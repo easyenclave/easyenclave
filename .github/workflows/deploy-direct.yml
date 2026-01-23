@@ -11,18 +11,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Stop existing container
-        run: docker stop easyenclave 2>/dev/null || true && docker rm easyenclave 2>/dev/null || true
+      - name: Stop existing containers
+        run: |
+          docker stop easyenclave-proxy 2>/dev/null || true
+          docker rm easyenclave-proxy 2>/dev/null || true
+          docker stop easyenclave 2>/dev/null || true
+          docker rm easyenclave 2>/dev/null || true
 
-      - name: Build and run
+      - name: Generate self-signed cert
+        run: |
+          mkdir -p /tmp/certs
+          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+            -keyout /tmp/certs/key.pem -out /tmp/certs/cert.pem \
+            -subj "/CN=app.easyenclave.com"
+
+      - name: Build and run with nginx SSL proxy
         run: |
           docker build -t easyenclave:latest .
-          docker run -d --name easyenclave -p 80:8080 -p 8080:8080 --restart unless-stopped easyenclave:latest
+
+          # Create nginx config for SSL termination
+          cat > /tmp/nginx.conf << 'EOF'
+          events { worker_connections 1024; }
+          http {
+            server {
+              listen 443 ssl;
+              server_name app.easyenclave.com;
+              ssl_certificate /certs/cert.pem;
+              ssl_certificate_key /certs/key.pem;
+              location / {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+              }
+            }
+            server {
+              listen 80;
+              location / {
+                proxy_pass http://backend:8080;
+                proxy_set_header Host $host;
+              }
+            }
+          }
+          EOF
+
+          # Create network and run containers
+          docker network create easyenclave-net 2>/dev/null || true
+          docker run -d --name easyenclave --network easyenclave-net --restart unless-stopped easyenclave:latest
+          docker run -d --name easyenclave-proxy --network easyenclave-net \
+            -p 80:80 -p 443:443 -p 8080:80 \
+            -v /tmp/nginx.conf:/etc/nginx/nginx.conf:ro \
+            -v /tmp/certs:/certs:ro \
+            --link easyenclave:backend \
+            --restart unless-stopped \
+            nginx:alpine
 
       - name: Wait for health
         run: |
+          sleep 5
           for i in {1..30}; do
-            if curl -s http://localhost:8080/health | grep -q healthy; then
+            if curl -sk https://localhost/health | grep -q healthy; then
               echo "Service is healthy!"
               exit 0
             fi
@@ -30,9 +77,10 @@ jobs:
           done
           echo "Health check failed"
           docker logs easyenclave
+          docker logs easyenclave-proxy
           exit 1
 
       - name: Show status
         run: |
-          echo "EasyEnclave running at http://localhost:8080"
-          curl -s http://localhost:8080/health
+          echo "EasyEnclave running at https://app.easyenclave.com"
+          curl -sk https://localhost/health
