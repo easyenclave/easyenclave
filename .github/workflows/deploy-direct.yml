@@ -1,0 +1,38 @@
+# Direct deployment (non-TDX) for quick testing
+name: Deploy Direct
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, tdx]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stop existing container
+        run: docker stop easyenclave 2>/dev/null || true && docker rm easyenclave 2>/dev/null || true
+
+      - name: Build and run
+        run: |
+          docker build -t easyenclave:latest .
+          docker run -d --name easyenclave -p 8080:8080 --restart unless-stopped easyenclave:latest
+
+      - name: Wait for health
+        run: |
+          for i in {1..30}; do
+            if curl -s http://localhost:8080/health | grep -q healthy; then
+              echo "Service is healthy!"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Health check failed"
+          docker logs easyenclave
+          exit 1
+
+      - name: Show status
+        run: |
+          echo "EasyEnclave running at http://localhost:8080"
+          curl -s http://localhost:8080/health
