@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyEnclave - Discovery Service</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>EasyEnclave</h1>
+            <p class="subtitle">Confidential Discovery Service for TDX-Attested Applications</p>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="search-section">
+            <div class="search-box">
+                <input type="text" id="searchInput" placeholder="Search services by name, tags, or description...">
+                <button onclick="searchServices()">Search</button>
+                <button onclick="clearSearch()" class="secondary">Clear</button>
+            </div>
+            <div class="filters">
+                <select id="envFilter" onchange="filterServices()">
+                    <option value="">All Environments</option>
+                    <option value="prod">Production</option>
+                    <option value="staging">Staging</option>
+                    <option value="dev">Development</option>
+                </select>
+                <select id="healthFilter" onchange="filterServices()">
+                    <option value="">All Health Status</option>
+                    <option value="healthy">Healthy</option>
+                    <option value="unhealthy">Unhealthy</option>
+                    <option value="unknown">Unknown</option>
+                </select>
+            </div>
+        </section>
+
+        <section class="stats-section">
+            <div class="stat-card">
+                <span class="stat-value" id="totalServices">0</span>
+                <span class="stat-label">Total Services</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="healthyServices">0</span>
+                <span class="stat-label">Healthy</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="attestedServices">0</span>
+                <span class="stat-label">Attested</span>
+            </div>
+        </section>
+
+        <section class="services-section">
+            <h2>Registered Services</h2>
+            <div id="servicesList" class="services-grid">
+                <div class="loading">Loading services...</div>
+            </div>
+        </section>
+
+        <div id="serviceModal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close-btn" onclick="closeModal()">&times;</span>
+                <div id="serviceDetails"></div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>EasyEnclave Discovery Service | Powered by TDX Confidential Computing</p>
+        </div>
+    </footer>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

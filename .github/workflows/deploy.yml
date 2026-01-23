@@ -1,0 +1,95 @@
+# Deploy EasyEnclave to TDX VM
+#
+# This workflow deploys the EasyEnclave discovery service as a persistent TDX VM.
+#
+# Prerequisites:
+# - Self-hosted runner with TDX enabled (label: tdx)
+# - TDX VM image built
+# - tdx_github_runner repo available
+
+name: Deploy to TDX
+
+on:
+  workflow_dispatch:
+    inputs:
+      vm_name:
+        description: 'Name for the VM'
+        default: 'easyenclave'
+        required: true
+      memory_gb:
+        description: 'Memory in GB'
+        default: '8'
+        required: true
+      cpus:
+        description: 'Number of CPUs'
+        default: '4'
+        required: true
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, tdx]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Checkout tdx_github_runner
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/tdx_github_runner
+          path: tdx_github_runner
+
+      - name: Build Docker image
+        run: |
+          docker build -t easyenclave:latest .
+
+      - name: Save Docker image for TDX VM
+        run: |
+          docker save easyenclave:latest -o easyenclave.tar
+
+      - name: Launch persistent TDX VM
+        id: tdx
+        uses: ./tdx_github_runner/.github/actions/launch-tdx
+        with:
+          vm_name: ${{ github.event.inputs.vm_name }}
+          docker_compose_path: './docker-compose.yml'
+          vm_memory_gb: ${{ github.event.inputs.memory_gb }}
+          vm_cpus: ${{ github.event.inputs.cpus }}
+          intel_api_key: ${{ secrets.INTEL_API_KEY }}
+          timeout_minutes: '15'
+
+      - name: Display deployment information
+        run: |
+          echo "========================================="
+          echo "EasyEnclave Deployed to TDX VM"
+          echo "========================================="
+          echo "VM Name:    ${{ steps.tdx.outputs.vm_name }}"
+          echo "Share Dir:  ${{ steps.tdx.outputs.share_dir }}"
+          echo ""
+          echo "Delete with:"
+          echo "  virsh destroy ${{ steps.tdx.outputs.vm_name }}"
+          echo ""
+          echo "Service should be available at:"
+          echo "  http://<host>:8080/"
+          echo "  http://<host>:8080/docs (API documentation)"
+          echo "  http://<host>:8080/health (Health check)"
+
+      - name: Save deployment info
+        run: |
+          mkdir -p deployment-info
+          cat > deployment-info/deployment.json << EOF
+          {
+            "vm_name": "${{ steps.tdx.outputs.vm_name }}",
+            "share_dir": "${{ steps.tdx.outputs.share_dir }}",
+            "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "github_run_id": "${{ github.run_id }}",
+            "github_sha": "${{ github.sha }}"
+          }
+          EOF
+
+      - name: Upload deployment info
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-info
+          path: deployment-info/
+          retention-days: 30
