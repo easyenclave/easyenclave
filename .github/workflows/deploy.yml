@@ -56,6 +56,7 @@ jobs:
           vm_memory_gb: ${{ github.event.inputs.memory_gb }}
           vm_cpus: ${{ github.event.inputs.cpus }}
           intel_api_key: ${{ secrets.INTEL_API_KEY }}
+          image_path: '/home/ubuntu/tdx/guest-tools/image/tdx-guest-ubuntu-24.04-generic.qcow2'
           timeout_minutes: '15'
 
       - name: Display deployment information
