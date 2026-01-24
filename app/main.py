@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -59,8 +60,57 @@ async def health_check():
 # API v1 endpoints
 @app.post("/api/v1/register", response_model=ServiceRegistration)
 async def register_service(request: ServiceRegistrationRequest):
-    """Register a new service with the discovery service."""
+    """Register a new service with the discovery service.
+
+    Requires:
+    - Valid MRTD (TDX measurement)
+    - Valid Intel Trust Authority token
+    - At least one endpoint that responds to health checks
+    """
+    # Require attestation
+    if not request.mrtd:
+        raise HTTPException(
+            status_code=400,
+            detail="Registration requires MRTD (TDX measurement)"
+        )
+    if not request.intel_ta_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Registration requires Intel Trust Authority token"
+        )
+
+    # Verify at least one endpoint is healthy
+    if not request.endpoints:
+        raise HTTPException(
+            status_code=400,
+            detail="Registration requires at least one endpoint"
+        )
+
+    health_status = "unknown"
+    health_error = None
+
+    for env, url in request.endpoints.items():
+        try:
+            # Try /health endpoint
+            health_url = url.rstrip('/') + '/health'
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(health_url)
+                if response.status_code == 200:
+                    health_status = "healthy"
+                    break
+        except Exception as e:
+            health_error = str(e)
+            continue
+
+    if health_status != "healthy":
+        raise HTTPException(
+            status_code=400,
+            detail=f"No endpoint responded to health check. Last error: {health_error}"
+        )
+
     service = ServiceRegistration.from_request(request)
+    service.health_status = health_status
+    service.last_health_check = datetime.utcnow()
     store.register(service)
     return service
 
