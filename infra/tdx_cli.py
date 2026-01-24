@@ -22,6 +22,7 @@ class TDXManager:
 
     DOMAIN_PREFIX = "tdvirsh"
     WORKDIR = Path("/var/tmp/tdvirsh")
+    VIRSH_CONNECT = "qemu:///system"
 
     def __init__(self, workspace: Path | None = None):
         self.workspace = workspace or Path.cwd()
@@ -56,6 +57,20 @@ class TDXManager:
         """Get XML template path."""
         name = "trust_domain_shared.xml.template" if shared else "trust_domain.xml.template"
         return self.infra_dir / "vm_templates" / name
+
+    def _virsh(self, *args, **kwargs) -> subprocess.CompletedProcess:
+        """Run virsh command with system connection.
+
+        Args:
+            *args: virsh subcommand and arguments
+            **kwargs: Passed to subprocess.run
+
+        Returns:
+            CompletedProcess result
+        """
+        cmd = ["virsh", "--connect", self.VIRSH_CONNECT, *args]
+        kwargs.setdefault("capture_output", True)
+        return subprocess.run(cmd, **kwargs)
 
     # =========================================================================
     # VM lifecycle methods (replacing tdvirsh)
@@ -112,30 +127,21 @@ class TDXManager:
         xml_path.write_text(xml_content)
 
         # Define and start VM
-        subprocess.run(["virsh", "define", str(xml_path)], check=True, capture_output=True)
+        self._virsh("define", str(xml_path), check=True)
 
         # Get UUID and rename
-        result = subprocess.run(
-            ["virsh", "domuuid", self.DOMAIN_PREFIX],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        result = self._virsh("domuuid", self.DOMAIN_PREFIX, text=True, check=True)
         vm_uuid = result.stdout.strip()
 
         # Determine template name for domain prefix
         template_name = template.stem.replace(".xml", "")
         vm_name = f"{self.DOMAIN_PREFIX}-{template_name}-{vm_uuid}"
 
-        subprocess.run(
-            ["virsh", "domrename", self.DOMAIN_PREFIX, vm_name],
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(["virsh", "start", vm_name], check=True, capture_output=True)
+        self._virsh("domrename", self.DOMAIN_PREFIX, vm_name, check=True)
+        self._virsh("start", vm_name, check=True)
 
         # Get VM info
-        result = subprocess.run(["virsh", "dominfo", vm_name], capture_output=True, text=True)
+        result = self._virsh("dominfo", vm_name, text=True)
 
         return {"name": vm_name, "uuid": vm_uuid, "info": result.stdout}
 
@@ -146,12 +152,12 @@ class TDXManager:
             name: VM name to delete
         """
         # First try graceful shutdown
-        subprocess.run(["virsh", "shutdown", name], capture_output=True)
+        self._virsh("shutdown", name)
         time.sleep(2)
 
         # Then force destroy
-        subprocess.run(["virsh", "destroy", name], capture_output=True)
-        subprocess.run(["virsh", "undefine", name], capture_output=True)
+        self._virsh("destroy", name)
+        self._virsh("undefine", name)
 
         # Note: Overlay cleanup is handled by cleaning up the share directory
         # The overlay path is stored in the VM XML, but we don't track it here
@@ -162,9 +168,7 @@ class TDXManager:
         Returns:
             List of VM names managed by tdvirsh
         """
-        result = subprocess.run(
-            ["virsh", "list", "--all", "--name"], capture_output=True, text=True
-        )
+        result = self._virsh("list", "--all", "--name", text=True)
         return [n for n in result.stdout.strip().split("\n") if n.startswith(self.DOMAIN_PREFIX)]
 
     # =========================================================================
