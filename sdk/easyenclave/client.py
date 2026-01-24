@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 import httpx
 
 
@@ -64,20 +63,20 @@ class EasyEnclaveClient:
                     f"Discovery service unhealthy: {data.get('status')}"
                 )
         except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Failed to connect to discovery service: {e}")
+            raise EasyEnclaveError(f"Failed to connect to discovery service: {e}") from e
 
     def register(
         self,
         name: str,
         endpoints: dict[str, str],
-        attestation_json: Optional[dict] = None,
-        source_repo: Optional[str] = None,
-        source_commit: Optional[str] = None,
-        compose_hash: Optional[str] = None,
-        mrtd: Optional[str] = None,
-        intel_ta_token: Optional[str] = None,
+        attestation_json: dict | None = None,
+        source_repo: str | None = None,
+        source_commit: str | None = None,
+        compose_hash: str | None = None,
+        mrtd: str | None = None,
+        intel_ta_token: str | None = None,
         description: str = "",
-        tags: Optional[list[str]] = None,
+        tags: list[str] | None = None,
     ) -> str:
         """
         Register this service with EasyEnclave.
@@ -126,18 +125,18 @@ class EasyEnclaveClient:
             data = response.json()
             return data["service_id"]
         except httpx.HTTPStatusError as e:
-            raise EasyEnclaveError(f"Registration failed: {e.response.text}")
+            raise EasyEnclaveError(f"Registration failed: {e.response.text}") from e
         except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Registration request failed: {e}")
+            raise EasyEnclaveError(f"Registration request failed: {e}") from e
 
     def discover(
         self,
-        name: Optional[str] = None,
-        tags: Optional[list[str]] = None,
-        environment: Optional[str] = None,
-        mrtd: Optional[str] = None,
-        health_status: Optional[str] = None,
-        query: Optional[str] = None,
+        name: str | None = None,
+        tags: list[str] | None = None,
+        environment: str | None = None,
+        mrtd: str | None = None,
+        health_status: str | None = None,
+        query: str | None = None,
     ) -> list[dict]:
         """
         Find services matching criteria.
@@ -176,7 +175,7 @@ class EasyEnclaveClient:
             data = response.json()
             return data["services"]
         except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Discovery request failed: {e}")
+            raise EasyEnclaveError(f"Discovery request failed: {e}") from e
 
     def get_service(self, service_id: str) -> dict:
         """
@@ -200,7 +199,7 @@ class EasyEnclaveClient:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Get service request failed: {e}")
+            raise EasyEnclaveError(f"Get service request failed: {e}") from e
 
     def verify_service(self, service_id: str) -> dict:
         """
@@ -229,7 +228,7 @@ class EasyEnclaveClient:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Verification request failed: {e}")
+            raise EasyEnclaveError(f"Verification request failed: {e}") from e
 
     def deregister(self, service_id: str) -> bool:
         """
@@ -253,7 +252,7 @@ class EasyEnclaveClient:
             response.raise_for_status()
             return True
         except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Deregister request failed: {e}")
+            raise EasyEnclaveError(f"Deregister request failed: {e}") from e
 
     def close(self) -> None:
         """Close the HTTP client."""

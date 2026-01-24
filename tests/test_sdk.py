@@ -1,7 +1,9 @@
 """Tests for EasyEnclave SDK."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from sdk.easyenclave.client import (
     EasyEnclaveClient,
     EasyEnclaveError,
@@ -96,7 +98,7 @@ class TestEasyEnclaveClient:
         ]
 
         client = EasyEnclaveClient("http://localhost:8080", verify_attestation=False)
-        services = client.discover(name="test", tags=["api"], environment="prod")
+        client.discover(name="test", tags=["api"], environment="prod")
 
         call_args = mock_httpx.get.call_args
         params = call_args[1]["params"]

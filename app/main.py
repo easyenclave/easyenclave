@@ -3,24 +3,23 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from .ita import verify_attestation_token
 from .models import (
+    HealthResponse,
+    ServiceListResponse,
     ServiceRegistration,
     ServiceRegistrationRequest,
-    ServiceListResponse,
     VerificationResponse,
-    HealthResponse,
 )
 from .storage import store
-from .ita import verify_attestation_token
 
 # Create FastAPI app
 app = FastAPI(
@@ -89,7 +88,7 @@ async def register_service(request: ServiceRegistrationRequest):
     health_status = "unknown"
     health_error = None
 
-    for env, url in request.endpoints.items():
+    for _env, url in request.endpoints.items():
         try:
             # Try /health endpoint
             health_url = url.rstrip('/') + '/health'
@@ -117,12 +116,12 @@ async def register_service(request: ServiceRegistrationRequest):
 
 @app.get("/api/v1/services", response_model=ServiceListResponse)
 async def list_services(
-    name: Optional[str] = Query(None, description="Filter by name (partial match)"),
-    tags: Optional[str] = Query(None, description="Filter by tags (comma-separated)"),
-    environment: Optional[str] = Query(None, description="Filter by environment"),
-    mrtd: Optional[str] = Query(None, description="Filter by MRTD (exact match)"),
-    health_status: Optional[str] = Query(None, description="Filter by health status"),
-    q: Optional[str] = Query(None, description="Search query"),
+    name: str | None = Query(None, description="Filter by name (partial match)"),
+    tags: str | None = Query(None, description="Filter by tags (comma-separated)"),
+    environment: str | None = Query(None, description="Filter by environment"),
+    mrtd: str | None = Query(None, description="Filter by MRTD (exact match)"),
+    health_status: str | None = Query(None, description="Filter by health status"),
+    q: str | None = Query(None, description="Search query"),
 ):
     """List all registered services with optional filters."""
     # If search query provided, use search

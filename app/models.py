@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, Field
 import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, Field
 
 
 class ServiceRegistrationRequest(BaseModel):
@@ -15,9 +15,9 @@ class ServiceRegistrationRequest(BaseModel):
     description: str = Field(default="", description="What this service does")
 
     # Source & Build Info
-    source_repo: Optional[str] = Field(default=None, description="GitHub repo URL")
-    source_commit: Optional[str] = Field(default=None, description="Git commit SHA")
-    compose_hash: Optional[str] = Field(
+    source_repo: str | None = Field(default=None, description="GitHub repo URL")
+    source_commit: str | None = Field(default=None, description="Git commit SHA")
+    compose_hash: str | None = Field(
         default=None, description="SHA256 of docker-compose.yml"
     )
 
@@ -28,11 +28,11 @@ class ServiceRegistrationRequest(BaseModel):
     )
 
     # Attestation
-    mrtd: Optional[str] = Field(default=None, description="TDX measurement")
-    attestation_json: Optional[dict] = Field(
+    mrtd: str | None = Field(default=None, description="TDX measurement")
+    attestation_json: dict | None = Field(
         default=None, description="Full attestation from measure-tdx"
     )
-    intel_ta_token: Optional[str] = Field(
+    intel_ta_token: str | None = Field(
         default=None, description="JWT from Intel Trust Authority"
     )
 
@@ -50,9 +50,9 @@ class ServiceRegistration(BaseModel):
     description: str = Field(default="", description="What this service does")
 
     # Source & Build Info
-    source_repo: Optional[str] = Field(default=None, description="GitHub repo URL")
-    source_commit: Optional[str] = Field(default=None, description="Git commit SHA")
-    compose_hash: Optional[str] = Field(
+    source_repo: str | None = Field(default=None, description="GitHub repo URL")
+    source_commit: str | None = Field(default=None, description="Git commit SHA")
+    compose_hash: str | None = Field(
         default=None, description="SHA256 of docker-compose.yml"
     )
 
@@ -63,24 +63,24 @@ class ServiceRegistration(BaseModel):
     )
 
     # Attestation
-    mrtd: Optional[str] = Field(default=None, description="TDX measurement")
-    attestation_json: Optional[dict] = Field(
+    mrtd: str | None = Field(default=None, description="TDX measurement")
+    attestation_json: dict | None = Field(
         default=None, description="Full attestation from measure-tdx"
     )
-    intel_ta_token: Optional[str] = Field(
+    intel_ta_token: str | None = Field(
         default=None, description="JWT from Intel Trust Authority"
     )
 
     # Metadata
     registered_at: datetime = Field(default_factory=datetime.utcnow)
-    last_health_check: Optional[datetime] = Field(default=None)
+    last_health_check: datetime | None = Field(default=None)
     health_status: str = Field(
         default="unknown", description="healthy, unhealthy, or unknown"
     )
     tags: list[str] = Field(default_factory=list, description="Searchable tags")
 
     @classmethod
-    def from_request(cls, request: ServiceRegistrationRequest) -> "ServiceRegistration":
+    def from_request(cls, request: ServiceRegistrationRequest) -> ServiceRegistration:
         """Create a ServiceRegistration from a request."""
         return cls(
             name=request.name,
@@ -109,8 +109,8 @@ class VerificationResponse(BaseModel):
     service_id: str
     verified: bool
     verification_time: datetime
-    details: Optional[dict] = None
-    error: Optional[str] = None
+    details: dict | None = None
+    error: str | None = None
 
 
 class HealthResponse(BaseModel):

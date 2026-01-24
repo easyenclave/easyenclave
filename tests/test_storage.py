@@ -1,8 +1,9 @@
 """Tests for in-memory storage."""
 
 import pytest
-from app.storage import InMemoryStore
+
 from app.models import ServiceRegistration
+from app.storage import InMemoryStore
 
 
 @pytest.fixture

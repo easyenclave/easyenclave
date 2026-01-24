@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
 from .models import ServiceRegistration
 
@@ -21,12 +20,12 @@ class InMemoryStore:
             self._services[service.service_id] = service
             return service.service_id
 
-    def get(self, service_id: str) -> Optional[ServiceRegistration]:
+    def get(self, service_id: str) -> ServiceRegistration | None:
         """Get a service by ID. Returns None if not found."""
         with self._lock:
             return self._services.get(service_id)
 
-    def list(self, filters: Optional[dict] = None) -> list[ServiceRegistration]:
+    def list(self, filters: dict | None = None) -> list[ServiceRegistration]:
         """List all services, optionally filtered."""
         with self._lock:
             services = list(self._services.values())
@@ -71,7 +70,7 @@ class InMemoryStore:
                 return True
             return False
 
-    def update(self, service_id: str, **updates) -> Optional[ServiceRegistration]:
+    def update(self, service_id: str, **updates) -> ServiceRegistration | None:
         """Update a service's fields. Returns updated service or None if not found."""
         with self._lock:
             service = self._services.get(service_id)

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import os
-import httpx
 from datetime import datetime
-from typing import Optional
 
+import httpx
 
 ITA_API_URL = os.environ.get(
     "ITA_API_URL", "https://api.trustauthority.intel.com/appraisal/v2"
@@ -98,7 +97,7 @@ async def verify_attestation_token(token: str) -> dict:
         }
 
 
-def decode_token_claims(token: str) -> Optional[dict]:
+def decode_token_claims(token: str) -> dict | None:
     """
     Decode JWT token claims without verification (for display purposes).
 
