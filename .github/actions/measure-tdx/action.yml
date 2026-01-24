@@ -1,0 +1,75 @@
+name: 'TDX Measure'
+description: 'Run workload in ephemeral TDX VM with attestation'
+author: 'EasyEnclave'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  intel_api_key:
+    description: 'Intel Trust Authority API key'
+    required: true
+  intel_api_url:
+    description: 'Intel Trust Authority API URL'
+    default: 'https://api.trustauthority.intel.com'
+  docker_compose_path:
+    description: 'Path to docker-compose.yml file'
+    default: './docker-compose.yml'
+  timeout_minutes:
+    description: 'Maximum time to wait for workload'
+    default: '30'
+  health_endpoint:
+    description: 'Health check endpoint'
+    default: '/health'
+  compose_up_args:
+    description: 'Arguments for docker compose up'
+    default: '--build -d'
+
+outputs:
+  attestation_json:
+    description: 'Attestation response JSON'
+    value: ${{ steps.run.outputs.attestation_json }}
+  vm_name:
+    description: 'Name of the TDX VM'
+    value: ${{ steps.run.outputs.vm_name }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ ! -f "${{ inputs.docker_compose_path }}" ]; then
+          echo "::error::Docker compose file not found: ${{ inputs.docker_compose_path }}"
+          exit 1
+        fi
+
+    - name: Run TDX measure
+      id: run
+      shell: bash
+      run: |
+        # Find the CLI script
+        CLI_PATH="${GITHUB_WORKSPACE}/infra/tdx_cli.py"
+        if [ ! -f "$CLI_PATH" ]; then
+          CLI_PATH="${{ github.action_path }}/../../../infra/tdx_cli.py"
+        fi
+
+        if [ ! -f "$CLI_PATH" ]; then
+          echo "::error::tdx_cli.py not found"
+          exit 1
+        fi
+
+        RESULT=$(python3 "$CLI_PATH" measure \
+          --compose "${{ inputs.docker_compose_path }}" \
+          --intel-api-key "${{ inputs.intel_api_key }}" \
+          --intel-api-url "${{ inputs.intel_api_url }}" \
+          --timeout "${{ inputs.timeout_minutes }}" \
+          --health-endpoint "${{ inputs.health_endpoint }}" \
+          --compose-up-args "${{ inputs.compose_up_args }}")
+
+        echo "vm_name=$(echo "$RESULT" | jq -r '.vm_name')" >> $GITHUB_OUTPUT
+        echo "attestation_json=$(echo "$RESULT" | jq -c '.attestation')" >> $GITHUB_OUTPUT
+
+        echo "Measure completed:"
+        echo "$RESULT" | jq .

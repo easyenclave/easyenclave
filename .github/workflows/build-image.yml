@@ -1,0 +1,41 @@
+name: Build TDX Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_name:
+        description: 'Image name'
+        required: false
+        default: 'tdx-runner'
+      image_size:
+        description: 'Image size'
+        required: false
+        default: '20G'
+  push:
+    branches: [main]
+    paths:
+      - 'infra/build_image.sh'
+      - 'infra/customize.sh'
+      - 'infra/launcher/**'
+
+jobs:
+  build:
+    name: Build TDX VM Image
+    runs-on: [self-hosted, tdx]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: |
+          cd infra
+          ./build_image.sh \
+            --name "${{ github.event.inputs.image_name || 'tdx-runner' }}" \
+            --size "${{ github.event.inputs.image_size || '20G' }}" \
+            --output ./output
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tdx-image
+          path: infra/output/*.qcow2
+          retention-days: 7

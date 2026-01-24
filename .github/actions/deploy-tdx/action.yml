@@ -1,0 +1,135 @@
+name: 'TDX Deploy'
+description: 'Deploy workload with attestation and EasyEnclave registration'
+author: 'EasyEnclave'
+
+branding:
+  icon: 'upload-cloud'
+  color: 'purple'
+
+inputs:
+  service_name:
+    description: 'Service name for EasyEnclave registration'
+    required: true
+  service_url:
+    description: 'Public URL of the deployed service'
+    required: true
+  docker_compose_path:
+    description: 'Path to docker-compose.yml'
+    default: './docker-compose.yml'
+  intel_api_key:
+    description: 'Intel Trust Authority API key'
+    required: true
+  intel_api_url:
+    description: 'Intel Trust Authority API URL'
+    default: 'https://api.trustauthority.intel.com'
+  easyenclave_api_url:
+    description: 'EasyEnclave API URL'
+    default: 'https://app.easyenclave.com'
+  health_endpoint:
+    description: 'Health check endpoint path'
+    default: '/health'
+  compose_up_args:
+    description: 'Arguments for docker compose up'
+    default: '--build -d'
+  source_repo:
+    description: 'Source repository URL for registration'
+    default: ''
+  tags:
+    description: 'JSON array of tags for EasyEnclave registration'
+    default: '[]'
+
+outputs:
+  vm_name:
+    description: 'Full VM name from libvirt'
+    value: ${{ steps.run.outputs.vm_name }}
+  service_id:
+    description: 'EasyEnclave service ID'
+    value: ${{ steps.run.outputs.service_id }}
+  mrtd:
+    description: 'TDX MRTD measurement'
+    value: ${{ steps.run.outputs.mrtd }}
+  attestation_json:
+    description: 'Full attestation JSON'
+    value: ${{ steps.run.outputs.attestation_json }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.service_name }}" ]; then
+          echo "::error::service_name is required"
+          exit 1
+        fi
+        if [ -z "${{ inputs.service_url }}" ]; then
+          echo "::error::service_url is required"
+          exit 1
+        fi
+        if [ -z "${{ inputs.intel_api_key }}" ]; then
+          echo "::error::intel_api_key is required"
+          exit 1
+        fi
+        if [ ! -f "${{ inputs.docker_compose_path }}" ]; then
+          echo "::error::Docker compose file not found: ${{ inputs.docker_compose_path }}"
+          exit 1
+        fi
+
+    - name: Run TDX deploy
+      id: run
+      shell: bash
+      run: |
+        # Find the CLI script
+        CLI_PATH="${GITHUB_WORKSPACE}/infra/tdx_cli.py"
+        if [ ! -f "$CLI_PATH" ]; then
+          CLI_PATH="${{ github.action_path }}/../../../infra/tdx_cli.py"
+        fi
+
+        if [ ! -f "$CLI_PATH" ]; then
+          echo "::error::tdx_cli.py not found"
+          exit 1
+        fi
+
+        # Build source repo URL
+        SOURCE_REPO="${{ inputs.source_repo }}"
+        if [ -z "$SOURCE_REPO" ]; then
+          SOURCE_REPO="https://github.com/${{ github.repository }}"
+        fi
+
+        RESULT=$(python3 "$CLI_PATH" deploy \
+          --service-name "${{ inputs.service_name }}" \
+          --service-url "${{ inputs.service_url }}" \
+          --compose "${{ inputs.docker_compose_path }}" \
+          --intel-api-key "${{ inputs.intel_api_key }}" \
+          --intel-api-url "${{ inputs.intel_api_url }}" \
+          --easyenclave-url "${{ inputs.easyenclave_api_url }}" \
+          --health-endpoint "${{ inputs.health_endpoint }}" \
+          --compose-up-args "${{ inputs.compose_up_args }}" \
+          --source-repo "$SOURCE_REPO" \
+          --source-commit "${{ github.sha }}" \
+          --tags '${{ inputs.tags }}')
+
+        echo "vm_name=$(echo "$RESULT" | jq -r '.vm_name')" >> $GITHUB_OUTPUT
+        echo "service_id=$(echo "$RESULT" | jq -r '.service_id')" >> $GITHUB_OUTPUT
+        echo "mrtd=$(echo "$RESULT" | jq -r '.mrtd')" >> $GITHUB_OUTPUT
+        echo "attestation_json=$(echo "$RESULT" | jq -c '.attestation')" >> $GITHUB_OUTPUT
+
+        echo "Deploy completed:"
+        echo "$RESULT" | jq .
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo ""
+        echo "========================================="
+        echo "TDX Deploy Complete"
+        echo "========================================="
+        echo ""
+        echo "VM Name:      ${{ steps.run.outputs.vm_name }}"
+        echo "Service ID:   ${{ steps.run.outputs.service_id }}"
+        echo "MRTD:         ${{ steps.run.outputs.mrtd }}"
+        echo ""
+        echo "========================================="
+        echo "The VM will persist until explicitly deleted."
+        echo "To delete: virsh destroy ${{ steps.run.outputs.vm_name }}"
+        echo "========================================="

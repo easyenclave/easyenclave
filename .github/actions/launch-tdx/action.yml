@@ -1,0 +1,98 @@
+name: 'TDX Launch'
+description: 'Launch a persistent TDX VM'
+author: 'EasyEnclave'
+
+branding:
+  icon: 'server'
+  color: 'green'
+
+inputs:
+  vm_name:
+    description: 'Name for the TDX VM (used for identification)'
+    required: true
+  docker_compose_path:
+    description: 'Path to docker-compose.yml for initial setup (optional)'
+    required: false
+    default: ''
+  intel_api_key:
+    description: 'Intel Trust Authority API key (optional for persistent mode)'
+    required: false
+  timeout_minutes:
+    description: 'Maximum time to wait for VM to be ready'
+    default: '10'
+  compose_up_args:
+    description: 'Arguments for docker compose up'
+    default: '-d'
+
+outputs:
+  vm_name:
+    description: 'Full VM name from libvirt'
+    value: ${{ steps.run.outputs.vm_name }}
+  share_dir:
+    description: 'Shared directory path'
+    value: ${{ steps.run.outputs.share_dir }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.vm_name }}" ]; then
+          echo "::error::vm_name is required"
+          exit 1
+        fi
+        if [ -n "${{ inputs.docker_compose_path }}" ] && [ ! -f "${{ inputs.docker_compose_path }}" ]; then
+          echo "::error::Docker compose file not found: ${{ inputs.docker_compose_path }}"
+          exit 1
+        fi
+
+    - name: Run TDX launch
+      id: run
+      shell: bash
+      run: |
+        # Find the CLI script
+        CLI_PATH="${GITHUB_WORKSPACE}/infra/tdx_cli.py"
+        if [ ! -f "$CLI_PATH" ]; then
+          CLI_PATH="${{ github.action_path }}/../../../infra/tdx_cli.py"
+        fi
+
+        if [ ! -f "$CLI_PATH" ]; then
+          echo "::error::tdx_cli.py not found"
+          exit 1
+        fi
+
+        # Build command
+        CMD="python3 $CLI_PATH launch --name ${{ inputs.vm_name }} --timeout ${{ inputs.timeout_minutes }}"
+
+        if [ -n "${{ inputs.docker_compose_path }}" ]; then
+          CMD="$CMD --compose ${{ inputs.docker_compose_path }}"
+        fi
+
+        if [ -n "${{ inputs.intel_api_key }}" ]; then
+          CMD="$CMD --intel-api-key ${{ inputs.intel_api_key }}"
+        fi
+
+        CMD="$CMD --compose-up-args '${{ inputs.compose_up_args }}'"
+
+        RESULT=$(eval $CMD)
+
+        echo "vm_name=$(echo "$RESULT" | jq -r '.vm_name')" >> $GITHUB_OUTPUT
+        echo "share_dir=$(echo "$RESULT" | jq -r '.share_dir')" >> $GITHUB_OUTPUT
+
+        echo "Launch completed:"
+        echo "$RESULT" | jq .
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo ""
+        echo "========================================="
+        echo "TDX VM Launch Complete"
+        echo "========================================="
+        echo "VM Name:     ${{ steps.run.outputs.vm_name }}"
+        echo "Share Dir:   ${{ steps.run.outputs.share_dir }}"
+        echo "========================================="
+        echo ""
+        echo "The VM will persist until explicitly deleted."
+        echo "To delete: virsh destroy ${{ steps.run.outputs.vm_name }}"

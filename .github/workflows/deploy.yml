@@ -4,8 +4,7 @@
 #
 # Prerequisites:
 # - Self-hosted runner with TDX enabled (label: tdx)
-# - TDX VM image built
-# - tdx_github_runner repo available
+# - TDX VM image built with infra/build_image.sh
 
 name: Deploy to TDX
 
@@ -16,13 +15,9 @@ on:
         description: 'Name for the VM'
         default: 'easyenclave'
         required: true
-      memory_gb:
-        description: 'Memory in GB'
-        default: '8'
-        required: true
-      cpus:
-        description: 'Number of CPUs'
-        default: '4'
+      service_url:
+        description: 'Public service URL'
+        default: 'https://app.easyenclave.com'
         required: true
 
 jobs:
@@ -33,31 +28,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Checkout tdx_github_runner
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/tdx_github_runner
-          path: tdx_github_runner
-
-      - name: Build Docker image
-        run: |
-          docker build -t easyenclave:latest .
-
-      - name: Save Docker image for TDX VM
-        run: |
-          docker save easyenclave:latest -o easyenclave.tar
-
-      - name: Launch persistent TDX VM
+      - name: Deploy with TDX attestation and registration
         id: tdx
-        uses: ./tdx_github_runner/.github/actions/launch-tdx
+        uses: ./.github/actions/deploy-tdx
         with:
-          vm_name: ${{ github.event.inputs.vm_name }}
+          service_name: ${{ github.event.inputs.vm_name }}
+          service_url: ${{ github.event.inputs.service_url }}
           docker_compose_path: './docker-compose.yml'
-          vm_memory_gb: ${{ github.event.inputs.memory_gb }}
-          vm_cpus: ${{ github.event.inputs.cpus }}
           intel_api_key: ${{ secrets.INTEL_API_KEY }}
-          image_path: '/home/ubuntu/tdx/guest-tools/image/tdx-guest-ubuntu-24.04-generic.qcow2'
-          timeout_minutes: '15'
 
       - name: Display deployment information
         run: |
@@ -65,15 +43,15 @@ jobs:
           echo "EasyEnclave Deployed to TDX VM"
           echo "========================================="
           echo "VM Name:    ${{ steps.tdx.outputs.vm_name }}"
-          echo "Share Dir:  ${{ steps.tdx.outputs.share_dir }}"
+          echo "Service ID: ${{ steps.tdx.outputs.service_id }}"
+          echo "MRTD:       ${{ steps.tdx.outputs.mrtd }}"
           echo ""
           echo "Delete with:"
           echo "  virsh destroy ${{ steps.tdx.outputs.vm_name }}"
           echo ""
-          echo "Service should be available at:"
-          echo "  http://<host>:8080/"
-          echo "  http://<host>:8080/docs (API documentation)"
-          echo "  http://<host>:8080/health (Health check)"
+          echo "Service available at:"
+          echo "  ${{ github.event.inputs.service_url }}"
+          echo "  ${{ github.event.inputs.service_url }}/docs (API documentation)"
 
       - name: Save deployment info
         run: |
@@ -81,7 +59,9 @@ jobs:
           cat > deployment-info/deployment.json << EOF
           {
             "vm_name": "${{ steps.tdx.outputs.vm_name }}",
-            "share_dir": "${{ steps.tdx.outputs.share_dir }}",
+            "service_id": "${{ steps.tdx.outputs.service_id }}",
+            "mrtd": "${{ steps.tdx.outputs.mrtd }}",
+            "service_url": "${{ github.event.inputs.service_url }}",
             "created_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "github_run_id": "${{ github.run_id }}",
             "github_sha": "${{ github.sha }}"
