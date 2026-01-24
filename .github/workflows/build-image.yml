@@ -11,12 +11,6 @@ on:
         description: 'Image size'
         required: false
         default: '20G'
-  push:
-    branches: [main]
-    paths:
-      - 'infra/build_image.sh'
-      - 'infra/customize.sh'
-      - 'infra/launcher/**'
 
 jobs:
   build:
@@ -33,9 +27,10 @@ jobs:
             --size "${{ github.event.inputs.image_size || '20G' }}" \
             --output ./output
 
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tdx-image
-          path: infra/output/*.qcow2
-          retention-days: 7
+      - name: Display image info
+        run: |
+          echo "Built images:"
+          ls -lh infra/output/*.qcow2
+          echo ""
+          echo "Image location on runner: $(pwd)/infra/output/"
+          echo "Set TDX_IMAGE_PATH to use in workflows"
