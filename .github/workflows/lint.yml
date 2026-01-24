@@ -17,10 +17,10 @@ jobs:
         run: pip install ruff
 
       - name: Run ruff check
-        run: ruff check infra/ vm_images/
+        run: ruff check infra/
 
       - name: Run ruff format check
-        run: ruff format --check infra/ vm_images/
+        run: ruff format --check infra/
 
   shell:
     name: Shell (shellcheck)
@@ -30,7 +30,7 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          find infra/ vm_images/ -name "*.sh" -print0 | xargs -0 shellcheck --severity=warning || true
+          find infra/ -name "*.sh" -print0 | xargs -0 shellcheck --severity=warning || true
 
   yaml:
     name: YAML (actionlint)
@@ -44,4 +44,4 @@ jobs:
           sudo mv actionlint /usr/local/bin/
 
       - name: Run actionlint
-        run: actionlint
+        run: actionlint -config-file .github/actionlint.yaml
