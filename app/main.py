@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -21,11 +24,67 @@ from .models import (
 )
 from .storage import store
 
+logger = logging.getLogger(__name__)
+
+# Health check interval in seconds
+HEALTH_CHECK_INTERVAL = 60
+
+
+async def check_service_health(service: ServiceRegistration) -> str:
+    """Check health of a single service. Returns health status."""
+    for _env, url in service.endpoints.items():
+        try:
+            health_url = url.rstrip("/") + "/health"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(health_url)
+                if response.status_code == 200:
+                    return "healthy"
+        except Exception:
+            continue
+    return "unhealthy"
+
+
+async def background_health_checker():
+    """Background task to periodically check health of all services."""
+    while True:
+        try:
+            services = store.get_all_for_health_check()
+            for service in services:
+                try:
+                    status = await check_service_health(service)
+                    store.update(
+                        service.service_id,
+                        health_status=status,
+                        last_health_check=datetime.utcnow(),
+                    )
+                except Exception as e:
+                    logger.warning(f"Health check failed for {service.name}: {e}")
+        except Exception as e:
+            logger.error(f"Background health checker error: {e}")
+
+        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan - start background tasks."""
+    # Start background health checker
+    task = asyncio.create_task(background_health_checker())
+    logger.info("Started background health checker")
+    yield
+    # Shutdown
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
 # Create FastAPI app
 app = FastAPI(
     title="EasyEnclave Discovery Service",
     description="Confidential discovery service for TDX-attested applications",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # CORS middleware - allow requests from easyenclave.com
@@ -110,8 +169,16 @@ async def register_service(request: ServiceRegistrationRequest):
     service = ServiceRegistration.from_request(request)
     service.health_status = health_status
     service.last_health_check = datetime.utcnow()
-    store.register(service)
-    return service
+
+    # Upsert: update existing service with same name, or create new
+    service_id, is_new = store.upsert(service)
+
+    # Return the stored service (may have preserved service_id if updated)
+    stored_service = store.get(service_id)
+    logger.info(
+        f"Service {'created' if is_new else 'updated'}: {service.name} ({service_id})"
+    )
+    return stored_service
 
 
 @app.get("/api/v1/services", response_model=ServiceListResponse)
@@ -122,11 +189,21 @@ async def list_services(
     mrtd: str | None = Query(None, description="Filter by MRTD (exact match)"),
     health_status: str | None = Query(None, description="Filter by health status"),
     q: str | None = Query(None, description="Search query"),
+    include_down: bool = Query(
+        False, description="Include services that have been down for extended period"
+    ),
 ):
-    """List all registered services with optional filters."""
+    """List all registered services with optional filters.
+
+    By default, services that have been unhealthy for more than 1 hour are hidden.
+    Use include_down=true to show all services.
+    """
     # If search query provided, use search
     if q:
         services = store.search(q)
+        # Filter out timed-out services from search results too
+        if not include_down:
+            services = [s for s in services if not store._is_timed_out(s)]
     else:
         # Build filters dict
         filters = {}
@@ -141,7 +218,7 @@ async def list_services(
         if health_status:
             filters["health_status"] = health_status
 
-        services = store.list(filters if filters else None)
+        services = store.list(filters if filters else None, include_down=include_down)
 
     return ServiceListResponse(services=services, total=len(services))
 
