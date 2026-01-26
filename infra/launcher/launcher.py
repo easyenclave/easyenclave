@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-File-based launcher - watches shared directory for config
+TDX Launcher Agent - Polls control plane for deployments
 
-Replaces HTTP-based launcher with virtio-fs filesystem sharing.
-The host writes config.json to the shared directory before booting the VM.
-This launcher reads the config, clones the repo, runs docker compose,
-waits for workload health, generates TDX attestation, and writes results
-back to the shared directory.
+This launcher is an active agent that:
+1. Boots and generates initial TDX attestation
+2. Registers with the EasyEnclave control plane
+3. Polls for deployment configurations
+4. Executes deployments (docker compose)
+5. Reports status and attestation back to control plane
+6. Can self-update from GitHub
 
-Supports two modes:
-- "measure" (default): Run compose, wait for health check, generate attestation
-- "persistent": Run compose, optionally wait for health, generate attestation, stay running
-
-Attestation is handled at the VM level (not in workloads), so workloads
-only need to expose a /health endpoint.
+The launcher runs in a TDX VM and handles all attestation at the VM level.
+Workloads only need to expose a /health endpoint.
 """
 
 import base64
@@ -21,7 +19,6 @@ import hashlib
 import json
 import logging
 import os
-import shutil
 import struct
 import subprocess
 import time
@@ -36,114 +33,50 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SHARE_DIR = Path("/mnt/share")
-CONFIG_FILE = SHARE_DIR / "config.json"
-STATUS_FILE = SHARE_DIR / "status"
-ERROR_FILE = SHARE_DIR / "error.log"
-ATTESTATION_FILE = SHARE_DIR / "attestation.json"
-REGISTRATION_FILE = SHARE_DIR / "registration.json"
+# Configuration
+CONTROL_PLANE_URL = os.environ.get("EASYENCLAVE_URL", "https://app.easyenclave.com")
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
+VERSION = "1.0.0"
+
+# Paths
 WORKLOAD_DIR = Path("/home/tdx/workload")
 TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
 
+# For backwards compatibility with file-based mode
+SHARE_DIR = Path("/mnt/share")
+CONFIG_FILE = SHARE_DIR / "config.json"
+STATUS_FILE = SHARE_DIR / "status"
+
+
+def get_vm_name() -> str:
+    """Get the VM name from environment or hostname."""
+    # Try environment variable first
+    vm_name = os.environ.get("VM_NAME")
+    if vm_name:
+        return vm_name
+
+    # Try to get from libvirt domain name (if available via cloud-init or similar)
+    try:
+        with open("/etc/hostname") as f:
+            hostname = f.read().strip()
+            if hostname:
+                return hostname
+    except Exception:
+        pass
+
+    # Fall back to a generated name
+    import uuid
+    return f"tdx-agent-{uuid.uuid4().hex[:8]}"
+
 
 def write_status(status: str):
-    """Write current status to status file"""
-    STATUS_FILE.write_text(status)
+    """Write status for monitoring."""
+    try:
+        if SHARE_DIR.exists():
+            STATUS_FILE.write_text(status)
+    except Exception:
+        pass
     logger.info(f"Status: {status}")
-
-
-def write_error(error: str):
-    """Write error message and set status to error"""
-    ERROR_FILE.write_text(error)
-    write_status("error")
-    logger.error(f"Error: {error}")
-
-
-def wait_for_config() -> dict:
-    """Wait for config.json to appear in shared directory"""
-    logger.info(f"Waiting for {CONFIG_FILE}...")
-    while not CONFIG_FILE.exists():
-        time.sleep(1)
-
-    logger.info("Config file found, reading...")
-    config = json.loads(CONFIG_FILE.read_text())
-    logger.info(f"Config loaded: repo={config.get('repo')}, ref={config.get('ref')}")
-    return config
-
-
-def setup_workload(config: dict):
-    """Setup workload directory with compose file from shared directory"""
-    write_status("setup")
-
-    # Clean up any previous workload
-    if WORKLOAD_DIR.exists():
-        subprocess.run(["rm", "-rf", str(WORKLOAD_DIR)], check=True)
-
-    WORKLOAD_DIR.mkdir(parents=True)
-
-    # Copy all workload files from shared directory
-    compose_src = SHARE_DIR / "docker-compose.yml"
-    if not compose_src.exists():
-        raise RuntimeError(f"Compose file not found in shared directory: {compose_src}")
-
-    # Copy compose file and any other config files/directories
-    skip_files = {"config.json", "status", "error.log", "attestation.json", "registration.json"}
-    for src_path in SHARE_DIR.iterdir():
-        if src_path.name in skip_files:
-            continue
-
-        dst_path = WORKLOAD_DIR / src_path.name
-        if src_path.is_file():
-            shutil.copy2(src_path, dst_path)
-            logger.info(f"Copied file {src_path.name}")
-        elif src_path.is_dir():
-            shutil.copytree(src_path, dst_path)
-            logger.info(f"Copied directory {src_path.name}/")
-
-    logger.info(f"Workload directory setup complete: {list(WORKLOAD_DIR.iterdir())}")
-
-
-def run_compose(config: dict):
-    """Run docker compose"""
-    write_status("building")
-
-    # Compose file is always at WORKLOAD_DIR/docker-compose.yml
-    compose_dir = WORKLOAD_DIR
-    compose_file = "docker-compose.yml"
-
-    # Run docker compose
-    compose_args = config.get("compose_up_args", "--build -d").split()
-    cmd = ["docker", "compose", "-f", compose_file, "up"] + compose_args
-    logger.info(f"Running: {' '.join(cmd)}")
-
-    result = subprocess.run(cmd, cwd=compose_dir, capture_output=True, text=True)
-
-    if result.returncode != 0:
-        raise RuntimeError(f"Docker compose failed: {result.stderr}")
-
-    logger.info("Docker compose completed")
-
-
-def wait_for_health(config: dict) -> dict:
-    """Wait for workload health endpoint to be ready"""
-    write_status("waiting_for_health")
-
-    health_endpoint = config.get("health_endpoint", "/health")
-    health_port = config.get("health_port", 8080)
-    url = f"http://localhost:{health_port}{health_endpoint}"
-    logger.info(f"Waiting for health endpoint: {url}")
-
-    for _attempt in range(60):
-        try:
-            response = requests.get(url, timeout=5)
-            if response.ok:
-                logger.info(f"Health check passed: {response.text.strip()}")
-                return {"status": "healthy", "response": response.text.strip()}
-        except requests.RequestException:
-            pass
-        time.sleep(2)
-
-    raise RuntimeError(f"Health check timeout after 120s: {url}")
 
 
 def generate_tdx_quote(user_data: bytes = None) -> str:
@@ -308,6 +241,203 @@ def parse_jwt_claims(jwt_token: str) -> dict:
         return {}
 
 
+def generate_initial_attestation() -> dict:
+    """Generate initial TDX attestation for registration."""
+    write_status("attesting")
+    logger.info("Generating initial TDX attestation...")
+
+    try:
+        quote_b64 = generate_tdx_quote()
+        measurements = parse_tdx_quote(quote_b64)
+
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tdx": {
+                "quote_b64": quote_b64,
+                "measurements": measurements,
+            },
+        }
+    except Exception as e:
+        logger.warning(f"TDX attestation failed: {e}")
+        # Return empty attestation for non-TDX environments
+        return {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "tdx": {
+                "measurements": {},
+                "error": str(e),
+            },
+        }
+
+
+def register_with_control_plane(attestation: dict, vm_name: str) -> str:
+    """Register agent with the control plane.
+
+    Args:
+        attestation: Initial TDX attestation
+        vm_name: VM name for identification
+
+    Returns:
+        Agent ID from control plane
+    """
+    write_status("registering")
+    logger.info(f"Registering with control plane: {CONTROL_PLANE_URL}")
+
+    response = requests.post(
+        f"{CONTROL_PLANE_URL}/api/v1/agents/register",
+        json={
+            "attestation": attestation,
+            "vm_name": vm_name,
+            "version": VERSION,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    result = response.json()
+
+    agent_id = result["agent_id"]
+    logger.info(f"Registered as agent: {agent_id}")
+    return agent_id
+
+
+def poll_control_plane(agent_id: str) -> dict:
+    """Poll control plane for deployment.
+
+    Args:
+        agent_id: Agent ID from registration
+
+    Returns:
+        Response dict with deployment and/or update instructions
+    """
+    response = requests.get(
+        f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/poll",
+        timeout=30,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def report_status(agent_id: str, status: str, deployment_id: str, error: str = None):
+    """Report status to control plane.
+
+    Args:
+        agent_id: Agent ID
+        status: New status
+        deployment_id: Deployment ID being updated
+        error: Error message if status is error
+    """
+    requests.post(
+        f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/status",
+        json={
+            "status": status,
+            "deployment_id": deployment_id,
+            "error": error,
+        },
+        timeout=30,
+    )
+
+
+def report_deployed(agent_id: str, deployment_id: str, service_id: str, attestation: dict):
+    """Report successful deployment to control plane.
+
+    Args:
+        agent_id: Agent ID
+        deployment_id: Completed deployment ID
+        service_id: Registered service ID
+        attestation: Workload attestation
+    """
+    requests.post(
+        f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/deployed",
+        json={
+            "deployment_id": deployment_id,
+            "service_id": service_id,
+            "attestation": attestation,
+        },
+        timeout=30,
+    )
+
+
+def setup_workload_from_deployment(deployment: dict):
+    """Setup workload directory from deployment config.
+
+    Args:
+        deployment: Deployment dict with compose, build_context, config
+    """
+    write_status("setup")
+    logger.info("Setting up workload from deployment...")
+
+    # Clean up any previous workload
+    if WORKLOAD_DIR.exists():
+        subprocess.run(["rm", "-rf", str(WORKLOAD_DIR)], check=True)
+
+    WORKLOAD_DIR.mkdir(parents=True)
+
+    # Write compose file
+    compose_b64 = deployment["compose"]
+    compose_content = base64.b64decode(compose_b64)
+    (WORKLOAD_DIR / "docker-compose.yml").write_bytes(compose_content)
+    logger.info("Wrote docker-compose.yml")
+
+    # Write build context files
+    build_context = deployment.get("build_context", {})
+    for filename, content_b64 in build_context.items():
+        content = base64.b64decode(content_b64)
+        filepath = WORKLOAD_DIR / filename
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        filepath.write_bytes(content)
+        logger.info(f"Wrote {filename}")
+
+    logger.info(f"Workload setup complete: {list(WORKLOAD_DIR.iterdir())}")
+
+
+def run_compose(config: dict):
+    """Run docker compose.
+
+    Args:
+        config: Configuration dict with compose_up_args, etc.
+    """
+    write_status("building")
+
+    compose_args = config.get("compose_up_args", "--build -d").split()
+    cmd = ["docker", "compose", "-f", "docker-compose.yml", "up"] + compose_args
+    logger.info(f"Running: {' '.join(cmd)}")
+
+    result = subprocess.run(cmd, cwd=WORKLOAD_DIR, capture_output=True, text=True)
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Docker compose failed: {result.stderr}")
+
+    logger.info("Docker compose completed")
+
+
+def wait_for_health(config: dict) -> dict:
+    """Wait for workload health endpoint.
+
+    Args:
+        config: Configuration dict with health_endpoint, health_port
+
+    Returns:
+        Health status dict
+    """
+    write_status("waiting_for_health")
+
+    health_endpoint = config.get("health_endpoint", "/health")
+    health_port = config.get("health_port", 8080)
+    url = f"http://localhost:{health_port}{health_endpoint}"
+    logger.info(f"Waiting for health endpoint: {url}")
+
+    for _attempt in range(60):
+        try:
+            response = requests.get(url, timeout=5)
+            if response.ok:
+                logger.info(f"Health check passed: {response.text.strip()}")
+                return {"status": "healthy", "response": response.text.strip()}
+        except requests.RequestException:
+            pass
+        time.sleep(2)
+
+    raise RuntimeError(f"Health check timeout after 120s: {url}")
+
+
 def compute_compose_hash() -> str:
     """Compute SHA256 hash of the docker-compose.yml file."""
     compose_file = WORKLOAD_DIR / "docker-compose.yml"
@@ -317,11 +447,14 @@ def compute_compose_hash() -> str:
 
 
 def get_tdx_attestation(config: dict, health_status: dict) -> dict:
-    """
-    Generate TDX quote and get Intel TA attestation.
+    """Generate TDX quote and get Intel TA attestation.
 
-    This is called by the launcher after the workload health check passes.
-    Attestation happens at the VM level, not in the workload.
+    Args:
+        config: Configuration dict with intel_api_key, etc.
+        health_status: Health status from wait_for_health
+
+    Returns:
+        Full attestation dict
     """
     write_status("attesting")
 
@@ -355,7 +488,6 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
             token = ita_response.get("token")
             if token:
                 result["tdx"]["intel_ta_token"] = token
-                # Parse JWT to get verified measurements
                 jwt_measurements = parse_jwt_claims(token)
                 if jwt_measurements:
                     result["tdx"]["verified_measurements"] = jwt_measurements
@@ -369,161 +501,158 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
     return result
 
 
-def register_with_easyenclave(config: dict, attestation: dict) -> dict:
-    """
-    Register service with EasyEnclave discovery.
+def register_service(config: dict, attestation: dict) -> str:
+    """Register service with EasyEnclave discovery.
 
     Args:
         config: Configuration dict with service_name, service_url, etc.
-        attestation: Attestation dict with TDX measurements and ITA token
+        attestation: Attestation dict with TDX measurements
 
     Returns:
-        Response dict from EasyEnclave API containing service_id
+        Service ID from registration
     """
-    easyenclave_url = config.get("easyenclave_url", "https://app.easyenclave.com")
+    service_name = config.get("service_name")
+    service_url = config.get("service_url")
+
+    if not service_name or not service_url:
+        logger.info("No service_name or service_url - skipping registration")
+        return ""
 
     payload = {
-        "name": config["service_name"],
+        "name": service_name,
         "description": config.get("service_description", ""),
-        "endpoints": {"prod": config["service_url"]},
+        "endpoints": {"prod": service_url},
         "source_repo": config.get("source_repo"),
         "source_commit": config.get("source_commit"),
         "tags": config.get("tags", []),
-        "mrtd": attestation["tdx"]["measurements"]["mrtd"],
+        "mrtd": attestation["tdx"]["measurements"].get("mrtd", ""),
         "intel_ta_token": attestation["tdx"].get("intel_ta_token"),
     }
 
-    logger.info(f"Registering with EasyEnclave: {easyenclave_url}")
-    logger.info(f"Service: {payload['name']} at {payload['endpoints']['prod']}")
+    logger.info(f"Registering service: {service_name} at {service_url}")
 
     response = requests.post(
-        f"{easyenclave_url}/api/v1/register",
+        f"{CONTROL_PLANE_URL}/api/v1/register",
         json=payload,
         timeout=30,
     )
     response.raise_for_status()
     result = response.json()
 
-    logger.info(f"Registered with EasyEnclave: service_id={result.get('service_id')}")
-    return result
+    service_id = result.get("service_id", "")
+    logger.info(f"Registered service: {service_id}")
+    return service_id
 
 
-def main():
-    """Main entry point"""
-    logger.info("TDX File-based Launcher starting...")
-    logger.info(f"Share directory: {SHARE_DIR}")
+def handle_deployment(agent_id: str, deployment: dict):
+    """Execute a deployment from the control plane.
 
-    # Wait for share directory to be mounted
-    # The 9P mount may not happen automatically at boot, so try to mount manually
-    for attempt in range(60):
-        if SHARE_DIR.exists() and SHARE_DIR.is_mount():
-            logger.info("Share directory is mounted")
-            break
-        logger.info("Waiting for share directory to be mounted...")
+    Args:
+        agent_id: Agent ID
+        deployment: Deployment dict with deployment_id, compose, build_context, config
+    """
+    deployment_id = deployment["deployment_id"]
+    config = deployment.get("config", {})
 
-        # Try to mount manually every few attempts
-        if attempt > 0 and attempt % 3 == 0:
-            logger.info("Attempting manual mount...")
-            result = subprocess.run(
-                [
-                    "mount",
-                    "-t",
-                    "9p",
-                    "-o",
-                    "trans=virtio,version=9p2000.L",
-                    "share",
-                    str(SHARE_DIR),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0:
-                logger.info("Manual mount succeeded")
-            else:
-                logger.debug(f"Manual mount failed (may not be ready): {result.stderr}")
+    logger.info(f"Starting deployment: {deployment_id}")
 
-        time.sleep(2)
-
-    if not SHARE_DIR.exists() or not SHARE_DIR.is_mount():
-        logger.error("Share directory not available after 120s")
-        return 1
+    # Report status: deploying
+    report_status(agent_id, "deploying", deployment_id)
 
     try:
-        config = wait_for_config()
+        # Setup workload from deployment config
+        setup_workload_from_deployment(deployment)
 
-        # Check mode: "measure" (default) or "persistent"
-        mode = config.get("mode", "measure")
-        logger.info(f"Running in '{mode}' mode")
+        # Run compose
+        run_compose(config)
 
-        # Setup and run compose only if compose file exists
-        compose_src = SHARE_DIR / "docker-compose.yml"
-        if compose_src.exists():
-            setup_workload(config)
-            run_compose(config)
-        else:
-            logger.info("No docker-compose.yml in share directory, skipping workload setup")
+        # Wait for health
+        health_status = wait_for_health(config)
 
-        if mode == "persistent":
-            # Persistent mode: run compose and generate attestation, then stay running
-            # Wait for health check if health_endpoint is configured
-            health_status = {"status": "unknown"}
-            if config.get("health_endpoint") or config.get("health_url"):
-                try:
-                    health_status = wait_for_health(config)
-                except Exception as e:
-                    logger.warning(f"Health check failed in persistent mode: {e}")
-                    health_status = {"status": "unhealthy", "error": str(e)}
+        # Generate attestation
+        attestation = get_tdx_attestation(config, health_status)
 
-            # Generate attestation even in persistent mode
-            attestation = None
-            if config.get("intel_api_key"):
-                try:
-                    attestation = get_tdx_attestation(config, health_status)
-                    ATTESTATION_FILE.write_text(json.dumps(attestation, indent=2))
-                    logger.info(f"Attestation written to {ATTESTATION_FILE}")
-                except Exception as e:
-                    logger.warning(f"Attestation generation failed: {e}")
+        # Register service with discovery
+        service_id = register_service(config, attestation)
 
-            # Register with EasyEnclave if service_name and service_url provided
-            if config.get("service_name") and config.get("service_url"):
-                if attestation is None:
-                    logger.warning("Cannot register with EasyEnclave: no attestation available")
-                elif not attestation.get("tdx", {}).get("intel_ta_token"):
-                    logger.warning("Cannot register with EasyEnclave: no Intel TA token")
-                else:
-                    try:
-                        registration = register_with_easyenclave(config, attestation)
-                        REGISTRATION_FILE.write_text(json.dumps(registration, indent=2))
-                        logger.info(f"Registration written to {REGISTRATION_FILE}")
-                    except Exception as e:
-                        logger.error(f"EasyEnclave registration failed: {e}")
-                        raise
+        # Report success
+        report_deployed(agent_id, deployment_id, service_id, attestation)
+        write_status("deployed")
+        logger.info(f"Deployment complete: {deployment_id}")
 
-            write_status("ready")
-            logger.info("Persistent mode: VM is ready")
-            # Keep running indefinitely for persistent VMs
-            while True:
-                time.sleep(60)
-        else:
-            # Measure mode: wait for health, generate attestation
-            health_status = wait_for_health(config)
-
-            # Generate attestation at VM level (not in workload)
-            attestation = get_tdx_attestation(config, health_status)
-
-            # Write attestation to shared directory
-            ATTESTATION_FILE.write_text(json.dumps(attestation, indent=2))
-            logger.info(f"Attestation written to {ATTESTATION_FILE}")
-
-            write_status("ready")
-            logger.info("Launcher completed successfully")
-
-        return 0
     except Exception as e:
-        write_error(str(e))
-        logger.exception("Launcher failed")
+        logger.error(f"Deployment failed: {e}")
+        report_status(agent_id, "error", deployment_id, error=str(e))
+        write_status("error")
         raise
 
 
+def handle_self_update():
+    """Check GitHub for latest launcher version and update if newer."""
+    # TODO: Implement self-update from GitHub releases
+    # For now, just log that we would check for updates
+    logger.debug("Self-update check: not implemented yet")
+
+
+def main():
+    """Main entry point - polling agent loop."""
+    logger.info("TDX Launcher Agent starting...")
+    logger.info(f"Control plane: {CONTROL_PLANE_URL}")
+    logger.info(f"Poll interval: {POLL_INTERVAL}s")
+    logger.info(f"Version: {VERSION}")
+
+    vm_name = get_vm_name()
+    logger.info(f"VM name: {vm_name}")
+
+    # 1. Generate initial attestation
+    attestation = generate_initial_attestation()
+
+    # 2. Register with control plane
+    try:
+        agent_id = register_with_control_plane(attestation, vm_name)
+    except Exception as e:
+        logger.error(f"Failed to register with control plane: {e}")
+        logger.info("Will retry registration in poll loop...")
+        agent_id = None
+
+    write_status("undeployed")
+
+    # 3. Main loop - poll for work
+    while True:
+        try:
+            # Try to register if not registered
+            if agent_id is None:
+                try:
+                    agent_id = register_with_control_plane(attestation, vm_name)
+                except Exception as e:
+                    logger.warning(f"Registration failed, will retry: {e}")
+                    time.sleep(POLL_INTERVAL)
+                    continue
+
+            # Poll for deployment
+            response = poll_control_plane(agent_id)
+
+            # Handle deployment if available
+            if response.get("deployment"):
+                try:
+                    handle_deployment(agent_id, response["deployment"])
+                except Exception as e:
+                    logger.error(f"Deployment failed: {e}")
+                    # Continue polling - agent may get another deployment
+
+            # Handle self-update if requested
+            if response.get("update", {}).get("check_github"):
+                handle_self_update()
+
+        except requests.exceptions.ConnectionError as e:
+            logger.warning(f"Connection error: {e}")
+        except requests.exceptions.Timeout as e:
+            logger.warning(f"Request timeout: {e}")
+        except Exception as e:
+            logger.error(f"Poll error: {e}")
+
+        time.sleep(POLL_INTERVAL)
+
+
 if __name__ == "__main__":
-    exit(main())
+    exit(main() or 0)

@@ -1,0 +1,123 @@
+name: 'Launch TDX Agent'
+description: 'Launch an undeployed TDX VM that registers with the control plane'
+author: 'EasyEnclave'
+
+branding:
+  icon: 'server'
+  color: 'blue'
+
+inputs:
+  easyenclave_api_url:
+    description: 'EasyEnclave control plane URL'
+    default: 'https://app.easyenclave.com'
+  image_path:
+    description: 'Path to TDX VM image (auto-detected if not provided)'
+    required: false
+  wait_timeout:
+    description: 'Timeout in seconds to wait for agent registration'
+    default: '300'
+
+outputs:
+  vm_name:
+    description: 'Libvirt VM name'
+    value: ${{ steps.launch.outputs.vm_name }}
+  agent_id:
+    description: 'Agent ID from control plane registration'
+    value: ${{ steps.wait.outputs.agent_id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Launch undeployed TDX VM
+      id: launch
+      shell: bash
+      run: |
+        # Find the CLI script
+        CLI_PATH="${GITHUB_WORKSPACE}/infra/tdx_cli.py"
+        if [ ! -f "$CLI_PATH" ]; then
+          CLI_PATH="${{ github.action_path }}/../../../infra/tdx_cli.py"
+        fi
+
+        if [ ! -f "$CLI_PATH" ]; then
+          echo "::error::tdx_cli.py not found"
+          exit 1
+        fi
+
+        # Launch VM (no deployment config - just boots with launcher)
+        IMAGE_ARG=""
+        if [ -n "${{ inputs.image_path }}" ]; then
+          IMAGE_ARG="--image ${{ inputs.image_path }}"
+        fi
+
+        RESULT=$(python3 "$CLI_PATH" vm new $IMAGE_ARG)
+        VM_NAME=$(echo "$RESULT" | jq -r '.name')
+
+        if [ -z "$VM_NAME" ] || [ "$VM_NAME" = "null" ]; then
+          echo "::error::Failed to launch VM"
+          echo "$RESULT"
+          exit 1
+        fi
+
+        echo "vm_name=$VM_NAME" >> $GITHUB_OUTPUT
+        echo "Launched VM: $VM_NAME"
+        echo ""
+        echo "The VM is now booting and will register with the control plane."
+        echo "Waiting for agent registration..."
+
+    - name: Wait for agent registration
+      id: wait
+      shell: bash
+      run: |
+        VM_NAME="${{ steps.launch.outputs.vm_name }}"
+        TIMEOUT="${{ inputs.wait_timeout }}"
+        API_URL="${{ inputs.easyenclave_api_url }}"
+
+        echo "Waiting for agent registration (timeout: ${TIMEOUT}s)..."
+
+        START_TIME=$(date +%s)
+        while true; do
+          CURRENT_TIME=$(date +%s)
+          ELAPSED=$((CURRENT_TIME - START_TIME))
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "::error::Timeout waiting for agent registration after ${TIMEOUT}s"
+            exit 1
+          fi
+
+          # Query control plane for agents with matching vm_name
+          RESPONSE=$(curl -s "${API_URL}/api/v1/agents?vm_name=${VM_NAME}" || echo '{"agents":[]}')
+          AGENT_ID=$(echo "$RESPONSE" | jq -r '.agents[0].agent_id // empty')
+
+          if [ -n "$AGENT_ID" ]; then
+            echo "agent_id=$AGENT_ID" >> $GITHUB_OUTPUT
+            echo ""
+            echo "Agent registered successfully!"
+            echo "  VM Name:  $VM_NAME"
+            echo "  Agent ID: $AGENT_ID"
+            exit 0
+          fi
+
+          echo "  Waiting... (${ELAPSED}s elapsed)"
+          sleep 5
+        done
+
+    - name: Summary
+      shell: bash
+      run: |
+        echo ""
+        echo "========================================="
+        echo "TDX Agent Launched"
+        echo "========================================="
+        echo ""
+        echo "VM Name:  ${{ steps.launch.outputs.vm_name }}"
+        echo "Agent ID: ${{ steps.wait.outputs.agent_id }}"
+        echo ""
+        echo "The agent is now polling the control plane for deployments."
+        echo ""
+        echo "To deploy a workload, use the deploy-tdx action or call the API:"
+        echo ""
+        echo "  curl -X POST ${{ inputs.easyenclave_api_url }}/api/v1/deployments \\"
+        echo "    -H 'Content-Type: application/json' \\"
+        echo "    -d '{\"agent_id\": \"${{ steps.wait.outputs.agent_id }}\", \"compose\": \"<base64>\", \"config\": {...}}'"
+        echo ""
+        echo "========================================="

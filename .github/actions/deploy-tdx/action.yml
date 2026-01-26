@@ -1,5 +1,5 @@
 name: 'TDX Deploy'
-description: 'Deploy workload with attestation and EasyEnclave registration'
+description: 'Deploy workload to a running TDX agent via control plane API'
 author: 'EasyEnclave'
 
 branding:
@@ -7,24 +7,27 @@ branding:
   color: 'purple'
 
 inputs:
-  service_name:
-    description: 'Service name for EasyEnclave registration'
+  agent_id:
+    description: 'Target agent ID (required)'
     required: true
-  service_url:
-    description: 'Public URL of the deployed service'
-    required: true
+  easyenclave_api_url:
+    description: 'EasyEnclave control plane URL'
+    default: 'https://app.easyenclave.com'
   docker_compose_path:
     description: 'Path to docker-compose.yml'
     default: './docker-compose.yml'
+  service_name:
+    description: 'Service name for EasyEnclave registration'
+    required: false
+  service_url:
+    description: 'Public URL of the deployed service'
+    required: false
   intel_api_key:
     description: 'Intel Trust Authority API key'
-    required: true
+    required: false
   intel_api_url:
     description: 'Intel Trust Authority API URL'
     default: 'https://api.trustauthority.intel.com'
-  easyenclave_api_url:
-    description: 'EasyEnclave API URL'
-    default: 'https://app.easyenclave.com'
   health_endpoint:
     description: 'Health check endpoint path'
     default: '/health'
@@ -37,20 +40,23 @@ inputs:
   tags:
     description: 'JSON array of tags for EasyEnclave registration'
     default: '[]'
+  wait_timeout:
+    description: 'Timeout in seconds to wait for deployment'
+    default: '600'
 
 outputs:
-  vm_name:
-    description: 'Full VM name from libvirt'
-    value: ${{ steps.run.outputs.vm_name }}
+  deployment_id:
+    description: 'Deployment ID'
+    value: ${{ steps.submit.outputs.deployment_id }}
   service_id:
     description: 'EasyEnclave service ID'
-    value: ${{ steps.run.outputs.service_id }}
+    value: ${{ steps.wait.outputs.service_id }}
   mrtd:
     description: 'TDX MRTD measurement'
-    value: ${{ steps.run.outputs.mrtd }}
+    value: ${{ steps.wait.outputs.mrtd }}
   attestation_json:
     description: 'Full attestation JSON'
-    value: ${{ steps.run.outputs.attestation_json }}
+    value: ${{ steps.wait.outputs.attestation_json }}
 
 runs:
   using: 'composite'
@@ -58,16 +64,8 @@ runs:
     - name: Validate inputs
       shell: bash
       run: |
-        if [ -z "${{ inputs.service_name }}" ]; then
-          echo "::error::service_name is required"
-          exit 1
-        fi
-        if [ -z "${{ inputs.service_url }}" ]; then
-          echo "::error::service_url is required"
-          exit 1
-        fi
-        if [ -z "${{ inputs.intel_api_key }}" ]; then
-          echo "::error::intel_api_key is required"
+        if [ -z "${{ inputs.agent_id }}" ]; then
+          echo "::error::agent_id is required"
           exit 1
         fi
         if [ ! -f "${{ inputs.docker_compose_path }}" ]; then
@@ -75,20 +73,14 @@ runs:
           exit 1
         fi
 
-    - name: Run TDX deploy
-      id: run
+    - name: Submit deployment
+      id: submit
       shell: bash
       run: |
-        # Find the CLI script
-        CLI_PATH="${GITHUB_WORKSPACE}/infra/tdx_cli.py"
-        if [ ! -f "$CLI_PATH" ]; then
-          CLI_PATH="${{ github.action_path }}/../../../infra/tdx_cli.py"
-        fi
+        API_URL="${{ inputs.easyenclave_api_url }}"
 
-        if [ ! -f "$CLI_PATH" ]; then
-          echo "::error::tdx_cli.py not found"
-          exit 1
-        fi
+        # Base64 encode the compose file
+        COMPOSE_B64=$(base64 -w0 "${{ inputs.docker_compose_path }}")
 
         # Build source repo URL
         SOURCE_REPO="${{ inputs.source_repo }}"
@@ -96,26 +88,93 @@ runs:
           SOURCE_REPO="https://github.com/${{ github.repository }}"
         fi
 
-        RESULT=$(python3 "$CLI_PATH" deploy \
-          --service-name "${{ inputs.service_name }}" \
-          --service-url "${{ inputs.service_url }}" \
-          --compose "${{ inputs.docker_compose_path }}" \
-          --intel-api-key "${{ inputs.intel_api_key }}" \
-          --intel-api-url "${{ inputs.intel_api_url }}" \
-          --easyenclave-url "${{ inputs.easyenclave_api_url }}" \
-          --health-endpoint "${{ inputs.health_endpoint }}" \
-          --compose-up-args "${{ inputs.compose_up_args }}" \
-          --source-repo "$SOURCE_REPO" \
-          --source-commit "${{ github.sha }}" \
-          --tags '${{ inputs.tags }}')
+        # Build config JSON
+        CONFIG=$(cat <<EOF
+        {
+          "service_name": "${{ inputs.service_name }}",
+          "service_url": "${{ inputs.service_url }}",
+          "intel_api_key": "${{ inputs.intel_api_key }}",
+          "intel_api_url": "${{ inputs.intel_api_url }}",
+          "health_endpoint": "${{ inputs.health_endpoint }}",
+          "compose_up_args": "${{ inputs.compose_up_args }}",
+          "source_repo": "$SOURCE_REPO",
+          "source_commit": "${{ github.sha }}",
+          "tags": ${{ inputs.tags }}
+        }
+        EOF
+        )
 
-        echo "vm_name=$(echo "$RESULT" | jq -r '.vm_name')" >> $GITHUB_OUTPUT
-        echo "service_id=$(echo "$RESULT" | jq -r '.service_id')" >> $GITHUB_OUTPUT
-        echo "mrtd=$(echo "$RESULT" | jq -r '.mrtd')" >> $GITHUB_OUTPUT
-        echo "attestation_json=$(echo "$RESULT" | jq -c '.attestation')" >> $GITHUB_OUTPUT
+        # Submit deployment to control plane
+        RESPONSE=$(curl -s -X POST "${API_URL}/api/v1/deployments" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"agent_id\": \"${{ inputs.agent_id }}\",
+            \"compose\": \"${COMPOSE_B64}\",
+            \"build_context\": {},
+            \"config\": ${CONFIG}
+          }")
 
-        echo "Deploy completed:"
-        echo "$RESULT" | jq .
+        DEPLOYMENT_ID=$(echo "$RESPONSE" | jq -r '.deployment_id // empty')
+
+        if [ -z "$DEPLOYMENT_ID" ]; then
+          echo "::error::Failed to submit deployment"
+          echo "$RESPONSE"
+          exit 1
+        fi
+
+        echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+        echo "Deployment submitted: $DEPLOYMENT_ID"
+
+    - name: Wait for deployment
+      id: wait
+      shell: bash
+      run: |
+        API_URL="${{ inputs.easyenclave_api_url }}"
+        DEPLOYMENT_ID="${{ steps.submit.outputs.deployment_id }}"
+        TIMEOUT="${{ inputs.wait_timeout }}"
+
+        echo "Waiting for deployment to complete (timeout: ${TIMEOUT}s)..."
+
+        START_TIME=$(date +%s)
+        while true; do
+          CURRENT_TIME=$(date +%s)
+          ELAPSED=$((CURRENT_TIME - START_TIME))
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "::error::Timeout waiting for deployment after ${TIMEOUT}s"
+            exit 1
+          fi
+
+          # Check deployment status
+          RESPONSE=$(curl -s "${API_URL}/api/v1/deployments/${DEPLOYMENT_ID}")
+          STATUS=$(echo "$RESPONSE" | jq -r '.status')
+
+          case "$STATUS" in
+            "completed")
+              SERVICE_ID=$(echo "$RESPONSE" | jq -r '.service_id // empty')
+              ATTESTATION=$(echo "$RESPONSE" | jq -c '.attestation // {}')
+              MRTD=$(echo "$ATTESTATION" | jq -r '.tdx.measurements.mrtd // empty')
+
+              echo "service_id=$SERVICE_ID" >> $GITHUB_OUTPUT
+              echo "mrtd=$MRTD" >> $GITHUB_OUTPUT
+              echo "attestation_json=$ATTESTATION" >> $GITHUB_OUTPUT
+
+              echo ""
+              echo "Deployment completed successfully!"
+              exit 0
+              ;;
+            "failed")
+              ERROR=$(echo "$RESPONSE" | jq -r '.error // "Unknown error"')
+              echo "::error::Deployment failed: $ERROR"
+              exit 1
+              ;;
+            *)
+              echo "  Status: $STATUS (${ELAPSED}s elapsed)"
+              ;;
+          esac
+
+          sleep 5
+        done
 
     - name: Summary
       shell: bash
@@ -125,11 +184,12 @@ runs:
         echo "TDX Deploy Complete"
         echo "========================================="
         echo ""
-        echo "VM Name:      ${{ steps.run.outputs.vm_name }}"
-        echo "Service ID:   ${{ steps.run.outputs.service_id }}"
-        echo "MRTD:         ${{ steps.run.outputs.mrtd }}"
+        echo "Deployment ID: ${{ steps.submit.outputs.deployment_id }}"
+        echo "Service ID:    ${{ steps.wait.outputs.service_id }}"
+        echo "MRTD:          ${{ steps.wait.outputs.mrtd }}"
         echo ""
-        echo "========================================="
-        echo "The VM will persist until explicitly deleted."
-        echo "To delete: virsh destroy ${{ steps.run.outputs.vm_name }}"
+        if [ -n "${{ inputs.service_url }}" ]; then
+          echo "Service URL:   ${{ inputs.service_url }}"
+        fi
+        echo ""
         echo "========================================="
