@@ -4,6 +4,9 @@
 Simple CLI for launching and managing TDX VMs with the launcher agent pre-installed.
 VMs boot in "undeployed" state and register with the control plane.
 
+Special command: `tdx control-plane new` launches a control plane in a TDX VM.
+This bootstraps a new EasyEnclave network.
+
 All deployments go through the control plane API - this CLI only handles VM lifecycle.
 """
 
@@ -15,6 +18,10 @@ import sys
 import time
 import uuid
 from pathlib import Path
+
+# Control plane mode config
+CONTROL_PLANE_MODE = "control-plane"
+AGENT_MODE = "agent"
 
 
 class TDXManager:
@@ -57,6 +64,49 @@ class TDXManager:
         """Get XML template path."""
         return self.infra_dir / "vm_templates" / "trust_domain.xml.template"
 
+    def _create_share_dir(self, vm_id: str, mode: str, config: dict | None = None) -> Path:
+        """Create shared directory with launcher config and code.
+
+        Args:
+            vm_id: Unique VM identifier
+            mode: Launcher mode (control-plane or agent)
+            config: Additional config to pass to launcher
+
+        Returns:
+            Path to shared directory
+        """
+        share_dir = self.WORKDIR / f"share.{vm_id}"
+        share_dir.mkdir(parents=True, exist_ok=True)
+
+        # Write launcher config
+        launcher_config = {
+            "mode": mode,
+            "vm_id": vm_id,
+            **(config or {}),
+        }
+        (share_dir / "config.json").write_text(json.dumps(launcher_config, indent=2))
+
+        # Note: We don't copy launcher.py to share for control-plane mode
+        # because the VM image already has the correct launcher with control-plane support.
+        # Copying the wrong launcher would cause issues.
+
+        return share_dir
+
+    def _get_filesystem_xml(self, share_dir: Path) -> str:
+        """Generate filesystem XML for sharing a directory with the VM.
+
+        Args:
+            share_dir: Host directory to share
+
+        Returns:
+            XML fragment for filesystem device
+        """
+        return f"""
+    <filesystem type='mount' accessmode='mapped'>
+      <source dir='{share_dir}'/>
+      <target dir='share'/>
+    </filesystem>"""
+
     def _virsh(self, *args, **kwargs) -> subprocess.CompletedProcess:
         """Run virsh command with system connection.
 
@@ -71,14 +121,22 @@ class TDXManager:
         kwargs.setdefault("capture_output", True)
         return subprocess.run(cmd, **kwargs)
 
-    def vm_new(self, image: str | None = None) -> dict:
+    def vm_new(
+        self,
+        image: str | None = None,
+        mode: str = AGENT_MODE,
+        config: dict | None = None,
+    ) -> dict:
         """Create and boot a new TDX VM.
 
         The VM boots with the launcher agent pre-installed, which will
-        register with the control plane and poll for deployments.
+        either run the control plane (if mode=control-plane) or register
+        with the control plane and poll for deployments (if mode=agent).
 
         Args:
             image: Path to TDX VM image (auto-detected if not provided)
+            mode: Launcher mode (control-plane or agent)
+            config: Additional config to pass to launcher
 
         Returns:
             Dict with vm_name, uuid, and info
@@ -111,12 +169,16 @@ class TDXManager:
             text=True,
         )
 
+        # Create share directory with config
+        share_dir = self._create_share_dir(rand_str, mode, config)
+        fs_xml = self._get_filesystem_xml(share_dir)
+
         # Generate domain XML
         xml_content = template.read_text()
         xml_content = xml_content.replace("BASE_IMG_PATH", str(image_path))
         xml_content = xml_content.replace("OVERLAY_IMG_PATH", str(overlay_path))
         xml_content = xml_content.replace("DOMAIN", self.DOMAIN_PREFIX)
-        xml_content = xml_content.replace("HOSTDEV_DEVICES", "")
+        xml_content = xml_content.replace("HOSTDEV_DEVICES", fs_xml)
 
         xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.xml"
         xml_path.write_text(xml_content)
@@ -138,7 +200,58 @@ class TDXManager:
         # Get VM info
         result = self._virsh("dominfo", vm_name, text=True)
 
-        return {"name": vm_name, "uuid": vm_uuid, "info": result.stdout}
+        return {
+            "name": vm_name,
+            "uuid": vm_uuid,
+            "mode": mode,
+            "share_dir": str(share_dir),
+            "info": result.stdout,
+        }
+
+    def control_plane_new(self, image: str | None = None, port: int = 8080) -> dict:
+        """Launch a control plane in a TDX VM.
+
+        This bootstraps a new EasyEnclave network. The control plane runs
+        directly in the VM without needing to poll an external control plane.
+
+        Args:
+            image: Path to TDX VM image (auto-detected if not provided)
+            port: Port for the control plane API (default 8080)
+
+        Returns:
+            Dict with vm_name, uuid, control_plane_url, and info
+        """
+        config = {
+            "port": port,
+            "easyenclave_repo": "https://github.com/easyenclave/easyenclave.git",
+        }
+        result = self.vm_new(image=image, mode=CONTROL_PLANE_MODE, config=config)
+        result["control_plane_port"] = port
+        return result
+
+    def get_vm_ip(self, name: str, timeout: int = 120) -> str | None:
+        """Wait for and return VM IP address.
+
+        Args:
+            name: VM name
+            timeout: Max seconds to wait for IP
+
+        Returns:
+            IP address or None if timeout
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            result = self._virsh("domifaddr", name, text=True)
+            if result.returncode == 0:
+                for line in result.stdout.strip().split("\n"):
+                    if "ipv4" in line:
+                        # Parse: " vnet0  52:54:00:xx:xx:xx  ipv4  192.168.122.x/24"
+                        parts = line.split()
+                        for part in parts:
+                            if "/" in part and "." in part:
+                                return part.split("/")[0]
+            time.sleep(2)
+        return None
 
     def vm_delete(self, name: str):
         """Delete a TDX VM.
@@ -192,17 +305,29 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  tdx control-plane new               Launch control plane in TDX VM (bootstrap new network)
   tdx vm new                          Create new TDX VM (registers with control plane)
   tdx vm list                         List all TDX VMs
   tdx vm status <name>                Get VM status
   tdx vm delete <name>                Delete a TDX VM
   tdx vm delete all                   Delete all TDX VMs
 
-Note: All deployments go through the control plane API.
-VMs boot with the launcher agent which registers and polls for deployments.
+To start a new EasyEnclave network:
+  1. tdx control-plane new            Launch control plane
+  2. tdx vm new                       Launch agent VMs that register with control plane
+  3. POST /api/v1/deployments         Deploy workloads via API
         """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # Control plane commands
+    cp_parser = subparsers.add_parser("control-plane", help="Control plane management")
+    cp_sub = cp_parser.add_subparsers(dest="cp_command", required=True)
+
+    cp_new_parser = cp_sub.add_parser("new", help="Launch control plane in TDX VM")
+    cp_new_parser.add_argument("-i", "--image", help="Path to TDX image")
+    cp_new_parser.add_argument("-p", "--port", type=int, default=8080, help="API port (default 8080)")
+    cp_new_parser.add_argument("--wait", action="store_true", help="Wait for control plane to be ready")
 
     # VM commands
     vm_parser = subparsers.add_parser("vm", help="VM lifecycle management")
@@ -224,7 +349,42 @@ VMs boot with the launcher agent which registers and polls for deployments.
     mgr = TDXManager(workspace)
 
     try:
-        if args.command == "vm":
+        if args.command == "control-plane":
+            if args.cp_command == "new":
+                print("Launching control plane in TDX VM...", file=sys.stderr)
+                result = mgr.control_plane_new(args.image, args.port)
+                print(json.dumps(result, indent=2))
+
+                if args.wait:
+                    print("\nWaiting for VM to get IP...", file=sys.stderr)
+                    ip = mgr.get_vm_ip(result["name"])
+                    if ip:
+                        url = f"http://{ip}:{args.port}"
+                        print(f"Control plane VM IP: {ip}", file=sys.stderr)
+                        print(f"Control plane URL: {url}", file=sys.stderr)
+
+                        # Wait for control plane to be ready
+                        print("Waiting for control plane to start...", file=sys.stderr)
+                        import urllib.error
+                        import urllib.request
+                        for _ in range(60):
+                            try:
+                                with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
+                                    if resp.status == 200:
+                                        print(f"\nControl plane ready at {url}", file=sys.stderr)
+                                        result["control_plane_url"] = url
+                                        result["ip"] = ip
+                                        print(json.dumps(result, indent=2))
+                                        break
+                            except (urllib.error.URLError, TimeoutError):
+                                pass
+                            time.sleep(2)
+                        else:
+                            print("Warning: Control plane did not become ready", file=sys.stderr)
+                    else:
+                        print("Warning: Could not get VM IP", file=sys.stderr)
+
+        elif args.command == "vm":
             if args.vm_command == "new":
                 result = mgr.vm_new(args.image)
                 print(json.dumps(result, indent=2))

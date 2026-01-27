@@ -8,9 +8,10 @@ This launcher reads the config, clones the repo, runs docker compose,
 waits for workload health, generates TDX attestation, and writes results
 back to the shared directory.
 
-Supports two modes:
+Supports three modes:
 - "measure" (default): Run compose, wait for health check, generate attestation
 - "persistent": Run compose, optionally wait for health, generate attestation, stay running
+- "control-plane": Run the EasyEnclave control plane directly (bootstrap a new network)
 
 Attestation is handled at the VM level (not in workloads), so workloads
 only need to expose a /health endpoint.
@@ -369,6 +370,129 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
     return result
 
 
+def run_control_plane(config: dict):
+    """Run the EasyEnclave control plane directly.
+
+    This bootstraps a new EasyEnclave network by cloning the repo
+    and running docker-compose for the control plane.
+
+    Args:
+        config: Launcher config with repo URL, port, etc.
+    """
+    write_status("control-plane-starting")
+    logger.info("Starting in CONTROL PLANE mode")
+
+    repo_url = config.get("easyenclave_repo", "https://github.com/easyenclave/easyenclave.git")
+    port = config.get("port", 8080)
+    control_plane_dir = Path("/home/tdx/easyenclave")
+
+    # Clone or update the easyenclave repo
+    if control_plane_dir.exists():
+        logger.info("Updating easyenclave repo...")
+        subprocess.run(
+            ["git", "pull"],
+            cwd=control_plane_dir,
+            check=True,
+            capture_output=True,
+        )
+    else:
+        logger.info(f"Cloning easyenclave repo from {repo_url}...")
+        subprocess.run(
+            ["git", "clone", repo_url, str(control_plane_dir)],
+            check=True,
+            capture_output=True,
+        )
+
+    # Generate attestation for the control plane VM
+    logger.info("Generating control plane attestation...")
+    attestation = get_tdx_attestation(config, {"status": "starting"})
+
+    # Save attestation
+    attestation_file = control_plane_dir / "control-plane-attestation.json"
+    attestation_file.write_text(json.dumps(attestation, indent=2))
+    ATTESTATION_FILE.write_text(json.dumps(attestation, indent=2))
+    logger.info("Saved attestation")
+
+    # Run docker-compose
+    logger.info("Starting control plane via docker-compose...")
+    env = os.environ.copy()
+    env["PORT"] = str(port)
+
+    # Stop any existing containers
+    subprocess.run(
+        ["docker", "compose", "down"],
+        cwd=control_plane_dir,
+        capture_output=True,
+    )
+
+    # Start the control plane
+    result = subprocess.run(
+        ["docker", "compose", "up", "--build", "-d"],
+        cwd=control_plane_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to start control plane: {result.stderr}")
+
+    logger.info("Control plane container started")
+
+    # Wait for health check
+    health_url = f"http://localhost:{port}/health"
+    logger.info(f"Waiting for control plane health: {health_url}")
+
+    for _attempt in range(60):
+        try:
+            response = requests.get(health_url, timeout=5)
+            if response.ok:
+                logger.info("Control plane is healthy!")
+
+                # Get the VM's IP for logging
+                try:
+                    ip_result = subprocess.run(
+                        ["hostname", "-I"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    vm_ip = ip_result.stdout.strip().split()[0]
+                    logger.info(f"Control plane available at: http://{vm_ip}:{port}")
+                    write_status(f"control-plane-ready:{vm_ip}:{port}")
+                except Exception:
+                    write_status("control-plane-ready")
+                break
+        except requests.RequestException:
+            pass
+        time.sleep(2)
+    else:
+        logger.warning("Control plane health check timeout - may still be starting")
+        write_status("control-plane-starting")
+
+    # Monitor and keep running
+    logger.info("Monitoring control plane...")
+    while True:
+        try:
+            # Check container status
+            result = subprocess.run(
+                ["docker", "compose", "ps", "-q"],
+                cwd=control_plane_dir,
+                capture_output=True,
+                text=True,
+            )
+            if not result.stdout.strip():
+                logger.warning("Control plane stopped, restarting...")
+                subprocess.run(
+                    ["docker", "compose", "up", "-d"],
+                    cwd=control_plane_dir,
+                    capture_output=True,
+                )
+        except Exception as e:
+            logger.error(f"Monitor error: {e}")
+
+        time.sleep(30)
+
+
 def register_with_easyenclave(config: dict, attestation: dict) -> dict:
     """
     Register service with EasyEnclave discovery.
@@ -406,6 +530,24 @@ def register_with_easyenclave(config: dict, attestation: dict) -> dict:
 
     logger.info(f"Registered with EasyEnclave: service_id={result.get('service_id')}")
     return result
+
+
+def check_for_updated_launcher():
+    """Check if there's an updated launcher in the share directory.
+
+    If launcher.py exists in the share, execute it instead of this one.
+    This allows hot-patching the launcher without rebuilding the VM image.
+    """
+    updated_launcher = SHARE_DIR / "launcher.py"
+    if updated_launcher.exists():
+        logger.info("Found updated launcher in share directory, executing it...")
+        import sys
+        # Execute the updated launcher
+        exec(compile(updated_launcher.read_text(), str(updated_launcher), "exec"), {
+            "__name__": "__main__",
+            "__file__": str(updated_launcher),
+        })
+        sys.exit(0)
 
 
 def main():
@@ -448,12 +590,20 @@ def main():
         logger.error("Share directory not available after 120s")
         return 1
 
+    # Check for updated launcher in share directory
+    check_for_updated_launcher()
+
     try:
         config = wait_for_config()
 
-        # Check mode: "measure" (default) or "persistent"
+        # Check mode: "measure" (default), "persistent", or "control-plane"
         mode = config.get("mode", "measure")
         logger.info(f"Running in '{mode}' mode")
+
+        # Control plane mode - run the EasyEnclave control plane directly
+        if mode == "control-plane":
+            run_control_plane(config)
+            return 0  # run_control_plane runs forever
 
         # Setup and run compose only if compose file exists
         compose_src = SHARE_DIR / "docker-compose.yml"

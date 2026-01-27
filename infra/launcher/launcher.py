@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-TDX Launcher Agent - Polls control plane for deployments
+TDX Launcher - Runs control plane or agent mode
 
-This launcher is an active agent that:
-1. Boots and generates initial TDX attestation
-2. Registers with the EasyEnclave control plane
-3. Polls for deployment configurations
-4. Executes deployments (docker compose)
-5. Reports status and attestation back to control plane
-6. Can self-update from GitHub
+This launcher supports two modes:
+1. CONTROL-PLANE MODE: Runs the EasyEnclave control plane directly
+   - Clones the easyenclave repo and runs docker-compose
+   - Bootstraps a new EasyEnclave network
 
-The launcher runs in a TDX VM and handles all attestation at the VM level.
-Workloads only need to expose a /health endpoint.
+2. AGENT MODE (default): Polls control plane for deployments
+   - Registers with the EasyEnclave control plane
+   - Polls for deployment configurations
+   - Executes deployments (docker compose)
+   - Reports status and attestation back to control plane
+
+The mode is determined by config.json in /mnt/share (set by tdx_cli.py).
 """
 
 import base64
@@ -38,14 +40,60 @@ CONTROL_PLANE_URL = os.environ.get("EASYENCLAVE_URL", "https://app.easyenclave.c
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 VERSION = "1.0.0"
 
+# Modes
+MODE_CONTROL_PLANE = "control-plane"
+MODE_AGENT = "agent"
+
 # Paths
 WORKLOAD_DIR = Path("/home/tdx/workload")
 TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
+CONTROL_PLANE_DIR = Path("/home/tdx/easyenclave")
 
-# For backwards compatibility with file-based mode
+# For config from host via 9p filesystem
 SHARE_DIR = Path("/mnt/share")
 CONFIG_FILE = SHARE_DIR / "config.json"
 STATUS_FILE = SHARE_DIR / "status"
+
+
+def mount_share_dir():
+    """Mount the 9p shared directory from host."""
+    if SHARE_DIR.exists() and list(SHARE_DIR.iterdir()):
+        logger.info("Share directory already mounted")
+        return True
+
+    SHARE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(
+            ["mount", "-t", "9p", "-o", "trans=virtio", "share", str(SHARE_DIR)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        logger.info("Mounted share directory")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Could not mount share directory: {e}")
+        return False
+
+
+def get_launcher_config() -> dict:
+    """Read launcher config from shared directory.
+
+    Returns:
+        Config dict with mode and other settings
+    """
+    mount_share_dir()
+
+    if CONFIG_FILE.exists():
+        try:
+            config = json.loads(CONFIG_FILE.read_text())
+            logger.info(f"Loaded config: mode={config.get('mode', MODE_AGENT)}")
+            return config
+        except Exception as e:
+            logger.warning(f"Could not read config: {e}")
+
+    # Default to agent mode
+    return {"mode": MODE_AGENT}
 
 
 def get_vm_name() -> str:
@@ -594,12 +642,162 @@ def handle_self_update():
     logger.debug("Self-update check: not implemented yet")
 
 
-def main():
-    """Main entry point - polling agent loop."""
-    logger.info("TDX Launcher Agent starting...")
+# ==============================================================================
+# Control Plane Mode
+# ==============================================================================
+
+
+def run_control_plane_mode(config: dict):
+    """Run the control plane directly in this VM.
+
+    This mode is used to bootstrap a new EasyEnclave network.
+    The control plane runs via docker-compose.
+
+    Args:
+        config: Launcher config with repo URL, port, etc.
+    """
+    write_status("control-plane-starting")
+    logger.info("Starting in CONTROL PLANE mode")
+
+    repo_url = config.get("easyenclave_repo", "https://github.com/easyenclave/easyenclave.git")
+    port = config.get("port", 8080)
+
+    # Clone or update the easyenclave repo
+    if CONTROL_PLANE_DIR.exists():
+        logger.info("Updating easyenclave repo...")
+        subprocess.run(
+            ["git", "pull"],
+            cwd=CONTROL_PLANE_DIR,
+            check=True,
+            capture_output=True,
+        )
+    else:
+        logger.info(f"Cloning easyenclave repo from {repo_url}...")
+        subprocess.run(
+            ["git", "clone", repo_url, str(CONTROL_PLANE_DIR)],
+            check=True,
+            capture_output=True,
+        )
+
+    # Generate attestation for the control plane VM
+    logger.info("Generating control plane attestation...")
+    attestation = generate_initial_attestation()
+
+    # Save attestation to a file for reference
+    attestation_file = CONTROL_PLANE_DIR / "control-plane-attestation.json"
+    attestation_file.write_text(json.dumps(attestation, indent=2))
+    logger.info(f"Saved attestation to {attestation_file}")
+
+    # Run docker-compose
+    logger.info("Starting control plane via docker-compose...")
+    env = os.environ.copy()
+    env["PORT"] = str(port)
+
+    # Stop any existing containers
+    subprocess.run(
+        ["docker", "compose", "down"],
+        cwd=CONTROL_PLANE_DIR,
+        capture_output=True,
+    )
+
+    # Start the control plane
+    result = subprocess.run(
+        ["docker", "compose", "up", "--build", "-d"],
+        cwd=CONTROL_PLANE_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        logger.error(f"Docker compose failed: {result.stderr}")
+        write_status("control-plane-error")
+        raise RuntimeError(f"Failed to start control plane: {result.stderr}")
+
+    logger.info("Control plane started")
+    write_status("control-plane-running")
+
+    # Wait for health check
+    health_url = f"http://localhost:{port}/health"
+    logger.info(f"Waiting for control plane health: {health_url}")
+
+    for _attempt in range(60):
+        try:
+            response = requests.get(health_url, timeout=5)
+            if response.ok:
+                logger.info("Control plane is healthy!")
+
+                # Get the VM's IP for logging
+                try:
+                    ip_result = subprocess.run(
+                        ["hostname", "-I"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    vm_ip = ip_result.stdout.strip().split()[0]
+                    logger.info(f"Control plane available at: http://{vm_ip}:{port}")
+                    logger.info(f"API docs at: http://{vm_ip}:{port}/docs")
+
+                    # Write URL to status file
+                    write_status(f"control-plane-ready:{vm_ip}:{port}")
+                except Exception:
+                    pass
+
+                break
+        except requests.RequestException:
+            pass
+        time.sleep(2)
+    else:
+        logger.warning("Control plane health check timeout - may still be starting")
+
+    # Monitor the control plane (restart if it crashes)
+    logger.info("Monitoring control plane...")
+    while True:
+        try:
+            # Check if containers are running
+            result = subprocess.run(
+                ["docker", "compose", "ps", "-q"],
+                cwd=CONTROL_PLANE_DIR,
+                capture_output=True,
+                text=True,
+            )
+            if not result.stdout.strip():
+                logger.warning("Control plane container stopped, restarting...")
+                subprocess.run(
+                    ["docker", "compose", "up", "-d"],
+                    cwd=CONTROL_PLANE_DIR,
+                    capture_output=True,
+                )
+
+            # Health check
+            try:
+                response = requests.get(health_url, timeout=10)
+                if not response.ok:
+                    logger.warning(f"Health check failed: {response.status_code}")
+            except requests.RequestException as e:
+                logger.warning(f"Health check error: {e}")
+
+        except Exception as e:
+            logger.error(f"Monitor error: {e}")
+
+        time.sleep(30)
+
+
+def run_agent_mode(config: dict):
+    """Run in agent mode - poll control plane for deployments.
+
+    Args:
+        config: Launcher config (may contain control_plane_url override)
+    """
+    global CONTROL_PLANE_URL
+
+    # Override control plane URL if specified in config
+    if config.get("control_plane_url"):
+        CONTROL_PLANE_URL = config["control_plane_url"]
+
+    logger.info("Starting in AGENT mode")
     logger.info(f"Control plane: {CONTROL_PLANE_URL}")
     logger.info(f"Poll interval: {POLL_INTERVAL}s")
-    logger.info(f"Version: {VERSION}")
 
     vm_name = get_vm_name()
     logger.info(f"VM name: {vm_name}")
@@ -652,6 +850,23 @@ def main():
             logger.error(f"Poll error: {e}")
 
         time.sleep(POLL_INTERVAL)
+
+
+def main():
+    """Main entry point - determines mode and runs accordingly."""
+    logger.info("TDX Launcher starting...")
+    logger.info(f"Version: {VERSION}")
+
+    # Read config to determine mode
+    config = get_launcher_config()
+    mode = config.get("mode", MODE_AGENT)
+
+    logger.info(f"Mode: {mode}")
+
+    if mode == MODE_CONTROL_PLANE:
+        run_control_plane_mode(config)
+    else:
+        run_agent_mode(config)
 
 
 if __name__ == "__main__":
