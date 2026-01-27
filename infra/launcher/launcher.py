@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 import struct
 import subprocess
 import time
@@ -317,7 +318,7 @@ def generate_initial_attestation() -> dict:
         }
 
 
-def register_with_control_plane(attestation: dict, vm_name: str) -> str:
+def register_with_control_plane(attestation: dict, vm_name: str) -> dict:
     """Register agent with the control plane.
 
     Args:
@@ -325,7 +326,11 @@ def register_with_control_plane(attestation: dict, vm_name: str) -> str:
         vm_name: VM name for identification
 
     Returns:
-        Agent ID from control plane
+        Registration response dict containing:
+        - agent_id: Unique agent identifier
+        - poll_interval: Seconds between polls
+        - tunnel_token: Cloudflare tunnel token (if configured)
+        - hostname: Public hostname (if tunnel configured)
     """
     write_status("registering")
     logger.info(f"Registering with control plane: {CONTROL_PLANE_URL}")
@@ -343,8 +348,40 @@ def register_with_control_plane(attestation: dict, vm_name: str) -> str:
     result = response.json()
 
     agent_id = result["agent_id"]
+    hostname = result.get("hostname")
     logger.info(f"Registered as agent: {agent_id}")
-    return agent_id
+    if hostname:
+        logger.info(f"Assigned hostname: {hostname}")
+
+    return result
+
+
+def start_cloudflared(tunnel_token: str) -> subprocess.Popen | None:
+    """Start cloudflared tunnel connector.
+
+    Args:
+        tunnel_token: Cloudflare tunnel token from registration
+
+    Returns:
+        Popen object for the cloudflared process, or None if not available
+    """
+    # Check if cloudflared is installed
+    if not shutil.which("cloudflared"):
+        logger.warning("cloudflared not installed, skipping tunnel setup")
+        return None
+
+    logger.info("Starting cloudflared tunnel...")
+    try:
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "run", "--token", tunnel_token],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        logger.info(f"Started cloudflared (PID: {proc.pid})")
+        return proc
+    except Exception as e:
+        logger.error(f"Failed to start cloudflared: {e}")
+        return None
 
 
 def poll_control_plane(agent_id: str) -> dict:
@@ -549,21 +586,30 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
     return result
 
 
-def register_service(config: dict, attestation: dict) -> str:
+def register_service(config: dict, attestation: dict, tunnel_hostname: str | None = None) -> str:
     """Register service with EasyEnclave discovery.
 
     Args:
         config: Configuration dict with service_name, service_url, etc.
         attestation: Attestation dict with TDX measurements
+        tunnel_hostname: Optional Cloudflare tunnel hostname (e.g., agent-xyz.easyenclave.com)
 
     Returns:
         Service ID from registration
     """
     service_name = config.get("service_name")
-    service_url = config.get("service_url")
 
-    if not service_name or not service_url:
-        logger.info("No service_name or service_url - skipping registration")
+    # Explicit service_url in config takes precedence over tunnel hostname
+    service_url = config.get("service_url")
+    if not service_url and tunnel_hostname:
+        service_url = f"https://{tunnel_hostname}"
+
+    if not service_name:
+        logger.info("No service_name - skipping registration")
+        return ""
+
+    if not service_url:
+        logger.info("No service_url or tunnel_hostname - skipping registration")
         return ""
 
     payload = {
@@ -592,12 +638,13 @@ def register_service(config: dict, attestation: dict) -> str:
     return service_id
 
 
-def handle_deployment(agent_id: str, deployment: dict):
+def handle_deployment(agent_id: str, deployment: dict, tunnel_hostname: str | None = None):
     """Execute a deployment from the control plane.
 
     Args:
         agent_id: Agent ID
         deployment: Deployment dict with deployment_id, compose, build_context, config
+        tunnel_hostname: Optional Cloudflare tunnel hostname for this agent
     """
     deployment_id = deployment["deployment_id"]
     config = deployment.get("config", {})
@@ -620,8 +667,8 @@ def handle_deployment(agent_id: str, deployment: dict):
         # Generate attestation
         attestation = get_tdx_attestation(config, health_status)
 
-        # Register service with discovery
-        service_id = register_service(config, attestation)
+        # Register service with discovery (use tunnel hostname if available)
+        service_id = register_service(config, attestation, tunnel_hostname)
 
         # Report success
         report_deployed(agent_id, deployment_id, service_id, attestation)
@@ -647,6 +694,131 @@ def handle_self_update():
 # ==============================================================================
 
 
+def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | None:
+    """Create Cloudflare tunnel for the control plane.
+
+    Uses a synchronous HTTP client since this runs before the async app starts.
+
+    Args:
+        config: Config dict with Cloudflare credentials
+        port: Control plane port
+
+    Returns:
+        Popen object for cloudflared process, or None if not configured
+    """
+    api_token = config.get("cloudflare_api_token")
+    account_id = config.get("cloudflare_account_id")
+    zone_id = config.get("cloudflare_zone_id")
+    domain = config.get("easyenclave_domain", "easyenclave.com")
+
+    if not all([api_token, account_id, zone_id]):
+        logger.info("Cloudflare credentials not configured, skipping tunnel setup")
+        return None
+
+    if not shutil.which("cloudflared"):
+        logger.warning("cloudflared not installed, skipping tunnel setup")
+        return None
+
+    import secrets
+    tunnel_name = "easyenclave-control-plane"
+    hostname = f"app.{domain}"
+
+    headers = {
+        "Authorization": f"Bearer {api_token}",
+        "Content-Type": "application/json",
+    }
+    api_url = "https://api.cloudflare.com/client/v4"
+
+    try:
+        # Check if tunnel already exists
+        logger.info(f"Looking for existing tunnel: {tunnel_name}")
+        list_resp = requests.get(
+            f"{api_url}/accounts/{account_id}/cfd_tunnel",
+            headers=headers,
+            params={"name": tunnel_name, "is_deleted": "false"},
+            timeout=30,
+        )
+        list_resp.raise_for_status()
+        tunnels = list_resp.json().get("result", [])
+
+        if tunnels:
+            # Get existing tunnel token
+            tunnel_id = tunnels[0]["id"]
+            logger.info(f"Found existing tunnel: {tunnel_id}")
+            token_resp = requests.get(
+                f"{api_url}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/token",
+                headers=headers,
+                timeout=30,
+            )
+            token_resp.raise_for_status()
+            tunnel_token = token_resp.json()["result"]
+        else:
+            # Create new tunnel
+            logger.info(f"Creating new tunnel: {tunnel_name}")
+            tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode()
+            create_resp = requests.post(
+                f"{api_url}/accounts/{account_id}/cfd_tunnel",
+                headers=headers,
+                json={"name": tunnel_name, "tunnel_secret": tunnel_secret},
+                timeout=30,
+            )
+            create_resp.raise_for_status()
+            tunnel_data = create_resp.json()["result"]
+            tunnel_id = tunnel_data["id"]
+            tunnel_token = tunnel_data["token"]
+            logger.info(f"Created tunnel: {tunnel_id}")
+
+            # Configure ingress
+            logger.info(f"Configuring ingress for {hostname}")
+            config_resp = requests.put(
+                f"{api_url}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
+                headers=headers,
+                json={
+                    "config": {
+                        "ingress": [
+                            {"hostname": hostname, "service": f"http://localhost:{port}"},
+                            {"service": "http_status:404"},
+                        ]
+                    }
+                },
+                timeout=30,
+            )
+            config_resp.raise_for_status()
+
+            # Create DNS record
+            logger.info(f"Creating DNS record for {hostname}")
+            dns_resp = requests.post(
+                f"{api_url}/zones/{zone_id}/dns_records",
+                headers=headers,
+                json={
+                    "type": "CNAME",
+                    "name": "app",
+                    "content": f"{tunnel_id}.cfargotunnel.com",
+                    "proxied": True,
+                },
+                timeout=30,
+            )
+            # Ignore if DNS already exists
+            if dns_resp.status_code not in (200, 409):
+                if "already exists" not in dns_resp.text.lower():
+                    dns_resp.raise_for_status()
+
+        # Start cloudflared
+        logger.info("Starting cloudflared for control plane...")
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "run", "--token", tunnel_token],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        logger.info(f"Started cloudflared (PID: {proc.pid})")
+        logger.info(f"Control plane available at: https://{hostname}")
+        return proc
+
+    except Exception as e:
+        logger.error(f"Failed to create control plane tunnel: {e}")
+        return None
+
+
 def run_control_plane_mode(config: dict):
     """Run the control plane directly in this VM.
 
@@ -654,7 +826,7 @@ def run_control_plane_mode(config: dict):
     The control plane runs via docker-compose.
 
     Args:
-        config: Launcher config with repo URL, port, etc.
+        config: Launcher config with repo URL, port, Cloudflare creds, etc.
     """
     write_status("control-plane-starting")
     logger.info("Starting in CONTROL PLANE mode")
@@ -693,6 +865,16 @@ def run_control_plane_mode(config: dict):
     env = os.environ.copy()
     env["PORT"] = str(port)
 
+    # Pass Cloudflare credentials to the control plane container
+    if config.get("cloudflare_api_token"):
+        env["CLOUDFLARE_API_TOKEN"] = config["cloudflare_api_token"]
+    if config.get("cloudflare_account_id"):
+        env["CLOUDFLARE_ACCOUNT_ID"] = config["cloudflare_account_id"]
+    if config.get("cloudflare_zone_id"):
+        env["CLOUDFLARE_ZONE_ID"] = config["cloudflare_zone_id"]
+    if config.get("easyenclave_domain"):
+        env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
+
     # Stop any existing containers
     subprocess.run(
         ["docker", "compose", "down"],
@@ -726,29 +908,34 @@ def run_control_plane_mode(config: dict):
             response = requests.get(health_url, timeout=5)
             if response.ok:
                 logger.info("Control plane is healthy!")
-
-                # Get the VM's IP for logging
-                try:
-                    ip_result = subprocess.run(
-                        ["hostname", "-I"],
-                        capture_output=True,
-                        text=True,
-                    )
-                    vm_ip = ip_result.stdout.strip().split()[0]
-                    logger.info(f"Control plane available at: http://{vm_ip}:{port}")
-                    logger.info(f"API docs at: http://{vm_ip}:{port}/docs")
-
-                    # Write URL to status file
-                    write_status(f"control-plane-ready:{vm_ip}:{port}")
-                except Exception:
-                    pass
-
                 break
         except requests.RequestException:
             pass
         time.sleep(2)
     else:
         logger.warning("Control plane health check timeout - may still be starting")
+
+    # Create Cloudflare tunnel for the control plane
+    cloudflared_proc = create_control_plane_tunnel(config, port)
+
+    # Get the VM's IP for logging (fallback if no tunnel)
+    try:
+        ip_result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True,
+            text=True,
+        )
+        vm_ip = ip_result.stdout.strip().split()[0]
+        logger.info(f"Control plane available at: http://{vm_ip}:{port}")
+        logger.info(f"API docs at: http://{vm_ip}:{port}/docs")
+
+        if cloudflared_proc:
+            domain = config.get("easyenclave_domain", "easyenclave.com")
+            write_status(f"control-plane-ready:app.{domain}")
+        else:
+            write_status(f"control-plane-ready:{vm_ip}:{port}")
+    except Exception:
+        write_status("control-plane-ready")
 
     # Monitor the control plane (restart if it crashes)
     logger.info("Monitoring control plane...")
@@ -768,6 +955,13 @@ def run_control_plane_mode(config: dict):
                     cwd=CONTROL_PLANE_DIR,
                     capture_output=True,
                 )
+
+            # Check if cloudflared is still running
+            if cloudflared_proc is not None:
+                poll_result = cloudflared_proc.poll()
+                if poll_result is not None:
+                    logger.warning(f"cloudflared exited with code {poll_result}, restarting...")
+                    cloudflared_proc = create_control_plane_tunnel(config, port)
 
             # Health check
             try:
@@ -806,12 +1000,22 @@ def run_agent_mode(config: dict):
     attestation = generate_initial_attestation()
 
     # 2. Register with control plane
+    agent_id = None
+    cloudflared_proc = None
+    tunnel_hostname = None  # Track the tunnel hostname for service registration
     try:
-        agent_id = register_with_control_plane(attestation, vm_name)
+        reg_response = register_with_control_plane(attestation, vm_name)
+        agent_id = reg_response["agent_id"]
+        tunnel_hostname = reg_response.get("hostname")
+
+        # Start cloudflared if we got a tunnel token
+        if reg_response.get("tunnel_token"):
+            cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
+            if cloudflared_proc and tunnel_hostname:
+                logger.info(f"Agent reachable at: https://{tunnel_hostname}")
     except Exception as e:
         logger.error(f"Failed to register with control plane: {e}")
         logger.info("Will retry registration in poll loop...")
-        agent_id = None
 
     write_status("undeployed")
 
@@ -821,11 +1025,26 @@ def run_agent_mode(config: dict):
             # Try to register if not registered
             if agent_id is None:
                 try:
-                    agent_id = register_with_control_plane(attestation, vm_name)
+                    reg_response = register_with_control_plane(attestation, vm_name)
+                    agent_id = reg_response["agent_id"]
+                    tunnel_hostname = reg_response.get("hostname")
+
+                    # Start cloudflared if we got a tunnel token (and not already running)
+                    if reg_response.get("tunnel_token") and cloudflared_proc is None:
+                        cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
+                        if cloudflared_proc and tunnel_hostname:
+                            logger.info(f"Agent reachable at: https://{tunnel_hostname}")
                 except Exception as e:
                     logger.warning(f"Registration failed, will retry: {e}")
                     time.sleep(POLL_INTERVAL)
                     continue
+
+            # Check if cloudflared is still running
+            if cloudflared_proc is not None:
+                poll_result = cloudflared_proc.poll()
+                if poll_result is not None:
+                    logger.warning(f"cloudflared exited with code {poll_result}, will restart on next registration")
+                    cloudflared_proc = None
 
             # Poll for deployment
             response = poll_control_plane(agent_id)
@@ -833,7 +1052,8 @@ def run_agent_mode(config: dict):
             # Handle deployment if available
             if response.get("deployment"):
                 try:
-                    handle_deployment(agent_id, response["deployment"])
+                    # Pass tunnel hostname so services can be registered with the public URL
+                    handle_deployment(agent_id, response["deployment"], tunnel_hostname)
                 except Exception as e:
                     logger.error(f"Deployment failed: {e}")
                     # Continue polling - agent may get another deployment

@@ -1,0 +1,135 @@
+name: 'Publish EasyEnclave App Version'
+description: 'Publish a new version of an app to EasyEnclave with source inspection and attestation'
+author: 'EasyEnclave'
+
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
+inputs:
+  app_name:
+    description: 'Name of the registered app'
+    required: true
+  version:
+    description: 'Version string (e.g., 1.0.0). Defaults to git tag.'
+    required: false
+  compose_file:
+    description: 'Path to docker-compose.yml'
+    required: false
+    default: 'docker-compose.yml'
+  image_digest:
+    description: 'Docker image digest (sha256:...)'
+    required: false
+  source_commit:
+    description: 'Git commit SHA. Defaults to current commit.'
+    required: false
+  source_tag:
+    description: 'Git tag. Defaults to current ref if a tag.'
+    required: false
+  control_plane_url:
+    description: 'EasyEnclave control plane URL'
+    required: false
+    default: 'https://app.easyenclave.com'
+
+outputs:
+  version_id:
+    description: 'The published version ID'
+    value: ${{ steps.publish.outputs.version_id }}
+  status:
+    description: 'Version status (attested, rejected, failed)'
+    value: ${{ steps.publish.outputs.status }}
+  rejection_reason:
+    description: 'Reason for rejection if status is rejected'
+    value: ${{ steps.publish.outputs.rejection_reason }}
+  mrtd:
+    description: 'TDX measurement (if attested)'
+    value: ${{ steps.publish.outputs.mrtd }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Publish version
+      id: publish
+      shell: bash
+      run: |
+        # Determine version
+        VERSION="${{ inputs.version }}"
+        if [ -z "$VERSION" ]; then
+          # Try to use git tag
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION="${{ github.ref_name }}"
+          else
+            echo "Error: version is required when not running on a tag"
+            exit 1
+          fi
+        fi
+
+        # Determine source_commit
+        SOURCE_COMMIT="${{ inputs.source_commit }}"
+        if [ -z "$SOURCE_COMMIT" ]; then
+          SOURCE_COMMIT="${{ github.sha }}"
+        fi
+
+        # Determine source_tag
+        SOURCE_TAG="${{ inputs.source_tag }}"
+        if [ -z "$SOURCE_TAG" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          SOURCE_TAG="${{ github.ref_name }}"
+        fi
+
+        # Read and base64 encode compose file
+        if [ ! -f "${{ inputs.compose_file }}" ]; then
+          echo "Error: compose file not found: ${{ inputs.compose_file }}"
+          exit 1
+        fi
+        COMPOSE_B64=$(base64 -w 0 "${{ inputs.compose_file }}")
+
+        # Build request JSON
+        REQUEST=$(jq -n \
+          --arg version "$VERSION" \
+          --arg compose "$COMPOSE_B64" \
+          --arg image_digest "${{ inputs.image_digest }}" \
+          --arg source_commit "$SOURCE_COMMIT" \
+          --arg source_tag "$SOURCE_TAG" \
+          '{
+            version: $version,
+            compose: $compose,
+            source_commit: $source_commit
+          }
+          + (if $image_digest != "" then {image_digest: $image_digest} else {} end)
+          + (if $source_tag != "" then {source_tag: $source_tag} else {} end)')
+
+        # Publish the version
+        RESPONSE=$(curl -s -X POST "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions" \
+          -H "Content-Type: application/json" \
+          -d "$REQUEST")
+
+        # Check for HTTP error
+        if echo "$RESPONSE" | jq -e '.detail' > /dev/null 2>&1; then
+          echo "Error: $(echo "$RESPONSE" | jq -r '.detail')"
+          exit 1
+        fi
+
+        # Extract outputs
+        VERSION_ID=$(echo "$RESPONSE" | jq -r '.version_id')
+        STATUS=$(echo "$RESPONSE" | jq -r '.status')
+        REJECTION_REASON=$(echo "$RESPONSE" | jq -r '.rejection_reason // empty')
+        MRTD=$(echo "$RESPONSE" | jq -r '.mrtd // empty')
+
+        echo "version_id=$VERSION_ID" >> $GITHUB_OUTPUT
+        echo "status=$STATUS" >> $GITHUB_OUTPUT
+        echo "rejection_reason=$REJECTION_REASON" >> $GITHUB_OUTPUT
+        echo "mrtd=$MRTD" >> $GITHUB_OUTPUT
+
+        echo "Published version: ${{ inputs.app_name }}@$VERSION"
+        echo "Status: $STATUS"
+
+        # Fail if rejected
+        if [ "$STATUS" = "rejected" ]; then
+          echo "Version rejected: $REJECTION_REASON"
+          exit 1
+        fi
+
+        echo "Version ID: $VERSION_ID"
+        if [ -n "$MRTD" ]; then
+          echo "MRTD: $MRTD"
+        fi

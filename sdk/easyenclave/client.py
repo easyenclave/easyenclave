@@ -1,8 +1,33 @@
-"""EasyEnclave SDK Client - Client library for the EasyEnclave discovery service."""
+"""EasyEnclave SDK Client - Client library for the EasyEnclave discovery service.
+
+This module provides the main client for interacting with EasyEnclave:
+
+1. EasyEnclaveClient - Main client for control plane operations
+   - Connects to control plane with optional TDX attestation verification
+   - Discovers proxy endpoints for service routing
+   - Provides service discovery and registration
+
+2. ServiceClient - Client for calling a specific service through the proxy
+   - Routes requests through the attested control plane
+   - Provides simple HTTP methods (get, post, etc.)
+
+Trust Model:
+    Client --> Control Plane (verify attestation) --> Proxy --> Service
+
+    1. Client connects to CP and verifies its TDX attestation
+    2. Client gets proxy endpoint from CP (default: CP itself)
+    3. Client routes service requests through proxy
+    4. Proxy forwards to services via Cloudflare tunnels
+"""
 
 from __future__ import annotations
 
+import secrets
+from typing import Any
+
 import httpx
+
+from .verify import VerificationResult, verify_quote_local
 
 
 class EasyEnclaveError(Exception):
@@ -23,47 +48,262 @@ class VerificationError(EasyEnclaveError):
     pass
 
 
-class EasyEnclaveClient:
-    """Client for interacting with the EasyEnclave discovery service."""
+class ControlPlaneNotVerifiedError(EasyEnclaveError):
+    """Raised when control plane attestation cannot be verified."""
+
+    pass
+
+
+class ServiceClient:
+    """Client for calling a specific service through the proxy.
+
+    This client routes all requests through the attested control plane's
+    proxy endpoint, which forwards to the service via Cloudflare tunnel.
+
+    Example:
+        client = EasyEnclaveClient("https://app.easyenclave.com")
+        my_service = client.service("my-app")
+        response = my_service.get("/api/data")
+    """
 
     def __init__(
         self,
-        discovery_url: str,
-        verify_attestation: bool = True,
+        proxy_url: str,
+        service_name: str,
         timeout: float = 30.0,
     ):
-        """
-        Connect to EasyEnclave service.
+        """Create a service client.
 
         Args:
-            discovery_url: Base URL of the EasyEnclave service (e.g., "https://easyenclave.example.com")
-            verify_attestation: Whether to verify the discovery service's own attestation on connect
+            proxy_url: Base URL of the proxy (usually CP)
+            service_name: Name of the target service
             timeout: Request timeout in seconds
         """
-        self.base_url = discovery_url.rstrip("/")
+        self.base_url = f"{proxy_url.rstrip('/')}/proxy/{service_name}"
+        self.service_name = service_name
         self.timeout = timeout
         self._client = httpx.Client(timeout=timeout)
 
-        # Verify discovery service health
+    def get(self, path: str, **kwargs) -> httpx.Response:
+        """Send GET request to service.
+
+        Args:
+            path: Path on the service (e.g., "/api/data")
+            **kwargs: Additional httpx request arguments
+
+        Returns:
+            httpx.Response from the service
+        """
+        url = f"{self.base_url}{path}"
+        return self._client.get(url, **kwargs)
+
+    def post(self, path: str, **kwargs) -> httpx.Response:
+        """Send POST request to service.
+
+        Args:
+            path: Path on the service
+            **kwargs: Additional httpx request arguments (json=, data=, etc.)
+
+        Returns:
+            httpx.Response from the service
+        """
+        url = f"{self.base_url}{path}"
+        return self._client.post(url, **kwargs)
+
+    def put(self, path: str, **kwargs) -> httpx.Response:
+        """Send PUT request to service."""
+        url = f"{self.base_url}{path}"
+        return self._client.put(url, **kwargs)
+
+    def patch(self, path: str, **kwargs) -> httpx.Response:
+        """Send PATCH request to service."""
+        url = f"{self.base_url}{path}"
+        return self._client.patch(url, **kwargs)
+
+    def delete(self, path: str, **kwargs) -> httpx.Response:
+        """Send DELETE request to service."""
+        url = f"{self.base_url}{path}"
+        return self._client.delete(url, **kwargs)
+
+    def request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Send arbitrary HTTP request to service.
+
+        Args:
+            method: HTTP method (GET, POST, etc.)
+            path: Path on the service
+            **kwargs: Additional httpx request arguments
+
+        Returns:
+            httpx.Response from the service
+        """
+        url = f"{self.base_url}{path}"
+        return self._client.request(method, url, **kwargs)
+
+    def close(self) -> None:
+        """Close the HTTP client."""
+        self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+
+class EasyEnclaveClient:
+    """Client for interacting with the EasyEnclave discovery service.
+
+    This client implements the chain-of-trust model:
+    1. Connects to the control plane
+    2. Optionally verifies the CP's TDX attestation
+    3. Discovers proxy endpoints for service routing
+    4. Provides methods for service discovery and registration
+
+    Example:
+        # Connect with attestation verification
+        client = EasyEnclaveClient("https://app.easyenclave.com", verify=True)
+
+        # Get a service client
+        my_service = client.service("my-app")
+
+        # Call the service through the proxy
+        response = my_service.get("/api/data")
+        print(response.json())
+
+        # Discover services
+        services = client.discover(tags=["api"])
+    """
+
+    def __init__(
+        self,
+        control_plane_url: str,
+        verify: bool = True,
+        expected_mrtd: str | None = None,
+        timeout: float = 30.0,
+    ):
+        """Connect to EasyEnclave control plane.
+
+        Args:
+            control_plane_url: URL of the control plane (e.g., "https://app.easyenclave.com")
+            verify: Whether to verify the control plane's TDX attestation
+            expected_mrtd: Expected MRTD for verification (optional, for pinning)
+            timeout: Request timeout in seconds
+
+        Raises:
+            EasyEnclaveError: If connection fails
+            ControlPlaneNotVerifiedError: If verify=True and attestation fails
+        """
+        self.cp_url = control_plane_url.rstrip("/")
+        self.timeout = timeout
+        self._client = httpx.Client(timeout=timeout)
+
+        # Verification result (set if verify=True)
+        self.verification_result: VerificationResult | None = None
+
+        # Check health first
         self._check_health()
 
-        # Optionally verify the discovery service's attestation
-        if verify_attestation:
-            # TODO: Implement discovery service self-attestation verification
-            pass
+        # Verify control plane attestation if requested
+        if verify:
+            self._verify_control_plane(expected_mrtd)
+
+        # Discover proxy endpoint
+        self.proxy_url = self._get_proxy_url()
 
     def _check_health(self) -> None:
-        """Check if the discovery service is healthy."""
+        """Check if the control plane is healthy."""
         try:
-            response = self._client.get(f"{self.base_url}/health")
+            response = self._client.get(f"{self.cp_url}/health")
             response.raise_for_status()
             data = response.json()
             if data.get("status") != "healthy":
                 raise EasyEnclaveError(
-                    f"Discovery service unhealthy: {data.get('status')}"
+                    f"Control plane unhealthy: {data.get('status')}"
                 )
         except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Failed to connect to discovery service: {e}") from e
+            raise EasyEnclaveError(f"Failed to connect to control plane: {e}") from e
+
+    def _verify_control_plane(self, expected_mrtd: str | None = None) -> None:
+        """Verify the control plane's TDX attestation.
+
+        This requests an attestation from the CP with a random nonce,
+        then verifies the quote locally. The nonce prevents replay attacks.
+
+        Args:
+            expected_mrtd: Expected MRTD value (optional)
+
+        Raises:
+            ControlPlaneNotVerifiedError: If verification fails
+        """
+        # Generate random nonce
+        nonce = secrets.token_hex(16)
+
+        try:
+            response = self._client.get(
+                f"{self.cp_url}/api/v1/attestation",
+                params={"nonce": nonce},
+            )
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPError as e:
+            raise ControlPlaneNotVerifiedError(
+                f"Failed to get attestation: {e}"
+            ) from e
+
+        # Check for error (CP not in TDX)
+        if "error" in data:
+            raise ControlPlaneNotVerifiedError(
+                f"Control plane attestation failed: {data['error']}"
+            )
+
+        # Verify the quote
+        quote_b64 = data.get("quote_b64")
+        if not quote_b64:
+            raise ControlPlaneNotVerifiedError(
+                "No quote in attestation response"
+            )
+
+        result = verify_quote_local(
+            quote_b64,
+            nonce=nonce,
+            expected_mrtd=expected_mrtd,
+        )
+
+        self.verification_result = result
+
+        if not result.verified:
+            raise ControlPlaneNotVerifiedError(
+                f"Attestation verification failed: {result.error}"
+            )
+
+    def _get_proxy_url(self) -> str:
+        """Get the proxy endpoint from the control plane."""
+        try:
+            response = self._client.get(f"{self.cp_url}/api/v1/proxy")
+            response.raise_for_status()
+            data = response.json()
+            return data.get("proxy_url", self.cp_url)
+        except httpx.HTTPError:
+            # Fall back to CP URL if proxy endpoint not available
+            return self.cp_url
+
+    def service(self, service_name: str) -> ServiceClient:
+        """Get a client for a specific service.
+
+        The returned client routes all requests through the proxy
+        to the named service.
+
+        Args:
+            service_name: Name of the target service
+
+        Returns:
+            ServiceClient for the service
+
+        Example:
+            my_service = client.service("my-app")
+            response = my_service.get("/api/data")
+        """
+        return ServiceClient(self.proxy_url, service_name, self.timeout)
 
     def register(
         self,
@@ -78,13 +318,12 @@ class EasyEnclaveClient:
         description: str = "",
         tags: list[str] | None = None,
     ) -> str:
-        """
-        Register this service with EasyEnclave.
+        """Register a service with EasyEnclave.
 
         Args:
             name: Human-readable service name
-            endpoints: Dict mapping environment names to URLs (e.g., {"prod": "https://..."})
-            attestation_json: Full attestation data from measure-tdx
+            endpoints: Dict mapping environment names to URLs
+            attestation_json: Full attestation data
             source_repo: GitHub repository URL
             source_commit: Git commit SHA
             compose_hash: SHA256 hash of docker-compose.yml
@@ -118,7 +357,7 @@ class EasyEnclaveClient:
 
         try:
             response = self._client.post(
-                f"{self.base_url}/api/v1/register",
+                f"{self.cp_url}/api/v1/register",
                 json=payload,
             )
             response.raise_for_status()
@@ -138,19 +377,18 @@ class EasyEnclaveClient:
         health_status: str | None = None,
         query: str | None = None,
     ) -> list[dict]:
-        """
-        Find services matching criteria.
+        """Find services matching criteria.
 
         Args:
             name: Filter by name (partial match)
             tags: Filter by tags (any match)
-            environment: Filter by environment (must have endpoint for this env)
+            environment: Filter by environment
             mrtd: Filter by MRTD (exact match)
             health_status: Filter by health status
             query: Full-text search query
 
         Returns:
-            List of service dictionaries matching the criteria
+            List of service dictionaries
         """
         params = {}
         if name:
@@ -168,7 +406,7 @@ class EasyEnclaveClient:
 
         try:
             response = self._client.get(
-                f"{self.base_url}/api/v1/services",
+                f"{self.cp_url}/api/v1/services",
                 params=params,
             )
             response.raise_for_status()
@@ -178,8 +416,7 @@ class EasyEnclaveClient:
             raise EasyEnclaveError(f"Discovery request failed: {e}") from e
 
     def get_service(self, service_id: str) -> dict:
-        """
-        Get details for a specific service.
+        """Get details for a specific service.
 
         Args:
             service_id: Unique identifier of the service
@@ -192,7 +429,7 @@ class EasyEnclaveClient:
         """
         try:
             response = self._client.get(
-                f"{self.base_url}/api/v1/services/{service_id}"
+                f"{self.cp_url}/api/v1/services/{service_id}"
             )
             if response.status_code == 404:
                 raise ServiceNotFoundError(f"Service not found: {service_id}")
@@ -202,26 +439,20 @@ class EasyEnclaveClient:
             raise EasyEnclaveError(f"Get service request failed: {e}") from e
 
     def verify_service(self, service_id: str) -> dict:
-        """
-        Verify a service's attestation via Intel Trust Authority.
+        """Verify a service's attestation via Intel Trust Authority.
 
         Args:
             service_id: Unique identifier of the service
 
         Returns:
-            Verification result dictionary with keys:
-            - verified: bool
-            - verification_time: datetime string
-            - details: dict (if verified)
-            - error: str (if not verified)
+            Verification result dictionary
 
         Raises:
             ServiceNotFoundError: If service not found
-            VerificationError: If verification fails
         """
         try:
             response = self._client.get(
-                f"{self.base_url}/api/v1/services/{service_id}/verify"
+                f"{self.cp_url}/api/v1/services/{service_id}/verify"
             )
             if response.status_code == 404:
                 raise ServiceNotFoundError(f"Service not found: {service_id}")
@@ -231,8 +462,7 @@ class EasyEnclaveClient:
             raise EasyEnclaveError(f"Verification request failed: {e}") from e
 
     def deregister(self, service_id: str) -> bool:
-        """
-        Deregister a service.
+        """Deregister a service.
 
         Args:
             service_id: Unique identifier of the service
@@ -245,7 +475,7 @@ class EasyEnclaveClient:
         """
         try:
             response = self._client.delete(
-                f"{self.base_url}/api/v1/services/{service_id}"
+                f"{self.cp_url}/api/v1/services/{service_id}"
             )
             if response.status_code == 404:
                 raise ServiceNotFoundError(f"Service not found: {service_id}")
@@ -253,6 +483,80 @@ class EasyEnclaveClient:
             return True
         except httpx.HTTPError as e:
             raise EasyEnclaveError(f"Deregister request failed: {e}") from e
+
+    # App catalog methods
+
+    def list_apps(
+        self,
+        name: str | None = None,
+        tags: list[str] | None = None,
+    ) -> list[dict]:
+        """List apps in the catalog.
+
+        Args:
+            name: Filter by name (partial match)
+            tags: Filter by tags
+
+        Returns:
+            List of app dictionaries
+        """
+        params = {}
+        if name:
+            params["name"] = name
+        if tags:
+            params["tags"] = ",".join(tags)
+
+        try:
+            response = self._client.get(
+                f"{self.cp_url}/api/v1/apps",
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["apps"]
+        except httpx.HTTPError as e:
+            raise EasyEnclaveError(f"List apps request failed: {e}") from e
+
+    def get_app(self, app_name: str) -> dict:
+        """Get details for an app.
+
+        Args:
+            app_name: Name of the app
+
+        Returns:
+            App details dictionary
+        """
+        try:
+            response = self._client.get(f"{self.cp_url}/api/v1/apps/{app_name}")
+            if response.status_code == 404:
+                raise ServiceNotFoundError(f"App not found: {app_name}")
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise EasyEnclaveError(f"Get app request failed: {e}") from e
+
+    def get_app_version(self, app_name: str, version: str) -> dict:
+        """Get details for a specific version of an app.
+
+        Args:
+            app_name: Name of the app
+            version: Version string
+
+        Returns:
+            Version details dictionary
+        """
+        try:
+            response = self._client.get(
+                f"{self.cp_url}/api/v1/apps/{app_name}/versions/{version}"
+            )
+            if response.status_code == 404:
+                raise ServiceNotFoundError(
+                    f"Version not found: {app_name}@{version}"
+                )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as e:
+            raise EasyEnclaveError(f"Get version request failed: {e}") from e
 
     def close(self) -> None:
         """Close the HTTP client."""

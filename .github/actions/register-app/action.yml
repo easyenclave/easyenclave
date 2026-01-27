@@ -1,0 +1,83 @@
+name: 'Register EasyEnclave App'
+description: 'Register a new app with the EasyEnclave catalog'
+author: 'EasyEnclave'
+
+branding:
+  icon: 'box'
+  color: 'blue'
+
+inputs:
+  name:
+    description: 'Unique app name'
+    required: true
+  description:
+    description: 'App description'
+    required: false
+    default: ''
+  source_repo:
+    description: 'GitHub repo (e.g., org/repo). Defaults to current repo.'
+    required: false
+  maintainers:
+    description: 'Comma-separated list of maintainer emails'
+    required: false
+    default: ''
+  tags:
+    description: 'Comma-separated list of tags'
+    required: false
+    default: ''
+  control_plane_url:
+    description: 'EasyEnclave control plane URL'
+    required: false
+    default: 'https://app.easyenclave.com'
+
+outputs:
+  app_id:
+    description: 'The registered app ID'
+    value: ${{ steps.register.outputs.app_id }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Register app
+      id: register
+      shell: bash
+      run: |
+        # Build maintainers array
+        MAINTAINERS_JSON="[]"
+        if [ -n "${{ inputs.maintainers }}" ]; then
+          MAINTAINERS_JSON=$(echo '${{ inputs.maintainers }}' | jq -R 'split(",") | map(ltrimstr(" ") | rtrimstr(" "))')
+        fi
+
+        # Build tags array
+        TAGS_JSON="[]"
+        if [ -n "${{ inputs.tags }}" ]; then
+          TAGS_JSON=$(echo '${{ inputs.tags }}' | jq -R 'split(",") | map(ltrimstr(" ") | rtrimstr(" "))')
+        fi
+
+        # Default source_repo to current repo
+        SOURCE_REPO="${{ inputs.source_repo }}"
+        if [ -z "$SOURCE_REPO" ]; then
+          SOURCE_REPO="${{ github.repository }}"
+        fi
+
+        # Register the app
+        RESPONSE=$(curl -s -X POST "${{ inputs.control_plane_url }}/api/v1/apps" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"name\": \"${{ inputs.name }}\",
+            \"description\": \"${{ inputs.description }}\",
+            \"source_repo\": \"$SOURCE_REPO\",
+            \"maintainers\": $MAINTAINERS_JSON,
+            \"tags\": $TAGS_JSON
+          }")
+
+        # Check for error
+        if echo "$RESPONSE" | jq -e '.detail' > /dev/null 2>&1; then
+          echo "Error: $(echo "$RESPONSE" | jq -r '.detail')"
+          exit 1
+        fi
+
+        # Extract app_id
+        APP_ID=$(echo "$RESPONSE" | jq -r '.app_id')
+        echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
+        echo "Registered app: ${{ inputs.name }} ($APP_ID)"

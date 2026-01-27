@@ -6,6 +6,11 @@ services:
     environment:
       - ITA_API_URL=${ITA_API_URL:-https://api.trustauthority.intel.com/appraisal/v2}
       - ITA_API_KEY=${ITA_API_KEY:-}
+      # Cloudflare Tunnel integration (optional)
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
+      - CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID:-}
+      - EASYENCLAVE_DOMAIN=${EASYENCLAVE_DOMAIN:-easyenclave.com}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s

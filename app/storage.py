@@ -5,7 +5,16 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta
 
-from .models import Deployment, Job, LauncherAgent, ServiceRegistration, TrustedMrtd, Worker
+from .models import (
+    App,
+    AppVersion,
+    Deployment,
+    Job,
+    LauncherAgent,
+    ServiceRegistration,
+    TrustedMrtd,
+    Worker,
+)
 
 # How long a service can be unhealthy before being marked as "down"
 UNHEALTHY_TIMEOUT = timedelta(hours=1)
@@ -555,6 +564,23 @@ class AgentStore:
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
 
+    def update_tunnel_info(
+        self,
+        agent_id: str,
+        tunnel_id: str,
+        hostname: str,
+    ) -> bool:
+        """Update agent's Cloudflare tunnel info. Returns False if not found."""
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return False
+            agent_dict = agent.model_dump()
+            agent_dict["tunnel_id"] = tunnel_id
+            agent_dict["hostname"] = hostname
+            self._agents[agent_id] = LauncherAgent(**agent_dict)
+            return True
+
     def get_deployed_agents(self) -> list[LauncherAgent]:
         """Get all deployed agents for health checking."""
         with self._lock:
@@ -842,3 +868,206 @@ class TrustedMrtdStore:
 agent_store = AgentStore()
 deployment_store = DeploymentStore()
 trusted_mrtd_store = TrustedMrtdStore()
+
+
+# ==============================================================================
+# App Catalog Storage - Apps and their versions
+# ==============================================================================
+
+
+class AppStore:
+    """Thread-safe in-memory storage for apps."""
+
+    def __init__(self):
+        self._apps: dict[str, App] = {}
+        self._name_index: dict[str, str] = {}  # name -> app_id
+        self._lock = threading.RLock()
+
+    def register(self, app: App) -> str:
+        """Register a new app. Returns the app_id."""
+        with self._lock:
+            self._apps[app.app_id] = app
+            self._name_index[app.name] = app.app_id
+            return app.app_id
+
+    def get(self, app_id: str) -> App | None:
+        """Get an app by ID. Returns None if not found."""
+        with self._lock:
+            return self._apps.get(app_id)
+
+    def get_by_name(self, name: str) -> App | None:
+        """Get an app by name. Returns None if not found."""
+        with self._lock:
+            app_id = self._name_index.get(name)
+            if app_id:
+                return self._apps.get(app_id)
+            return None
+
+    def list(self, filters: dict | None = None) -> list[App]:
+        """List all apps, optionally filtered."""
+        with self._lock:
+            apps = list(self._apps.values())
+
+        if not filters:
+            return apps
+
+        result = apps
+
+        # Filter by name (partial match)
+        if filters.get("name"):
+            name_filter = filters["name"].lower()
+            result = [a for a in result if name_filter in a.name.lower()]
+
+        # Filter by tags (any match)
+        if filters.get("tags"):
+            filter_tags = set(filters["tags"])
+            result = [a for a in result if filter_tags & set(a.tags)]
+
+        return result
+
+    def update(self, app_id: str, **updates) -> App | None:
+        """Update an app's fields. Returns updated app or None if not found."""
+        with self._lock:
+            app = self._apps.get(app_id)
+            if app is None:
+                return None
+
+            app_dict = app.model_dump()
+            app_dict.update(updates)
+            updated_app = App(**app_dict)
+            self._apps[app_id] = updated_app
+            return updated_app
+
+    def delete(self, app_id: str) -> bool:
+        """Delete an app. Returns True if deleted, False if not found."""
+        with self._lock:
+            if app_id in self._apps:
+                app = self._apps[app_id]
+                if self._name_index.get(app.name) == app_id:
+                    del self._name_index[app.name]
+                del self._apps[app_id]
+                return True
+            return False
+
+    def clear(self) -> None:
+        """Clear all apps (useful for testing)."""
+        with self._lock:
+            self._apps.clear()
+            self._name_index.clear()
+
+
+class AppVersionStore:
+    """Thread-safe in-memory storage for app versions."""
+
+    def __init__(self):
+        self._versions: dict[str, AppVersion] = {}
+        # Index: app_name -> [version_ids] (ordered by published_at)
+        self._app_versions: dict[str, list[str]] = {}
+        # Index: (app_name, version) -> version_id
+        self._version_index: dict[tuple[str, str], str] = {}
+        self._lock = threading.RLock()
+
+    def create(self, version: AppVersion) -> str:
+        """Create a new app version. Returns the version_id."""
+        with self._lock:
+            self._versions[version.version_id] = version
+
+            # Update app versions index
+            if version.app_name not in self._app_versions:
+                self._app_versions[version.app_name] = []
+            self._app_versions[version.app_name].append(version.version_id)
+
+            # Update version index
+            self._version_index[(version.app_name, version.version)] = version.version_id
+
+            return version.version_id
+
+    def get(self, version_id: str) -> AppVersion | None:
+        """Get a version by ID. Returns None if not found."""
+        with self._lock:
+            return self._versions.get(version_id)
+
+    def get_by_version(self, app_name: str, version: str) -> AppVersion | None:
+        """Get a specific version of an app. Returns None if not found."""
+        with self._lock:
+            version_id = self._version_index.get((app_name, version))
+            if version_id:
+                return self._versions.get(version_id)
+            return None
+
+    def list_for_app(self, app_name: str) -> list[AppVersion]:
+        """List all versions for an app, ordered by published_at (newest first)."""
+        with self._lock:
+            version_ids = self._app_versions.get(app_name, [])
+            versions = [self._versions[vid] for vid in version_ids if vid in self._versions]
+            return sorted(versions, key=lambda v: v.published_at, reverse=True)
+
+    def update(self, version_id: str, **updates) -> AppVersion | None:
+        """Update a version's fields. Returns updated version or None if not found."""
+        with self._lock:
+            version = self._versions.get(version_id)
+            if version is None:
+                return None
+
+            version_dict = version.model_dump()
+            version_dict.update(updates)
+            updated_version = AppVersion(**version_dict)
+            self._versions[version_id] = updated_version
+            return updated_version
+
+    def update_status(
+        self,
+        version_id: str,
+        status: str,
+        mrtd: str | None = None,
+        attestation: dict | None = None,
+        rejection_reason: str | None = None,
+    ) -> bool:
+        """Update version status and attestation. Returns False if not found."""
+        with self._lock:
+            version = self._versions.get(version_id)
+            if version is None:
+                return False
+
+            version_dict = version.model_dump()
+            version_dict["status"] = status
+            if mrtd is not None:
+                version_dict["mrtd"] = mrtd
+            if attestation is not None:
+                version_dict["attestation"] = attestation
+            if rejection_reason is not None:
+                version_dict["rejection_reason"] = rejection_reason
+
+            self._versions[version_id] = AppVersion(**version_dict)
+            return True
+
+    def delete(self, version_id: str) -> bool:
+        """Delete a version. Returns True if deleted, False if not found."""
+        with self._lock:
+            if version_id in self._versions:
+                version = self._versions[version_id]
+
+                # Clean up indexes
+                if version.app_name in self._app_versions:
+                    if version_id in self._app_versions[version.app_name]:
+                        self._app_versions[version.app_name].remove(version_id)
+
+                key = (version.app_name, version.version)
+                if key in self._version_index:
+                    del self._version_index[key]
+
+                del self._versions[version_id]
+                return True
+            return False
+
+    def clear(self) -> None:
+        """Clear all versions (useful for testing)."""
+        with self._lock:
+            self._versions.clear()
+            self._app_versions.clear()
+            self._version_index.clear()
+
+
+# Global app store instances
+app_store = AppStore()
+app_version_store = AppVersionStore()

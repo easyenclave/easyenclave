@@ -214,6 +214,15 @@ class TDXManager:
         This bootstraps a new EasyEnclave network. The control plane runs
         directly in the VM without needing to poll an external control plane.
 
+        If Cloudflare environment variables are set, the control plane will
+        create a tunnel and be accessible at https://app.{domain}.
+
+        Environment variables for Cloudflare tunnel:
+        - CLOUDFLARE_API_TOKEN: API token with Tunnel and DNS edit permissions
+        - CLOUDFLARE_ACCOUNT_ID: Cloudflare account ID
+        - CLOUDFLARE_ZONE_ID: Zone ID for the domain
+        - EASYENCLAVE_DOMAIN: Domain for hostnames (default: easyenclave.com)
+
         Args:
             image: Path to TDX VM image (auto-detected if not provided)
             port: Port for the control plane API (default 8080)
@@ -224,9 +233,19 @@ class TDXManager:
         config = {
             "port": port,
             "easyenclave_repo": "https://github.com/easyenclave/easyenclave.git",
+            # Cloudflare config for self-tunneling (if env vars are set)
+            "cloudflare_api_token": os.environ.get("CLOUDFLARE_API_TOKEN"),
+            "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
+            "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
+            "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
         }
         result = self.vm_new(image=image, mode=CONTROL_PLANE_MODE, config=config)
         result["control_plane_port"] = port
+
+        # Add expected hostname if Cloudflare is configured
+        if config.get("cloudflare_api_token"):
+            result["control_plane_hostname"] = f"app.{config['easyenclave_domain']}"
+
         return result
 
     def get_vm_ip(self, name: str, timeout: int = 120) -> str | None:

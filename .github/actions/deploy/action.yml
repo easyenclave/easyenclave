@@ -1,0 +1,117 @@
+name: 'Deploy EasyEnclave App'
+description: 'Deploy a published app version to an EasyEnclave agent'
+author: 'EasyEnclave'
+
+branding:
+  icon: 'server'
+  color: 'green'
+
+inputs:
+  app_name:
+    description: 'Name of the registered app'
+    required: true
+  version:
+    description: 'Version to deploy'
+    required: true
+  agent_id:
+    description: 'Target agent ID'
+    required: true
+  service_url:
+    description: 'Optional service URL override (defaults to agent tunnel hostname)'
+    required: false
+  health_endpoint:
+    description: 'Health check endpoint path'
+    required: false
+    default: '/health'
+  intel_api_key:
+    description: 'Intel Trust Authority API key for attestation'
+    required: false
+  control_plane_url:
+    description: 'EasyEnclave control plane URL'
+    required: false
+    default: 'https://app.easyenclave.com'
+
+outputs:
+  deployment_id:
+    description: 'The deployment ID'
+    value: ${{ steps.deploy.outputs.deployment_id }}
+  status:
+    description: 'Deployment status'
+    value: ${{ steps.deploy.outputs.status }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Get version details
+      id: version
+      shell: bash
+      run: |
+        # Get the version to extract compose and attestation
+        RESPONSE=$(curl -s "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/${{ inputs.version }}")
+
+        # Check for error
+        if echo "$RESPONSE" | jq -e '.detail' > /dev/null 2>&1; then
+          echo "Error: $(echo "$RESPONSE" | jq -r '.detail')"
+          exit 1
+        fi
+
+        # Check status
+        STATUS=$(echo "$RESPONSE" | jq -r '.status')
+        if [ "$STATUS" != "attested" ]; then
+          echo "Error: Version status is '$STATUS', expected 'attested'"
+          exit 1
+        fi
+
+        # Extract compose
+        COMPOSE=$(echo "$RESPONSE" | jq -r '.compose')
+        echo "compose=$COMPOSE" >> $GITHUB_OUTPUT
+
+    - name: Create deployment
+      id: deploy
+      shell: bash
+      run: |
+        # Build config
+        CONFIG=$(jq -n \
+          --arg service_url "${{ inputs.service_url }}" \
+          --arg health_endpoint "${{ inputs.health_endpoint }}" \
+          --arg intel_api_key "${{ inputs.intel_api_key }}" \
+          --arg service_name "${{ inputs.app_name }}" \
+          '{
+            service_name: $service_name,
+            health_endpoint: $health_endpoint
+          }
+          + (if $service_url != "" then {service_url: $service_url} else {} end)
+          + (if $intel_api_key != "" then {intel_api_key: $intel_api_key} else {} end)')
+
+        # Create deployment request
+        REQUEST=$(jq -n \
+          --arg compose "${{ steps.version.outputs.compose }}" \
+          --arg agent_id "${{ inputs.agent_id }}" \
+          --argjson config "$CONFIG" \
+          '{
+            compose: $compose,
+            agent_id: $agent_id,
+            config: $config
+          }')
+
+        # Create deployment
+        RESPONSE=$(curl -s -X POST "${{ inputs.control_plane_url }}/api/v1/deployments" \
+          -H "Content-Type: application/json" \
+          -d "$REQUEST")
+
+        # Check for error
+        if echo "$RESPONSE" | jq -e '.detail' > /dev/null 2>&1; then
+          echo "Error: $(echo "$RESPONSE" | jq -r '.detail')"
+          exit 1
+        fi
+
+        # Extract outputs
+        DEPLOYMENT_ID=$(echo "$RESPONSE" | jq -r '.deployment_id')
+        STATUS=$(echo "$RESPONSE" | jq -r '.status')
+
+        echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+        echo "status=$STATUS" >> $GITHUB_OUTPUT
+
+        echo "Created deployment: $DEPLOYMENT_ID"
+        echo "Status: $STATUS"
+        echo "Agent: ${{ inputs.agent_id }}"
