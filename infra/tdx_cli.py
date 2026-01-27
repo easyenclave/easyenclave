@@ -335,6 +335,12 @@ To start a new EasyEnclave network:
 
     new_parser = vm_sub.add_parser("new", help="Create new TDX VM")
     new_parser.add_argument("-i", "--image", help="Path to TDX image")
+    new_parser.add_argument(
+        "--easyenclave-url",
+        default="https://app.easyenclave.com",
+        help="Control plane URL for agent registration (default: https://app.easyenclave.com)",
+    )
+    new_parser.add_argument("--wait", action="store_true", help="Wait for agent to get IP")
 
     vm_sub.add_parser("list", help="List TDX VMs")
 
@@ -386,8 +392,20 @@ To start a new EasyEnclave network:
 
         elif args.command == "vm":
             if args.vm_command == "new":
-                result = mgr.vm_new(args.image)
+                config = {"control_plane_url": args.easyenclave_url}
+                result = mgr.vm_new(args.image, config=config)
                 print(json.dumps(result, indent=2))
+
+                if args.wait:
+                    print(f"\nWaiting for VM to get IP...", file=sys.stderr)
+                    ip = mgr.get_vm_ip(result["name"])
+                    if ip:
+                        print(f"VM IP: {ip}", file=sys.stderr)
+                        print(f"Agent will register with: {args.easyenclave_url}", file=sys.stderr)
+                        result["ip"] = ip
+                        print(json.dumps(result, indent=2))
+                    else:
+                        print("Warning: Could not get VM IP", file=sys.stderr)
             elif args.vm_command == "list":
                 for vm in mgr.vm_list():
                     print(vm)
