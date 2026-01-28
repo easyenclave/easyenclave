@@ -23,6 +23,7 @@ Client-side usage:
         response = await client.call("my_action", {"data": "value"})
 """
 
+from .app import NoiseApp
 from .attestation import (
     BindingKeyPair,
     BoundAttestation,
@@ -32,17 +33,16 @@ from .attestation import (
     parse_tdx_quote,
     refresh_attestation,
 )
-from .server import (
-    NOISE_PROTOCOL,
-    NoiseServer,
-    NoiseSession,
-)
-from .app import NoiseApp
 from .client import (
     AttestationExpiredError,
     NoiseClient,
     VerificationResult,
     verify_intel_ta_token,
+)
+from .server import (
+    NOISE_PROTOCOL,
+    NoiseServer,
+    NoiseSession,
 )
 
 __all__ = [

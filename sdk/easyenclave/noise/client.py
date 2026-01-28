@@ -30,8 +30,9 @@ import hashlib
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ class NoiseClient:
             timeout: Connection timeout in seconds
         """
         import websockets
-        from noise.connection import NoiseConnection, Keypair
+        from noise.connection import Keypair, NoiseConnection
 
         if self._handshake_complete:
             return
@@ -652,7 +653,7 @@ class NoiseClient:
                 if on_failure:
                     on_failure(error)
                 else:
-                    raise error
+                    raise error from e
 
     async def __aenter__(self):
         """Async context manager entry."""

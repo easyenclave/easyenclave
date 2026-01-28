@@ -31,9 +31,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Callable, Awaitable, Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 

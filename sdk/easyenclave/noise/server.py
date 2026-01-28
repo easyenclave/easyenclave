@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Awaitable, Any
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .attestation import BoundAttestation
@@ -139,7 +140,7 @@ class NoiseServer:
         Returns:
             Tuple of (NoiseSession, server_response_bytes)
         """
-        from noise.connection import NoiseConnection, Keypair
+        from noise.connection import Keypair, NoiseConnection
 
         # Initialize Noise connection as responder
         noise = NoiseConnection.from_name(NOISE_PROTOCOL)
