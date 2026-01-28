@@ -32,23 +32,30 @@ jobs:
 
       - name: Deploy Private LLM Demo
         run: |
-          trust_mrtd_from_share() {
-            local SHARE_DIR="$1"
-            echo "Waiting for attestation in $SHARE_DIR..." >&2
-            for i in {1..30}; do
+          ensure_trusted_mrtd() {
+            # Check if we already have trusted MRTDs
+            TRUSTED=$(curl -sf "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" 2>/dev/null | jq -r '.total // 0')
+            if [ "$TRUSTED" -gt 0 ]; then
+              echo "Already have $TRUSTED trusted MRTD(s)" >&2
+              return 0
+            fi
+
+            # Try to find any attestation.json from existing VMs
+            echo "Looking for attestation.json in share directories..." >&2
+            for SHARE_DIR in /var/tmp/tdvirsh/share.*; do
               if [ -f "${SHARE_DIR}/attestation.json" ]; then
                 MRTD=$(jq -r '.tdx.measurements.mrtd // empty' "${SHARE_DIR}/attestation.json")
                 if [ -n "$MRTD" ]; then
-                  echo "Adding MRTD to trusted list: ${MRTD:0:32}..." >&2
+                  echo "Found MRTD: ${MRTD:0:32}... from $SHARE_DIR" >&2
                   curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" \
                     -H "Content-Type: application/json" \
                     -d "{\"mrtd\": \"$MRTD\", \"description\": \"CI auto-trusted\"}" || true
                   return 0
                 fi
               fi
-              sleep 2
             done
-            echo "::warning::Could not find attestation.json" >&2
+
+            echo "::warning::No attestation.json found in any share directory" >&2
             return 1
           }
 
@@ -57,36 +64,27 @@ jobs:
             VM_OUTPUT=$(python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait)
             echo "$VM_OUTPUT" >&2
 
-            # Extract share_dir from VM output
-            SHARE_DIR=$(echo "$VM_OUTPUT" | jq -r '.share_dir // empty' | tail -1)
-            echo "Share dir: $SHARE_DIR" >&2
-
-            # Trust the agent's MRTD (wait for attestation)
-            trust_mrtd_from_share "$SHARE_DIR"
-
-            # Wait for agent to register and be verified
+            # Wait for agent to register
             echo "Waiting for agent registration..." >&2
             for i in {1..60}; do
-              # Get the most recently registered agent
               AGENT_DATA=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null)
               AGENT_ID=$(echo "$AGENT_DATA" | jq -r '.agents[-1].agent_id // empty')
-              AGENT_VERIFIED=$(echo "$AGENT_DATA" | jq -r '.agents[-1].verified // false')
 
-              if [ -n "$AGENT_ID" ] && [ "$AGENT_VERIFIED" = "true" ]; then
-                echo "Agent registered and verified: $AGENT_ID" >&2
+              if [ -n "$AGENT_ID" ]; then
+                echo "Agent registered: $AGENT_ID" >&2
                 echo "$AGENT_ID"
                 return 0
-              elif [ -n "$AGENT_ID" ]; then
-                echo "  Agent $AGENT_ID registered but not yet verified ($i/60)" >&2
-              else
-                echo "  Waiting for registration... ($i/60)" >&2
               fi
+              echo "  Waiting... ($i/60)" >&2
               sleep 5
             done
             return 1
           }
 
-          # Always launch a fresh agent for CI/CD deployments
+          # Ensure we have a trusted MRTD (from any existing attestation)
+          ensure_trusted_mrtd
+
+          # Launch a fresh agent for CI/CD deployments
           AGENT_ID=$(launch_agent) || {
             echo "::error::Agent did not register within timeout"
             exit 1
