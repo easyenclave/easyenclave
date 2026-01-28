@@ -32,10 +32,7 @@ jobs:
 
       - name: Deploy Private LLM Demo
         run: |
-          # Get first available agent or launch one
-          AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
-
-          if [ -z "$AGENT_ID" ]; then
+          launch_agent() {
             echo "Launching new agent..."
             python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait
 
@@ -45,15 +42,32 @@ jobs:
               AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
               if [ -n "$AGENT_ID" ]; then
                 echo "Agent registered: $AGENT_ID"
-                break
+                echo "$AGENT_ID"
+                return 0
               fi
               echo "  Waiting... ($i/60)"
               sleep 5
             done
+            return 1
+          }
 
-            if [ -z "$AGENT_ID" ]; then
+          # Get first available agent
+          AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
+
+          if [ -z "$AGENT_ID" ]; then
+            AGENT_ID=$(launch_agent) || {
               echo "::error::Agent did not register within timeout"
               exit 1
+            }
+          else
+            # Verify the agent is still valid (control plane may have restarted)
+            AGENT_CHECK=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null) || AGENT_CHECK=""
+            if [ -z "$AGENT_CHECK" ]; then
+              echo "Agent $AGENT_ID not found, launching new one..."
+              AGENT_ID=$(launch_agent) || {
+                echo "::error::Agent did not register within timeout"
+                exit 1
+              }
             fi
           fi
 
