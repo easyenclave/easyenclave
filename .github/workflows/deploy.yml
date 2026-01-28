@@ -38,14 +38,30 @@ jobs:
           if [ -z "$AGENT_ID" ]; then
             echo "Launching new agent..."
             python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait
-            # Wait for registration
-            sleep 30
-            AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id')
+
+            # Wait for agent registration with polling
+            echo "Waiting for agent registration..."
+            for i in {1..60}; do
+              AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
+              if [ -n "$AGENT_ID" ]; then
+                echo "Agent registered: $AGENT_ID"
+                break
+              fi
+              echo "  Waiting... ($i/60)"
+              sleep 5
+            done
+
+            if [ -z "$AGENT_ID" ]; then
+              echo "::error::Agent did not register within timeout"
+              exit 1
+            fi
           fi
+
+          echo "Using agent: $AGENT_ID"
 
           # Deploy demo
           COMPOSE_B64=$(base64 -w0 examples/private-llm/docker-compose.yml)
-          curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/deployments" \
+          RESPONSE=$(curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/deployments" \
             -H "Content-Type: application/json" \
             -d "{
               \"agent_id\": \"$AGENT_ID\",
@@ -54,6 +70,10 @@ jobs:
                 \"service_name\": \"private-llm\",
                 \"health_endpoint\": \"/health\"
               }
-            }"
+            }" 2>&1) || {
+            echo "::error::Deployment failed: $RESPONSE"
+            exit 1
+          }
 
+          echo "Deployment response: $RESPONSE"
           echo "Demo deployment triggered"
