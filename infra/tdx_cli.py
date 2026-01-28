@@ -392,20 +392,24 @@ To start a new EasyEnclave network:
                         print("Waiting for control plane to start...", file=sys.stderr)
                         import urllib.error
                         import urllib.request
-                        for _ in range(60):
+                        # Always include IP in result so workflow can proceed
+                        result["ip"] = ip
+                        result["control_plane_url"] = url
+
+                        for _ in range(120):  # 4 minutes for docker build on first boot
                             try:
                                 with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
                                     if resp.status == 200:
                                         print(f"\nControl plane ready at {url}", file=sys.stderr)
-                                        result["control_plane_url"] = url
-                                        result["ip"] = ip
-                                        print(json.dumps(result, indent=2))
                                         break
                             except (urllib.error.URLError, TimeoutError):
                                 pass
                             time.sleep(2)
                         else:
                             print("Warning: Control plane did not become ready", file=sys.stderr)
+
+                        # Always print final result with IP
+                        print(json.dumps(result, indent=2))
                     else:
                         print("Warning: Could not get VM IP", file=sys.stderr)
 
