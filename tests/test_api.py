@@ -173,9 +173,7 @@ class TestListServicesEndpoint:
         data = response.json()
         assert data["total"] == 1
 
-    def test_list_filter_by_environment(
-        self, client, sample_registration, mock_health_check
-    ):
+    def test_list_filter_by_environment(self, client, sample_registration, mock_health_check):
         """Test filtering services by environment."""
         client.post("/api/v1/register", json=sample_registration)
 

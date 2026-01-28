@@ -258,9 +258,7 @@ class TestEasyEnclaveClient:
 
     def test_context_manager(self, mock_httpx):
         """Test using client as context manager."""
-        with EasyEnclaveClient(
-            "http://localhost:8080", verify=False
-        ) as client:
+        with EasyEnclaveClient("http://localhost:8080", verify=False) as client:
             assert client is not None
         mock_httpx.close.assert_called_once()
 

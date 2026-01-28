@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 class AttestationExpiredError(Exception):
     """Raised when attestation has expired or failed during monitoring."""
+
     pass
+
 
 NOISE_PROTOCOL = b"Noise_NK_25519_ChaChaPoly_SHA256"
 
@@ -312,9 +314,7 @@ class NoiseClient:
         # Receive and decrypt
         import asyncio
 
-        response_ciphertext = await asyncio.wait_for(
-            self._ws.recv(), timeout=timeout
-        )
+        response_ciphertext = await asyncio.wait_for(self._ws.recv(), timeout=timeout)
         response_plaintext = self._noise.decrypt(response_ciphertext)
         return json.loads(response_plaintext)
 
@@ -325,9 +325,7 @@ class NoiseClient:
             raise RuntimeError(f"Server error: {response.get('payload', {}).get('error')}")
         return response.get("payload", {})
 
-    def _verify_session_binding(
-        self, attestation: dict, expected_mrtd: str | None = None
-    ) -> bool:
+    def _verify_session_binding(self, attestation: dict, expected_mrtd: str | None = None) -> bool:
         """Verify session binding proves channel connects to attested TEE.
 
         Args:
@@ -470,10 +468,12 @@ class NoiseClient:
         Returns:
             Response payload from server
         """
-        response = await self.send_request({
-            "type": message_type,
-            "payload": payload,
-        })
+        response = await self.send_request(
+            {
+                "type": message_type,
+                "payload": payload,
+            }
+        )
 
         if response.get("type") == "error":
             raise RuntimeError(f"Server error: {response.get('payload', {}).get('error')}")

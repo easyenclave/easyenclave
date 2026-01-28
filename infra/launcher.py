@@ -542,11 +542,15 @@ def check_for_updated_launcher():
     if updated_launcher.exists():
         logger.info("Found updated launcher in share directory, executing it...")
         import sys
+
         # Execute the updated launcher
-        exec(compile(updated_launcher.read_text(), str(updated_launcher), "exec"), {
-            "__name__": "__main__",
-            "__file__": str(updated_launcher),
-        })
+        exec(
+            compile(updated_launcher.read_text(), str(updated_launcher), "exec"),
+            {
+                "__name__": "__main__",
+                "__file__": str(updated_launcher),
+            },
+        )
         sys.exit(0)
 
 

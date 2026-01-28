@@ -7,9 +7,7 @@ from datetime import datetime
 
 import httpx
 
-ITA_API_URL = os.environ.get(
-    "ITA_API_URL", "https://api.trustauthority.intel.com/appraisal/v2"
-)
+ITA_API_URL = os.environ.get("ITA_API_URL", "https://api.trustauthority.intel.com/appraisal/v2")
 ITA_API_KEY = os.environ.get("ITA_API_KEY", "")
 
 

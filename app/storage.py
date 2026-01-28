@@ -659,10 +659,7 @@ class AgentStore:
     def get_agents_for_attestation_check(self) -> list[LauncherAgent]:
         """Get deployed agents that need attestation check."""
         with self._lock:
-            return [
-                a for a in self._agents.values()
-                if a.status == "deployed" and a.verified
-            ]
+            return [a for a in self._agents.values() if a.status == "deployed" and a.verified]
 
     def clear(self) -> None:
         """Clear all agents (useful for testing)."""

@@ -89,9 +89,7 @@ class TestInMemoryStore:
 
     def test_list_filter_by_environment(self, store):
         """Test filtering by environment."""
-        s1 = ServiceRegistration(
-            name="service-1", endpoints={"prod": "https://prod.example.com"}
-        )
+        s1 = ServiceRegistration(name="service-1", endpoints={"prod": "https://prod.example.com"})
         s2 = ServiceRegistration(
             name="service-2", endpoints={"staging": "https://staging.example.com"}
         )

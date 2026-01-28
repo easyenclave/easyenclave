@@ -398,6 +398,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
 
+
 # Create FastAPI app
 app = FastAPI(
     title="EasyEnclave Discovery Service",
@@ -446,22 +447,15 @@ async def register_service(request: ServiceRegistrationRequest):
     """
     # Require attestation
     if not request.mrtd:
-        raise HTTPException(
-            status_code=400,
-            detail="Registration requires MRTD (TDX measurement)"
-        )
+        raise HTTPException(status_code=400, detail="Registration requires MRTD (TDX measurement)")
     if not request.intel_ta_token:
         raise HTTPException(
-            status_code=400,
-            detail="Registration requires Intel Trust Authority token"
+            status_code=400, detail="Registration requires Intel Trust Authority token"
         )
 
     # Verify at least one endpoint is healthy
     if not request.endpoints:
-        raise HTTPException(
-            status_code=400,
-            detail="Registration requires at least one endpoint"
-        )
+        raise HTTPException(status_code=400, detail="Registration requires at least one endpoint")
 
     health_status = "unknown"
     health_error = None
@@ -469,7 +463,7 @@ async def register_service(request: ServiceRegistrationRequest):
     for _env, url in request.endpoints.items():
         try:
             # Try /health endpoint
-            health_url = url.rstrip('/') + '/health'
+            health_url = url.rstrip("/") + "/health"
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.get(health_url)
                 if response.status_code == 200:
@@ -482,7 +476,7 @@ async def register_service(request: ServiceRegistrationRequest):
     if health_status != "healthy":
         raise HTTPException(
             status_code=400,
-            detail=f"No endpoint responded to health check. Last error: {health_error}"
+            detail=f"No endpoint responded to health check. Last error: {health_error}",
         )
 
     service = ServiceRegistration.from_request(request)
@@ -494,9 +488,7 @@ async def register_service(request: ServiceRegistrationRequest):
 
     # Return the stored service (may have preserved service_id if updated)
     stored_service = store.get(service_id)
-    logger.info(
-        f"Service {'created' if is_new else 'updated'}: {service.name} ({service_id})"
-    )
+    logger.info(f"Service {'created' if is_new else 'updated'}: {service.name} ({service_id})")
     return stored_service
 
 
@@ -597,10 +589,7 @@ async def register_worker(request: WorkerRegistrationRequest):
     Requires valid TDX attestation to register.
     """
     if not request.attestation:
-        raise HTTPException(
-            status_code=400,
-            detail="Registration requires attestation"
-        )
+        raise HTTPException(status_code=400, detail="Registration requires attestation")
 
     worker = Worker(
         attestation=request.attestation,
@@ -648,10 +637,7 @@ async def submit_job(request: JobSubmitRequest):
     Jobs are picked up by standby workers for execution.
     """
     if not request.compose:
-        raise HTTPException(
-            status_code=400,
-            detail="Job requires compose file (base64 encoded)"
-        )
+        raise HTTPException(status_code=400, detail="Job requires compose file (base64 encoded)")
 
     job = Job(
         compose=request.compose,
@@ -732,16 +718,10 @@ async def register_agent(request: AgentRegistrationRequest):
     via HTTPS at agent-{agent_id}.easyenclave.com.
     """
     if not request.attestation:
-        raise HTTPException(
-            status_code=400,
-            detail="Registration requires attestation"
-        )
+        raise HTTPException(status_code=400, detail="Registration requires attestation")
 
     if not request.vm_name:
-        raise HTTPException(
-            status_code=400,
-            detail="Registration requires vm_name"
-        )
+        raise HTTPException(status_code=400, detail="Registration requires vm_name")
 
     # Check if agent with this vm_name already exists
     existing = agent_store.get_by_vm_name(request.vm_name)
@@ -791,8 +771,12 @@ async def register_agent(request: AgentRegistrationRequest):
                 intel_ta_verified = True
                 logger.info(f"Agent Intel TA token verified ({request.vm_name})")
             else:
-                verification_error = f"Intel TA verification failed: {ita_result.get('error', 'unknown')}"
-                logger.warning(f"Agent Intel TA verification failed: {verification_error} ({request.vm_name})")
+                verification_error = (
+                    f"Intel TA verification failed: {ita_result.get('error', 'unknown')}"
+                )
+                logger.warning(
+                    f"Agent Intel TA verification failed: {verification_error} ({request.vm_name})"
+                )
         except Exception as e:
             verification_error = f"Intel TA verification error: {e}"
             logger.warning(f"Agent Intel TA verification error: {e} ({request.vm_name})")
@@ -1114,15 +1098,11 @@ async def create_deployment(request: DeploymentCreateRequest):
     """
     if not request.compose:
         raise HTTPException(
-            status_code=400,
-            detail="Deployment requires compose file (base64 encoded)"
+            status_code=400, detail="Deployment requires compose file (base64 encoded)"
         )
 
     if not request.agent_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Deployment requires agent_id"
-        )
+        raise HTTPException(status_code=400, detail="Deployment requires agent_id")
 
     # Verify agent exists
     agent = agent_store.get(request.agent_id)
@@ -1133,14 +1113,13 @@ async def create_deployment(request: DeploymentCreateRequest):
     if not agent.verified:
         raise HTTPException(
             status_code=403,
-            detail=f"Agent not verified: {agent.verification_error or 'MRTD not trusted'}"
+            detail=f"Agent not verified: {agent.verification_error or 'MRTD not trusted'}",
         )
 
     # Check if agent is available
     if agent.status not in ("undeployed", "deployed"):
         raise HTTPException(
-            status_code=400,
-            detail=f"Agent is not available (status: {agent.status})"
+            status_code=400, detail=f"Agent is not available (status: {agent.status})"
         )
 
     deployment = Deployment(
@@ -1194,18 +1173,12 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
     This ensures only known-good launcher images can run workloads.
     """
     if not request.mrtd:
-        raise HTTPException(
-            status_code=400,
-            detail="MRTD is required"
-        )
+        raise HTTPException(status_code=400, detail="MRTD is required")
 
     # Check if already exists
     existing = trusted_mrtd_store.get(request.mrtd)
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail="MRTD already in trusted list"
-        )
+        raise HTTPException(status_code=409, detail="MRTD already in trusted list")
 
     trusted = TrustedMrtd(
         mrtd=request.mrtd,
@@ -1260,11 +1233,7 @@ async def deactivate_trusted_mrtd(mrtd: str):
     # Mark agents with this MRTD as unverified
     for agent in agent_store.list():
         if agent.mrtd == mrtd and agent.verified:
-            agent_store.set_verified(
-                agent.agent_id,
-                False,
-                error="MRTD deactivated"
-            )
+            agent_store.set_verified(agent.agent_id, False, error="MRTD deactivated")
             logger.info(f"Agent {agent.agent_id} unverified (MRTD deactivated)")
 
     logger.info(f"Deactivated trusted MRTD: {mrtd[:16]}...")
@@ -1296,11 +1265,7 @@ async def delete_trusted_mrtd(mrtd: str):
     # Mark agents with this MRTD as unverified
     for agent in agent_store.list():
         if agent.mrtd == mrtd and agent.verified:
-            agent_store.set_verified(
-                agent.agent_id,
-                False,
-                error="MRTD removed from trusted list"
-            )
+            agent_store.set_verified(agent.agent_id, False, error="MRTD removed from trusted list")
             logger.info(f"Agent {agent.agent_id} unverified (MRTD deleted)")
 
     logger.info(f"Deleted trusted MRTD: {mrtd[:16]}...")
@@ -1320,18 +1285,12 @@ async def register_app(request: AppCreateRequest):
     published for the app.
     """
     if not request.name:
-        raise HTTPException(
-            status_code=400,
-            detail="App name is required"
-        )
+        raise HTTPException(status_code=400, detail="App name is required")
 
     # Check if app with this name already exists
     existing = app_store.get_by_name(request.name)
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail=f"App '{request.name}' already exists"
-        )
+        raise HTTPException(status_code=409, detail=f"App '{request.name}' already exists")
 
     new_app = App(
         name=request.name,
@@ -1407,23 +1366,16 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
         raise HTTPException(status_code=404, detail="App not found")
 
     if not request.version:
-        raise HTTPException(
-            status_code=400,
-            detail="Version is required"
-        )
+        raise HTTPException(status_code=400, detail="Version is required")
 
     if not request.compose:
-        raise HTTPException(
-            status_code=400,
-            detail="Compose file is required (base64 encoded)"
-        )
+        raise HTTPException(status_code=400, detail="Compose file is required (base64 encoded)")
 
     # Check if version already exists
     existing = app_version_store.get_by_version(name, request.version)
     if existing:
         raise HTTPException(
-            status_code=409,
-            detail=f"Version '{request.version}' already exists for app '{name}'"
+            status_code=409, detail=f"Version '{request.version}' already exists for app '{name}'"
         )
 
     # Create version record (status: pending)
@@ -1474,8 +1426,7 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
             )
 
         logger.info(
-            f"Source inspection passed: {result.files_scanned} files, "
-            f"{result.total_size} bytes"
+            f"Source inspection passed: {result.files_scanned} files, {result.total_size} bytes"
         )
 
     # Source inspection passed (or not required) - proceed to attestation
@@ -1582,11 +1533,21 @@ async def get_control_plane_attestation(
                 measurements = {}
                 if len(quote) >= 584:
                     td_report_offset = 48
-                    measurements["mrtd"] = quote[td_report_offset + 136 : td_report_offset + 184].hex()
-                    measurements["rtmr0"] = quote[td_report_offset + 328 : td_report_offset + 376].hex()
-                    measurements["rtmr1"] = quote[td_report_offset + 376 : td_report_offset + 424].hex()
-                    measurements["rtmr2"] = quote[td_report_offset + 424 : td_report_offset + 472].hex()
-                    measurements["rtmr3"] = quote[td_report_offset + 472 : td_report_offset + 520].hex()
+                    measurements["mrtd"] = quote[
+                        td_report_offset + 136 : td_report_offset + 184
+                    ].hex()
+                    measurements["rtmr0"] = quote[
+                        td_report_offset + 328 : td_report_offset + 376
+                    ].hex()
+                    measurements["rtmr1"] = quote[
+                        td_report_offset + 376 : td_report_offset + 424
+                    ].hex()
+                    measurements["rtmr2"] = quote[
+                        td_report_offset + 424 : td_report_offset + 472
+                    ].hex()
+                    measurements["rtmr3"] = quote[
+                        td_report_offset + 472 : td_report_offset + 520
+                    ].hex()
 
                 result["quote_b64"] = quote_b64
                 result["measurements"] = measurements
@@ -1633,7 +1594,10 @@ async def get_proxy_endpoint():
     }
 
 
-@app.api_route("/proxy/{service_name}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@app.api_route(
+    "/proxy/{service_name}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+)
 async def proxy_service_request(
     service_name: str,
     path: str,

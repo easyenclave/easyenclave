@@ -138,11 +138,7 @@ async def proxy_request(
         "transfer-encoding",
         "upgrade",
     }
-    headers = {
-        k: v
-        for k, v in request.headers.items()
-        if k.lower() not in excluded_headers
-    }
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_headers}
 
     # Add forwarded headers
     client_host = request.client.host if request.client else "unknown"
@@ -165,9 +161,7 @@ async def proxy_request(
 
             # Build response headers, excluding hop-by-hop
             response_headers = {
-                k: v
-                for k, v in response.headers.items()
-                if k.lower() not in excluded_headers
+                k: v for k, v in response.headers.items() if k.lower() not in excluded_headers
             }
 
             return Response(

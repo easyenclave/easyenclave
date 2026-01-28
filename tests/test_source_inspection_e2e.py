@@ -61,7 +61,10 @@ def mock_github_repo_hacked(httpx_mock):
     # exploit.py: # HACK: this is a backdoor
     httpx_mock.add_response(
         url="https://api.github.com/repos/test/hacked-app/git/blobs/sha1",
-        json={"encoding": "base64", "content": base64.b64encode(b"# HACK: this is a backdoor").decode()},
+        json={
+            "encoding": "base64",
+            "content": base64.b64encode(b"# HACK: this is a backdoor").decode(),
+        },
     )
 
 
@@ -79,7 +82,10 @@ def mock_github_repo_hax(httpx_mock):
     # src/backdoor.py: def hax0r_mode():
     httpx_mock.add_response(
         url="https://api.github.com/repos/test/hax-app/git/blobs/sha1",
-        json={"encoding": "base64", "content": base64.b64encode(b"def hax0r_mode():\n    pass").decode()},
+        json={
+            "encoding": "base64",
+            "content": base64.b64encode(b"def hax0r_mode():\n    pass").decode(),
+        },
     )
 
 
@@ -90,12 +96,14 @@ def mock_github_repo_large(httpx_mock):
     # Use fewer, larger files to avoid creating too many mock responses
     tree_items = []
     for i in range(110):
-        tree_items.append({
-            "type": "blob",
-            "path": f"file{i}.py",
-            "sha": f"sha{i}",
-            "size": 1000,  # 1KB each = 110KB total
-        })
+        tree_items.append(
+            {
+                "type": "blob",
+                "path": f"file{i}.py",
+                "sha": f"sha{i}",
+                "size": 1000,  # 1KB each = 110KB total
+            }
+        )
 
     httpx_mock.add_response(
         url="https://api.github.com/repos/test/large-app/git/trees/large123?recursive=1",
@@ -108,7 +116,10 @@ def mock_github_repo_large(httpx_mock):
     for i in range(110):
         httpx_mock.add_response(
             url=f"https://api.github.com/repos/test/large-app/git/blobs/sha{i}",
-            json={"encoding": "base64", "content": base64.b64encode(large_content.encode()).decode()},
+            json={
+                "encoding": "base64",
+                "content": base64.b64encode(large_content.encode()).decode(),
+            },
         )
 
 
@@ -118,19 +129,25 @@ async def test_publish_clean_app_succeeds(mock_github_repo_clean):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # First register the app
-        register_response = await client.post("/api/v1/apps", json={
-            "name": "clean-app",
-            "source_repo": "test/clean-app",
-        })
+        register_response = await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "clean-app",
+                "source_repo": "test/clean-app",
+            },
+        )
         assert register_response.status_code == 200
 
         # Publish a version
         compose_b64 = base64.b64encode(b"services: {}").decode()
-        response = await client.post("/api/v1/apps/clean-app/versions", json={
-            "version": "1.0.0",
-            "source_commit": "abc123",
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/clean-app/versions",
+            json={
+                "version": "1.0.0",
+                "source_commit": "abc123",
+                "compose": compose_b64,
+            },
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -144,18 +161,24 @@ async def test_publish_hacked_app_rejected(mock_github_repo_hacked):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # First register the app
-        await client.post("/api/v1/apps", json={
-            "name": "hacked-app",
-            "source_repo": "test/hacked-app",
-        })
+        await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "hacked-app",
+                "source_repo": "test/hacked-app",
+            },
+        )
 
         # Try to publish a version
         compose_b64 = base64.b64encode(b"services: {}").decode()
-        response = await client.post("/api/v1/apps/hacked-app/versions", json={
-            "version": "1.0.0",
-            "source_commit": "def456",
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/hacked-app/versions",
+            json={
+                "version": "1.0.0",
+                "source_commit": "def456",
+                "compose": compose_b64,
+            },
+        )
 
         # Returns 200 with status: rejected
         assert response.status_code == 200
@@ -171,19 +194,25 @@ async def test_publish_hacked_app_rejected_via_get(mock_github_repo_hacked):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register the app
-        await client.post("/api/v1/apps", json={
-            "name": "hacked-app-2",
-            "source_repo": "test/hacked-app",
-        })
+        await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "hacked-app-2",
+                "source_repo": "test/hacked-app",
+            },
+        )
 
         # Try to publish - this will fail with 500 in the action
         compose_b64 = base64.b64encode(b"services: {}").decode()
         try:
-            await client.post("/api/v1/apps/hacked-app-2/versions", json={
-                "version": "1.0.0",
-                "source_commit": "def456",
-                "compose": compose_b64,
-            })
+            await client.post(
+                "/api/v1/apps/hacked-app-2/versions",
+                json={
+                    "version": "1.0.0",
+                    "source_commit": "def456",
+                    "compose": compose_b64,
+                },
+            )
         except Exception:
             pass
 
@@ -204,18 +233,24 @@ async def test_publish_with_hax_rejected(mock_github_repo_hax):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register the app
-        await client.post("/api/v1/apps", json={
-            "name": "hax-app",
-            "source_repo": "test/hax-app",
-        })
+        await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "hax-app",
+                "source_repo": "test/hax-app",
+            },
+        )
 
         # Try to publish
         compose_b64 = base64.b64encode(b"services: {}").decode()
-        response = await client.post("/api/v1/apps/hax-app/versions", json={
-            "version": "1.0.0",
-            "source_commit": "ghi789",
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/hax-app/versions",
+            json={
+                "version": "1.0.0",
+                "source_commit": "ghi789",
+                "compose": compose_b64,
+            },
+        )
 
         # Returns 200 with status: rejected
         assert response.status_code == 200
@@ -227,24 +262,32 @@ async def test_publish_with_hax_rejected(mock_github_repo_hax):
 
 
 @pytest.mark.asyncio
-@pytest.mark.httpx_mock(can_send_already_matched_responses=True, assert_all_responses_were_requested=False)
+@pytest.mark.httpx_mock(
+    can_send_already_matched_responses=True, assert_all_responses_were_requested=False
+)
 async def test_source_size_limit_enforced(mock_github_repo_large):
     """Test that sources over 100KB are rejected."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register the app
-        await client.post("/api/v1/apps", json={
-            "name": "large-app",
-            "source_repo": "test/large-app",
-        })
+        await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "large-app",
+                "source_repo": "test/large-app",
+            },
+        )
 
         # Try to publish
         compose_b64 = base64.b64encode(b"services: {}").decode()
-        response = await client.post("/api/v1/apps/large-app/versions", json={
-            "version": "1.0.0",
-            "source_commit": "large123",
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/large-app/versions",
+            json={
+                "version": "1.0.0",
+                "source_commit": "large123",
+                "compose": compose_b64,
+            },
+        )
 
         # Returns 200 with status: rejected
         assert response.status_code == 200
@@ -259,18 +302,24 @@ async def test_publish_without_source_repo_skips_inspection():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register app without source_repo
-        await client.post("/api/v1/apps", json={
-            "name": "no-source-app",
-            # No source_repo
-        })
+        await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "no-source-app",
+                # No source_repo
+            },
+        )
 
         # Publish should succeed without inspection
         compose_b64 = base64.b64encode(b"services: {}").decode()
-        response = await client.post("/api/v1/apps/no-source-app/versions", json={
-            "version": "1.0.0",
-            "source_commit": "abc123",
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/no-source-app/versions",
+            json={
+                "version": "1.0.0",
+                "source_commit": "abc123",
+                "compose": compose_b64,
+            },
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -283,18 +332,24 @@ async def test_publish_without_source_commit_skips_inspection():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register app with source_repo
-        await client.post("/api/v1/apps", json={
-            "name": "no-commit-app",
-            "source_repo": "test/some-repo",
-        })
+        await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "no-commit-app",
+                "source_repo": "test/some-repo",
+            },
+        )
 
         # Publish without source_commit should succeed without inspection
         compose_b64 = base64.b64encode(b"services: {}").decode()
-        response = await client.post("/api/v1/apps/no-commit-app/versions", json={
-            "version": "1.0.0",
-            # No source_commit
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/no-commit-app/versions",
+            json={
+                "version": "1.0.0",
+                # No source_commit
+                "compose": compose_b64,
+            },
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -307,11 +362,14 @@ async def test_app_lifecycle_register_list_get_delete():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register
-        response = await client.post("/api/v1/apps", json={
-            "name": "lifecycle-app",
-            "description": "Test app",
-            "tags": ["test", "e2e"],
-        })
+        response = await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "lifecycle-app",
+                "description": "Test app",
+                "tags": ["test", "e2e"],
+            },
+        )
         assert response.status_code == 200
         app_data = response.json()
         assert app_data["name"] == "lifecycle-app"
@@ -343,15 +401,21 @@ async def test_duplicate_app_name_rejected():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register first app
-        response = await client.post("/api/v1/apps", json={
-            "name": "duplicate-app",
-        })
+        response = await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "duplicate-app",
+            },
+        )
         assert response.status_code == 200
 
         # Try to register duplicate
-        response = await client.post("/api/v1/apps", json={
-            "name": "duplicate-app",
-        })
+        response = await client.post(
+            "/api/v1/apps",
+            json={
+                "name": "duplicate-app",
+            },
+        )
         assert response.status_code == 409
 
 
@@ -365,15 +429,21 @@ async def test_duplicate_version_rejected():
 
         # Publish first version
         compose_b64 = base64.b64encode(b"services: {}").decode()
-        response = await client.post("/api/v1/apps/dup-version-app/versions", json={
-            "version": "1.0.0",
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/dup-version-app/versions",
+            json={
+                "version": "1.0.0",
+                "compose": compose_b64,
+            },
+        )
         assert response.status_code == 200
 
         # Try to publish duplicate version
-        response = await client.post("/api/v1/apps/dup-version-app/versions", json={
-            "version": "1.0.0",
-            "compose": compose_b64,
-        })
+        response = await client.post(
+            "/api/v1/apps/dup-version-app/versions",
+            json={
+                "version": "1.0.0",
+                "compose": compose_b64,
+            },
+        )
         assert response.status_code == 409

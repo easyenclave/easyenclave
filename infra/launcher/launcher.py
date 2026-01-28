@@ -115,6 +115,7 @@ def get_vm_name() -> str:
 
     # Fall back to a generated name
     import uuid
+
     return f"tdx-agent-{uuid.uuid4().hex[:8]}"
 
 
@@ -751,6 +752,7 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
         return None
 
     import secrets
+
     tunnel_name = "easyenclave-control-plane"
     hostname = f"app.{domain}"
 
@@ -1074,7 +1076,9 @@ def run_agent_mode(config: dict):
             if cloudflared_proc is not None:
                 poll_result = cloudflared_proc.poll()
                 if poll_result is not None:
-                    logger.warning(f"cloudflared exited with code {poll_result}, will restart on next registration")
+                    logger.warning(
+                        f"cloudflared exited with code {poll_result}, will restart on next registration"
+                    )
                     cloudflared_proc = None
 
             # Poll for deployment

@@ -276,9 +276,7 @@ class NoiseApp(FastAPI):
             Decorator function
         """
 
-        def decorator(
-            func: Callable[[dict], Awaitable[dict]]
-        ) -> Callable[[dict], Awaitable[dict]]:
+        def decorator(func: Callable[[dict], Awaitable[dict]]) -> Callable[[dict], Awaitable[dict]]:
             self._noise_handlers[message_type] = func
             logger.info(f"Registered Noise handler for '{message_type}'")
             return func

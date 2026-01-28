@@ -17,9 +17,7 @@ class ServiceRegistrationRequest(BaseModel):
     # Source & Build Info
     source_repo: str | None = Field(default=None, description="GitHub repo URL")
     source_commit: str | None = Field(default=None, description="Git commit SHA")
-    compose_hash: str | None = Field(
-        default=None, description="SHA256 of docker-compose.yml"
-    )
+    compose_hash: str | None = Field(default=None, description="SHA256 of docker-compose.yml")
 
     # Endpoints (by environment)
     endpoints: dict[str, str] = Field(
@@ -32,9 +30,7 @@ class ServiceRegistrationRequest(BaseModel):
     attestation_json: dict | None = Field(
         default=None, description="Full attestation from measure-tdx"
     )
-    intel_ta_token: str | None = Field(
-        default=None, description="JWT from Intel Trust Authority"
-    )
+    intel_ta_token: str | None = Field(default=None, description="JWT from Intel Trust Authority")
 
     # Metadata
     tags: list[str] = Field(default_factory=list, description="Searchable tags")
@@ -52,9 +48,7 @@ class ServiceRegistration(BaseModel):
     # Source & Build Info
     source_repo: str | None = Field(default=None, description="GitHub repo URL")
     source_commit: str | None = Field(default=None, description="Git commit SHA")
-    compose_hash: str | None = Field(
-        default=None, description="SHA256 of docker-compose.yml"
-    )
+    compose_hash: str | None = Field(default=None, description="SHA256 of docker-compose.yml")
 
     # Endpoints (by environment)
     endpoints: dict[str, str] = Field(
@@ -67,16 +61,12 @@ class ServiceRegistration(BaseModel):
     attestation_json: dict | None = Field(
         default=None, description="Full attestation from measure-tdx"
     )
-    intel_ta_token: str | None = Field(
-        default=None, description="JWT from Intel Trust Authority"
-    )
+    intel_ta_token: str | None = Field(default=None, description="JWT from Intel Trust Authority")
 
     # Metadata
     registered_at: datetime = Field(default_factory=datetime.utcnow)
     last_health_check: datetime | None = Field(default=None)
-    health_status: str = Field(
-        default="unknown", description="healthy, unhealthy, or unknown"
-    )
+    health_status: str = Field(default="unknown", description="healthy, unhealthy, or unknown")
     tags: list[str] = Field(default_factory=list, description="Searchable tags")
 
     @classmethod
@@ -138,9 +128,7 @@ class Worker(BaseModel):
     )
     registered_at: datetime = Field(default_factory=datetime.utcnow)
     last_heartbeat: datetime = Field(default_factory=datetime.utcnow)
-    status: str = Field(
-        default="available", description="available, busy, or offline"
-    )
+    status: str = Field(default="available", description="available, busy, or offline")
     current_job_id: str | None = Field(default=None, description="Current job being processed")
 
 
@@ -264,23 +252,17 @@ class LauncherAgent(BaseModel):
     intel_ta_token: str | None = Field(default=None, description="JWT from Intel Trust Authority")
 
     # Cloudflare Tunnel
-    tunnel_id: str | None = Field(
-        default=None, description="Cloudflare Tunnel ID"
-    )
+    tunnel_id: str | None = Field(default=None, description="Cloudflare Tunnel ID")
     hostname: str | None = Field(
         default=None, description="Public hostname (e.g., agent-abc123.easyenclave.com)"
     )
 
     # Deployment tracking
-    current_deployment_id: str | None = Field(
-        default=None, description="Active deployment ID"
-    )
+    current_deployment_id: str | None = Field(default=None, description="Active deployment ID")
     service_url: str | None = Field(
         default=None, description="Service URL for health checks (from deployment config)"
     )
-    health_endpoint: str = Field(
-        default="/health", description="Health check endpoint path"
-    )
+    health_endpoint: str = Field(default="/health", description="Health check endpoint path")
 
     # Health tracking
     health_status: str = Field(
@@ -485,15 +467,11 @@ class TrustedMrtd(BaseModel):
     source_commit: str | None = Field(
         default=None, description="Git commit SHA that produced this MRTD"
     )
-    source_tag: str | None = Field(
-        default=None, description="Git tag (e.g., v1.0.0)"
-    )
+    source_tag: str | None = Field(default=None, description="Git tag (e.g., v1.0.0)")
     build_workflow: str | None = Field(
         default=None, description="GitHub Actions workflow URL that built the image"
     )
-    image_digest: str | None = Field(
-        default=None, description="Docker image digest (sha256:...)"
-    )
+    image_digest: str | None = Field(default=None, description="Docker image digest (sha256:...)")
 
     # Metadata
     added_at: datetime = Field(default_factory=datetime.utcnow)
@@ -518,15 +496,11 @@ class TrustedMrtdCreateRequest(BaseModel):
     source_commit: str | None = Field(
         default=None, description="Git commit SHA that produced this MRTD"
     )
-    source_tag: str | None = Field(
-        default=None, description="Git tag (e.g., v1.0.0)"
-    )
+    source_tag: str | None = Field(default=None, description="Git tag (e.g., v1.0.0)")
     build_workflow: str | None = Field(
         default=None, description="GitHub Actions workflow URL that built the image"
     )
-    image_digest: str | None = Field(
-        default=None, description="Docker image digest (sha256:...)"
-    )
+    image_digest: str | None = Field(default=None, description="Docker image digest (sha256:...)")
 
 
 class TrustedMrtdListResponse(BaseModel):
@@ -549,9 +523,7 @@ class App(BaseModel):
     )
     name: str = Field(..., description="Unique app name")
     description: str = Field(default="", description="What this app does")
-    source_repo: str | None = Field(
-        default=None, description="GitHub repo (e.g., 'org/repo')"
-    )
+    source_repo: str | None = Field(default=None, description="GitHub repo (e.g., 'org/repo')")
     maintainers: list[str] = Field(
         default_factory=list, description="Email addresses of maintainers"
     )
@@ -564,9 +536,7 @@ class AppCreateRequest(BaseModel):
 
     name: str = Field(..., description="Unique app name")
     description: str = Field(default="", description="What this app does")
-    source_repo: str | None = Field(
-        default=None, description="GitHub repo (e.g., 'org/repo')"
-    )
+    source_repo: str | None = Field(default=None, description="GitHub repo (e.g., 'org/repo')")
     maintainers: list[str] = Field(
         default_factory=list, description="Email addresses of maintainers"
     )
@@ -589,17 +559,13 @@ class AppVersion(BaseModel):
     app_name: str = Field(..., description="Name of the parent app")
     version: str = Field(..., description="Semver version string (e.g., '1.0.0')")
     compose: str = Field(..., description="Base64 encoded docker-compose.yml")
-    image_digest: str | None = Field(
-        default=None, description="Docker image digest (sha256:...)"
-    )
+    image_digest: str | None = Field(default=None, description="Docker image digest (sha256:...)")
     source_commit: str | None = Field(default=None, description="Git commit SHA")
     source_tag: str | None = Field(default=None, description="Git tag (e.g., 'v1.0.0')")
 
     # Attestation results
     mrtd: str | None = Field(default=None, description="TDX measurement from attestation")
-    attestation: dict | None = Field(
-        default=None, description="Full attestation details"
-    )
+    attestation: dict | None = Field(default=None, description="Full attestation details")
 
     # Status: pending, attesting, attested, rejected, failed
     status: str = Field(
@@ -618,9 +584,7 @@ class AppVersionCreateRequest(BaseModel):
 
     version: str = Field(..., description="Semver version string (e.g., '1.0.0')")
     compose: str = Field(..., description="Base64 encoded docker-compose.yml")
-    image_digest: str | None = Field(
-        default=None, description="Docker image digest (sha256:...)"
-    )
+    image_digest: str | None = Field(default=None, description="Docker image digest (sha256:...)")
     source_commit: str | None = Field(default=None, description="Git commit SHA")
     source_tag: str | None = Field(default=None, description="Git tag (e.g., 'v1.0.0')")
 

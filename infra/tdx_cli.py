@@ -350,8 +350,12 @@ To start a new EasyEnclave network:
 
     cp_new_parser = cp_sub.add_parser("new", help="Launch control plane in TDX VM")
     cp_new_parser.add_argument("-i", "--image", help="Path to TDX image")
-    cp_new_parser.add_argument("-p", "--port", type=int, default=8080, help="API port (default 8080)")
-    cp_new_parser.add_argument("--wait", action="store_true", help="Wait for control plane to be ready")
+    cp_new_parser.add_argument(
+        "-p", "--port", type=int, default=8080, help="API port (default 8080)"
+    )
+    cp_new_parser.add_argument(
+        "--wait", action="store_true", help="Wait for control plane to be ready"
+    )
 
     # VM commands
     vm_parser = subparsers.add_parser("vm", help="VM lifecycle management")
@@ -396,6 +400,7 @@ To start a new EasyEnclave network:
                         print("Waiting for control plane to start...", file=sys.stderr)
                         import urllib.error
                         import urllib.request
+
                         # Always include IP in result so workflow can proceed
                         result["ip"] = ip
                         result["control_plane_url"] = url

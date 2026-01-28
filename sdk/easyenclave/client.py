@@ -216,9 +216,7 @@ class EasyEnclaveClient:
             response.raise_for_status()
             data = response.json()
             if data.get("status") != "healthy":
-                raise EasyEnclaveError(
-                    f"Control plane unhealthy: {data.get('status')}"
-                )
+                raise EasyEnclaveError(f"Control plane unhealthy: {data.get('status')}")
         except httpx.HTTPError as e:
             raise EasyEnclaveError(f"Failed to connect to control plane: {e}") from e
 
@@ -245,22 +243,16 @@ class EasyEnclaveClient:
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPError as e:
-            raise ControlPlaneNotVerifiedError(
-                f"Failed to get attestation: {e}"
-            ) from e
+            raise ControlPlaneNotVerifiedError(f"Failed to get attestation: {e}") from e
 
         # Check for error (CP not in TDX)
         if "error" in data:
-            raise ControlPlaneNotVerifiedError(
-                f"Control plane attestation failed: {data['error']}"
-            )
+            raise ControlPlaneNotVerifiedError(f"Control plane attestation failed: {data['error']}")
 
         # Verify the quote
         quote_b64 = data.get("quote_b64")
         if not quote_b64:
-            raise ControlPlaneNotVerifiedError(
-                "No quote in attestation response"
-            )
+            raise ControlPlaneNotVerifiedError("No quote in attestation response")
 
         result = verify_quote_local(
             quote_b64,
@@ -271,9 +263,7 @@ class EasyEnclaveClient:
         self.verification_result = result
 
         if not result.verified:
-            raise ControlPlaneNotVerifiedError(
-                f"Attestation verification failed: {result.error}"
-            )
+            raise ControlPlaneNotVerifiedError(f"Attestation verification failed: {result.error}")
 
     def _get_proxy_url(self) -> str:
         """Get the proxy endpoint from the control plane."""
@@ -427,9 +417,7 @@ class EasyEnclaveClient:
             ServiceNotFoundError: If service not found
         """
         try:
-            response = self._client.get(
-                f"{self.cp_url}/api/v1/services/{service_id}"
-            )
+            response = self._client.get(f"{self.cp_url}/api/v1/services/{service_id}")
             if response.status_code == 404:
                 raise ServiceNotFoundError(f"Service not found: {service_id}")
             response.raise_for_status()
@@ -450,9 +438,7 @@ class EasyEnclaveClient:
             ServiceNotFoundError: If service not found
         """
         try:
-            response = self._client.get(
-                f"{self.cp_url}/api/v1/services/{service_id}/verify"
-            )
+            response = self._client.get(f"{self.cp_url}/api/v1/services/{service_id}/verify")
             if response.status_code == 404:
                 raise ServiceNotFoundError(f"Service not found: {service_id}")
             response.raise_for_status()
@@ -473,9 +459,7 @@ class EasyEnclaveClient:
             ServiceNotFoundError: If service not found
         """
         try:
-            response = self._client.delete(
-                f"{self.cp_url}/api/v1/services/{service_id}"
-            )
+            response = self._client.delete(f"{self.cp_url}/api/v1/services/{service_id}")
             if response.status_code == 404:
                 raise ServiceNotFoundError(f"Service not found: {service_id}")
             response.raise_for_status()
@@ -545,13 +529,9 @@ class EasyEnclaveClient:
             Version details dictionary
         """
         try:
-            response = self._client.get(
-                f"{self.cp_url}/api/v1/apps/{app_name}/versions/{version}"
-            )
+            response = self._client.get(f"{self.cp_url}/api/v1/apps/{app_name}/versions/{version}")
             if response.status_code == 404:
-                raise ServiceNotFoundError(
-                    f"Version not found: {app_name}@{version}"
-                )
+                raise ServiceNotFoundError(f"Version not found: {app_name}@{version}")
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
