@@ -184,6 +184,23 @@ systemctl enable tdx-launcher.service
 mkdir -p /home/tdx
 
 # =============================================================================
+# Install Cloudflared for Tunnel Support
+# =============================================================================
+echo "[customize.sh] Installing cloudflared..."
+
+# Download and install cloudflared
+curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+dpkg -i /tmp/cloudflared.deb || apt-get install -f -y
+rm -f /tmp/cloudflared.deb
+
+# Verify installation
+if command -v cloudflared >/dev/null 2>&1; then
+    echo "[customize.sh] cloudflared installed: $(cloudflared --version)"
+else
+    echo "[customize.sh] WARNING: cloudflared installation failed"
+fi
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 apt-get clean
@@ -192,6 +209,7 @@ rm -rf /var/lib/apt/lists/*
 echo "[customize.sh] Customization complete!"
 echo "Installed:"
 echo "  - Docker CE + docker-compose plugin"
+echo "  - cloudflared (for Cloudflare Tunnel)"
 echo "  - trustauthority-cli (if available)"
 echo "  - libtdx-attest-dev (if available)"
 echo "  - compose-with-attestation wrapper"
