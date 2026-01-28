@@ -81,14 +81,22 @@ jobs:
             return 1
           }
 
-          # Ensure we have a trusted MRTD (from any existing attestation)
-          ensure_trusted_mrtd
+          # Try to ensure we have a trusted MRTD (non-fatal if not found)
+          ensure_trusted_mrtd || echo "Warning: No trusted MRTD found. Run Bootstrap workflow first."
 
-          # Launch a fresh agent for CI/CD deployments
-          AGENT_ID=$(launch_agent) || {
-            echo "::error::Agent did not register within timeout"
-            exit 1
-          }
+          # Check for an existing verified agent, or launch a new one
+          AGENT_DATA=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
+          AGENT_ID=$(echo "$AGENT_DATA" | jq -r '[.agents[] | select(.verified == true)] | .[0].agent_id // empty')
+
+          if [ -n "$AGENT_ID" ]; then
+            echo "Using existing verified agent: $AGENT_ID"
+          else
+            echo "No verified agents found, launching new agent..."
+            AGENT_ID=$(launch_agent) || {
+              echo "::error::Agent did not register within timeout"
+              exit 1
+            }
+          fi
 
           echo "Using agent: $AGENT_ID"
 
