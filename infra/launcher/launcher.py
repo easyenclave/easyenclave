@@ -776,7 +776,7 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
                 json={
                     "config": {
                         "ingress": [
-                            {"hostname": hostname, "service": f"http://localhost:{port}"},
+                            {"hostname": hostname, "service": f"http://127.0.0.1:{port}"},
                             {"service": "http_status:404"},
                         ]
                     }
