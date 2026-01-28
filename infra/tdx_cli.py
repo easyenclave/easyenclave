@@ -428,7 +428,7 @@ To start a new EasyEnclave network:
                 print(json.dumps(result, indent=2))
 
                 if args.wait:
-                    print(f"\nWaiting for VM to get IP...", file=sys.stderr)
+                    print("\nWaiting for VM to get IP...", file=sys.stderr)
                     ip = mgr.get_vm_ip(result["name"])
                     if ip:
                         print(f"VM IP: {ip}", file=sys.stderr)

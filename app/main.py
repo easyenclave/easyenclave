@@ -212,8 +212,9 @@ def is_token_expired(intel_ta_token: str | None) -> bool:
         return True
 
     try:
-        from .ita import decode_token_claims
         import time
+
+        from .ita import decode_token_claims
 
         claims = decode_token_claims(intel_ta_token)
         if not claims:
@@ -1548,7 +1549,6 @@ async def get_control_plane_attestation(
     """
     import base64
     import os
-    import struct
     import time
     from pathlib import Path
 

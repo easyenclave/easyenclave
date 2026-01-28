@@ -23,7 +23,6 @@ Trust Model:
 from __future__ import annotations
 
 import secrets
-from typing import Any
 
 import httpx
 

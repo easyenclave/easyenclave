@@ -14,11 +14,9 @@ Trust flow:
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import httpx
 from fastapi import HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
 
 from .storage import agent_store, store
 
@@ -179,21 +177,21 @@ async def proxy_request(
                 media_type=response.headers.get("content-type"),
             )
 
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as e:
         logger.warning(f"Proxy timeout: {target_url}")
         raise HTTPException(
             status_code=504,
             detail=f"Service timeout: {service_name}",
-        )
+        ) from e
     except httpx.ConnectError as e:
         logger.warning(f"Proxy connection error: {target_url} - {e}")
         raise HTTPException(
             status_code=502,
             detail=f"Cannot connect to service: {service_name}",
-        )
+        ) from e
     except Exception as e:
         logger.error(f"Proxy error: {target_url} - {e}")
         raise HTTPException(
             status_code=502,
             detail=f"Proxy error: {e}",
-        )
+        ) from e

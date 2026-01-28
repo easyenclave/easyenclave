@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import base64
 import json
-import struct
 from dataclasses import dataclass
 
 
@@ -61,7 +60,7 @@ def parse_tdx_quote(quote_b64: str) -> TDXMeasurements:
     try:
         quote = base64.b64decode(quote_b64)
     except Exception as e:
-        raise VerificationError(f"Invalid base64 quote: {e}")
+        raise VerificationError(f"Invalid base64 quote: {e}") from e
 
     # Minimum TDX quote size (header + TD report)
     if len(quote) < 584:
