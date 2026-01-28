@@ -35,6 +35,10 @@ on:
 
 env:
   CONTROL_PLANE_PORT: 8080
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+  CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+  EASYENCLAVE_DOMAIN: easyenclave.com
 
 jobs:
   bootstrap:
