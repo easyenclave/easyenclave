@@ -47,19 +47,24 @@ jobs:
           }
 
           launch_agent() {
+            # Get existing agent IDs before launching
+            EXISTING_AGENTS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null | jq -r '.agents[].agent_id' | sort)
+
             echo "Launching new agent..." >&2
-            python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait >&2
+            VM_OUTPUT=$(python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait 2>&1)
+            echo "$VM_OUTPUT" >&2
 
             # Trust the agent's MRTD
             trust_mrtd
 
-            # Wait for agent registration with polling
-            echo "Waiting for agent registration..." >&2
+            # Wait for a NEW agent to register (one that wasn't in the list before)
+            echo "Waiting for new agent registration..." >&2
             for i in {1..60}; do
-              AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
-              if [ -n "$AGENT_ID" ]; then
-                echo "Agent registered: $AGENT_ID" >&2
-                echo "$AGENT_ID"
+              CURRENT_AGENTS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null | jq -r '.agents[].agent_id' | sort)
+              NEW_AGENT=$(comm -13 <(echo "$EXISTING_AGENTS") <(echo "$CURRENT_AGENTS") | head -1)
+              if [ -n "$NEW_AGENT" ]; then
+                echo "New agent registered: $NEW_AGENT" >&2
+                echo "$NEW_AGENT"
                 return 0
               fi
               echo "  Waiting... ($i/60)" >&2
@@ -68,25 +73,11 @@ jobs:
             return 1
           }
 
-          # Get first available agent
-          AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
-
-          if [ -z "$AGENT_ID" ]; then
-            AGENT_ID=$(launch_agent) || {
-              echo "::error::Agent did not register within timeout"
-              exit 1
-            }
-          else
-            # Verify the agent is still valid (control plane may have restarted)
-            AGENT_CHECK=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null) || AGENT_CHECK=""
-            if [ -z "$AGENT_CHECK" ]; then
-              echo "Agent $AGENT_ID not found, launching new one..."
-              AGENT_ID=$(launch_agent) || {
-                echo "::error::Agent did not register within timeout"
-                exit 1
-              }
-            fi
-          fi
+          # Always launch a fresh agent for CI/CD deployments
+          AGENT_ID=$(launch_agent) || {
+            echo "::error::Agent did not register within timeout"
+            exit 1
+          }
 
           echo "Using agent: $AGENT_ID"
 
