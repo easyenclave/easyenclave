@@ -33,19 +33,19 @@ jobs:
       - name: Deploy Private LLM Demo
         run: |
           launch_agent() {
-            echo "Launching new agent..."
-            python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait
+            echo "Launching new agent..." >&2
+            python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait >&2
 
             # Wait for agent registration with polling
-            echo "Waiting for agent registration..."
+            echo "Waiting for agent registration..." >&2
             for i in {1..60}; do
               AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
               if [ -n "$AGENT_ID" ]; then
-                echo "Agent registered: $AGENT_ID"
+                echo "Agent registered: $AGENT_ID" >&2
                 echo "$AGENT_ID"
                 return 0
               fi
-              echo "  Waiting... ($i/60)"
+              echo "  Waiting... ($i/60)" >&2
               sleep 5
             done
             return 1
