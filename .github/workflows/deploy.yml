@@ -32,9 +32,26 @@ jobs:
 
       - name: Deploy Private LLM Demo
         run: |
+          trust_mrtd() {
+            # Get MRTD from most recent VM's attestation and add to trusted list
+            SHARE_DIR=$(find /var/tmp/tdvirsh -maxdepth 1 -type d -name 'share.*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+            if [ -f "${SHARE_DIR}/attestation.json" ]; then
+              MRTD=$(jq -r '.tdx.measurements.mrtd // empty' "${SHARE_DIR}/attestation.json")
+              if [ -n "$MRTD" ]; then
+                echo "Adding MRTD to trusted list: ${MRTD:0:32}..." >&2
+                curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"mrtd\": \"$MRTD\", \"description\": \"CI auto-trusted\"}" 2>/dev/null || true
+              fi
+            fi
+          }
+
           launch_agent() {
             echo "Launching new agent..." >&2
             python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait >&2
+
+            # Trust the agent's MRTD
+            trust_mrtd
 
             # Wait for agent registration with polling
             echo "Waiting for agent registration..." >&2
