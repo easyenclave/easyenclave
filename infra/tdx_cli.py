@@ -50,9 +50,14 @@ class TDXManager:
         search_paths = [
             image_path,
             os.environ.get("TDX_IMAGE_PATH"),
+            # Customized image with launcher (built by build_image.sh)
+            str(self.infra_dir / "output/tdx-runner.qcow2"),
+            str(self.workspace / "infra/output/tdx-runner.qcow2"),
+            # Legacy paths
             str(self.infra_dir / "vm_images/output/tdx-runner.qcow2"),
             str(self.workspace / "vm_images/output/tdx-runner.qcow2"),
             "/var/lib/tdx/images/tdx-runner.qcow2",
+            # Base Canonical image (no launcher - fallback only)
             str(Path.home() / "tdx/guest-tools/image/tdx-guest-ubuntu-24.04-generic.qcow2"),
         ]
         for p in search_paths:
