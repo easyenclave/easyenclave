@@ -63,7 +63,7 @@ jobs:
           echo "Launching control plane in TDX VM..."
 
           # Launch control plane and wait for it to be ready
-          RESULT=$(python3 infra/tdx_cli.py control-plane new --wait --port $CONTROL_PLANE_PORT)
+          RESULT=$(python3 infra/tdx_cli.py control-plane new --wait --port "$CONTROL_PLANE_PORT")
 
           # Parse result
           VM_NAME=$(echo "$RESULT" | jq -r '.name')
@@ -79,9 +79,11 @@ jobs:
             URL="http://${IP}:${CONTROL_PLANE_PORT}"
           fi
 
-          echo "vm_name=$VM_NAME" >> $GITHUB_OUTPUT
-          echo "ip=$IP" >> $GITHUB_OUTPUT
-          echo "url=$URL" >> $GITHUB_OUTPUT
+          {
+            echo "vm_name=$VM_NAME"
+            echo "ip=$IP"
+            echo "url=$URL"
+          } >> "$GITHUB_OUTPUT"
 
           echo ""
           echo "Control plane launched!"
@@ -116,14 +118,14 @@ jobs:
         run: |
           # Use the launched control plane URL or discover existing one
           if [ -n "${{ steps.control-plane.outputs.url }}" ]; then
-            echo "url=${{ steps.control-plane.outputs.url }}" >> $GITHUB_OUTPUT
+            echo "url=${{ steps.control-plane.outputs.url }}" >> "$GITHUB_OUTPUT"
           else
             # Try to find running control plane VM
             VM=$(python3 infra/tdx_cli.py vm list | grep "trust_domain" | head -1)
             if [ -n "$VM" ]; then
               IP=$(virsh --connect qemu:///system domifaddr "$VM" 2>/dev/null | grep ipv4 | awk '{print $4}' | cut -d/ -f1)
               if [ -n "$IP" ]; then
-                echo "url=http://${IP}:${CONTROL_PLANE_PORT}" >> $GITHUB_OUTPUT
+                echo "url=http://${IP}:${CONTROL_PLANE_PORT}" >> "$GITHUB_OUTPUT"
                 echo "Found existing control plane at http://${IP}:${CONTROL_PLANE_PORT}"
               fi
             fi
@@ -131,7 +133,7 @@ jobs:
 
           # Fallback to environment or default
           if [ -z "${{ steps.control-plane.outputs.url }}" ]; then
-            echo "url=${EASYENCLAVE_URL:-https://app.easyenclave.com}" >> $GITHUB_OUTPUT
+            echo "url=${EASYENCLAVE_URL:-https://app.easyenclave.com}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Add Trusted MRTD (manual)
@@ -161,7 +163,7 @@ jobs:
           URL="${{ steps.get-url.outputs.url }}"
 
           # Get the MRTD from the control plane VM's attestation
-          SHARE_DIR=$(ls -td /var/tmp/tdvirsh/share.* 2>/dev/null | head -1)
+          SHARE_DIR=$(find /var/tmp/tdvirsh -maxdepth 1 -type d -name 'share.*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
           if [ -f "${SHARE_DIR}/attestation.json" ]; then
             MRTD=$(jq -r '.tdx.measurements.mrtd // empty' "${SHARE_DIR}/attestation.json")
             if [ -n "$MRTD" ]; then
@@ -189,7 +191,7 @@ jobs:
 
           echo "Launching $COUNT agent(s)..."
 
-          for i in $(seq 1 $COUNT); do
+          for i in $(seq 1 "$COUNT"); do
             echo ""
             echo "=== Launching agent $i of $COUNT ==="
 
@@ -222,7 +224,7 @@ jobs:
 
           # Remove trailing comma
           AGENT_IDS="${AGENT_IDS%,}"
-          echo "agent_ids=$AGENT_IDS" >> $GITHUB_OUTPUT
+          echo "agent_ids=$AGENT_IDS" >> "$GITHUB_OUTPUT"
           echo ""
           echo "Launched agents: $AGENT_IDS"
 
