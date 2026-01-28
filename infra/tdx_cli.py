@@ -378,7 +378,6 @@ To start a new EasyEnclave network:
             if args.cp_command == "new":
                 print("Launching control plane in TDX VM...", file=sys.stderr)
                 result = mgr.control_plane_new(args.image, args.port)
-                print(json.dumps(result, indent=2))
 
                 if args.wait:
                     print("\nWaiting for VM to get IP...", file=sys.stderr)
@@ -412,6 +411,10 @@ To start a new EasyEnclave network:
                         print(json.dumps(result, indent=2))
                     else:
                         print("Warning: Could not get VM IP", file=sys.stderr)
+                        print(json.dumps(result, indent=2))
+                else:
+                    # No --wait, just print immediately
+                    print(json.dumps(result, indent=2))
 
         elif args.command == "vm":
             if args.vm_command == "new":
