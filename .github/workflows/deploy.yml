@@ -61,7 +61,8 @@ jobs:
 
           # Deploy demo
           COMPOSE_B64=$(base64 -w0 examples/private-llm/docker-compose.yml)
-          RESPONSE=$(curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/deployments" \
+          HTTP_CODE=$(curl -s -o /tmp/deploy_response.json -w "%{http_code}" \
+            -X POST "$CONTROL_PLANE_URL/api/v1/deployments" \
             -H "Content-Type: application/json" \
             -d "{
               \"agent_id\": \"$AGENT_ID\",
@@ -70,10 +71,14 @@ jobs:
                 \"service_name\": \"private-llm\",
                 \"health_endpoint\": \"/health\"
               }
-            }" 2>&1) || {
-            echo "::error::Deployment failed: $RESPONSE"
-            exit 1
-          }
+            }")
 
-          echo "Deployment response: $RESPONSE"
-          echo "Demo deployment triggered"
+          RESPONSE=$(cat /tmp/deploy_response.json)
+          echo "HTTP $HTTP_CODE: $RESPONSE"
+
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "::error::Deployment failed with HTTP $HTTP_CODE: $RESPONSE"
+            exit 1
+          fi
+
+          echo "Demo deployment triggered successfully"
