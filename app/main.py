@@ -73,6 +73,11 @@ HEALTH_CHECK_INTERVAL = 60
 AGENT_HEALTH_CHECK_INTERVAL = 30  # Check agents every 30 seconds
 AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhealthy
 
+# Continuous attestation settings
+ATTESTATION_CHECK_INTERVAL = 300  # 5 minutes - less frequent than health checks
+ATTESTATION_GRACE_PERIOD = timedelta(minutes=10)  # 10 minutes before tunnel rotation
+TOKEN_EXPIRY_BUFFER = 300  # 5 minutes before token expiry to request refresh
+
 
 async def check_service_health(service: ServiceRegistration) -> str:
     """Check health of a single service. Returns health status."""
@@ -196,23 +201,199 @@ async def process_pending_reassignments():
             )
 
 
+# ==============================================================================
+# Continuous Attestation - Verify agents remain attested
+# ==============================================================================
+
+
+def is_token_expired(intel_ta_token: str | None) -> bool:
+    """Check if Intel TA token is expired or about to expire."""
+    if not intel_ta_token:
+        return True
+
+    try:
+        from .ita import decode_token_claims
+        import time
+
+        claims = decode_token_claims(intel_ta_token)
+        if not claims:
+            return True
+
+        exp = claims.get("exp", 0)
+        # Consider expired if within buffer period
+        return time.time() > (exp - TOKEN_EXPIRY_BUFFER)
+    except Exception as e:
+        logger.warning(f"Error checking token expiry: {e}")
+        return True
+
+
+def should_recheck_attestation(agent: LauncherAgent) -> bool:
+    """Determine if we should re-check attestation for this agent."""
+    # Check if token is expired
+    if is_token_expired(agent.intel_ta_token):
+        return True
+
+    # Check if we haven't checked recently
+    if agent.last_attestation_check is None:
+        return True
+
+    time_since_check = datetime.utcnow() - agent.last_attestation_check
+    return time_since_check > timedelta(seconds=ATTESTATION_CHECK_INTERVAL)
+
+
+async def request_fresh_attestation(agent: LauncherAgent) -> tuple[bool, str | None, str | None]:
+    """Request new TDX quote from agent and verify.
+
+    Returns:
+        Tuple of (success, new_token, error_message)
+    """
+    if not agent.hostname:
+        return False, None, "Agent has no hostname for attestation refresh"
+
+    try:
+        url = f"https://{agent.hostname}/attestation/refresh"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url)
+            if resp.status_code != 200:
+                return False, None, f"Attestation refresh failed: HTTP {resp.status_code}"
+
+            data = resp.json()
+
+        # Get fresh Intel TA token
+        new_token = data.get("intel_ta_token")
+        if not new_token:
+            return False, None, "No intel_ta_token in refresh response"
+
+        # Verify fresh Intel TA token
+        result = await verify_attestation_token(new_token)
+
+        if result["verified"]:
+            return True, new_token, None
+        else:
+            return False, None, f"Token verification failed: {result.get('error', 'unknown')}"
+
+    except httpx.TimeoutException:
+        return False, None, "Attestation refresh request timed out"
+    except httpx.ConnectError as e:
+        return False, None, f"Cannot connect to agent for refresh: {e}"
+    except Exception as e:
+        logger.warning(f"Fresh attestation failed for {agent.agent_id}: {e}")
+        return False, None, str(e)
+
+
+async def recheck_agent_attestation(agent: LauncherAgent) -> tuple[bool, str | None]:
+    """Re-check agent attestation.
+
+    Returns:
+        Tuple of (attestation_ok, error_message)
+    """
+    # Quick check: is token expired?
+    if is_token_expired(agent.intel_ta_token):
+        logger.info(f"Agent {agent.agent_id} token expired, requesting fresh attestation")
+        success, new_token, error = await request_fresh_attestation(agent)
+        if success:
+            agent_store.update_attestation_status(
+                agent.agent_id,
+                attestation_valid=True,
+                intel_ta_token=new_token,
+            )
+            return True, None
+        return False, error
+
+    # Periodic deep check: verify existing token
+    if agent.intel_ta_token:
+        result = await verify_attestation_token(agent.intel_ta_token)
+        if result["verified"]:
+            agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
+            return True, None
+        else:
+            # Token invalid, try to get fresh one
+            logger.info(f"Agent {agent.agent_id} token invalid, requesting fresh attestation")
+            success, new_token, error = await request_fresh_attestation(agent)
+            if success:
+                agent_store.update_attestation_status(
+                    agent.agent_id,
+                    attestation_valid=True,
+                    intel_ta_token=new_token,
+                )
+                return True, None
+            return False, error or result.get("error", "Token verification failed")
+
+    return False, "No attestation token"
+
+
+async def handle_attestation_failure(agent: LauncherAgent, error: str):
+    """Handle attestation failure by rotating tunnel to cut off access."""
+    logger.warning(f"Attestation failed for agent {agent.agent_id}: {error}")
+
+    # 1. Delete old tunnel (immediately cuts off access)
+    if agent.tunnel_id:
+        try:
+            await cloudflare.delete_tunnel(agent.tunnel_id)
+            logger.info(f"Deleted tunnel {agent.tunnel_id} for agent {agent.agent_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete tunnel for agent {agent.agent_id}: {e}")
+
+        # Also clean up DNS
+        if agent.hostname:
+            try:
+                await cloudflare.delete_dns_record(agent.hostname)
+            except Exception as e:
+                logger.warning(f"Failed to delete DNS for {agent.hostname}: {e}")
+
+    # 2. Mark agent as attestation-failed
+    agent_store.mark_attestation_failed(agent.agent_id, error)
+
+
+async def background_attestation_checker():
+    """Background task to periodically verify attestation of deployed agents."""
+    while True:
+        try:
+            agents = agent_store.get_agents_for_attestation_check()
+
+            for agent in agents:
+                try:
+                    if not should_recheck_attestation(agent):
+                        continue
+
+                    logger.debug(f"Checking attestation for agent {agent.agent_id}")
+                    attestation_ok, error = await recheck_agent_attestation(agent)
+
+                    if not attestation_ok:
+                        await handle_attestation_failure(agent, error or "Unknown error")
+
+                except Exception as e:
+                    logger.warning(f"Attestation check failed for agent {agent.agent_id}: {e}")
+
+        except Exception as e:
+            logger.error(f"Background attestation checker error: {e}")
+
+        await asyncio.sleep(ATTESTATION_CHECK_INTERVAL)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - start background tasks."""
     # Start background health checkers
     service_health_task = asyncio.create_task(background_health_checker())
     agent_health_task = asyncio.create_task(background_agent_health_checker())
-    logger.info("Started background health checkers (services + agents)")
+    attestation_task = asyncio.create_task(background_attestation_checker())
+    logger.info("Started background health checkers (services + agents + attestation)")
     yield
     # Shutdown
     service_health_task.cancel()
     agent_health_task.cancel()
+    attestation_task.cancel()
     try:
         await service_health_task
     except asyncio.CancelledError:
         pass
     try:
         await agent_health_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await attestation_task
     except asyncio.CancelledError:
         pass
 
@@ -675,6 +856,9 @@ async def poll_for_deployment(agent_id: str):
     Launcher agents call this periodically to check for work.
     If a deployment is available, it's returned for execution.
     Only verified agents receive deployments.
+
+    If attestation has failed, returns action='re_attest' to tell the
+    agent to generate fresh attestation and re-register.
     """
     # Update heartbeat
     if not agent_store.heartbeat(agent_id):
@@ -682,6 +866,15 @@ async def poll_for_deployment(agent_id: str):
 
     # Check if agent is verified
     agent = agent_store.get(agent_id)
+
+    # If attestation failed, tell agent to re-attest
+    if agent.status == "attestation_failed":
+        logger.info(f"Agent {agent_id} in attestation_failed state, requesting re_attest")
+        return AgentPollResponse(
+            action="re_attest",
+            message="Attestation expired or failed, please re-register with fresh attestation",
+        )
+
     if not agent.verified:
         # Unverified agents don't receive deployments
         logger.debug(f"Agent {agent_id} not verified - no deployment")

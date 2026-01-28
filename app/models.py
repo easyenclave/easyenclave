@@ -308,6 +308,20 @@ class LauncherAgent(BaseModel):
         description="Error message if MRTD verification failed",
     )
 
+    # Continuous attestation tracking
+    last_attestation_check: datetime | None = Field(
+        default=None,
+        description="Last time attestation was verified",
+    )
+    attestation_valid: bool = Field(
+        default=True,
+        description="Whether the last attestation check passed",
+    )
+    attestation_error: str | None = Field(
+        default=None,
+        description="Error from last attestation check (if failed)",
+    )
+
 
 class AgentRegistrationRequest(BaseModel):
     """Request model for agent registration."""
@@ -341,6 +355,14 @@ class AgentPollResponse(BaseModel):
     update: dict | None = Field(
         default=None,
         description="Update instructions: {check_github: true}",
+    )
+    action: str | None = Field(
+        default=None,
+        description="Action for agent: 're_attest' if attestation failed",
+    )
+    message: str | None = Field(
+        default=None,
+        description="Human-readable message for the action",
     )
 
 

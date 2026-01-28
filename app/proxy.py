@@ -35,6 +35,9 @@ async def get_service_url(service_name: str) -> str:
     1. Agent store - deployed services with tunnel hostnames
     2. Service registry - registered services with endpoints
 
+    Only routes to agents that are deployed AND have valid attestation.
+    Agents with attestation_failed status are excluded.
+
     Args:
         service_name: Name of the service
 
@@ -42,14 +45,21 @@ async def get_service_url(service_name: str) -> str:
         Service URL (e.g., "https://agent-xyz.easyenclave.com")
 
     Raises:
-        HTTPException: If service not found
+        HTTPException: If service not found or attestation invalid
     """
     # First, check deployed agents for a service with this name
     for agent in agent_store.list():
+        # Only route to deployed agents with valid attestation
         if agent.status == "deployed" and agent.hostname:
+            # Check attestation status
+            if not agent.attestation_valid:
+                logger.warning(
+                    f"Skipping agent {agent.agent_id} - attestation invalid: "
+                    f"{agent.attestation_error}"
+                )
+                continue
+
             # Check if deployment config has this service name
-            # For now, we match by checking if the agent's deployment was for this service
-            # This could be enhanced to store service_name on the agent
             deployment_id = agent.current_deployment_id
             if deployment_id:
                 from .storage import deployment_store
@@ -59,6 +69,21 @@ async def get_service_url(service_name: str) -> str:
                     config = deployment.config or {}
                     if config.get("service_name") == service_name:
                         return f"https://{agent.hostname}"
+
+        # Explicitly refuse to route to attestation_failed agents
+        if agent.status == "attestation_failed":
+            deployment_id = agent.current_deployment_id
+            if deployment_id:
+                from .storage import deployment_store
+
+                deployment = deployment_store.get(deployment_id)
+                if deployment:
+                    config = deployment.config or {}
+                    if config.get("service_name") == service_name:
+                        raise HTTPException(
+                            status_code=503,
+                            detail=f"Service '{service_name}' attestation failed - service unavailable",
+                        )
 
     # Second, check the service registry
     service = store.get_by_name(service_name)

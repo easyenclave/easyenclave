@@ -391,7 +391,7 @@ def poll_control_plane(agent_id: str) -> dict:
         agent_id: Agent ID from registration
 
     Returns:
-        Response dict with deployment and/or update instructions
+        Response dict with deployment, update instructions, and/or action
     """
     response = requests.get(
         f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/poll",
@@ -399,6 +399,37 @@ def poll_control_plane(agent_id: str) -> dict:
     )
     response.raise_for_status()
     return response.json()
+
+
+def handle_re_attest(vm_name: str) -> dict | None:
+    """Handle re-attestation request from control plane.
+
+    Generates fresh TDX attestation and re-registers with the control plane.
+
+    Args:
+        vm_name: VM name for re-registration
+
+    Returns:
+        New registration response or None if failed
+    """
+    write_status("re-attesting")
+    logger.info("Control plane requested re-attestation...")
+
+    try:
+        # Generate fresh TDX attestation
+        attestation = generate_initial_attestation()
+        logger.info("Generated fresh TDX attestation")
+
+        # Re-register with control plane
+        reg_response = register_with_control_plane(attestation, vm_name)
+        logger.info(f"Re-registered as agent: {reg_response['agent_id']}")
+
+        return reg_response
+
+    except Exception as e:
+        logger.error(f"Re-attestation failed: {e}")
+        write_status("re-attest-failed")
+        return None
 
 
 def report_status(agent_id: str, status: str, deployment_id: str, error: str = None):
@@ -1048,6 +1079,31 @@ def run_agent_mode(config: dict):
 
             # Poll for deployment
             response = poll_control_plane(agent_id)
+
+            # Handle re-attestation request (attestation failed on control plane)
+            if response.get("action") == "re_attest":
+                logger.warning(f"Received re_attest action: {response.get('message')}")
+                reg_response = handle_re_attest(vm_name)
+                if reg_response:
+                    # Update agent_id and tunnel info from new registration
+                    agent_id = reg_response["agent_id"]
+                    tunnel_hostname = reg_response.get("hostname")
+
+                    # Restart cloudflared with new tunnel token if provided
+                    if reg_response.get("tunnel_token"):
+                        if cloudflared_proc is not None:
+                            cloudflared_proc.terminate()
+                            cloudflared_proc.wait()
+                        cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
+                        if cloudflared_proc and tunnel_hostname:
+                            logger.info(f"Agent reachable at: https://{tunnel_hostname}")
+
+                    write_status("undeployed")
+                else:
+                    # Re-attestation failed, wait and retry
+                    logger.error("Re-attestation failed, will retry...")
+                    time.sleep(POLL_INTERVAL)
+                continue
 
             # Handle deployment if available
             if response.get("deployment"):

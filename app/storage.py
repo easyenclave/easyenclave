@@ -613,6 +613,57 @@ class AgentStore:
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
 
+    def update_attestation_status(
+        self,
+        agent_id: str,
+        attestation_valid: bool,
+        error: str | None = None,
+        intel_ta_token: str | None = None,
+    ) -> bool:
+        """Update agent's attestation status. Returns False if not found."""
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return False
+            agent_dict = agent.model_dump()
+            agent_dict["last_attestation_check"] = datetime.utcnow()
+            agent_dict["attestation_valid"] = attestation_valid
+            agent_dict["attestation_error"] = error
+            if intel_ta_token is not None:
+                agent_dict["intel_ta_token"] = intel_ta_token
+            self._agents[agent_id] = LauncherAgent(**agent_dict)
+            return True
+
+    def mark_attestation_failed(
+        self,
+        agent_id: str,
+        error: str,
+        clear_tunnel: bool = True,
+    ) -> bool:
+        """Mark agent as attestation failed. Returns False if not found."""
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return False
+            agent_dict = agent.model_dump()
+            agent_dict["status"] = "attestation_failed"
+            agent_dict["attestation_valid"] = False
+            agent_dict["attestation_error"] = error
+            agent_dict["last_attestation_check"] = datetime.utcnow()
+            if clear_tunnel:
+                agent_dict["tunnel_id"] = None
+                agent_dict["hostname"] = None
+            self._agents[agent_id] = LauncherAgent(**agent_dict)
+            return True
+
+    def get_agents_for_attestation_check(self) -> list[LauncherAgent]:
+        """Get deployed agents that need attestation check."""
+        with self._lock:
+            return [
+                a for a in self._agents.values()
+                if a.status == "deployed" and a.verified
+            ]
+
     def clear(self) -> None:
         """Clear all agents (useful for testing)."""
         with self._lock:
