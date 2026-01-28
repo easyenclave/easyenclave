@@ -12,6 +12,13 @@
 name: Bootstrap
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'sdk/**'
+      - 'examples/**'
+      - 'infra/**'
   workflow_dispatch:
     inputs:
       action:
@@ -23,6 +30,7 @@ on:
           - control-plane-only
           - add-agents
           - add-trusted-mrtd
+          - deploy-demo
       agent_count:
         description: 'Number of agents to launch (for bootstrap-all or add-agents)'
         default: '1'

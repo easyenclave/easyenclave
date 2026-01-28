@@ -1,0 +1,59 @@
+# Deploy EasyEnclave Demo
+#
+# This workflow deploys the private-llm demo on every push to main.
+# It updates the control plane and deploys the demo to an available agent.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CONTROL_PLANE_URL: https://app.easyenclave.com
+
+jobs:
+  deploy-control-plane:
+    runs-on: [self-hosted, tdx]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update Control Plane
+        run: |
+          # Trigger control plane update (pull latest code)
+          curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/admin/update" || true
+
+  deploy-demo:
+    runs-on: [self-hosted, tdx]
+    needs: deploy-control-plane
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy Private LLM Demo
+        run: |
+          # Get first available agent or launch one
+          AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id // empty')
+
+          if [ -z "$AGENT_ID" ]; then
+            echo "Launching new agent..."
+            python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait
+            # Wait for registration
+            sleep 30
+            AGENT_ID=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" | jq -r '.agents[0].agent_id')
+          fi
+
+          # Deploy demo
+          COMPOSE_B64=$(base64 -w0 examples/private-llm/docker-compose.yml)
+          curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/deployments" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"agent_id\": \"$AGENT_ID\",
+              \"compose\": \"$COMPOSE_B64\",
+              \"config\": {
+                \"service_name\": \"private-llm\",
+                \"health_endpoint\": \"/health\"
+              }
+            }"
+
+          echo "Demo deployment triggered"
