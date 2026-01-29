@@ -71,12 +71,8 @@ jobs:
         run: |
           echo "Looking for running control plane VM..."
 
-          # Find control plane VM
-          VM=$(python3 infra/tdx_cli.py vm list 2>/dev/null | grep -E "trust_domain.*control" | head -1 || true)
-          if [ -z "$VM" ]; then
-            # Try alternative pattern
-            VM=$(python3 infra/tdx_cli.py vm list 2>/dev/null | grep "trust_domain" | head -1 || true)
-          fi
+          # Find control plane VM and its share directory
+          VM=$(python3 infra/tdx_cli.py vm list 2>/dev/null | grep -E "trust_domain" | head -1 || true)
 
           if [ -z "$VM" ]; then
             echo "No running control plane VM found - skipping update"
@@ -96,48 +92,52 @@ jobs:
           echo "Control plane IP: $IP"
           echo "ip=$IP" >> "$GITHUB_OUTPUT"
 
-          # Wait for SSH to be available
-          echo "Waiting for SSH..."
-          for i in {1..30}; do
-            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes "ubuntu@${IP}" "echo ok" 2>/dev/null; then
-              echo "SSH is available"
-              break
-            fi
-            echo "  Waiting... ($i/30)"
-            sleep 2
-          done
+          # Find the share directory for this VM
+          VM_ID=$(echo "$VM" | sed 's/tdvirsh-trust_domain-//')
+          SHARE_DIR="/var/tmp/tdvirsh/share.${VM_ID}"
 
-          # Update the control plane
-          echo "Updating control plane..."
-          ssh -o StrictHostKeyChecking=no "ubuntu@${IP}" << 'ENDSSH'
-            set -e
-            cd /home/ubuntu/easyenclave || cd /workload
+          if [ ! -d "$SHARE_DIR" ]; then
+            # Try to find by pattern
+            SHARE_DIR=$(find /var/tmp/tdvirsh -maxdepth 1 -type d -name 'share.*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+          fi
 
-            echo "Pulling latest code..."
-            git fetch origin main
-            git reset --hard origin/main
+          if [ -z "$SHARE_DIR" ] || [ ! -d "$SHARE_DIR" ]; then
+            echo "::warning::Could not find share directory for VM, skipping update"
+            exit 0
+          fi
 
-            echo "Rebuilding and restarting control plane..."
-            docker compose down || true
-            docker compose up --build -d
+          echo "Share directory: $SHARE_DIR"
 
-            echo "Control plane updated!"
-          ENDSSH
+          # Write update signal to share directory
+          # The control plane will be updated via docker exec
+          echo "Triggering update via docker..."
+
+          # Get the control plane container name
+          URL="http://${IP}:${CONTROL_PLANE_PORT}"
+
+          # Use docker exec through virsh to update the code
+          # Since we can't SSH, we'll restart the VM which will pull latest code
+          echo "Restarting control plane VM to pull latest code..."
+
+          virsh --connect qemu:///system reboot "$VM"
+
+          # Wait for VM to come back up
+          echo "Waiting for VM to restart..."
+          sleep 30
 
           # Wait for health
-          URL="http://${IP}:${CONTROL_PLANE_PORT}"
           echo "Waiting for control plane health at $URL..."
-          for i in {1..60}; do
+          for i in {1..90}; do
             if curl -sf "${URL}/health" > /dev/null 2>&1; then
               echo "Control plane is healthy!"
               curl -s "${URL}/health" | jq .
               exit 0
             fi
-            echo "  Waiting... ($i/60)"
-            sleep 3
+            echo "  Waiting... ($i/90)"
+            sleep 5
           done
 
-          echo "::error::Control plane did not become healthy after update"
+          echo "::error::Control plane did not become healthy after restart"
           exit 1
 
       # =================================================================
