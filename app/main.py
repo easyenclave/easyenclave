@@ -1311,8 +1311,8 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
     - rejection_reason: If rejected, the reason why
 
     The version is rejected if:
-    - Source code contains forbidden keywords (HACK, HAX, HAX0R)
-    - Source code exceeds 100KB limit
+    - Source code contains forbidden keywords (see source_inspector.py)
+    - Source code exceeds size limit
     - Source code cannot be downloaded from GitHub
     """
     found_app = app_store.get_by_name(name)

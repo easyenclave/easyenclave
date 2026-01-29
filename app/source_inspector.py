@@ -69,7 +69,7 @@ async def download_github_source(repo: str, commit: str) -> dict[str, str]:
             # Check size limit before downloading
             size = item.get("size", 0)
             if total_size + size > MAX_SOURCE_SIZE:
-                raise ValueError(f"Source exceeds {MAX_SOURCE_SIZE // 1024}KB limit")
+                raise ValueError(f"Source exceeds {MAX_SOURCE_SIZE // (1024 * 1024)}MB limit")
 
             # Download file content
             blob_url = f"https://api.github.com/repos/{repo}/git/blobs/{item['sha']}"
