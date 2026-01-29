@@ -1,261 +1,376 @@
-// EasyEnclave Web GUI JavaScript
+// EasyEnclave App Store Dashboard
 
 const API_BASE = '/api/v1';
-let allServices = [];
+let allApps = [];
+let allAgents = [];
+let allDeployments = [];
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
-    loadServices();
+    loadAll();
     // Refresh every 30 seconds
-    setInterval(loadServices, 30000);
-
-    // Search on Enter key
-    document.getElementById('searchInput').addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') searchServices();
-    });
+    setInterval(loadAll, 30000);
 });
 
-// Load all services from API
-async function loadServices() {
+async function loadAll() {
+    await Promise.all([loadApps(), loadAgents(), loadDeployments()]);
+    updateStats();
+}
+
+// Load apps from API
+async function loadApps() {
     try {
-        const response = await fetch(`${API_BASE}/services`);
+        const response = await fetch(`${API_BASE}/apps`);
         const data = await response.json();
-        allServices = data.services;
-        updateStats(allServices);
-        renderServices(allServices);
+        allApps = data.apps;
+        renderApps(allApps);
     } catch (error) {
-        console.error('Failed to load services:', error);
-        document.getElementById('servicesList').innerHTML =
-            '<div class="error">Failed to load services. Please try again.</div>';
+        console.error('Failed to load apps:', error);
+        document.getElementById('appsList').innerHTML =
+            '<div class="error">Failed to load apps</div>';
     }
 }
 
-// Update statistics display
-function updateStats(services) {
-    document.getElementById('totalServices').textContent = services.length;
-    document.getElementById('healthyServices').textContent =
-        services.filter(s => s.health_status === 'healthy').length;
-    document.getElementById('attestedServices').textContent =
-        services.filter(s => s.intel_ta_token || s.mrtd).length;
+// Load agents from API
+async function loadAgents() {
+    try {
+        const response = await fetch(`${API_BASE}/agents`);
+        const data = await response.json();
+        allAgents = data.agents;
+        renderAgents(allAgents);
+    } catch (error) {
+        console.error('Failed to load agents:', error);
+        document.getElementById('agentsList').innerHTML =
+            '<div class="error">Failed to load agents</div>';
+    }
 }
 
-// Render services grid
-function renderServices(services) {
-    const container = document.getElementById('servicesList');
+// Load deployments from API
+async function loadDeployments() {
+    try {
+        const response = await fetch(`${API_BASE}/deployments`);
+        const data = await response.json();
+        allDeployments = data.deployments.slice(0, 20); // Show last 20
+        renderDeployments(allDeployments);
+    } catch (error) {
+        console.error('Failed to load deployments:', error);
+        document.getElementById('deploymentsList').innerHTML =
+            '<div class="error">Failed to load deployments</div>';
+    }
+}
 
-    if (services.length === 0) {
-        container.innerHTML = '<div class="empty">No services registered yet.</div>';
+// Update statistics
+function updateStats() {
+    document.getElementById('totalApps').textContent = allApps.length;
+    document.getElementById('totalAgents').textContent = allAgents.length;
+    document.getElementById('healthyAgents').textContent =
+        allAgents.filter(a => a.health_status === 'healthy').length;
+
+    // Count total versions across all apps
+    let totalVersions = 0;
+    // We'd need to fetch versions for each app, so just show apps for now
+    document.getElementById('totalVersions').textContent = '-';
+}
+
+// Render apps grid
+function renderApps(apps) {
+    const container = document.getElementById('appsList');
+
+    if (apps.length === 0) {
+        container.innerHTML = `
+            <div class="empty">
+                <p>No apps registered yet.</p>
+                <p>Register your first app to get started!</p>
+            </div>
+        `;
         return;
     }
 
-    container.innerHTML = services.map(service => `
-        <div class="service-card" onclick="showServiceDetails('${service.service_id}')">
-            <div class="service-header">
-                <h3>${escapeHtml(service.name)}</h3>
-                <span class="health-badge ${service.health_status}">${service.health_status}</span>
+    container.innerHTML = apps.map(app => `
+        <div class="app-card" onclick="showAppDetails('${escapeHtml(app.name)}')">
+            <div class="app-header">
+                <h3>${escapeHtml(app.name)}</h3>
             </div>
-            <p class="service-description">${escapeHtml(service.description || 'No description')}</p>
-            <div class="service-meta">
-                ${service.source_repo ? `<a href="${escapeHtml(service.source_repo)}" target="_blank" onclick="event.stopPropagation()">Source</a>` : ''}
-                ${Object.keys(service.endpoints).length > 0 ? `<span>${Object.keys(service.endpoints).length} endpoint(s)</span>` : ''}
-            </div>
-            <div class="service-tags">
-                ${service.tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
-            </div>
-            <div class="service-attestation">
-                ${service.intel_ta_token ? '<span class="attested">ITA Verified</span>' : ''}
-                ${service.mrtd ? `<span class="mrtd" title="${escapeHtml(service.mrtd)}">MRTD</span>` : ''}
+            <p class="app-description">${escapeHtml(app.description || 'No description')}</p>
+            ${app.source_repo ? `
+                <div class="app-repo">
+                    <svg viewBox="0 0 16 16" width="14" height="14">
+                        <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                    </svg>
+                    <span>${escapeHtml(app.source_repo)}</span>
+                </div>
+            ` : ''}
+            <div class="app-meta">
+                <span>Created ${formatDate(app.created_at)}</span>
             </div>
         </div>
     `).join('');
 }
 
-// Search services
-async function searchServices() {
-    const query = document.getElementById('searchInput').value.trim();
-    if (!query) {
-        renderServices(allServices);
+// Render agents grid
+function renderAgents(agents) {
+    const container = document.getElementById('agentsList');
+
+    if (agents.length === 0) {
+        container.innerHTML = '<div class="empty">No agents registered</div>';
         return;
     }
 
+    container.innerHTML = agents.map(agent => `
+        <div class="agent-card" onclick="showAgentDetails('${agent.agent_id}')">
+            <div class="agent-header">
+                <h3>${escapeHtml(agent.vm_name)}</h3>
+                <span class="status-badge ${agent.status}">${agent.status}</span>
+            </div>
+            <div class="agent-status">
+                <span class="health-dot ${agent.health_status}"></span>
+                <span>${agent.health_status}</span>
+                ${agent.verified ? '<span class="verified-badge">Verified</span>' : '<span class="unverified-badge">Unverified</span>'}
+            </div>
+            ${agent.hostname ? `<div class="agent-hostname">${escapeHtml(agent.hostname)}</div>` : ''}
+            <div class="agent-meta">
+                <span>Registered ${formatDate(agent.registered_at)}</span>
+            </div>
+        </div>
+    `).join('');
+}
+
+// Render deployments list
+function renderDeployments(deployments) {
+    const container = document.getElementById('deploymentsList');
+
+    if (deployments.length === 0) {
+        container.innerHTML = '<div class="empty">No deployments yet</div>';
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="deployments-table">
+            <thead>
+                <tr>
+                    <th>Deployment ID</th>
+                    <th>Agent</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${deployments.map(d => `
+                    <tr>
+                        <td><code>${d.deployment_id.substring(0, 8)}...</code></td>
+                        <td>${d.agent_id.substring(0, 8)}...</td>
+                        <td><span class="status-badge ${d.status}">${d.status}</span></td>
+                        <td>${formatDate(d.created_at)}</td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
+// Show app details modal
+async function showAppDetails(appName) {
     try {
-        const response = await fetch(`${API_BASE}/services?q=${encodeURIComponent(query)}`);
-        const data = await response.json();
-        renderServices(data.services);
-    } catch (error) {
-        console.error('Search failed:', error);
-    }
-}
+        const [appResponse, versionsResponse] = await Promise.all([
+            fetch(`${API_BASE}/apps/${encodeURIComponent(appName)}`),
+            fetch(`${API_BASE}/apps/${encodeURIComponent(appName)}/versions`)
+        ]);
 
-// Clear search and filters
-function clearSearch() {
-    document.getElementById('searchInput').value = '';
-    document.getElementById('envFilter').value = '';
-    document.getElementById('healthFilter').value = '';
-    renderServices(allServices);
-}
+        const app = await appResponse.json();
+        const versionsData = await versionsResponse.json();
+        const versions = versionsData.versions || [];
 
-// Filter services by environment and health
-function filterServices() {
-    const envFilter = document.getElementById('envFilter').value;
-    const healthFilter = document.getElementById('healthFilter').value;
-
-    let filtered = allServices;
-
-    if (envFilter) {
-        filtered = filtered.filter(s => s.endpoints && s.endpoints[envFilter]);
-    }
-
-    if (healthFilter) {
-        filtered = filtered.filter(s => s.health_status === healthFilter);
-    }
-
-    renderServices(filtered);
-}
-
-// Show service details modal
-async function showServiceDetails(serviceId) {
-    try {
-        const response = await fetch(`${API_BASE}/services/${serviceId}`);
-        const service = await response.json();
-
-        const details = document.getElementById('serviceDetails');
+        const details = document.getElementById('appDetails');
         details.innerHTML = `
-            <h2>${escapeHtml(service.name)}</h2>
-            <p class="description">${escapeHtml(service.description || 'No description')}</p>
+            <h2>${escapeHtml(app.name)}</h2>
+            <p class="description">${escapeHtml(app.description || 'No description')}</p>
 
             <div class="detail-section">
-                <h3>Service Info</h3>
+                <h3>App Info</h3>
                 <table>
-                    <tr><td>Service ID</td><td><code>${escapeHtml(service.service_id)}</code></td></tr>
-                    <tr><td>Health Status</td><td><span class="health-badge ${service.health_status}">${service.health_status}</span></td></tr>
-                    <tr><td>Registered</td><td>${formatDate(service.registered_at)}</td></tr>
-                    ${service.last_health_check ? `<tr><td>Last Health Check</td><td>${formatDate(service.last_health_check)}</td></tr>` : ''}
+                    <tr><td>App ID</td><td><code>${escapeHtml(app.app_id)}</code></td></tr>
+                    ${app.source_repo ? `<tr><td>Source Repo</td><td><a href="https://github.com/${escapeHtml(app.source_repo)}" target="_blank">${escapeHtml(app.source_repo)}</a></td></tr>` : ''}
+                    <tr><td>Created</td><td>${formatDate(app.created_at)}</td></tr>
                 </table>
             </div>
 
-            ${service.source_repo ? `
             <div class="detail-section">
-                <h3>Source Info</h3>
-                <table>
-                    <tr><td>Repository</td><td><a href="${escapeHtml(service.source_repo)}" target="_blank">${escapeHtml(service.source_repo)}</a></td></tr>
-                    ${service.source_commit ? `<tr><td>Commit</td><td><code>${escapeHtml(service.source_commit)}</code></td></tr>` : ''}
-                    ${service.compose_hash ? `<tr><td>Compose Hash</td><td><code>${escapeHtml(service.compose_hash.substring(0, 16))}...</code></td></tr>` : ''}
-                </table>
-            </div>
-            ` : ''}
-
-            ${Object.keys(service.endpoints).length > 0 ? `
-            <div class="detail-section">
-                <h3>Endpoints</h3>
-                <table>
-                    ${Object.entries(service.endpoints).map(([env, url]) =>
-                        `<tr><td>${escapeHtml(env)}</td><td><a href="${escapeHtml(url)}" target="_blank">${escapeHtml(url)}</a></td></tr>`
-                    ).join('')}
-                </table>
-            </div>
-            ` : ''}
-
-            <div class="detail-section">
-                <h3>Attestation</h3>
-                ${service.mrtd ? `<p><strong>MRTD:</strong> <code>${escapeHtml(service.mrtd)}</code></p>` : '<p>No MRTD recorded</p>'}
-                ${service.intel_ta_token ? `
-                    <p><strong>Intel Trust Authority Token:</strong> Present</p>
-                    <button onclick="verifyAttestation('${serviceId}')" class="verify-btn">Verify Attestation</button>
-                    <div id="verificationResult"></div>
-                ` : '<p>No ITA token</p>'}
-                ${service.attestation_json ? `
-                    <details>
-                        <summary>Full Attestation JSON</summary>
-                        <pre>${escapeHtml(JSON.stringify(service.attestation_json, null, 2))}</pre>
-                    </details>
-                ` : ''}
+                <h3>Versions (${versions.length})</h3>
+                ${versions.length > 0 ? `
+                    <table class="versions-table">
+                        <thead>
+                            <tr>
+                                <th>Version</th>
+                                <th>Status</th>
+                                <th>Published</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${versions.map(v => `
+                                <tr>
+                                    <td><code>${escapeHtml(v.version)}</code></td>
+                                    <td><span class="status-badge ${v.status}">${v.status}</span></td>
+                                    <td>${formatDate(v.published_at)}</td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                ` : '<p>No versions published yet</p>'}
             </div>
 
-            ${service.tags.length > 0 ? `
             <div class="detail-section">
-                <h3>Tags</h3>
-                <div class="tags-list">
-                    ${service.tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
-                </div>
+                <h3>Deploy via GitHub Action</h3>
+                <pre><code>- uses: easyenclave/easyenclave/.github/actions/deploy@main
+  with:
+    app_name: ${escapeHtml(app.name)}
+    compose_file: docker-compose.yml
+    service_name: ${escapeHtml(app.name)}</code></pre>
             </div>
-            ` : ''}
 
             <div class="detail-actions">
-                <button onclick="deleteService('${serviceId}')" class="delete-btn">Delete Service</button>
+                <button onclick="deleteApp('${escapeHtml(app.name)}')" class="delete-btn">Delete App</button>
             </div>
         `;
 
-        document.getElementById('serviceModal').classList.remove('hidden');
+        document.getElementById('appModal').classList.remove('hidden');
     } catch (error) {
-        console.error('Failed to load service details:', error);
-        alert('Failed to load service details');
+        console.error('Failed to load app details:', error);
+        alert('Failed to load app details');
     }
 }
 
-// Close modal
-function closeModal() {
-    document.getElementById('serviceModal').classList.add('hidden');
+// Show agent details modal
+async function showAgentDetails(agentId) {
+    try {
+        const response = await fetch(`${API_BASE}/agents/${agentId}`);
+        const agent = await response.json();
+
+        const details = document.getElementById('agentDetails');
+        details.innerHTML = `
+            <h2>${escapeHtml(agent.vm_name)}</h2>
+
+            <div class="detail-section">
+                <h3>Status</h3>
+                <table>
+                    <tr><td>Agent ID</td><td><code>${escapeHtml(agent.agent_id)}</code></td></tr>
+                    <tr><td>Status</td><td><span class="status-badge ${agent.status}">${agent.status}</span></td></tr>
+                    <tr><td>Health</td><td><span class="health-dot ${agent.health_status}"></span> ${agent.health_status}</td></tr>
+                    <tr><td>Verified</td><td>${agent.verified ? '<span class="verified-badge">Yes</span>' : '<span class="unverified-badge">No</span>'}</td></tr>
+                    ${agent.hostname ? `<tr><td>Hostname</td><td><a href="https://${escapeHtml(agent.hostname)}" target="_blank">${escapeHtml(agent.hostname)}</a></td></tr>` : ''}
+                </table>
+            </div>
+
+            <div class="detail-section">
+                <h3>Attestation</h3>
+                ${agent.mrtd ? `<p><strong>MRTD:</strong> <code>${escapeHtml(agent.mrtd)}</code></p>` : '<p>No MRTD</p>'}
+                ${agent.verification_error ? `<p class="error-text">Error: ${escapeHtml(agent.verification_error)}</p>` : ''}
+            </div>
+
+            <div class="detail-section">
+                <h3>Deployment</h3>
+                ${agent.current_deployment_id ? `
+                    <p>Current: <code>${escapeHtml(agent.current_deployment_id)}</code></p>
+                ` : '<p>No active deployment</p>'}
+            </div>
+
+            <div class="detail-section">
+                <h3>Timestamps</h3>
+                <table>
+                    <tr><td>Registered</td><td>${formatDate(agent.registered_at)}</td></tr>
+                    <tr><td>Last Heartbeat</td><td>${formatDate(agent.last_heartbeat)}</td></tr>
+                    ${agent.last_health_check ? `<tr><td>Last Health Check</td><td>${formatDate(agent.last_health_check)}</td></tr>` : ''}
+                </table>
+            </div>
+        `;
+
+        document.getElementById('agentModal').classList.remove('hidden');
+    } catch (error) {
+        console.error('Failed to load agent details:', error);
+        alert('Failed to load agent details');
+    }
+}
+
+// Tab navigation
+function showTab(tabName) {
+    // Hide all tabs
+    document.querySelectorAll('.tab-content').forEach(tab => tab.classList.add('hidden'));
+    document.querySelectorAll('.tab').forEach(btn => btn.classList.remove('active'));
+
+    // Show selected tab
+    document.getElementById(`${tabName}-tab`).classList.remove('hidden');
+    event.target.classList.add('active');
+}
+
+// Modal functions
+function closeModal(modalId) {
+    document.getElementById(modalId).classList.add('hidden');
+}
+
+function showRegisterAppModal() {
+    document.getElementById('registerModal').classList.remove('hidden');
 }
 
 // Close modal on click outside
 document.addEventListener('click', (e) => {
-    const modal = document.getElementById('serviceModal');
-    if (e.target === modal) {
-        closeModal();
+    if (e.target.classList.contains('modal')) {
+        e.target.classList.add('hidden');
     }
 });
 
-// Verify attestation
-async function verifyAttestation(serviceId) {
-    const resultDiv = document.getElementById('verificationResult');
-    resultDiv.innerHTML = '<p>Verifying...</p>';
+// Register new app
+async function registerApp(event) {
+    event.preventDefault();
+
+    const name = document.getElementById('appName').value.trim();
+    const description = document.getElementById('appDescription').value.trim();
+    const sourceRepo = document.getElementById('sourceRepo').value.trim();
 
     try {
-        const response = await fetch(`${API_BASE}/services/${serviceId}/verify`);
-        const result = await response.json();
+        const response = await fetch(`${API_BASE}/apps`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name,
+                description,
+                source_repo: sourceRepo || null
+            })
+        });
 
-        if (result.verified) {
-            resultDiv.innerHTML = `
-                <div class="verification-success">
-                    <p>Attestation Verified</p>
-                    <p>Verified at: ${formatDate(result.verification_time)}</p>
-                    ${result.details ? `<pre>${escapeHtml(JSON.stringify(result.details, null, 2))}</pre>` : ''}
-                </div>
-            `;
-        } else {
-            resultDiv.innerHTML = `
-                <div class="verification-failed">
-                    <p>Verification Failed</p>
-                    <p>${escapeHtml(result.error || 'Unknown error')}</p>
-                </div>
-            `;
+        if (!response.ok) {
+            const error = await response.json();
+            alert(`Failed to register app: ${error.detail || 'Unknown error'}`);
+            return;
         }
+
+        closeModal('registerModal');
+        document.getElementById('registerAppForm').reset();
+        loadApps();
     } catch (error) {
-        resultDiv.innerHTML = `<div class="verification-failed"><p>Verification request failed</p></div>`;
+        console.error('Failed to register app:', error);
+        alert('Failed to register app');
     }
 }
 
-// Delete service
-async function deleteService(serviceId) {
-    if (!confirm('Are you sure you want to delete this service?')) {
+// Delete app
+async function deleteApp(appName) {
+    if (!confirm(`Are you sure you want to delete "${appName}"? This will also delete all versions.`)) {
         return;
     }
 
     try {
-        const response = await fetch(`${API_BASE}/services/${serviceId}`, {
+        const response = await fetch(`${API_BASE}/apps/${encodeURIComponent(appName)}`, {
             method: 'DELETE'
         });
 
         if (response.ok) {
-            closeModal();
-            loadServices();
+            closeModal('appModal');
+            loadApps();
         } else {
-            alert('Failed to delete service');
+            alert('Failed to delete app');
         }
     } catch (error) {
         console.error('Delete failed:', error);
-        alert('Failed to delete service');
+        alert('Failed to delete app');
     }
 }
 

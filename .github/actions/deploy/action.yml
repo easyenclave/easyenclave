@@ -1,117 +1,248 @@
-name: 'Deploy EasyEnclave App'
-description: 'Deploy a published app version to an EasyEnclave agent'
-author: 'EasyEnclave'
+# Deploy to EasyEnclave - Composite Action
+#
+# Deploys a docker-compose.yml to a TDX agent via the EasyEnclave control plane.
+# This action handles all the TDX complexity - users just need Docker files.
+#
+# IMPORTANT: The app must be pre-registered in the app catalog before deployment.
+# Register apps via: POST /api/v1/apps or the register-app action.
+#
+# Usage:
+#   - uses: easyenclave/easyenclave/.github/actions/deploy@main
+#     with:
+#       app_name: my-app
+#       compose_file: docker-compose.yml
+#       service_name: my-app
 
-branding:
-  icon: 'server'
-  color: 'green'
+name: Deploy to EasyEnclave
+description: Deploy a Docker Compose application to EasyEnclave's confidential computing platform
 
 inputs:
   app_name:
-    description: 'Name of the registered app'
+    description: 'App name (must be pre-registered in the app catalog)'
     required: true
-  version:
-    description: 'Version to deploy'
+  compose_file:
+    description: Path to docker-compose.yml file
     required: true
-  agent_id:
-    description: 'Target agent ID'
+  service_name:
+    description: Service name for deployment
     required: true
-  service_url:
-    description: 'Optional service URL override (defaults to agent tunnel hostname)'
-    required: false
   health_endpoint:
-    description: 'Health check endpoint path'
+    description: Health check endpoint path
     required: false
     default: '/health'
-  intel_api_key:
-    description: 'Intel Trust Authority API key for attestation'
-    required: false
   control_plane_url:
-    description: 'EasyEnclave control plane URL'
+    description: EasyEnclave control plane URL
     required: false
     default: 'https://app.easyenclave.com'
+  trusted_mrtd:
+    description: TDX VM image MRTD to trust (optional)
+    required: false
+    default: ''
 
 outputs:
   deployment_id:
-    description: 'The deployment ID'
+    description: The deployment ID
     value: ${{ steps.deploy.outputs.deployment_id }}
-  status:
-    description: 'Deployment status'
-    value: ${{ steps.deploy.outputs.status }}
+  agent_id:
+    description: The agent ID used for deployment
+    value: ${{ steps.deploy.outputs.agent_id }}
+  service_url:
+    description: The deployed service URL
+    value: ${{ steps.deploy.outputs.service_url }}
+  version:
+    description: The published app version
+    value: ${{ steps.deploy.outputs.version }}
 
 runs:
-  using: 'composite'
+  using: composite
   steps:
-    - name: Get version details
-      id: version
+    - name: Validate inputs
       shell: bash
       run: |
-        # Get the version to extract compose and attestation
-        RESPONSE=$(curl -s "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/${{ inputs.version }}")
-
-        # Check for error
-        if echo "$RESPONSE" | jq -e '.detail' > /dev/null 2>&1; then
-          echo "Error: $(echo "$RESPONSE" | jq -r '.detail')"
+        if [ ! -f "${{ inputs.compose_file }}" ]; then
+          echo "::error::Compose file not found: ${{ inputs.compose_file }}"
           exit 1
         fi
+        echo "Deploying ${{ inputs.app_name }} from ${{ inputs.compose_file }}"
 
-        # Check status
-        STATUS=$(echo "$RESPONSE" | jq -r '.status')
-        if [ "$STATUS" != "attested" ]; then
-          echo "Error: Version status is '$STATUS', expected 'attested'"
-          exit 1
-        fi
-
-        # Extract compose
-        COMPOSE=$(echo "$RESPONSE" | jq -r '.compose')
-        echo "compose=$COMPOSE" >> $GITHUB_OUTPUT
-
-    - name: Create deployment
+    - name: Deploy to EasyEnclave
       id: deploy
       shell: bash
+      env:
+        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
+        TRUSTED_MRTD: ${{ inputs.trusted_mrtd }}
+        COMPOSE_FILE: ${{ inputs.compose_file }}
+        APP_NAME: ${{ inputs.app_name }}
+        SERVICE_NAME: ${{ inputs.service_name }}
+        HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
       run: |
-        # Build config
-        CONFIG=$(jq -n \
-          --arg service_url "${{ inputs.service_url }}" \
-          --arg health_endpoint "${{ inputs.health_endpoint }}" \
-          --arg intel_api_key "${{ inputs.intel_api_key }}" \
-          --arg service_name "${{ inputs.app_name }}" \
-          '{
-            service_name: $service_name,
-            health_endpoint: $health_endpoint
-          }
-          + (if $service_url != "" then {service_url: $service_url} else {} end)
-          + (if $intel_api_key != "" then {intel_api_key: $intel_api_key} else {} end)')
+        set -e
 
-        # Create deployment request
-        REQUEST=$(jq -n \
-          --arg compose "${{ steps.version.outputs.compose }}" \
-          --arg agent_id "${{ inputs.agent_id }}" \
-          --argjson config "$CONFIG" \
-          '{
-            compose: $compose,
-            agent_id: $agent_id,
-            config: $config
-          }')
+        # Trust MRTD if provided
+        if [ -n "$TRUSTED_MRTD" ]; then
+          echo "Ensuring MRTD is trusted: ${TRUSTED_MRTD:0:32}..."
+          curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" \
+            -H "Content-Type: application/json" \
+            -d "{\"mrtd\": \"$TRUSTED_MRTD\", \"description\": \"TDX runner image\"}" 2>/dev/null || true
+        fi
 
-        # Create deployment
-        RESPONSE=$(curl -s -X POST "${{ inputs.control_plane_url }}/api/v1/deployments" \
+        # Step 1: Verify app exists
+        echo "Verifying app '$APP_NAME' is registered..."
+        HTTP_CODE=$(curl -s -o /tmp/app_response.json -w "%{http_code}" \
+          "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME" 2>/dev/null) || true
+
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "::error::App '$APP_NAME' is not registered. Please register the app first using:"
+          echo "::error::  curl -X POST $CONTROL_PLANE_URL/api/v1/apps -H 'Content-Type: application/json' -d '{\"name\": \"$APP_NAME\", \"source_repo\": \"your-org/your-repo\"}'"
+          exit 1
+        fi
+        echo "App '$APP_NAME' found"
+
+        # Step 2: Generate version string (YYYYMMDD-HHMMSS-short_sha)
+        TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+        SHORT_SHA="${GITHUB_SHA:0:7}"
+        VERSION="${TIMESTAMP}-${SHORT_SHA}"
+        echo "Generated version: $VERSION"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+        # Step 3: Publish version
+        echo "Publishing version $VERSION..."
+        COMPOSE_B64=$(base64 -w0 "$COMPOSE_FILE")
+        HTTP_CODE=$(curl -s -o /tmp/version_response.json -w "%{http_code}" \
+          -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions" \
           -H "Content-Type: application/json" \
-          -d "$REQUEST")
+          -d "{
+            \"version\": \"$VERSION\",
+            \"compose\": \"$COMPOSE_B64\",
+            \"source_commit\": \"$GITHUB_SHA\"
+          }")
 
-        # Check for error
-        if echo "$RESPONSE" | jq -e '.detail' > /dev/null 2>&1; then
-          echo "Error: $(echo "$RESPONSE" | jq -r '.detail')"
+        if [ "$HTTP_CODE" -ge 400 ]; then
+          echo "::error::Failed to publish version: $(cat /tmp/version_response.json)"
           exit 1
         fi
 
-        # Extract outputs
+        # Step 4: Check version status
+        VERSION_STATUS=$(jq -r '.status' /tmp/version_response.json)
+        echo "Version status: $VERSION_STATUS"
+
+        if [ "$VERSION_STATUS" = "rejected" ]; then
+          REJECTION_REASON=$(jq -r '.rejection_reason // "Unknown reason"' /tmp/version_response.json)
+          echo "::error::Version was rejected by source inspection: $REJECTION_REASON"
+          exit 1
+        fi
+
+        if [ "$VERSION_STATUS" != "attested" ]; then
+          echo "::error::Version status is '$VERSION_STATUS', expected 'attested'"
+          exit 1
+        fi
+        echo "Version $VERSION is attested"
+
+        # Helper: Check if agent exists and is available
+        check_agent_available() {
+          local agent_id="$1"
+          local http_code
+          http_code=$(curl -s -o /tmp/agent_status.json -w "%{http_code}" \
+            "$CONTROL_PLANE_URL/api/v1/agents/$agent_id" 2>/dev/null) || true
+          if [ "$http_code" != "200" ]; then
+            return 1
+          fi
+          local deploy_status
+          deploy_status=$(jq -r '.status // "unknown"' /tmp/agent_status.json)
+          [ "$deploy_status" = "deploying" ] && return 2
+          return 0
+        }
+
+        # Helper: Find an available verified agent
+        find_available_agent() {
+          local agents_json
+          agents_json=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
+          local agent_ids
+          agent_ids=$(echo "$agents_json" | jq -r '[.agents[] | select(.verified == true)] | .[].agent_id')
+          for agent_id in $agent_ids; do
+            echo "  Checking agent $agent_id..." >&2
+            check_agent_available "$agent_id"
+            local result=$?
+            if [ $result -eq 0 ]; then
+              echo "$agent_id"
+              return 0
+            elif [ $result -eq 2 ]; then
+              echo "    Agent is busy, skipping" >&2
+            else
+              echo "    Agent not found, skipping" >&2
+            fi
+          done
+          return 1
+        }
+
+        # Step 5: Find available agent (retry for up to 3 minutes)
+        echo "Looking for available agent..."
+        AGENT_ID=""
+        for attempt in {1..6}; do
+          AGENT_ID=$(find_available_agent) || true
+          if [ -n "$AGENT_ID" ]; then
+            check_agent_available "$AGENT_ID"
+            [ $? -eq 0 ] && break
+            AGENT_ID=""
+          fi
+          if [ $attempt -lt 6 ]; then
+            echo "No available agents, waiting 30s... ($attempt/6)"
+            sleep 30
+          fi
+        done
+
+        if [ -z "$AGENT_ID" ]; then
+          echo "::error::No available agents found. Please ensure agents are running via the EasyEnclave control plane."
+          exit 1
+        fi
+        echo "Using agent: $AGENT_ID"
+        echo "agent_id=$AGENT_ID" >> "$GITHUB_OUTPUT"
+
+        # Step 6: Deploy version
+        echo "Deploying version $VERSION to agent $AGENT_ID..."
+        HTTP_CODE=$(curl -s -o /tmp/deploy_response.json -w "%{http_code}" \
+          -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions/$VERSION/deploy" \
+          -H "Content-Type: application/json" \
+          -d "{
+            \"agent_id\": \"$AGENT_ID\",
+            \"config\": {
+              \"service_name\": \"$SERVICE_NAME\",
+              \"health_endpoint\": \"$HEALTH_ENDPOINT\"
+            }
+          }")
+
+        RESPONSE=$(cat /tmp/deploy_response.json)
+        echo "HTTP $HTTP_CODE"
+
+        if [ "$HTTP_CODE" -ge 400 ]; then
+          echo "::error::Deployment failed: $RESPONSE"
+          exit 1
+        fi
+
         DEPLOYMENT_ID=$(echo "$RESPONSE" | jq -r '.deployment_id')
-        STATUS=$(echo "$RESPONSE" | jq -r '.status')
+        echo "Deployment ID: $DEPLOYMENT_ID"
+        echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
 
-        echo "deployment_id=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
-        echo "status=$STATUS" >> $GITHUB_OUTPUT
+        # Step 7: Wait for health
+        echo "Waiting for deployment to become healthy..."
+        for i in {1..60}; do
+          STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null || echo '{}')
+          HEALTH=$(echo "$STATUS" | jq -r '.health_status // "unknown"')
+          SERVICE_URL=$(echo "$STATUS" | jq -r '.service_url // empty')
 
-        echo "Created deployment: $DEPLOYMENT_ID"
-        echo "Status: $STATUS"
-        echo "Agent: ${{ inputs.agent_id }}"
+          if [ "$HEALTH" = "healthy" ] && [ -n "$SERVICE_URL" ]; then
+            echo "Service is healthy at $SERVICE_URL"
+            echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+
+            # Verify health endpoint
+            if curl -sf "${SERVICE_URL}${HEALTH_ENDPOINT}" > /dev/null 2>&1; then
+              echo "Health check passed!"
+              exit 0
+            fi
+          fi
+
+          echo "  Status: $HEALTH ($i/60)"
+          sleep 5
+        done
+
+        echo "::warning::Deployment accepted but health check timed out"

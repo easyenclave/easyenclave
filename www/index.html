@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyEnclave - The App Store for Confidential Computing</title>
+    <meta name="description" content="Register, publish, and deploy applications to Intel TDX trusted execution environments. An app store for confidential computing with source inspection and cryptographic attestation.">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <a href="/" class="logo">EasyEnclave</a>
+            <div class="nav-links">
+                <a href="#app-store">App Store</a>
+                <a href="#attestation">Attestation</a>
+                <a href="#architecture">Architecture</a>
+                <a href="#getting-started">Get Started</a>
+                <a href="https://app.easyenclave.com/docs" target="_blank">API Docs</a>
+                <a href="https://app.easyenclave.com" class="btn btn-primary">Open App Store</a>
+            </div>
+        </div>
+    </nav>
+
+    <header class="hero">
+        <div class="container">
+            <h1>The App Store for<br>Confidential Computing</h1>
+            <p class="hero-subtitle">
+                Register your app. Publish versions with automatic source inspection.
+                Deploy to Intel TDX trusted execution environments with one click.
+            </p>
+            <div class="hero-buttons">
+                <a href="#getting-started" class="btn btn-primary btn-large">Get Started</a>
+                <a href="https://app.easyenclave.com" class="btn btn-secondary btn-large">Browse Apps</a>
+            </div>
+        </div>
+    </header>
+
+    <section id="app-store" class="app-store">
+        <div class="container">
+            <h2>How the App Store Works</h2>
+            <p class="section-subtitle">Every deployment flows through a secure, auditable pipeline</p>
+
+            <div class="flow-diagram">
+                <div class="flow-step">
+                    <div class="flow-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                            <polyline points="14 2 14 8 20 8"/>
+                            <line x1="12" y1="18" x2="12" y2="12"/>
+                            <line x1="9" y1="15" x2="15" y2="15"/>
+                        </svg>
+                    </div>
+                    <h3>Register App</h3>
+                    <p>Register your app once with its name and source repository. This creates an entry in the app catalog.</p>
+                </div>
+                <div class="flow-arrow">&#8594;</div>
+                <div class="flow-step">
+                    <div class="flow-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                    </div>
+                    <h3>Publish Version</h3>
+                    <p>Each push creates a new version (timestamp + git SHA). Your docker-compose and source commit are recorded.</p>
+                </div>
+                <div class="flow-arrow">&#8594;</div>
+                <div class="flow-step">
+                    <div class="flow-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                            <polyline points="22 4 12 14.01 9 11.01"/>
+                        </svg>
+                    </div>
+                    <h3>Source Inspection</h3>
+                    <p>Automated review downloads and scans your source code. Only versions that pass inspection become "attested".</p>
+                </div>
+                <div class="flow-arrow">&#8594;</div>
+                <div class="flow-step">
+                    <div class="flow-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                    </div>
+                    <h3>Deploy to TDX</h3>
+                    <p>Attested versions deploy to verified TDX agents. Hardware attestation proves your code runs in a secure enclave.</p>
+                </div>
+            </div>
+
+            <div class="app-store-benefits">
+                <div class="benefit">
+                    <h4>Version Tracking</h4>
+                    <p>Every deployment is tied to a specific version with full audit trail back to source.</p>
+                </div>
+                <div class="benefit">
+                    <h4>Source Verification</h4>
+                    <p>Code is automatically inspected before deployment. Rejected versions never run.</p>
+                </div>
+                <div class="benefit">
+                    <h4>No Direct Deploys</h4>
+                    <p>All deployments go through the catalog. No way to deploy untracked code.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="architecture" class="architecture">
+        <div class="container">
+            <h2>Network Architecture</h2>
+            <p class="section-subtitle">One-way trust through a proxy: clients trust the control plane, the control plane trusts agents</p>
+
+            <div class="architecture-diagram">
+                <div class="arch-row">
+                    <div class="arch-node client">
+                        <div class="node-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                                <line x1="8" y1="21" x2="16" y2="21"/>
+                                <line x1="12" y1="17" x2="12" y2="21"/>
+                            </svg>
+                        </div>
+                        <h4>Your Client</h4>
+                        <p class="node-desc">Verifies control plane attestation once, then trusts it to verify agents</p>
+                    </div>
+                    <div class="arch-arrow">
+                        <span class="arrow-label">HTTPS</span>
+                        <span class="arrow-line">&#8594;</span>
+                    </div>
+                    <div class="arch-node cloudflare">
+                        <div class="node-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+                            </svg>
+                        </div>
+                        <h4>Cloudflare Edge</h4>
+                        <p class="node-desc">TLS termination, DDoS protection</p>
+                        <span class="trust-barrier">TRUST BARRIER</span>
+                    </div>
+                </div>
+
+                <div class="arch-row">
+                    <div class="arch-spacer"></div>
+                    <div class="arch-arrow vertical">
+                        <span class="arrow-label">Tunnel</span>
+                        <span class="arrow-line">&#8595;</span>
+                    </div>
+                    <div class="arch-spacer"></div>
+                </div>
+
+                <div class="arch-row">
+                    <div class="arch-spacer"></div>
+                    <div class="arch-node control-plane">
+                        <div class="node-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                            </svg>
+                        </div>
+                        <h4>Control Plane (TDX)</h4>
+                        <p class="node-desc">Runs in TDX. Verifies agents. Routes traffic.</p>
+                        <span class="node-url">app.easyenclave.com</span>
+                    </div>
+                    <div class="arch-spacer"></div>
+                </div>
+
+                <div class="arch-row">
+                    <div class="arch-arrow diagonal-left">
+                        <span class="arrow-label">Proxy</span>
+                        <span class="arrow-line">&#8601;</span>
+                    </div>
+                    <div class="arch-spacer"></div>
+                    <div class="arch-arrow diagonal-right">
+                        <span class="arrow-label">Proxy</span>
+                        <span class="arrow-line">&#8600;</span>
+                    </div>
+                </div>
+
+                <div class="arch-row agents-row">
+                    <div class="arch-node agent">
+                        <div class="node-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+                                <rect x="9" y="9" width="6" height="6"/>
+                                <line x1="9" y1="1" x2="9" y2="4"/>
+                                <line x1="15" y1="1" x2="15" y2="4"/>
+                                <line x1="9" y1="20" x2="9" y2="23"/>
+                                <line x1="15" y1="20" x2="15" y2="23"/>
+                            </svg>
+                        </div>
+                        <h4>Agent 1 (TDX)</h4>
+                        <p class="node-desc">Your service runs here</p>
+                        <span class="node-url">agent-abc.easyenclave.com</span>
+                    </div>
+                    <div class="arch-node agent">
+                        <div class="node-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="4" y="4" width="16" height="16" rx="2" ry="2"/>
+                                <rect x="9" y="9" width="6" height="6"/>
+                                <line x1="9" y1="1" x2="9" y2="4"/>
+                                <line x1="15" y1="1" x2="15" y2="4"/>
+                                <line x1="9" y1="20" x2="9" y2="23"/>
+                                <line x1="15" y1="20" x2="15" y2="23"/>
+                            </svg>
+                        </div>
+                        <h4>Agent 2 (TDX)</h4>
+                        <p class="node-desc">Another service</p>
+                        <span class="node-url">agent-xyz.easyenclave.com</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="architecture-explanation">
+                <h3>One-Way Trust Model</h3>
+                <div class="trust-explanation">
+                    <div class="trust-point">
+                        <h4>1. Client &rarr; Control Plane</h4>
+                        <p>Client verifies control plane's TDX attestation. Once verified, client trusts the control plane to make decisions about agents.</p>
+                    </div>
+                    <div class="trust-point">
+                        <h4>2. Control Plane &rarr; Agents</h4>
+                        <p>Control plane verifies each agent's attestation on registration. Only agents with MRTD in the trusted list receive deployments.</p>
+                    </div>
+                    <div class="trust-point">
+                        <h4>3. Why This Works</h4>
+                        <p>Clients don't need to verify every agent. They verify the control plane once, then trust its proxy to only route traffic to attested agents. This is <strong>one-way trust through a proxy</strong>.</p>
+                    </div>
+                </div>
+
+                <h3>Cloudflare Trust Barrier</h3>
+                <div class="cloudflare-explanation">
+                    <p>All nodes connect to the outside world through Cloudflare Tunnels. This creates a <strong>trust barrier</strong>:</p>
+                    <ul>
+                        <li><strong>Agents have no public IP</strong> - They connect outbound to Cloudflare, which routes inbound traffic to them</li>
+                        <li><strong>Control plane manages tunnels</strong> - When an agent registers, the CP creates a Cloudflare tunnel and DNS record</li>
+                        <li><strong>Cloudflare sees encrypted traffic</strong> - HTTPS terminates at Cloudflare edge, but with Noise Protocol (Level 3), traffic is double-encrypted</li>
+                        <li><strong>Tunnel deletion = instant revocation</strong> - If attestation fails, CP deletes the tunnel immediately cutting off access</li>
+                    </ul>
+                    <div class="cloudflare-note">
+                        <strong>Note:</strong> Cloudflare is trusted for availability (routing) but not for confidentiality (with Noise Protocol). Even if Cloudflare is compromised, Level 3 attestation ensures E2E encryption to the TEE.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="attestation" class="attestation">
+        <div class="container">
+            <h2>Three Levels of Attestation</h2>
+            <p class="section-subtitle">Defense in depth: verify at every layer</p>
+
+            <div class="attestation-levels">
+                <div class="attestation-level">
+                    <div class="level-header">
+                        <span class="level-number">1</span>
+                        <h3>Control Plane Attestation</h3>
+                    </div>
+                    <div class="level-content">
+                        <p class="level-desc">The control plane (app.easyenclave.com) runs in its own TDX enclave. Before trusting it, verify its attestation.</p>
+                        <div class="level-how">
+                            <h4>How it works:</h4>
+                            <ul>
+                                <li>Client calls <code>GET /api/v1/attestation</code> with a nonce</li>
+                                <li>Control plane generates a TDX quote with your nonce in report_data</li>
+                                <li>Client verifies the quote via Intel Trust Authority</li>
+                                <li>MRTD in the quote links to auditable GitHub source code</li>
+                            </ul>
+                        </div>
+                        <pre><code># Verify control plane before trusting it
+quote = requests.get("https://app.easyenclave.com/api/v1/attestation?nonce=abc123")
+# Verify quote with Intel Trust Authority
+# Check MRTD matches known-good control plane build</code></pre>
+                    </div>
+                </div>
+
+                <div class="attestation-level">
+                    <div class="level-header">
+                        <span class="level-number">2</span>
+                        <h3>Proxy-Level Attestation</h3>
+                    </div>
+                    <div class="level-content">
+                        <p class="level-desc">Traffic to your service routes through the control plane proxy. The proxy only forwards to agents with verified MRTD measurements.</p>
+                        <div class="level-how">
+                            <h4>How it works:</h4>
+                            <ul>
+                                <li>Agents register with TDX attestation (MRTD + Intel TA token)</li>
+                                <li>Control plane verifies MRTD is in the trusted allowlist</li>
+                                <li>Only verified agents receive deployments</li>
+                                <li>Proxy routes <code>/proxy/{service}/{path}</code> only to attested agents</li>
+                                <li>Continuous attestation: agents are re-verified periodically</li>
+                            </ul>
+                        </div>
+                        <pre><code># All traffic goes through the proxy
+# Control plane has already verified the agent's attestation
+response = requests.get("https://app.easyenclave.com/proxy/my-app/api/data")
+# You trust this because you verified the control plane (Level 1)</code></pre>
+                    </div>
+                </div>
+
+                <div class="attestation-level">
+                    <div class="level-header">
+                        <span class="level-number">3</span>
+                        <h3>SDK Noise-Level Attestation</h3>
+                    </div>
+                    <div class="level-content">
+                        <p class="level-desc">For maximum security, the SDK establishes a Noise Protocol channel directly to your service and verifies attestation is bound to the encryption key.</p>
+                        <div class="level-how">
+                            <h4>How it works:</h4>
+                            <ul>
+                                <li>SDK initiates Noise Protocol handshake via WebSocket</li>
+                                <li>Service returns its Noise public key + TDX attestation</li>
+                                <li>Attestation report_data contains hash of the Noise public key</li>
+                                <li>SDK verifies: genuine TDX quote + key binding + MRTD</li>
+                                <li>Now SDK knows: traffic is encrypted to a specific key, and that key is inside a verified TDX enclave</li>
+                            </ul>
+                        </div>
+                        <pre><code>from easyenclave.noise import NoiseClient
+
+async with NoiseClient("wss://my-app.easyenclave.com/ws/noise") as client:
+    # This does:
+    # 1. Noise handshake - get service's public key
+    # 2. Request attestation with nonce
+    # 3. Verify TDX quote contains hash(noise_pubkey)
+    # 4. Verify MRTD is in trusted list
+    result = await client.verify()
+
+    if result.secure:
+        # E2E encrypted channel verified to be inside TDX
+        response = await client.call("api", {"secret": "data"})</code></pre>
+                        <p class="level-note"><strong>Key insight:</strong> The Noise public key is generated inside the TEE. By binding it to the attestation, we prove the encryption terminates inside the enclave, not at a proxy or Cloudflare edge.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="attestation-summary">
+                <h3>Choose Your Trust Level</h3>
+                <table class="trust-table">
+                    <thead>
+                        <tr>
+                            <th>Level</th>
+                            <th>Trust Model</th>
+                            <th>Use Case</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>Level 1 only</strong></td>
+                            <td>Trust control plane, it verifies agents</td>
+                            <td>Simple apps, lower sensitivity</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Level 1 + 2</strong></td>
+                            <td>Verify CP, use its proxy</td>
+                            <td>Most applications</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Level 1 + 2 + 3</strong></td>
+                            <td>E2E encryption with key binding</td>
+                            <td>Highest security: keys, secrets, PII</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <section id="getting-started" class="getting-started">
+        <div class="container">
+            <h2>Quick Start</h2>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <div class="step-content">
+                        <h3>Register Your App</h3>
+                        <p>Create an entry in the app catalog. This is a one-time setup.</p>
+                        <pre><code>curl -X POST https://app.easyenclave.com/api/v1/apps \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-app", "source_repo": "myorg/myrepo"}'</code></pre>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <div class="step-content">
+                        <h3>Add the GitHub Action</h3>
+                        <p>Every push publishes a version and deploys it.</p>
+                        <pre><code>- uses: easyenclave/easyenclave/.github/actions/deploy@main
+  with:
+    app_name: my-app
+    compose_file: docker-compose.yml
+    service_name: my-app</code></pre>
+                    </div>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <div class="step-content">
+                        <h3>Connect with E2E Encryption</h3>
+                        <p>Use our SDK for encrypted connections with attestation verification.</p>
+                        <pre><code>from easyenclave.noise import NoiseClient
+
+async with NoiseClient("wss://my-app.easyenclave.com/ws/noise") as client:
+    result = await client.verify()  # Verify attestation
+    response = await client.call("api", {"data": "secret"})</code></pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="cta-section">
+                <p>Browse existing apps, register your own, or check the API documentation.</p>
+                <div class="cta-buttons">
+                    <a href="https://app.easyenclave.com" class="btn btn-primary btn-large">Open App Store</a>
+                    <a href="https://app.easyenclave.com/docs" class="btn btn-secondary btn-large">API Documentation</a>
+                    <a href="https://github.com/easyenclave/easyenclave/tree/main/examples" class="btn btn-secondary btn-large">View Examples</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <h3>EasyEnclave</h3>
+                    <p>The app store for confidential computing.</p>
+                </div>
+                <div class="footer-links">
+                    <div class="footer-column">
+                        <h4>Product</h4>
+                        <a href="https://app.easyenclave.com">App Store</a>
+                        <a href="https://app.easyenclave.com/docs">API Docs</a>
+                    </div>
+                    <div class="footer-column">
+                        <h4>Resources</h4>
+                        <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
+                        <a href="https://github.com/easyenclave/easyenclave/tree/main/examples">Examples</a>
+                    </div>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>Built with Intel TDX</p>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

@@ -31,9 +31,9 @@ from .models import (
     AppVersionListResponse,
     AppVersionResponse,
     Deployment,
-    DeploymentCreateRequest,
     DeploymentCreateResponse,
     DeploymentListResponse,
+    DeployFromVersionRequest,
     HealthResponse,
     Job,
     JobCompleteRequest,
@@ -1085,54 +1085,8 @@ async def delete_agent(agent_id: str):
 
 
 # ==============================================================================
-# Deployment API - Create and track deployments
+# Deployment API - List and track deployments
 # ==============================================================================
-
-
-@app.post("/api/v1/deployments", response_model=DeploymentCreateResponse)
-async def create_deployment(request: DeploymentCreateRequest):
-    """Submit a deployment for an agent.
-
-    The deployment will be picked up by the specified agent on its next poll.
-    Only verified agents can receive deployments.
-    """
-    if not request.compose:
-        raise HTTPException(
-            status_code=400, detail="Deployment requires compose file (base64 encoded)"
-        )
-
-    if not request.agent_id:
-        raise HTTPException(status_code=400, detail="Deployment requires agent_id")
-
-    # Verify agent exists
-    agent = agent_store.get(request.agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Check if agent is verified (MRTD in trusted list)
-    if not agent.verified:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Agent not verified: {agent.verification_error or 'MRTD not trusted'}",
-        )
-
-    # Check if agent is available
-    if agent.status not in ("undeployed", "deployed"):
-        raise HTTPException(
-            status_code=400, detail=f"Agent is not available (status: {agent.status})"
-        )
-
-    deployment = Deployment(
-        compose=request.compose,
-        build_context=request.build_context,
-        config=request.config,
-        agent_id=request.agent_id,
-        status="pending",
-    )
-    deployment_id = deployment_store.create(deployment)
-    logger.info(f"Deployment created: {deployment_id} for agent {request.agent_id}")
-
-    return DeploymentCreateResponse(deployment_id=deployment_id, status="pending")
 
 
 @app.get("/api/v1/deployments", response_model=DeploymentListResponse)
@@ -1472,6 +1426,82 @@ async def get_app_version(name: str, version: str):
         raise HTTPException(status_code=404, detail="Version not found")
 
     return found_version
+
+
+@app.post("/api/v1/apps/{name}/versions/{version}/deploy", response_model=DeploymentCreateResponse)
+async def deploy_app_version(name: str, version: str, request: DeployFromVersionRequest):
+    """Deploy a published app version to an agent.
+
+    This is the only way to create deployments. The app must be registered
+    and the version must be "attested" (passed source inspection).
+
+    Flow:
+    1. Validate app exists
+    2. Validate version exists and status is "attested"
+    3. Validate agent exists, is verified, and available
+    4. Create deployment using version's compose
+    5. Return deployment_id
+    """
+    # 1. Validate app exists
+    found_app = app_store.get_by_name(name)
+    if found_app is None:
+        raise HTTPException(status_code=404, detail=f"App '{name}' not found")
+
+    # 2. Validate version exists
+    found_version = app_version_store.get_by_version(name, version)
+    if found_version is None:
+        raise HTTPException(status_code=404, detail=f"Version '{version}' not found for app '{name}'")
+
+    # 3. Validate version status is "attested"
+    if found_version.status != "attested":
+        if found_version.status == "rejected":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Version '{version}' was rejected: {found_version.rejection_reason}",
+            )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Version '{version}' is not attested (status: {found_version.status})",
+        )
+
+    # 4. Validate agent exists
+    agent = agent_store.get(request.agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # 5. Check if agent is verified (MRTD in trusted list)
+    if not agent.verified:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Agent not verified: {agent.verification_error or 'MRTD not trusted'}",
+        )
+
+    # 6. Check if agent is available
+    if agent.status not in ("undeployed", "deployed"):
+        raise HTTPException(
+            status_code=400, detail=f"Agent is not available (status: {agent.status})"
+        )
+
+    # 7. Build deployment config
+    config = request.config or {}
+    # Default service_name to app name if not provided
+    if "service_name" not in config:
+        config["service_name"] = name
+
+    # 8. Create deployment
+    deployment = Deployment(
+        compose=found_version.compose,
+        config=config,
+        agent_id=request.agent_id,
+        status="pending",
+    )
+    deployment_id = deployment_store.create(deployment)
+    logger.info(
+        f"Deployment created from app version: {deployment_id} "
+        f"({name}@{version} -> agent {request.agent_id})"
+    )
+
+    return DeploymentCreateResponse(deployment_id=deployment_id, status="pending")
 
 
 # ==============================================================================

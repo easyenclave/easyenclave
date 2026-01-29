@@ -31,11 +31,42 @@ Access the service at:
 
 ### Deploy to TDX
 
-Use the GitHub Actions workflow to deploy to a TDX VM:
+Use the GitHub Actions workflows to deploy to TDX VMs:
 
 ```bash
-# Trigger the deploy workflow
-gh workflow run deploy.yml -f vm_name=easyenclave -f memory_gb=8
+# Bootstrap the full infrastructure (control plane + agents)
+gh workflow run bootstrap.yml -f action=bootstrap-all
+
+# Or deploy just the private-llm demo (uses existing infrastructure)
+gh workflow run deploy.yml
+```
+
+See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LLM example.
+
+#### Available Workflows
+
+| Workflow | Trigger | Description |
+|----------|---------|-------------|
+| `bootstrap.yml` | Manual | Bootstrap infrastructure: control plane, agents, trusted MRTDs |
+| `deploy.yml` | Push to main | Auto-deploy private-llm demo to existing infrastructure |
+
+#### Bootstrap Actions
+
+```bash
+# Full bootstrap: control plane + agents
+gh workflow run bootstrap.yml -f action=bootstrap-all -f agent_count=2
+
+# Launch control plane only
+gh workflow run bootstrap.yml -f action=control-plane-only
+
+# Add more agents to existing control plane
+gh workflow run bootstrap.yml -f action=add-agents -f agent_count=3
+
+# Trust a new VM image MRTD
+gh workflow run bootstrap.yml -f action=add-trusted-mrtd -f mrtd="91eb2b44..."
+
+# Clean up all VMs
+gh workflow run bootstrap.yml -f action=cleanup-vms
 ```
 
 ## API Endpoints

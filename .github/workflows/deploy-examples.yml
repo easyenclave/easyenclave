@@ -1,0 +1,41 @@
+# Deploy Examples
+#
+# Deploys example apps when they change. Uses the same action that
+# external users would use, demonstrating the workflow.
+#
+# NOTE: Apps must be pre-registered before deployment. The bootstrap
+# workflow registers example apps as part of initial setup.
+
+name: Deploy Examples
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'examples/**'
+  workflow_dispatch:
+    inputs:
+      example:
+        description: 'Example to deploy'
+        required: true
+        type: choice
+        options:
+          - private-llm
+
+jobs:
+  deploy-private-llm:
+    name: Deploy Private LLM
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' && github.event.inputs.example == 'private-llm' ||
+      github.event_name == 'push' && contains(github.event.head_commit.modified, 'examples/private-llm')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to EasyEnclave
+        uses: ./.github/actions/deploy
+        with:
+          app_name: private-llm
+          compose_file: examples/private-llm/docker-compose.yml
+          service_name: private-llm
+          health_endpoint: /health

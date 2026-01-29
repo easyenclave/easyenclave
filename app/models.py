@@ -607,3 +607,13 @@ class AppVersionListResponse(BaseModel):
 
     versions: list[AppVersion]
     total: int
+
+
+class DeployFromVersionRequest(BaseModel):
+    """Request model for deploying from an app version."""
+
+    agent_id: str = Field(..., description="Target agent ID")
+    config: dict | None = Field(
+        default=None,
+        description="Override config: service_url, health_endpoint, etc.",
+    )

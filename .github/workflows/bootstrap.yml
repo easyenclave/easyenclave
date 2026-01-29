@@ -31,6 +31,7 @@ on:
           - add-agents
           - add-trusted-mrtd
           - deploy-demo
+          - cleanup-vms
       agent_count:
         description: 'Number of agents to launch (for bootstrap-all or add-agents)'
         default: '1'
@@ -187,6 +188,28 @@ jobs:
           fi
 
       # =================================================================
+      # REGISTER EXAMPLE APPS
+      # =================================================================
+      - name: Register Example Apps
+        if: inputs.action == 'bootstrap-all'
+        run: |
+          URL="${{ steps.get-url.outputs.url }}"
+
+          echo "Registering example apps in the app catalog..."
+
+          # Register private-llm app
+          echo "Registering private-llm app..."
+          curl -sf -X POST "${URL}/api/v1/apps" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "private-llm",
+              "description": "Private LLM with E2E encryption",
+              "source_repo": "easyenclave/easyenclave"
+            }' 2>/dev/null || echo "::warning::App 'private-llm' may already exist"
+
+          echo "Example apps registered"
+
+      # =================================================================
       # AGENTS
       # =================================================================
       - name: Launch Agents
@@ -237,6 +260,23 @@ jobs:
           echo "Launched agents: $AGENT_IDS"
 
       # =================================================================
+      # CLEANUP
+      # =================================================================
+      - name: Cleanup VMs
+        if: inputs.action == 'cleanup-vms'
+        run: |
+          echo "Listing running VMs..."
+          python3 infra/tdx_cli.py vm list
+
+          echo ""
+          echo "Deleting all TDX VMs..."
+          python3 infra/tdx_cli.py vm delete all
+
+          echo ""
+          echo "Cleanup complete. Remaining VMs:"
+          python3 infra/tdx_cli.py vm list || echo "(none)"
+
+      # =================================================================
       # SUMMARY
       # =================================================================
       - name: Summary
@@ -255,15 +295,28 @@ jobs:
             echo "Agents: ${{ steps.agents.outputs.agent_ids }}"
             echo ""
           fi
-          echo "To deploy an app, use the API:"
+          echo "To deploy an app via the app catalog flow:"
           echo ""
-          echo "  curl -X POST ${{ steps.get-url.outputs.url }}/api/v1/deployments \\"
-          echo "    -H 'Content-Type: application/json' \\"
-          echo "    -d '{"
-          echo "      \"agent_id\": \"<agent_id>\","
-          echo "      \"compose\": \"<base64-encoded-compose>\","
-          echo "      \"config\": {\"service_name\": \"my-app\", \"health_endpoint\": \"/health\"}"
-          echo "    }'"
+          echo "1. Register app (one-time):"
+          echo "   curl -X POST ${{ steps.get-url.outputs.url }}/api/v1/apps \\"
+          echo "     -H 'Content-Type: application/json' \\"
+          echo "     -d '{\"name\": \"my-app\", \"source_repo\": \"org/repo\"}'"
+          echo ""
+          echo "2. Publish version:"
+          echo "   curl -X POST ${{ steps.get-url.outputs.url }}/api/v1/apps/my-app/versions \\"
+          echo "     -H 'Content-Type: application/json' \\"
+          echo "     -d '{\"version\": \"1.0.0\", \"compose\": \"<base64>\", \"source_commit\": \"<sha>\"}'"
+          echo ""
+          echo "3. Deploy version:"
+          echo "   curl -X POST ${{ steps.get-url.outputs.url }}/api/v1/apps/my-app/versions/1.0.0/deploy \\"
+          echo "     -H 'Content-Type: application/json' \\"
+          echo "     -d '{\"agent_id\": \"<agent_id>\"}'"
+          echo ""
+          echo "Or use the GitHub Action:"
+          echo "   uses: easyenclave/easyenclave/.github/actions/deploy@main"
+          echo "   with:"
+          echo "     app_name: my-app"
+          echo "     compose_file: docker-compose.yml"
           echo ""
           echo "========================================="
 

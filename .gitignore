@@ -8,3 +8,13 @@ venv/
 dist/
 build/
 
+# VM images and build outputs
+infra/output/
+*.qcow2
+*.iso
+
+# Temporary files
+plan
+*.log
+/tmp/
+
