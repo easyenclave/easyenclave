@@ -271,8 +271,43 @@
                 </div>
             </div>
 
-            <div class="agent-cta">
-                <a href="#getting-started" class="btn btn-primary btn-large">Get Started</a>
+            <div class="agent-setup">
+                <h3>Set Up Your Agent</h3>
+                <div class="setup-steps">
+                    <div class="setup-step">
+                        <span class="setup-number">1</span>
+                        <div class="setup-content">
+                            <h4>Get TDX Hardware</h4>
+                            <p>You need an Intel TDX-capable machine. Check with cloud providers (Azure, GCP) or use bare metal with 4th/5th Gen Xeon.</p>
+                        </div>
+                    </div>
+                    <div class="setup-step">
+                        <span class="setup-number">2</span>
+                        <div class="setup-content">
+                            <h4>Clone and Configure</h4>
+                            <pre><code>git clone https://github.com/easyenclave/easyenclave
+cd easyenclave
+cp .env.example .env  # Add your control plane URL</code></pre>
+                        </div>
+                    </div>
+                    <div class="setup-step">
+                        <span class="setup-number">3</span>
+                        <div class="setup-content">
+                            <h4>Launch Your Agent</h4>
+                            <pre><code># Build and launch a TDX agent VM
+python3 infra/tdx_cli.py vm launch --template agent
+
+# Your agent will register automatically with the control plane</code></pre>
+                        </div>
+                    </div>
+                    <div class="setup-step">
+                        <span class="setup-number">4</span>
+                        <div class="setup-content">
+                            <h4>Verify on Control Plane</h4>
+                            <p>Once attestation passes, your agent appears in the <a href="https://app.easyenclave.com">control plane dashboard</a>. You'll start receiving workloads automatically.</p>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </section>

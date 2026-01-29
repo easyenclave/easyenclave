@@ -442,8 +442,72 @@ section h2 {
     color: var(--gray-700);
 }
 
-.agent-cta {
+.agent-setup {
+    max-width: 700px;
+    margin: 0 auto;
+    padding-top: 40px;
+    border-top: 1px solid var(--gray-200);
+}
+
+.agent-setup h3 {
     text-align: center;
+    font-size: 1.5rem;
+    margin-bottom: 30px;
+    color: var(--gray-900);
+}
+
+.setup-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.setup-step {
+    display: flex;
+    gap: 20px;
+    align-items: flex-start;
+}
+
+.setup-number {
+    width: 32px;
+    height: 32px;
+    background: var(--primary);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    flex-shrink: 0;
+}
+
+.setup-content {
+    flex: 1;
+}
+
+.setup-content h4 {
+    font-size: 1rem;
+    color: var(--gray-900);
+    margin-bottom: 8px;
+}
+
+.setup-content p {
+    font-size: 0.9rem;
+    color: var(--gray-600);
+    margin-bottom: 10px;
+}
+
+.setup-content pre {
+    background: var(--gray-900);
+    color: #e5e7eb;
+    padding: 12px 15px;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: 0.8rem;
+}
+
+.setup-content code {
+    font-family: 'Monaco', 'Menlo', monospace;
 }
 
 /* Attestation Section */
