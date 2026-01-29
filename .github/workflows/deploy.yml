@@ -31,23 +31,58 @@ jobs:
               -d "{\"mrtd\": \"$TRUSTED_MRTD\", \"description\": \"TDX runner image\"}" 2>/dev/null || true
           }
 
+          # Check if agent exists and is available (not deploying)
+          check_agent_available() {
+            local agent_id="$1"
+            local status
+            status=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$agent_id" 2>/dev/null)
+            if [ $? -ne 0 ]; then
+              return 1  # Agent doesn't exist
+            fi
+            local deploy_status
+            deploy_status=$(echo "$status" | jq -r '.status // "unknown"')
+            if [ "$deploy_status" = "deploying" ]; then
+              return 2  # Agent is busy
+            fi
+            return 0  # Agent is available
+          }
+
+          # Find an available verified agent
+          find_available_agent() {
+            local agents_json
+            agents_json=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
+            local agent_ids
+            agent_ids=$(echo "$agents_json" | jq -r '[.agents[] | select(.verified == true)] | .[].agent_id')
+
+            for agent_id in $agent_ids; do
+              echo "  Checking agent $agent_id..." >&2
+              if check_agent_available "$agent_id"; then
+                echo "$agent_id"
+                return 0
+              elif [ $? -eq 2 ]; then
+                echo "    Agent is busy deploying, skipping" >&2
+              else
+                echo "    Agent not found in API, skipping" >&2
+              fi
+            done
+            return 1
+          }
+
           launch_agent() {
             echo "Launching new agent..." >&2
             VM_OUTPUT=$(python3 infra/tdx_cli.py vm new --easyenclave-url "$CONTROL_PLANE_URL" --wait)
             echo "$VM_OUTPUT" >&2
 
-            # Wait for agent to register
-            echo "Waiting for agent registration..." >&2
-            for i in {1..60}; do
-              AGENT_DATA=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null)
-              AGENT_ID=$(echo "$AGENT_DATA" | jq -r '.agents[-1].agent_id // empty')
-
+            # Wait for agent to register and be verified
+            echo "Waiting for agent registration and verification..." >&2
+            for i in {1..90}; do
+              AGENT_ID=$(find_available_agent)
               if [ -n "$AGENT_ID" ]; then
-                echo "Agent registered: $AGENT_ID" >&2
+                echo "Agent available: $AGENT_ID" >&2
                 echo "$AGENT_ID"
                 return 0
               fi
-              echo "  Waiting... ($i/60)" >&2
+              echo "  Waiting for verified agent... ($i/90)" >&2
               sleep 5
             done
             return 1
@@ -56,14 +91,29 @@ jobs:
           # Ensure the known MRTD is trusted
           ensure_trusted_mrtd
 
-          # Check for an existing verified agent, or launch a new one
-          AGENT_DATA=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
-          AGENT_ID=$(echo "$AGENT_DATA" | jq -r '[.agents[] | select(.verified == true)] | .[0].agent_id // empty')
+          # Wait for an available agent (with retries)
+          echo "Looking for available verified agent..."
+          AGENT_ID=""
+          for attempt in {1..6}; do
+            AGENT_ID=$(find_available_agent)
+            if [ -n "$AGENT_ID" ]; then
+              # Double-check the agent is still available
+              if check_agent_available "$AGENT_ID"; then
+                echo "Found available agent: $AGENT_ID"
+                break
+              fi
+              echo "Agent $AGENT_ID became unavailable, retrying..."
+              AGENT_ID=""
+            fi
 
-          if [ -n "$AGENT_ID" ]; then
-            echo "Using existing verified agent: $AGENT_ID"
-          else
-            echo "No verified agents found, launching new agent..."
+            if [ $attempt -lt 6 ]; then
+              echo "No available agents, waiting 30s before retry ($attempt/6)..."
+              sleep 30
+            fi
+          done
+
+          if [ -z "$AGENT_ID" ]; then
+            echo "No available agents after retries, launching new agent..."
             AGENT_ID=$(launch_agent) || {
               echo "::error::Agent did not register within timeout"
               exit 1
