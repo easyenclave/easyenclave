@@ -915,9 +915,21 @@ def run_control_plane_mode(config: dict):
         capture_output=True,
     )
 
+    # Build fresh to pick up code changes (no cache)
+    logger.info("Building control plane image (no cache)...")
+    build_result = subprocess.run(
+        ["docker", "compose", "build", "--no-cache"],
+        cwd=CONTROL_PLANE_DIR,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    if build_result.returncode != 0:
+        logger.warning(f"Build warning: {build_result.stderr}")
+
     # Start the control plane
     result = subprocess.run(
-        ["docker", "compose", "up", "--build", "-d"],
+        ["docker", "compose", "up", "-d"],
         cwd=CONTROL_PLANE_DIR,
         env=env,
         capture_output=True,
