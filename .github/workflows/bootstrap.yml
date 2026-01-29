@@ -63,6 +63,84 @@ jobs:
         uses: actions/checkout@v4
 
       # =================================================================
+      # AUTO-UPDATE CONTROL PLANE (on push to app/**)
+      # =================================================================
+      - name: Update Control Plane
+        id: update-cp
+        if: github.event_name == 'push'
+        run: |
+          echo "Looking for running control plane VM..."
+
+          # Find control plane VM
+          VM=$(python3 infra/tdx_cli.py vm list 2>/dev/null | grep -E "trust_domain.*control" | head -1 || true)
+          if [ -z "$VM" ]; then
+            # Try alternative pattern
+            VM=$(python3 infra/tdx_cli.py vm list 2>/dev/null | grep "trust_domain" | head -1 || true)
+          fi
+
+          if [ -z "$VM" ]; then
+            echo "No running control plane VM found - skipping update"
+            echo "Run 'bootstrap-all' or 'control-plane-only' to launch one"
+            exit 0
+          fi
+
+          echo "Found control plane VM: $VM"
+
+          # Get VM IP
+          IP=$(virsh --connect qemu:///system domifaddr "$VM" 2>/dev/null | grep ipv4 | awk '{print $4}' | cut -d/ -f1)
+          if [ -z "$IP" ]; then
+            echo "::error::Could not get IP for VM $VM"
+            exit 1
+          fi
+
+          echo "Control plane IP: $IP"
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+
+          # Wait for SSH to be available
+          echo "Waiting for SSH..."
+          for i in {1..30}; do
+            if ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=yes "ubuntu@${IP}" "echo ok" 2>/dev/null; then
+              echo "SSH is available"
+              break
+            fi
+            echo "  Waiting... ($i/30)"
+            sleep 2
+          done
+
+          # Update the control plane
+          echo "Updating control plane..."
+          ssh -o StrictHostKeyChecking=no "ubuntu@${IP}" << 'ENDSSH'
+            set -e
+            cd /home/ubuntu/easyenclave || cd /workload
+
+            echo "Pulling latest code..."
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "Rebuilding and restarting control plane..."
+            docker compose down || true
+            docker compose up --build -d
+
+            echo "Control plane updated!"
+          ENDSSH
+
+          # Wait for health
+          URL="http://${IP}:${CONTROL_PLANE_PORT}"
+          echo "Waiting for control plane health at $URL..."
+          for i in {1..60}; do
+            if curl -sf "${URL}/health" > /dev/null 2>&1; then
+              echo "Control plane is healthy!"
+              curl -s "${URL}/health" | jq .
+              exit 0
+            fi
+            echo "  Waiting... ($i/60)"
+            sleep 3
+          done
+
+          echo "::error::Control plane did not become healthy after update"
+          exit 1
+
+      # =================================================================
       # CONTROL PLANE
       # =================================================================
       - name: Launch Control Plane
