@@ -12,6 +12,8 @@ on:
 
 env:
   CONTROL_PLANE_URL: https://app.easyenclave.com
+  # TDX VM image MRTD - update when VM image changes
+  TRUSTED_MRTD: "91eb2b44d141d4ece09f0c75c2c53d247a3c68edd7fafe8a3520c942a604a407de03ae6dc5f87f27428b2538873118b7"
 
 jobs:
   deploy-control-plane:
@@ -33,30 +35,11 @@ jobs:
       - name: Deploy Private LLM Demo
         run: |
           ensure_trusted_mrtd() {
-            # Check if we already have trusted MRTDs
-            TRUSTED=$(curl -sf "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" 2>/dev/null | jq -r '.total // 0')
-            if [ "$TRUSTED" -gt 0 ]; then
-              echo "Already have $TRUSTED trusted MRTD(s)" >&2
-              return 0
-            fi
-
-            # Try to find any attestation.json from existing VMs
-            echo "Looking for attestation.json in share directories..." >&2
-            for SHARE_DIR in /var/tmp/tdvirsh/share.*; do
-              if [ -f "${SHARE_DIR}/attestation.json" ]; then
-                MRTD=$(jq -r '.tdx.measurements.mrtd // empty' "${SHARE_DIR}/attestation.json")
-                if [ -n "$MRTD" ]; then
-                  echo "Found MRTD: ${MRTD:0:32}... from $SHARE_DIR" >&2
-                  curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"mrtd\": \"$MRTD\", \"description\": \"CI auto-trusted\"}" || true
-                  return 0
-                fi
-              fi
-            done
-
-            echo "::warning::No attestation.json found in any share directory" >&2
-            return 1
+            # Add the known MRTD to trusted list (idempotent)
+            echo "Ensuring MRTD is trusted: ${TRUSTED_MRTD:0:32}..."
+            curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" \
+              -H "Content-Type: application/json" \
+              -d "{\"mrtd\": \"$TRUSTED_MRTD\", \"description\": \"TDX runner image\"}" 2>/dev/null || true
           }
 
           launch_agent() {
@@ -81,8 +64,8 @@ jobs:
             return 1
           }
 
-          # Try to ensure we have a trusted MRTD (non-fatal if not found)
-          ensure_trusted_mrtd || echo "Warning: No trusted MRTD found. Run Bootstrap workflow first."
+          # Ensure the known MRTD is trusted
+          ensure_trusted_mrtd
 
           # Check for an existing verified agent, or launch a new one
           AGENT_DATA=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
