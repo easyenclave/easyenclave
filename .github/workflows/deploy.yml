@@ -108,4 +108,33 @@ jobs:
             exit 1
           fi
 
-          echo "Demo deployment triggered successfully"
+          DEPLOYMENT_ID=$(echo "$RESPONSE" | jq -r '.deployment_id')
+          echo "Deployment triggered: $DEPLOYMENT_ID"
+
+          # Wait for deployment to be ready
+          echo "Waiting for deployment to complete..."
+          for i in {1..60}; do
+            AGENT_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null || echo '{}')
+            DEPLOY_STATUS=$(echo "$AGENT_STATUS" | jq -r '.current_deployment_id // empty')
+            HEALTH=$(echo "$AGENT_STATUS" | jq -r '.health_status // "unknown"')
+            SERVICE_URL=$(echo "$AGENT_STATUS" | jq -r '.service_url // empty')
+
+            if [ "$HEALTH" = "healthy" ] && [ -n "$SERVICE_URL" ]; then
+              echo "Deployment healthy at $SERVICE_URL"
+              break
+            fi
+            echo "  Status: $HEALTH ($i/60)"
+            sleep 5
+          done
+
+          # Test the deployed service
+          if [ -n "$SERVICE_URL" ]; then
+            echo "Testing service at $SERVICE_URL..."
+            if curl -sf "${SERVICE_URL}/health" > /dev/null 2>&1; then
+              echo "Health check passed!"
+            else
+              echo "::warning::Health check failed, but deployment was accepted"
+            fi
+          fi
+
+          echo "Demo deployment complete"
