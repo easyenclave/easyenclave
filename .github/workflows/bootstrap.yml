@@ -93,7 +93,7 @@ jobs:
           echo "ip=$IP" >> "$GITHUB_OUTPUT"
 
           # Find the share directory for this VM
-          VM_ID=$(echo "$VM" | sed 's/tdvirsh-trust_domain-//')
+          VM_ID="${VM//tdvirsh-trust_domain-/}"
           SHARE_DIR="/var/tmp/tdvirsh/share.${VM_ID}"
 
           if [ ! -d "$SHARE_DIR" ]; then
