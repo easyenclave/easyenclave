@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cloudflare, proxy, source_inspector
+from . import cloudflare, proxy
 from .ita import verify_attestation_token
 from .models import (
     AgentDeployedRequest,
@@ -1302,18 +1302,9 @@ async def delete_app(name: str):
 async def publish_app_version(name: str, request: AppVersionCreateRequest):
     """Publish a new version of an app.
 
-    This endpoint performs source code inspection before accepting the version.
-    If the app has a source_repo configured and source_commit is provided,
-    the source code is downloaded and scanned for forbidden keywords.
-
     Returns:
     - status: "pending", "attesting", "attested", "rejected", or "failed"
     - rejection_reason: If rejected, the reason why
-
-    The version is rejected if:
-    - Source code contains forbidden keywords (see source_inspector.py)
-    - Source code exceeds size limit
-    - Source code cannot be downloaded from GitHub
     """
     found_app = app_store.get_by_name(name)
     if found_app is None:
@@ -1345,45 +1336,10 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
     app_version_store.create(new_version)
     logger.info(f"Version created: {name}@{request.version} ({new_version.version_id})")
 
-    # Perform source code inspection if source_repo and source_commit are available
-    if found_app.source_repo and request.source_commit:
-        logger.info(
-            f"Inspecting source for {name}@{request.version}: "
-            f"{found_app.source_repo}@{request.source_commit}"
-        )
+    # TODO: Re-enable source inspection once GitHub token auth is implemented
+    # See source_inspector.py for the inspection logic
 
-        result = await source_inspector.inspect_source(
-            found_app.source_repo,
-            request.source_commit,
-        )
-
-        if not result.passed:
-            # Reject the version
-            app_version_store.update_status(
-                new_version.version_id,
-                status="rejected",
-                rejection_reason=result.rejection_reason,
-            )
-            logger.warning(
-                f"Version rejected: {name}@{request.version} - {result.rejection_reason}"
-            )
-
-            # Return the rejected version
-            rejected = app_version_store.get(new_version.version_id)
-            return AppVersionResponse(
-                version_id=rejected.version_id,
-                app_name=rejected.app_name,
-                version=rejected.version,
-                status=rejected.status,
-                rejection_reason=rejected.rejection_reason,
-                published_at=rejected.published_at,
-            )
-
-        logger.info(
-            f"Source inspection passed: {result.files_scanned} files, {result.total_size} bytes"
-        )
-
-    # Source inspection passed (or not required) - proceed to attestation
+    # Proceed to attestation
     # For now, mark as attested (attestation happens during deployment)
     app_version_store.update_status(
         new_version.version_id,
