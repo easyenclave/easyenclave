@@ -32,13 +32,19 @@ jobs:
           }
 
           # Check if agent exists and is available (not deploying)
+          # Returns 0 if available, 1 if not found, 2 if busy
           check_agent_available() {
             local agent_id="$1"
             local status
-            status=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$agent_id" 2>/dev/null)
-            if [ $? -ne 0 ]; then
+            local http_code
+            http_code=$(curl -s -o /tmp/agent_status.json -w "%{http_code}" \
+              "$CONTROL_PLANE_URL/api/v1/agents/$agent_id" 2>/dev/null) || true
+
+            if [ "$http_code" != "200" ]; then
               return 1  # Agent doesn't exist
             fi
+
+            status=$(cat /tmp/agent_status.json)
             local deploy_status
             deploy_status=$(echo "$status" | jq -r '.status // "unknown"')
             if [ "$deploy_status" = "deploying" ]; then
@@ -56,10 +62,12 @@ jobs:
 
             for agent_id in $agent_ids; do
               echo "  Checking agent $agent_id..." >&2
-              if check_agent_available "$agent_id"; then
+              check_agent_available "$agent_id"
+              local result=$?
+              if [ $result -eq 0 ]; then
                 echo "$agent_id"
                 return 0
-              elif [ $? -eq 2 ]; then
+              elif [ $result -eq 2 ]; then
                 echo "    Agent is busy deploying, skipping" >&2
               else
                 echo "    Agent not found in API, skipping" >&2
