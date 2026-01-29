@@ -401,9 +401,54 @@ section h2 {
     font-size: 0.9rem;
 }
 
+/* Run an Agent Section */
+.run-agent {
+    background: var(--gray-50);
+}
+
+.agent-options {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 30px;
+    max-width: 800px;
+    margin: 0 auto 40px;
+}
+
+.agent-option {
+    background: white;
+    padding: 30px;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.agent-option h3 {
+    font-size: 1.3rem;
+    color: var(--primary);
+    margin-bottom: 10px;
+}
+
+.agent-option > p {
+    color: var(--gray-600);
+    margin-bottom: 20px;
+}
+
+.agent-option ul {
+    margin-left: 20px;
+}
+
+.agent-option li {
+    margin-bottom: 8px;
+    font-size: 0.95rem;
+    color: var(--gray-700);
+}
+
+.agent-cta {
+    text-align: center;
+}
+
 /* Attestation Section */
 .attestation {
-    background: var(--gray-50);
+    background: white;
 }
 
 .attestation-levels {

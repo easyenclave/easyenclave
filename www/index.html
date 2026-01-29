@@ -15,6 +15,7 @@
                 <a href="#app-store">App Store</a>
                 <a href="#attestation">Attestation</a>
                 <a href="#architecture">Architecture</a>
+                <a href="#run-agent">Run an Agent</a>
                 <a href="#getting-started">Get Started</a>
                 <a href="https://app.easyenclave.com/docs" target="_blank">API Docs</a>
                 <a href="https://app.easyenclave.com" class="btn btn-primary">Open App Store</a>
@@ -232,77 +233,90 @@
                     <ul>
                         <li><strong>Agents have no public IP</strong> - They connect outbound to Cloudflare, which routes inbound traffic to them</li>
                         <li><strong>Control plane manages tunnels</strong> - When an agent registers, the CP creates a Cloudflare tunnel and DNS record</li>
-                        <li><strong>Cloudflare sees encrypted traffic</strong> - HTTPS terminates at Cloudflare edge, but with Noise Protocol (Level 3), traffic is double-encrypted</li>
+                        <li><strong>Cloudflare sees encrypted traffic</strong> - HTTPS terminates at Cloudflare edge, but with Direct Attestation, traffic is double-encrypted</li>
                         <li><strong>Tunnel deletion = instant revocation</strong> - If attestation fails, CP deletes the tunnel immediately cutting off access</li>
                     </ul>
                     <div class="cloudflare-note">
-                        <strong>Note:</strong> Cloudflare is trusted for availability (routing) but not for confidentiality (with Noise Protocol). Even if Cloudflare is compromised, Level 3 attestation ensures E2E encryption to the TEE.
+                        <strong>Note:</strong> Cloudflare is trusted for availability (routing) but not for confidentiality (with Noise Protocol). Even if Cloudflare is compromised, Direct Attestation ensures E2E encryption to the TEE.
                     </div>
                 </div>
+
+            </div>
+        </div>
+    </section>
+
+    <section id="run-agent" class="run-agent">
+        <div class="container">
+            <h2>Run an Agent</h2>
+            <p class="section-subtitle">Join the network - provide compute or deploy workloads</p>
+
+            <div class="agent-options">
+                <div class="agent-option">
+                    <h3>Earn Credits</h3>
+                    <p>Run workloads for others on your TDX hardware</p>
+                    <ul>
+                        <li>Earn system credits based on uptime and reliability</li>
+                        <li>No permission needed - pass attestation and join</li>
+                        <li>Automatic workload assignment from the control plane</li>
+                    </ul>
+                </div>
+                <div class="agent-option">
+                    <h3>Use Credits</h3>
+                    <p>Deploy your apps on the distributed agent network</p>
+                    <ul>
+                        <li>Pay credits to run on verified TDX enclaves</li>
+                        <li>Automatic failover to healthy agents</li>
+                        <li>No need to manage your own hardware</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="agent-cta">
+                <a href="#getting-started" class="btn btn-primary btn-large">Get Started</a>
             </div>
         </div>
     </section>
 
     <section id="attestation" class="attestation">
         <div class="container">
-            <h2>Three Levels of Attestation</h2>
-            <p class="section-subtitle">Defense in depth: verify at every layer</p>
+            <h2>Attestation Models</h2>
+            <p class="section-subtitle">The key question: can your client do attestation?</p>
 
             <div class="attestation-levels">
                 <div class="attestation-level">
                     <div class="level-header">
-                        <span class="level-number">1</span>
-                        <h3>Control Plane Attestation</h3>
+                        <span class="level-number">A</span>
+                        <h3>Proxy Trust (Default)</h3>
                     </div>
                     <div class="level-content">
-                        <p class="level-desc">The control plane (app.easyenclave.com) runs in its own TDX enclave. Before trusting it, verify its attestation.</p>
+                        <p class="level-desc">For clients that <strong>cannot</strong> do TDX attestation: browsers, curl, REST clients. Traffic routes through the control plane, which verifies agents on your behalf.</p>
                         <div class="level-how">
-                            <h4>How it works:</h4>
+                            <h4>Your app doesn't change:</h4>
                             <ul>
-                                <li>Client calls <code>GET /api/v1/attestation</code> with a nonce</li>
-                                <li>Control plane generates a TDX quote with your nonce in report_data</li>
-                                <li>Client verifies the quote via Intel Trust Authority</li>
-                                <li>MRTD in the quote links to auditable GitHub source code</li>
+                                <li>Write a normal Docker app - no TDX-specific code</li>
+                                <li>Deploy with a standard docker-compose.yml</li>
+                                <li>Your app doesn't know it's running in an enclave</li>
+                                <li>Control plane verifies agents using MRTD allowlist</li>
+                                <li>Clients call the proxy URL - that's it</li>
                             </ul>
                         </div>
-                        <pre><code># Verify control plane before trusting it
-quote = requests.get("https://app.easyenclave.com/api/v1/attestation?nonce=abc123")
-# Verify quote with Intel Trust Authority
-# Check MRTD matches known-good control plane build</code></pre>
+                        <pre><code># Your app is just a normal FastAPI/Flask/Express app
+# No attestation code, no special libraries
+curl https://app.easyenclave.com/proxy/my-app/api/data
+
+# Or from a browser - same URL
+fetch("https://app.easyenclave.com/proxy/my-app/api/data")</code></pre>
+                        <p class="level-note"><strong>See it in action:</strong> The <a href="https://github.com/easyenclave/easyenclave/tree/main/examples/private-llm" target="_blank">private-llm example</a> runs Ollama (completely unmodified) inside a TDX enclave. Your existing Docker apps work the same way - just deploy and they're protected.</p>
                     </div>
                 </div>
 
                 <div class="attestation-level">
                     <div class="level-header">
-                        <span class="level-number">2</span>
-                        <h3>Proxy-Level Attestation</h3>
+                        <span class="level-number">B</span>
+                        <h3>Direct Attestation (SDK)</h3>
                     </div>
                     <div class="level-content">
-                        <p class="level-desc">Traffic to your service routes through the control plane proxy. The proxy only forwards to agents with verified MRTD measurements.</p>
-                        <div class="level-how">
-                            <h4>How it works:</h4>
-                            <ul>
-                                <li>Agents register with TDX attestation (MRTD + Intel TA token)</li>
-                                <li>Control plane verifies MRTD is in the trusted allowlist</li>
-                                <li>Only verified agents receive deployments</li>
-                                <li>Proxy routes <code>/proxy/{service}/{path}</code> only to attested agents</li>
-                                <li>Continuous attestation: agents are re-verified periodically</li>
-                            </ul>
-                        </div>
-                        <pre><code># All traffic goes through the proxy
-# Control plane has already verified the agent's attestation
-response = requests.get("https://app.easyenclave.com/proxy/my-app/api/data")
-# You trust this because you verified the control plane (Level 1)</code></pre>
-                    </div>
-                </div>
-
-                <div class="attestation-level">
-                    <div class="level-header">
-                        <span class="level-number">3</span>
-                        <h3>SDK Noise-Level Attestation</h3>
-                    </div>
-                    <div class="level-content">
-                        <p class="level-desc">For maximum security, the SDK establishes a Noise Protocol channel directly to your service and verifies attestation is bound to the encryption key.</p>
+                        <p class="level-desc">For clients that <strong>can</strong> do attestation: applications using the EasyEnclave SDK. The SDK establishes a Noise Protocol channel and verifies attestation is bound to the encryption key.</p>
                         <div class="level-how">
                             <h4>How it works:</h4>
                             <ul>
@@ -310,7 +324,7 @@ response = requests.get("https://app.easyenclave.com/proxy/my-app/api/data")
                                 <li>Service returns its Noise public key + TDX attestation</li>
                                 <li>Attestation report_data contains hash of the Noise public key</li>
                                 <li>SDK verifies: genuine TDX quote + key binding + MRTD</li>
-                                <li>Now SDK knows: traffic is encrypted to a specific key, and that key is inside a verified TDX enclave</li>
+                                <li>This is <strong>mutual attestation</strong> - both sides verified</li>
                             </ul>
                         </div>
                         <pre><code>from easyenclave.noise import NoiseClient
@@ -332,33 +346,34 @@ async with NoiseClient("wss://my-app.easyenclave.com/ws/noise") as client:
             </div>
 
             <div class="attestation-summary">
-                <h3>Choose Your Trust Level</h3>
+                <h3>Which Model Should You Use?</h3>
                 <table class="trust-table">
                     <thead>
                         <tr>
-                            <th>Level</th>
+                            <th>Client Type</th>
+                            <th>Attestation Model</th>
                             <th>Trust Model</th>
-                            <th>Use Case</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td><strong>Level 1 only</strong></td>
-                            <td>Trust control plane, it verifies agents</td>
-                            <td>Simple apps, lower sensitivity</td>
+                            <td><strong>Browser / Web App</strong></td>
+                            <td>Proxy Trust</td>
+                            <td>Trust control plane to verify agents</td>
                         </tr>
                         <tr>
-                            <td><strong>Level 1 + 2</strong></td>
-                            <td>Verify CP, use its proxy</td>
-                            <td>Most applications</td>
+                            <td><strong>curl / REST client</strong></td>
+                            <td>Proxy Trust</td>
+                            <td>Trust control plane to verify agents</td>
                         </tr>
                         <tr>
-                            <td><strong>Level 1 + 2 + 3</strong></td>
-                            <td>E2E encryption with key binding</td>
-                            <td>Highest security: keys, secrets, PII</td>
+                            <td><strong>SDK (highest security)</strong></td>
+                            <td>Direct Attestation</td>
+                            <td>E2E encryption with key binding to TEE</td>
                         </tr>
                     </tbody>
                 </table>
+                <p class="level-note" style="margin-top: 20px;">Most users should use Proxy Trust - it requires no special code and works with any HTTP client. Use Direct Attestation when you need cryptographic proof that your data is encrypted to a verified enclave.</p>
             </div>
         </div>
     </section>
