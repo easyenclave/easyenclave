@@ -103,10 +103,11 @@ jobs:
           echo "Looking for available verified agent..."
           AGENT_ID=""
           for attempt in {1..6}; do
-            AGENT_ID=$(find_available_agent)
+            AGENT_ID=$(find_available_agent) || true
             if [ -n "$AGENT_ID" ]; then
               # Double-check the agent is still available
-              if check_agent_available "$AGENT_ID"; then
+              check_agent_available "$AGENT_ID"
+              if [ $? -eq 0 ]; then
                 echo "Found available agent: $AGENT_ID"
                 break
               fi
