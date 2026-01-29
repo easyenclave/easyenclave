@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 # Forbidden keywords (case-insensitive)
 FORBIDDEN_KEYWORDS = ["HACK", "HAX", "HAX0R"]
 
-# Maximum source code size (100KB)
-MAX_SOURCE_SIZE = 100 * 1024
+# Maximum source code size (10MB)
+MAX_SOURCE_SIZE = 10 * 1024 * 1024
 
 
 @dataclass
