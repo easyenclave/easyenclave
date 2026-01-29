@@ -16,19 +16,8 @@ env:
   TRUSTED_MRTD: "91eb2b44d141d4ece09f0c75c2c53d247a3c68edd7fafe8a3520c942a604a407de03ae6dc5f87f27428b2538873118b7"
 
 jobs:
-  deploy-control-plane:
-    runs-on: [self-hosted, tdx]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Update Control Plane
-        run: |
-          # Trigger control plane update (pull latest code)
-          curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/admin/update" || true
-
   deploy-demo:
     runs-on: [self-hosted, tdx]
-    needs: deploy-control-plane
     steps:
       - uses: actions/checkout@v4
 
