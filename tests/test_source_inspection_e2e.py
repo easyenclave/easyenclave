@@ -124,6 +124,7 @@ def mock_github_repo_large(httpx_mock):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Source inspection temporarily disabled - see commit 09d2b20")
 async def test_publish_clean_app_succeeds(mock_github_repo_clean):
     """Test that a clean app passes inspection and gets published."""
     transport = ASGITransport(app=app)
@@ -156,6 +157,7 @@ async def test_publish_clean_app_succeeds(mock_github_repo_clean):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Source inspection temporarily disabled - see commit 09d2b20")
 async def test_publish_hacked_app_rejected(mock_github_repo_hacked):
     """Test that an app with forbidden keywords is rejected."""
     transport = ASGITransport(app=app)
@@ -189,6 +191,7 @@ async def test_publish_hacked_app_rejected(mock_github_repo_hacked):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Source inspection temporarily disabled - see commit 09d2b20")
 async def test_publish_hacked_app_rejected_via_get(mock_github_repo_hacked):
     """Test that a rejected version shows rejection reason via GET."""
     transport = ASGITransport(app=app)
@@ -228,6 +231,7 @@ async def test_publish_hacked_app_rejected_via_get(mock_github_repo_hacked):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Source inspection temporarily disabled - see commit 09d2b20")
 async def test_publish_with_hax_rejected(mock_github_repo_hax):
     """Test that HAX keyword is also detected (matches hax0r)."""
     transport = ASGITransport(app=app)
@@ -262,6 +266,7 @@ async def test_publish_with_hax_rejected(mock_github_repo_hax):
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="Source inspection temporarily disabled - see commit 09d2b20")
 @pytest.mark.httpx_mock(
     can_send_already_matched_responses=True, assert_all_responses_were_requested=False
 )
