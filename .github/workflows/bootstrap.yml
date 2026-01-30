@@ -232,27 +232,6 @@ jobs:
 
           echo "Trusted MRTD added"
 
-      - name: Add VM Image MRTD
-        if: inputs.action == 'bootstrap-all'
-        run: |
-          URL="${{ steps.get-url.outputs.url }}"
-
-          # Get the MRTD from the control plane VM's attestation
-          SHARE_DIR=$(find /var/tmp/tdvirsh -maxdepth 1 -type d -name 'share.*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-          if [ -f "${SHARE_DIR}/attestation.json" ]; then
-            MRTD=$(jq -r '.tdx.measurements.mrtd // empty' "${SHARE_DIR}/attestation.json")
-            if [ -n "$MRTD" ]; then
-              echo "Adding control plane VM MRTD to trusted list..."
-              curl -sf -X POST "${URL}/api/v1/trusted-mrtds" \
-                -H "Content-Type: application/json" \
-                -d "{
-                  \"mrtd\": \"$MRTD\",
-                  \"description\": \"TDX runner image (auto-added)\"
-                }" || echo "::warning::MRTD may already exist"
-              echo "Added MRTD: ${MRTD:0:32}..."
-            fi
-          fi
-
       # =================================================================
       # REGISTER EXAMPLE APPS
       # =================================================================
@@ -324,6 +303,51 @@ jobs:
           echo "agent_ids=$AGENT_IDS" >> "$GITHUB_OUTPUT"
           echo ""
           echo "Launched agents: $AGENT_IDS"
+
+      - name: Add Trusted MRTD for Agents
+        if: inputs.action == 'bootstrap-all' || inputs.action == 'add-agents'
+        run: |
+          URL="${{ steps.get-url.outputs.url }}"
+
+          # Get MRTDs from all registered agents
+          echo "Getting MRTDs from registered agents..."
+          AGENT_DATA=$(curl -sf "${URL}/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
+
+          # Extract unique MRTDs
+          MRTDS=$(echo "$AGENT_DATA" | jq -r '.agents[].mrtd // empty' | sort -u)
+
+          if [ -z "$MRTDS" ]; then
+            echo "::warning::No agents found with MRTDs"
+            exit 0
+          fi
+
+          for MRTD in $MRTDS; do
+            if [ -z "$MRTD" ] || [ "$MRTD" == "null" ]; then
+              continue
+            fi
+
+            # Check if MRTD already exists
+            EXISTING=$(curl -sf "${URL}/api/v1/trusted-mrtds/${MRTD}" 2>/dev/null || echo "")
+            if [ -n "$EXISTING" ]; then
+              echo "MRTD ${MRTD:0:32}... already in trusted list"
+              continue
+            fi
+
+            # Add MRTD with GitHub attestation
+            echo "Adding MRTD ${MRTD:0:32}... with GitHub attestation"
+            curl -sf -X POST "${URL}/api/v1/trusted-mrtds" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"mrtd\": \"$MRTD\",
+                \"type\": \"agent\",
+                \"description\": \"TDX VM image from GitHub Actions\",
+                \"source_repo\": \"${{ github.repository }}\",
+                \"source_commit\": \"${{ github.sha }}\",
+                \"build_workflow\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"
+              }" || echo "::warning::Failed to add MRTD (may already exist)"
+          done
+
+          echo "Trusted MRTDs added"
 
       # =================================================================
       # CLEANUP
