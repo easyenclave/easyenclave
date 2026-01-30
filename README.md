@@ -197,4 +197,6 @@ easyenclave/
 - [ ] Webhook notifications on registration/deregistration
 - [ ] Service groups/namespaces
 - [ ] Rate limiting
-- [ ] Authentication for registration
+- [ ] Authentication for registration and deployment
+- [ ] Accounting (credit for work, debit to deploy)
+- [ ] Use the private LLM to replace the hack searches for some obvious prompts

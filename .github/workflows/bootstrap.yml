@@ -71,7 +71,6 @@ jobs:
         run: |
           echo "Looking for running control plane VM..."
 
-          # Find control plane VM and its share directory
           VM=$(python3 infra/tdx_cli.py vm list 2>/dev/null | grep -E "trust_domain" | head -1 || true)
 
           if [ -z "$VM" ]; then
@@ -92,52 +91,41 @@ jobs:
           echo "Control plane IP: $IP"
           echo "ip=$IP" >> "$GITHUB_OUTPUT"
 
-          # Find the share directory for this VM
-          VM_ID="${VM//tdvirsh-trust_domain-/}"
-          SHARE_DIR="/var/tmp/tdvirsh/share.${VM_ID}"
-
-          if [ ! -d "$SHARE_DIR" ]; then
-            # Try to find by pattern
-            SHARE_DIR=$(find /var/tmp/tdvirsh -maxdepth 1 -type d -name 'share.*' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-          fi
-
-          if [ -z "$SHARE_DIR" ] || [ ! -d "$SHARE_DIR" ]; then
-            echo "::warning::Could not find share directory for VM, skipping update"
-            exit 0
-          fi
-
-          echo "Share directory: $SHARE_DIR"
-
-          # Write update signal to share directory
-          # The control plane will be updated via docker exec
-          echo "Triggering update via docker..."
-
-          # Get the control plane container name
           URL="http://${IP}:${CONTROL_PLANE_PORT}"
 
-          # Use docker exec through virsh to update the code
-          # Since we can't SSH, we'll restart the VM which will pull latest code
           echo "Restarting control plane VM to pull latest code..."
-
           virsh --connect qemu:///system reboot "$VM"
 
-          # Wait for VM to come back up
+          # Wait for VM to restart (increased from 30s to 60s for tunnel setup)
           echo "Waiting for VM to restart..."
-          sleep 30
+          sleep 60
 
-          # Wait for health
+          # Wait for internal health
           echo "Waiting for control plane health at $URL..."
-          for i in {1..90}; do
+          for i in {1..60}; do
             if curl -sf "${URL}/health" > /dev/null 2>&1; then
-              echo "Control plane is healthy!"
-              curl -s "${URL}/health" | jq .
-              exit 0
+              echo "Internal health check passed!"
+              break
             fi
-            echo "  Waiting... ($i/90)"
+            echo "  Waiting for internal health... ($i/60)"
             sleep 5
           done
 
-          echo "::error::Control plane did not become healthy after restart"
+          # Verify external tunnel connectivity
+          echo "Verifying Cloudflare tunnel at https://app.easyenclave.com..."
+          for i in {1..30}; do
+            if curl -sf "https://app.easyenclave.com/health" > /dev/null 2>&1; then
+              echo "Tunnel connected!"
+              curl -s "https://app.easyenclave.com/health" | jq .
+              exit 0
+            fi
+            echo "  Waiting for tunnel... ($i/30)"
+            sleep 10
+          done
+
+          echo "::error::Cloudflare tunnel not connected after 5 minutes"
+          echo "Internal health check at $URL:"
+          curl -s "${URL}/health" | jq . || echo "Internal health also failing"
           exit 1
 
       # =================================================================
