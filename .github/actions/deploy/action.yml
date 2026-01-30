@@ -223,26 +223,80 @@ runs:
         echo "Deployment ID: $DEPLOYMENT_ID"
         echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
 
-        # Step 7: Wait for health
+        # Step 7: Wait for health (also check for deployment failures)
         echo "Waiting for deployment to become healthy..."
         for i in {1..60}; do
-          STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null || echo '{}')
-          HEALTH=$(echo "$STATUS" | jq -r '.health_status // "unknown"')
-          SERVICE_URL=$(echo "$STATUS" | jq -r '.service_url // empty')
+          # Check agent status
+          AGENT_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null || echo '{}')
+          AGENT_STATE=$(echo "$AGENT_STATUS" | jq -r '.status // "unknown"')
+          HEALTH=$(echo "$AGENT_STATUS" | jq -r '.health_status // "unknown"')
+          SERVICE_URL=$(echo "$AGENT_STATUS" | jq -r '.service_url // empty')
 
-          if [ "$HEALTH" = "healthy" ] && [ -n "$SERVICE_URL" ]; then
-            echo "Service is healthy at $SERVICE_URL"
-            echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
-
-            # Verify health endpoint
-            if curl -sf "${SERVICE_URL}${HEALTH_ENDPOINT}" > /dev/null 2>&1; then
-              echo "Health check passed!"
-              exit 0
-            fi
+          # Check if agent reported an error
+          if [ "$AGENT_STATE" = "error" ]; then
+            # Get deployment details for error message
+            DEPLOY_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/deployments/$DEPLOYMENT_ID" 2>/dev/null || echo '{}')
+            DEPLOY_ERROR=$(echo "$DEPLOY_STATUS" | jq -r '.error // "Unknown error"')
+            echo "::error::Deployment failed on agent: $DEPLOY_ERROR"
+            echo ""
+            echo "Debug info:"
+            echo "  Agent ID: $AGENT_ID"
+            echo "  Agent status: $AGENT_STATE"
+            echo "  Deployment ID: $DEPLOYMENT_ID"
+            echo "  Deployment status: $(echo "$DEPLOY_STATUS" | jq -r '.status // "unknown"')"
+            exit 1
           fi
 
-          echo "  Status: $HEALTH ($i/60)"
+          # Check deployment status directly
+          DEPLOY_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/deployments/$DEPLOYMENT_ID" 2>/dev/null || echo '{}')
+          DEPLOY_STATE=$(echo "$DEPLOY_STATUS" | jq -r '.status // "unknown"')
+
+          if [ "$DEPLOY_STATE" = "failed" ]; then
+            DEPLOY_ERROR=$(echo "$DEPLOY_STATUS" | jq -r '.error // "Unknown error"')
+            echo "::error::Deployment failed: $DEPLOY_ERROR"
+            echo ""
+            echo "Debug info:"
+            echo "  Agent ID: $AGENT_ID"
+            echo "  Agent status: $AGENT_STATE"
+            echo "  Deployment ID: $DEPLOYMENT_ID"
+            exit 1
+          fi
+
+          if [ "$HEALTH" = "healthy" ] && [ -n "$SERVICE_URL" ]; then
+            echo "Agent reports healthy at $SERVICE_URL"
+            echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+
+            # Now wait for the tunnel to become accessible
+            echo "Verifying tunnel connectivity..."
+            for j in {1..30}; do
+              if curl -sf "${SERVICE_URL}${HEALTH_ENDPOINT}" > /dev/null 2>&1; then
+                echo "Tunnel verification passed!"
+                curl -s "${SERVICE_URL}${HEALTH_ENDPOINT}" | head -c 500
+                echo ""
+                echo "Deployment complete!"
+                exit 0
+              fi
+              echo "  Waiting for tunnel... ($j/30)"
+              sleep 10
+            done
+
+            # Tunnel never became accessible
+            echo "::error::Deployment completed but tunnel not accessible after 5 minutes"
+            echo "Agent is healthy but ${SERVICE_URL}${HEALTH_ENDPOINT} is not reachable"
+            exit 1
+          fi
+
+          echo "  Agent: $AGENT_STATE | Health: $HEALTH | Deploy: $DEPLOY_STATE ($i/60)"
           sleep 5
         done
 
-        echo "::warning::Deployment accepted but health check timed out"
+        # On timeout, show more diagnostic info
+        echo "::error::Deployment timed out waiting for health"
+        echo ""
+        echo "Final state:"
+        echo "  Agent status: $(echo "$AGENT_STATUS" | jq -r '.status // "unknown"')"
+        echo "  Agent health: $HEALTH"
+        echo "  Agent service_url: $SERVICE_URL"
+        echo "  Deployment status: $DEPLOY_STATE"
+        echo "  Deployment error: $(echo "$DEPLOY_STATUS" | jq -r '.error // "none"')"
+        exit 1
