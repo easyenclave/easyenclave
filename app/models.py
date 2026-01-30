@@ -289,6 +289,10 @@ class LauncherAgent(BaseModel):
         default=None,
         description="Error message if MRTD verification failed",
     )
+    tunnel_error: str | None = Field(
+        default=None,
+        description="Error message if Cloudflare tunnel creation failed",
+    )
 
     # Continuous attestation tracking
     last_attestation_check: datetime | None = Field(

@@ -804,6 +804,7 @@ async def register_agent(request: AgentRegistrationRequest):
     # Create Cloudflare tunnel for verified agents
     tunnel_token = None
     hostname = None
+    tunnel_error = None
     if verified and cloudflare.is_configured():
         try:
             tunnel_info = await cloudflare.create_tunnel_for_agent(agent_id)
@@ -818,12 +819,14 @@ async def register_agent(request: AgentRegistrationRequest):
             )
             logger.info(f"Created tunnel for agent {agent_id}: {hostname}")
         except Exception as e:
+            tunnel_error = str(e)
             logger.warning(f"Failed to create tunnel for agent {agent_id}: {e}")
-            # Continue without tunnel - agent can still work via direct IP
+            # Store the error on the agent so it's visible in the API
+            agent_store.update_tunnel_error(agent_id, tunnel_error)
 
     logger.info(
         f"Agent registered: {agent_id} ({request.vm_name}) "
-        f"verified={verified} intel_ta={intel_ta_verified}"
+        f"verified={verified} intel_ta={intel_ta_verified} tunnel_error={tunnel_error}"
     )
 
     return AgentRegistrationResponse(

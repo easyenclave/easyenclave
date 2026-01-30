@@ -578,6 +578,18 @@ class AgentStore:
             agent_dict = agent.model_dump()
             agent_dict["tunnel_id"] = tunnel_id
             agent_dict["hostname"] = hostname
+            agent_dict["tunnel_error"] = None  # Clear any previous error
+            self._agents[agent_id] = LauncherAgent(**agent_dict)
+            return True
+
+    def update_tunnel_error(self, agent_id: str, error: str) -> bool:
+        """Store tunnel creation error on agent. Returns False if not found."""
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return False
+            agent_dict = agent.model_dump()
+            agent_dict["tunnel_error"] = error
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
 
