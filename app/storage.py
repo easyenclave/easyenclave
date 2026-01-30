@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 from datetime import datetime, timedelta
 
@@ -11,10 +13,13 @@ from .models import (
     Deployment,
     Job,
     LauncherAgent,
+    MrtdType,
     ServiceRegistration,
     TrustedMrtd,
     Worker,
 )
+
+logger = logging.getLogger(__name__)
 
 # How long a service can be unhealthy before being marked as "down"
 UNHEALTHY_TIMEOUT = timedelta(hours=1)
@@ -863,6 +868,34 @@ class TrustedMrtdStore:
     def __init__(self):
         self._mrtds: dict[str, TrustedMrtd] = {}
         self._lock = threading.RLock()
+        self._load_system_mrtds()
+
+    def _load_system_mrtds(self):
+        """Load hardcoded system MRTDs from environment variables.
+
+        System MRTDs are locked and cannot be modified via API.
+        """
+        # Load agent MRTD
+        agent_mrtd = os.environ.get("SYSTEM_AGENT_MRTD")
+        if agent_mrtd:
+            self._mrtds[agent_mrtd] = TrustedMrtd(
+                mrtd=agent_mrtd,
+                type=MrtdType.AGENT,
+                locked=True,
+                description="System agent launcher image",
+            )
+            logger.info(f"Loaded system agent MRTD: {agent_mrtd[:16]}...")
+
+        # Load proxy MRTD
+        proxy_mrtd = os.environ.get("SYSTEM_PROXY_MRTD")
+        if proxy_mrtd:
+            self._mrtds[proxy_mrtd] = TrustedMrtd(
+                mrtd=proxy_mrtd,
+                type=MrtdType.PROXY,
+                locked=True,
+                description="System cloudflared proxy image",
+            )
+            logger.info(f"Loaded system proxy MRTD: {proxy_mrtd[:16]}...")
 
     def add(self, trusted_mrtd: TrustedMrtd) -> str:
         """Add a trusted MRTD. Returns the MRTD value."""
@@ -888,16 +921,25 @@ class TrustedMrtdStore:
                 return list(self._mrtds.values())
             return [m for m in self._mrtds.values() if m.active]
 
-    def deactivate(self, mrtd: str) -> bool:
-        """Deactivate a trusted MRTD. Returns False if not found."""
+    def deactivate(self, mrtd: str) -> tuple[bool, str | None]:
+        """Deactivate a trusted MRTD.
+
+        Returns:
+            Tuple of (success, error_message).
+            - (True, None) if deactivated successfully
+            - (False, None) if not found
+            - (False, error_message) if locked
+        """
         with self._lock:
             trusted = self._mrtds.get(mrtd)
             if trusted is None:
-                return False
+                return False, None
+            if trusted.locked:
+                return False, "Cannot deactivate system MRTD"
             mrtd_dict = trusted.model_dump()
             mrtd_dict["active"] = False
             self._mrtds[mrtd] = TrustedMrtd(**mrtd_dict)
-            return True
+            return True, None
 
     def activate(self, mrtd: str) -> bool:
         """Activate a trusted MRTD. Returns False if not found."""
@@ -910,13 +952,22 @@ class TrustedMrtdStore:
             self._mrtds[mrtd] = TrustedMrtd(**mrtd_dict)
             return True
 
-    def delete(self, mrtd: str) -> bool:
-        """Delete a trusted MRTD. Returns True if deleted, False if not found."""
+    def delete(self, mrtd: str) -> tuple[bool, str | None]:
+        """Delete a trusted MRTD.
+
+        Returns:
+            Tuple of (success, error_message).
+            - (True, None) if deleted successfully
+            - (False, None) if not found
+            - (False, error_message) if locked
+        """
         with self._lock:
             if mrtd in self._mrtds:
+                if self._mrtds[mrtd].locked:
+                    return False, "Cannot delete system MRTD"
                 del self._mrtds[mrtd]
-                return True
-            return False
+                return True, None
+            return False, None
 
     def clear(self) -> None:
         """Clear all trusted MRTDs (useful for testing)."""

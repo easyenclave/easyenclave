@@ -456,8 +456,9 @@ class DeploymentListResponse(BaseModel):
 class MrtdType(str, Enum):
     """Type of trusted MRTD - agent launcher vs app workload."""
 
-    AGENT = "agent"  # Trusted launcher agent image
-    APP = "app"  # Trusted app workload image
+    AGENT = "agent"  # Trusted launcher agent image (system, locked)
+    PROXY = "proxy"  # Trusted cloudflared proxy image (system, locked)
+    APP = "app"  # Trusted app workload image (dynamic, from app store)
 
 
 class TrustedMrtd(BaseModel):
@@ -469,7 +470,8 @@ class TrustedMrtd(BaseModel):
     """
 
     mrtd: str = Field(..., description="TDX MRTD measurement (hex string)")
-    type: MrtdType = Field(default=MrtdType.AGENT, description="Type: 'agent' for launcher images, 'app' for workloads")
+    type: MrtdType = Field(default=MrtdType.AGENT, description="Type: 'agent' for launcher images, 'proxy' for cloudflared, 'app' for workloads")
+    locked: bool = Field(default=False, description="System MRTDs (agent/proxy) cannot be modified via API")
     description: str = Field(default="", description="Human-readable description")
     image_version: str = Field(default="", description="Image version")
 

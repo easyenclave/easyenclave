@@ -11,6 +11,9 @@ services:
       - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
       - CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID:-}
       - EASYENCLAVE_DOMAIN=${EASYENCLAVE_DOMAIN:-easyenclave.com}
+      # System MRTDs (locked, cannot be modified via API)
+      - SYSTEM_AGENT_MRTD=${SYSTEM_AGENT_MRTD:-}
+      - SYSTEM_PROXY_MRTD=${SYSTEM_PROXY_MRTD:-}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s

@@ -744,22 +744,22 @@ async def register_agent(request: AgentRegistrationRequest):
         mrtd = measurements.get("mrtd", "")
     intel_ta_token = request.attestation.get("tdx", {}).get("intel_ta_token")
 
-    # Step 1: Verify MRTD against trusted list (must be type "agent")
+    # Step 1: Verify MRTD against trusted list (must be type "agent" or "proxy")
     mrtd_verified = False
     verification_error = None
     trusted_mrtd_info = None
     if mrtd:
         trusted_mrtd_info = trusted_mrtd_store.get(mrtd)
         if trusted_mrtd_info and trusted_mrtd_info.active:
-            # Check that this MRTD is for agents, not apps
-            if trusted_mrtd_info.type == MrtdType.AGENT:
+            # Check that this MRTD is for system infrastructure (agent or proxy), not apps
+            if trusted_mrtd_info.type in (MrtdType.AGENT, MrtdType.PROXY):
                 mrtd_verified = True
                 logger.info(
-                    f"Agent MRTD verified: {mrtd[:16]}... "
+                    f"Agent MRTD verified: {mrtd[:16]}... (type: {trusted_mrtd_info.type}) "
                     f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
                 )
             else:
-                verification_error = f"MRTD is type '{trusted_mrtd_info.type}', not 'agent'"
+                verification_error = f"MRTD is type '{trusted_mrtd_info.type}', not 'agent' or 'proxy'"
                 logger.warning(f"Agent MRTD wrong type: {mrtd[:16]}... is '{trusted_mrtd_info.type}' ({request.vm_name})")
         else:
             verification_error = "MRTD not in trusted list"
@@ -1134,6 +1134,9 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
 
     Only agents with MRTDs in this list can receive deployments.
     This ensures only known-good launcher images can run workloads.
+
+    Note: System MRTDs (agent/proxy) are pre-loaded from environment variables
+    and cannot be added or modified via this API.
     """
     if not request.mrtd:
         raise HTTPException(status_code=400, detail="MRTD is required")
@@ -1141,10 +1144,13 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
     # Check if already exists
     existing = trusted_mrtd_store.get(request.mrtd)
     if existing:
+        if existing.locked:
+            raise HTTPException(status_code=403, detail="Cannot modify system MRTD")
         raise HTTPException(status_code=409, detail="MRTD already in trusted list")
 
     trusted = TrustedMrtd(
         mrtd=request.mrtd,
+        type=request.type,
         description=request.description,
         image_version=request.image_version,
         source_repo=request.source_repo,
@@ -1192,8 +1198,13 @@ async def deactivate_trusted_mrtd(mrtd: str):
 
     Agents with this MRTD will no longer be verified for new deployments.
     Existing deployments are not affected.
+
+    Note: System MRTDs (agent/proxy) cannot be deactivated.
     """
-    if not trusted_mrtd_store.deactivate(mrtd):
+    success, error = trusted_mrtd_store.deactivate(mrtd)
+    if error:
+        raise HTTPException(status_code=403, detail=error)
+    if not success:
         raise HTTPException(status_code=404, detail="Trusted MRTD not found")
 
     # Mark agents with this MRTD as unverified
@@ -1224,8 +1235,14 @@ async def activate_trusted_mrtd(mrtd: str):
 
 @app.delete("/api/v1/trusted-mrtds/{mrtd}")
 async def delete_trusted_mrtd(mrtd: str):
-    """Delete a trusted MRTD from the allowlist."""
-    if not trusted_mrtd_store.delete(mrtd):
+    """Delete a trusted MRTD from the allowlist.
+
+    Note: System MRTDs (agent/proxy) cannot be deleted.
+    """
+    success, error = trusted_mrtd_store.delete(mrtd)
+    if error:
+        raise HTTPException(status_code=403, detail=error)
+    if not success:
         raise HTTPException(status_code=404, detail="Trusted MRTD not found")
 
     # Mark agents with this MRTD as unverified
