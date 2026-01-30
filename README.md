@@ -192,6 +192,7 @@ easyenclave/
 
 ## Future Enhancements
 
+- [ ] SQLite storage (replace in-memory dicts, fix persistence)
 - [ ] S3 backup/restore for persistence
 - [ ] Periodic health checks of registered services
 - [ ] Webhook notifications on registration/deregistration
