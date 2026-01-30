@@ -92,8 +92,9 @@ runs:
           "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME" 2>/dev/null) || true
 
         if [ "$HTTP_CODE" != "200" ]; then
-          echo "::error::App '$APP_NAME' is not registered. Please register the app first using:"
+          echo "::error::App '$APP_NAME' is not registered (HTTP $HTTP_CODE). Please register the app first using:"
           echo "::error::  curl -X POST $CONTROL_PLANE_URL/api/v1/apps -H 'Content-Type: application/json' -d '{\"name\": \"$APP_NAME\", \"source_repo\": \"your-org/your-repo\"}'"
+          echo "Response body: $(cat /tmp/app_response.json 2>/dev/null || echo 'empty')"
           exit 1
         fi
         echo "App '$APP_NAME' found"
