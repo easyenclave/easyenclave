@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
@@ -452,17 +453,25 @@ class DeploymentListResponse(BaseModel):
 # ==============================================================================
 
 
-class TrustedMrtd(BaseModel):
-    """A trusted MRTD measurement for launcher agents.
+class MrtdType(str, Enum):
+    """Type of trusted MRTD - agent launcher vs app workload."""
 
-    Each trusted MRTD should be linked to a specific, auditable build of the
-    launcher image. This allows verification that an agent is running code
-    from a known source.
+    AGENT = "agent"  # Trusted launcher agent image
+    APP = "app"  # Trusted app workload image
+
+
+class TrustedMrtd(BaseModel):
+    """A trusted MRTD measurement for launcher agents or app workloads.
+
+    Each trusted MRTD should be linked to a specific, auditable build.
+    Agent MRTDs authorize VMs to register as launcher agents.
+    App MRTDs authorize specific app workload images for deployment.
     """
 
     mrtd: str = Field(..., description="TDX MRTD measurement (hex string)")
+    type: MrtdType = Field(default=MrtdType.AGENT, description="Type: 'agent' for launcher images, 'app' for workloads")
     description: str = Field(default="", description="Human-readable description")
-    image_version: str = Field(default="", description="Launcher image version")
+    image_version: str = Field(default="", description="Image version")
 
     # GitHub attestation - links MRTD to auditable source code
     source_repo: str | None = Field(
@@ -490,8 +499,9 @@ class TrustedMrtdCreateRequest(BaseModel):
     """
 
     mrtd: str = Field(..., description="TDX MRTD measurement (hex string)")
+    type: MrtdType = Field(default=MrtdType.AGENT, description="Type: 'agent' for launcher images, 'app' for workloads")
     description: str = Field(default="", description="Human-readable description")
-    image_version: str = Field(default="", description="Launcher image version")
+    image_version: str = Field(default="", description="Image version")
 
     # GitHub attestation - links MRTD to auditable source code
     source_repo: str | None = Field(

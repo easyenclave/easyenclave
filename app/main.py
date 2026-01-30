@@ -42,6 +42,7 @@ from .models import (
     JobSubmitRequest,
     JobSubmitResponse,
     LauncherAgent,
+    MrtdType,
     ServiceListResponse,
     ServiceRegistration,
     ServiceRegistrationRequest,
@@ -743,18 +744,23 @@ async def register_agent(request: AgentRegistrationRequest):
         mrtd = measurements.get("mrtd", "")
     intel_ta_token = request.attestation.get("tdx", {}).get("intel_ta_token")
 
-    # Step 1: Verify MRTD against trusted list
+    # Step 1: Verify MRTD against trusted list (must be type "agent")
     mrtd_verified = False
     verification_error = None
     trusted_mrtd_info = None
     if mrtd:
         trusted_mrtd_info = trusted_mrtd_store.get(mrtd)
         if trusted_mrtd_info and trusted_mrtd_info.active:
-            mrtd_verified = True
-            logger.info(
-                f"Agent MRTD verified: {mrtd[:16]}... "
-                f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
-            )
+            # Check that this MRTD is for agents, not apps
+            if trusted_mrtd_info.type == MrtdType.AGENT:
+                mrtd_verified = True
+                logger.info(
+                    f"Agent MRTD verified: {mrtd[:16]}... "
+                    f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
+                )
+            else:
+                verification_error = f"MRTD is type '{trusted_mrtd_info.type}', not 'agent'"
+                logger.warning(f"Agent MRTD wrong type: {mrtd[:16]}... is '{trusted_mrtd_info.type}' ({request.vm_name})")
         else:
             verification_error = "MRTD not in trusted list"
             logger.warning(f"Agent MRTD not trusted: {mrtd[:16]}... ({request.vm_name})")
@@ -1162,9 +1168,12 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
 @app.get("/api/v1/trusted-mrtds", response_model=TrustedMrtdListResponse)
 async def list_trusted_mrtds(
     include_inactive: bool = Query(False, description="Include inactive MRTDs"),
+    type: MrtdType | None = Query(None, description="Filter by type: 'agent' or 'app'"),
 ):
-    """List all trusted MRTDs."""
+    """List all trusted MRTDs, optionally filtered by type."""
     mrtds = trusted_mrtd_store.list(include_inactive=include_inactive)
+    if type is not None:
+        mrtds = [m for m in mrtds if m.type == type]
     return TrustedMrtdListResponse(trusted_mrtds=mrtds, total=len(mrtds))
 
 
