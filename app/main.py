@@ -289,6 +289,18 @@ async def recheck_agent_attestation(agent: LauncherAgent) -> tuple[bool, str | N
     Returns:
         Tuple of (attestation_ok, error_message)
     """
+    # Agents without hostnames can't be refreshed remotely.
+    # Trust their existing token until it expires, then they need to re-register.
+    if not agent.hostname:
+        if agent.intel_ta_token and not is_token_expired(agent.intel_ta_token):
+            # Token still valid, keep trusting
+            agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
+            return True, None
+        # No hostname and no valid token - they need to re-register
+        # Don't mark as failed (no tunnel to delete), just note it
+        logger.info(f"Agent {agent.agent_id} has no hostname and token expired, needs re-registration")
+        return True, None  # Return ok so we don't mark as failed
+
     # Quick check: is token expired?
     if is_token_expired(agent.intel_ta_token):
         logger.info(f"Agent {agent.agent_id} token expired, requesting fresh attestation")
@@ -1093,6 +1105,40 @@ async def delete_agent(agent_id: str):
     return {"status": "deleted", "agent_id": agent_id}
 
 
+@app.post("/api/v1/agents/{agent_id}/reset")
+async def reset_agent(agent_id: str):
+    """Reset an agent to undeployed status.
+
+    This is useful to recover agents stuck in attestation_failed status.
+    If the agent doesn't have a tunnel and is verified, creates one.
+    """
+    agent = agent_store.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Reset status to undeployed
+    agent_store.update_status(agent_id, "undeployed", None)
+    agent_store.update_attestation_status(agent_id, attestation_valid=True)
+    logger.info(f"Reset agent {agent_id} to undeployed status")
+
+    # Create tunnel if needed
+    tunnel_created = False
+    if agent.verified and not agent.hostname and cloudflare.is_configured():
+        try:
+            tunnel_info = await cloudflare.create_tunnel_for_agent(agent_id)
+            agent_store.update_tunnel_info(
+                agent_id,
+                tunnel_id=tunnel_info["tunnel_id"],
+                hostname=tunnel_info["hostname"],
+            )
+            tunnel_created = True
+            logger.info(f"Created tunnel for reset agent {agent_id}: {tunnel_info['hostname']}")
+        except Exception as e:
+            logger.warning(f"Failed to create tunnel for reset agent {agent_id}: {e}")
+
+    return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
+
+
 # ==============================================================================
 # Deployment API - List and track deployments
 # ==============================================================================
@@ -1162,11 +1208,24 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
     trusted_mrtd_store.add(trusted)
     logger.info(f"Added trusted MRTD: {request.mrtd[:16]}... ({request.description})")
 
-    # Re-verify any unverified agents that now match
+    # Re-verify any unverified agents that now match and create tunnels
     for agent in agent_store.list():
         if not agent.verified and agent.mrtd == request.mrtd:
             agent_store.set_verified(agent.agent_id, True)
             logger.info(f"Agent {agent.agent_id} now verified")
+
+            # Create tunnel for newly verified agent if they don't have one
+            if not agent.hostname and cloudflare.is_configured():
+                try:
+                    tunnel_info = await cloudflare.create_tunnel_for_agent(agent.agent_id)
+                    agent_store.update_tunnel_info(
+                        agent.agent_id,
+                        tunnel_id=tunnel_info["tunnel_id"],
+                        hostname=tunnel_info["hostname"],
+                    )
+                    logger.info(f"Created tunnel for newly verified agent {agent.agent_id}: {tunnel_info['hostname']}")
+                except Exception as e:
+                    logger.warning(f"Failed to create tunnel for newly verified agent {agent.agent_id}: {e}")
 
     return trusted
 
