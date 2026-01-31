@@ -90,6 +90,12 @@ write_files:
     content: '{json.dumps(config)}'
     owner: root:root
     permissions: '0644'
+
+# Enable login for debugging
+password: tdx
+chpasswd:
+  expire: false
+ssh_pwauth: true
 """
         (iso_dir / "user-data").write_text(user_data)
 

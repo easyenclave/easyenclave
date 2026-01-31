@@ -154,8 +154,9 @@ fi
 cat > /etc/systemd/system/tdx-launcher.service << 'LAUNCHERSERVICE'
 [Unit]
 Description=TDX VM Launcher Service
-After=local-fs.target docker.service cloud-init.target
+After=local-fs.target docker.service cloud-final.service
 Wants=docker.service
+Requires=cloud-final.service
 
 [Service]
 Type=simple
