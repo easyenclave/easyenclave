@@ -13,7 +13,7 @@ This launcher supports two modes:
    - Executes deployments (docker compose)
    - Reports status and attestation back to control plane
 
-The mode is determined by config.json in /mnt/share (set by tdx_cli.py).
+The mode is determined by config.json provisioned via cloud-init.
 """
 
 import base64
@@ -53,10 +53,8 @@ WORKLOAD_DIR = Path("/home/tdx/workload")
 TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
 CONTROL_PLANE_DIR = Path("/home/tdx/easyenclave")
 
-# For config from host via 9p filesystem
-SHARE_DIR = Path("/mnt/share")
-CONFIG_FILE = SHARE_DIR / "config.json"
-STATUS_FILE = SHARE_DIR / "status"
+# Config file provisioned by cloud-init
+CONFIG_FILE = Path("/etc/easyenclave/config.json")
 
 # Log level mapping
 LOG_LEVEL_MAP = {
@@ -281,35 +279,12 @@ def send_container_logs(agent_id: str, since_minutes: int = 1) -> int:
         return 0
 
 
-def mount_share_dir():
-    """Mount the 9p shared directory from host."""
-    if SHARE_DIR.exists() and list(SHARE_DIR.iterdir()):
-        logger.info("Share directory already mounted")
-        return True
-
-    SHARE_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        subprocess.run(
-            ["mount", "-t", "9p", "-o", "trans=virtio", "share", str(SHARE_DIR)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        logger.info("Mounted share directory")
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.warning(f"Could not mount share directory: {e}")
-        return False
-
-
 def get_launcher_config() -> dict:
-    """Read launcher config from shared directory.
+    """Read config from cloud-init provisioned file.
 
     Returns:
         Config dict with mode and other settings
     """
-    mount_share_dir()
-
     if CONFIG_FILE.exists():
         try:
             config = json.loads(CONFIG_FILE.read_text())
@@ -345,12 +320,7 @@ def get_vm_name() -> str:
 
 
 def write_status(status: str):
-    """Write status for monitoring."""
-    try:
-        if SHARE_DIR.exists():
-            STATUS_FILE.write_text(status)
-    except Exception:
-        pass
+    """Log status update (agent reports to control plane via API)."""
     logger.info(f"Status: {status}")
 
 

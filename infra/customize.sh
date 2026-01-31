@@ -125,16 +125,12 @@ COMPOSESCRIPT
 chmod +x /usr/local/bin/compose-with-attestation
 
 # =============================================================================
-# Configure Virtio-fs Mount
+# Configure Cloud-init Config Directory
 # =============================================================================
-echo "[customize.sh] Configuring virtio-fs mount..."
+echo "[customize.sh] Creating config directory for cloud-init..."
 
-# Create mount point for virtio-fs shared directory
-mkdir -p /mnt/share
-
-# Add fstab entry for 9P filesystem (virtiofs doesn't work with TDX due to IOMMU requirements)
-# The mount tag "share" must match the target dir in the XML template
-echo "share /mnt/share 9p trans=virtio,version=9p2000.L,nofail 0 0" >> /etc/fstab
+# Create config directory for cloud-init provisioned config
+mkdir -p /etc/easyenclave
 
 # =============================================================================
 # Install Launcher Service
@@ -154,14 +150,12 @@ if [ -d /tmp/launcher ]; then
     rm -rf /tmp/launcher
 fi
 
-# Create systemd service for file-based launcher
+# Create systemd service for launcher (reads config from cloud-init)
 cat > /etc/systemd/system/tdx-launcher.service << 'LAUNCHERSERVICE'
 [Unit]
-Description=TDX VM File-based Launcher Service
-After=local-fs.target docker.service
+Description=TDX VM Launcher Service
+After=local-fs.target docker.service cloud-init.target
 Wants=docker.service
-# Don't require mount - launcher will wait for it
-# RequiresMountsFor=/mnt/share
 
 [Service]
 Type=simple
@@ -213,5 +207,5 @@ echo "  - cloudflared (for Cloudflare Tunnel)"
 echo "  - trustauthority-cli (if available)"
 echo "  - libtdx-attest-dev (if available)"
 echo "  - compose-with-attestation wrapper"
-echo "  - TDX Launcher service (file-based via 9P)"
-echo "  - 9P mount point at /mnt/share"
+echo "  - TDX Launcher service (config via cloud-init)"
+echo "  - /etc/easyenclave config directory"

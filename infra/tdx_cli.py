@@ -70,48 +70,49 @@ class TDXManager:
         """Get XML template path."""
         return self.infra_dir / "vm_templates" / "trust_domain.xml.template"
 
-    def _create_share_dir(self, vm_id: str, mode: str, config: dict | None = None) -> Path:
-        """Create shared directory with launcher config and code.
+    def _create_cloud_init_iso(self, vm_id: str, config: dict) -> Path:
+        """Create NoCloud ISO with VM configuration.
 
         Args:
             vm_id: Unique VM identifier
-            mode: Launcher mode (control-plane or agent)
-            config: Additional config to pass to launcher
+            config: Configuration dict to pass to launcher
 
         Returns:
-            Path to shared directory
+            Path to cloud-init ISO
         """
-        share_dir = self.WORKDIR / f"share.{vm_id}"
-        share_dir.mkdir(parents=True, exist_ok=True)
+        iso_dir = self.WORKDIR / f"cidata.{vm_id}"
+        iso_dir.mkdir(parents=True, exist_ok=True)
 
-        # Write launcher config
-        launcher_config = {
-            "mode": mode,
-            "vm_id": vm_id,
-            **(config or {}),
-        }
-        (share_dir / "config.json").write_text(json.dumps(launcher_config, indent=2))
+        # user-data with cloud-config
+        user_data = f"""#cloud-config
+write_files:
+  - path: /etc/easyenclave/config.json
+    content: '{json.dumps(config)}'
+    owner: root:root
+    permissions: '0644'
+"""
+        (iso_dir / "user-data").write_text(user_data)
 
-        # Note: We don't copy launcher.py to share for control-plane mode
-        # because the VM image already has the correct launcher with control-plane support.
-        # Copying the wrong launcher would cause issues.
+        # meta-data (required by NoCloud)
+        meta_data = f"instance-id: {vm_id}\nlocal-hostname: tdx-{vm_id[:8]}\n"
+        (iso_dir / "meta-data").write_text(meta_data)
 
-        return share_dir
+        # Create ISO with genisoimage
+        iso_path = self.WORKDIR / f"cidata.{vm_id}.iso"
+        subprocess.run(
+            [
+                "genisoimage",
+                "-output", str(iso_path),
+                "-volid", "cidata",
+                "-joliet",
+                "-rock",
+                str(iso_dir),
+            ],
+            check=True,
+            capture_output=True,
+        )
 
-    def _get_filesystem_xml(self, share_dir: Path) -> str:
-        """Generate filesystem XML for sharing a directory with the VM.
-
-        Args:
-            share_dir: Host directory to share
-
-        Returns:
-            XML fragment for filesystem device
-        """
-        return f"""
-    <filesystem type='mount' accessmode='mapped'>
-      <source dir='{share_dir}'/>
-      <target dir='share'/>
-    </filesystem>"""
+        return iso_path
 
     def _virsh(self, *args, **kwargs) -> subprocess.CompletedProcess:
         """Run virsh command with system connection.
@@ -175,16 +176,21 @@ class TDXManager:
             text=True,
         )
 
-        # Create share directory with config
-        share_dir = self._create_share_dir(rand_str, mode, config)
-        fs_xml = self._get_filesystem_xml(share_dir)
+        # Create cloud-init ISO with config
+        launcher_config = {
+            "mode": mode,
+            "vm_id": rand_str,
+            **(config or {}),
+        }
+        cloud_init_iso = self._create_cloud_init_iso(rand_str, launcher_config)
 
         # Generate domain XML
         xml_content = template.read_text()
         xml_content = xml_content.replace("BASE_IMG_PATH", str(image_path))
         xml_content = xml_content.replace("OVERLAY_IMG_PATH", str(overlay_path))
+        xml_content = xml_content.replace("CLOUD_INIT_ISO", str(cloud_init_iso))
         xml_content = xml_content.replace("DOMAIN", self.DOMAIN_PREFIX)
-        xml_content = xml_content.replace("HOSTDEV_DEVICES", fs_xml)
+        xml_content = xml_content.replace("HOSTDEV_DEVICES", "")
 
         xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.xml"
         xml_path.write_text(xml_content)
@@ -210,7 +216,6 @@ class TDXManager:
             "name": vm_name,
             "uuid": vm_uuid,
             "mode": mode,
-            "share_dir": str(share_dir),
             "info": result.stdout,
         }
 
