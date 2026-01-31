@@ -190,11 +190,15 @@ ssh_pwauth: true
         }
         cloud_init_iso = self._create_cloud_init_iso(rand_str, launcher_config)
 
+        # Create serial console log path for debugging
+        serial_log = self.WORKDIR / f"console.{rand_str}.log"
+
         # Generate domain XML
         xml_content = template.read_text()
         xml_content = xml_content.replace("BASE_IMG_PATH", str(image_path))
         xml_content = xml_content.replace("OVERLAY_IMG_PATH", str(overlay_path))
         xml_content = xml_content.replace("CLOUD_INIT_ISO", str(cloud_init_iso))
+        xml_content = xml_content.replace("SERIAL_LOG_PATH", str(serial_log))
         xml_content = xml_content.replace("DOMAIN", self.DOMAIN_PREFIX)
         xml_content = xml_content.replace("HOSTDEV_DEVICES", "")
 
@@ -222,6 +226,7 @@ ssh_pwauth: true
             "name": vm_name,
             "uuid": vm_uuid,
             "mode": mode,
+            "serial_log": str(serial_log),
             "info": result.stdout,
         }
 

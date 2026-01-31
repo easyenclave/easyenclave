@@ -196,6 +196,19 @@ else
 fi
 
 # =============================================================================
+# Configure Serial Console for Boot Logging
+# =============================================================================
+echo "[customize.sh] Configuring serial console for boot logging..."
+
+# Configure GRUB to output to serial console
+cat >> /etc/default/grub << 'GRUBCONF'
+GRUB_CMDLINE_LINUX_DEFAULT="console=tty0 console=ttyS0,115200"
+GRUB_TERMINAL="console serial"
+GRUB_SERIAL_COMMAND="serial --speed=115200"
+GRUBCONF
+update-grub
+
+# =============================================================================
 # Cleanup
 # =============================================================================
 apt-get clean
