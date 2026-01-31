@@ -46,7 +46,7 @@ class TDXManager:
         return Path(__file__).parent
 
     def _find_image(self, image_path: str | None = None) -> Path:
-        """Find TDX VM image."""
+        """Find TDX VM image. Returns an absolute path."""
         search_paths = [
             image_path,
             os.environ.get("TDX_IMAGE_PATH"),
@@ -62,7 +62,8 @@ class TDXManager:
         ]
         for p in search_paths:
             if p and Path(p).exists():
-                return Path(p)
+                # Return absolute path so qemu-img can find it regardless of cwd
+                return Path(p).resolve()
         raise FileNotFoundError("TDX image not found. Set TDX_IMAGE_PATH or provide --image path.")
 
     def _get_template(self) -> Path:
