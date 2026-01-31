@@ -42,6 +42,12 @@ from .models import (
     JobSubmitRequest,
     JobSubmitResponse,
     LauncherAgent,
+    LogBatchRequest,
+    LogBatchResponse,
+    LogEntry,
+    LogLevel,
+    LogListResponse,
+    LogSource,
     MrtdType,
     ServiceListResponse,
     ServiceRegistration,
@@ -60,6 +66,7 @@ from .storage import (
     app_version_store,
     deployment_store,
     job_store,
+    log_store,
     store,
     trusted_mrtd_store,
     worker_store,
@@ -1697,6 +1704,101 @@ async def proxy_service_request(
         Response from the target service
     """
     return await proxy.proxy_request(service_name, path, request)
+
+
+# ==============================================================================
+# Agent and Workload Logging API
+# ==============================================================================
+
+
+@app.post("/api/v1/agents/{agent_id}/logs", response_model=LogBatchResponse)
+async def submit_agent_logs(agent_id: str, request: LogBatchRequest):
+    """Submit a batch of logs from an agent.
+
+    Agents can submit both their own logs and container logs from deployed workloads.
+    Logs are filtered by the min_level parameter before storage.
+    """
+    agent = agent_store.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    received, stored = log_store.add_batch(agent_id, request.logs, request.min_level)
+    logger.debug(f"Received {received} logs from agent {agent_id}, stored {stored}")
+
+    return LogBatchResponse(received=received, stored=stored)
+
+
+@app.get("/api/v1/agents/{agent_id}/logs", response_model=LogListResponse)
+async def get_agent_logs(
+    agent_id: str,
+    source: LogSource | None = Query(None, description="Filter by source: 'agent' or 'container'"),
+    container_name: str | None = Query(None, description="Filter by container name"),
+    min_level: LogLevel = Query(LogLevel.INFO, description="Minimum log level"),
+    since: datetime | None = Query(None, description="Logs since this time"),
+    until: datetime | None = Query(None, description="Logs until this time"),
+    limit: int = Query(100, description="Maximum number of logs to return", le=1000),
+):
+    """Get logs for a specific agent.
+
+    Returns logs from both the agent and its deployed containers.
+    Logs are returned in reverse chronological order (most recent first).
+    """
+    agent = agent_store.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    logs = log_store.query(
+        agent_id=agent_id,
+        source=source,
+        container_name=container_name,
+        min_level=min_level,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+
+    return LogListResponse(logs=logs, total=len(logs))
+
+
+@app.get("/api/v1/logs", response_model=LogListResponse)
+async def query_logs(
+    agent_id: str | None = Query(None, description="Filter by agent ID"),
+    source: LogSource | None = Query(None, description="Filter by source: 'agent' or 'container'"),
+    container_name: str | None = Query(None, description="Filter by container name"),
+    min_level: LogLevel = Query(LogLevel.INFO, description="Minimum log level"),
+    since: datetime | None = Query(None, description="Logs since this time"),
+    until: datetime | None = Query(None, description="Logs until this time"),
+    limit: int = Query(100, description="Maximum number of logs to return", le=1000),
+):
+    """Query logs across all agents.
+
+    Returns logs from agents and containers, filtered by the provided parameters.
+    Logs are returned in reverse chronological order (most recent first).
+    """
+    logs = log_store.query(
+        agent_id=agent_id,
+        source=source,
+        container_name=container_name,
+        min_level=min_level,
+        since=since,
+        until=until,
+        limit=limit,
+    )
+
+    return LogListResponse(logs=logs, total=len(logs))
+
+
+@app.delete("/api/v1/agents/{agent_id}/logs")
+async def clear_agent_logs(agent_id: str):
+    """Clear all logs for an agent."""
+    agent = agent_store.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    count = log_store.clear_agent_logs(agent_id)
+    logger.info(f"Cleared {count} logs for agent {agent_id}")
+
+    return {"status": "cleared", "count": count}
 
 
 # Serve static files and web GUI

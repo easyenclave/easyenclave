@@ -24,6 +24,7 @@ import os
 import shutil
 import struct
 import subprocess
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 CONTROL_PLANE_URL = os.environ.get("EASYENCLAVE_URL", "https://app.easyenclave.com")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
+LOG_FLUSH_INTERVAL = int(os.environ.get("LOG_FLUSH_INTERVAL", "10"))  # Send logs every 10s
+LOG_MIN_LEVEL = os.environ.get("LOG_MIN_LEVEL", "info").lower()  # Default to INFO level
 VERSION = "1.0.0"
 
 # Modes
@@ -54,6 +57,228 @@ CONTROL_PLANE_DIR = Path("/home/tdx/easyenclave")
 SHARE_DIR = Path("/mnt/share")
 CONFIG_FILE = SHARE_DIR / "config.json"
 STATUS_FILE = SHARE_DIR / "status"
+
+# Log level mapping
+LOG_LEVEL_MAP = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+}
+
+
+class ControlPlaneLogHandler(logging.Handler):
+    """Custom log handler that buffers logs and sends them to the control plane."""
+
+    def __init__(self, min_level: str = "info"):
+        super().__init__()
+        self._buffer: list[dict] = []
+        self._lock = threading.Lock()
+        self._agent_id: str | None = None
+        self._min_level = min_level
+        self.setLevel(LOG_LEVEL_MAP.get(min_level, logging.INFO))
+
+    def set_agent_id(self, agent_id: str):
+        """Set the agent ID for log submission."""
+        self._agent_id = agent_id
+
+    def emit(self, record: logging.LogRecord):
+        """Buffer a log record."""
+        try:
+            level_name = record.levelname.lower()
+            if level_name == "warn":
+                level_name = "warning"
+
+            log_entry = {
+                "source": "agent",
+                "level": level_name,
+                "message": self.format(record),
+                "timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
+                "metadata": {
+                    "module": record.module,
+                    "funcName": record.funcName,
+                    "lineno": record.lineno,
+                },
+            }
+
+            with self._lock:
+                self._buffer.append(log_entry)
+        except Exception:
+            self.handleError(record)
+
+    def flush_to_control_plane(self) -> int:
+        """Send buffered logs to control plane. Returns number of logs sent."""
+        if not self._agent_id:
+            return 0
+
+        with self._lock:
+            if not self._buffer:
+                return 0
+            logs_to_send = self._buffer.copy()
+            self._buffer.clear()
+
+        try:
+            response = requests.post(
+                f"{CONTROL_PLANE_URL}/api/v1/agents/{self._agent_id}/logs",
+                json={"logs": logs_to_send, "min_level": self._min_level},
+                timeout=10,
+            )
+            response.raise_for_status()
+            result = response.json()
+            return result.get("stored", 0)
+        except Exception as e:
+            # Put logs back in buffer if send failed
+            with self._lock:
+                self._buffer = logs_to_send + self._buffer
+            logger.debug(f"Failed to send logs: {e}")
+            return 0
+
+
+# Global control plane log handler
+cp_log_handler: ControlPlaneLogHandler | None = None
+
+
+def setup_control_plane_logging(min_level: str = "info"):
+    """Setup logging to send agent logs to control plane."""
+    global cp_log_handler
+    cp_log_handler = ControlPlaneLogHandler(min_level)
+    cp_log_handler.setFormatter(logging.Formatter("%(message)s"))
+    logging.getLogger().addHandler(cp_log_handler)
+
+
+def set_log_agent_id(agent_id: str):
+    """Set the agent ID for log submission."""
+    global cp_log_handler
+    if cp_log_handler:
+        cp_log_handler.set_agent_id(agent_id)
+
+
+def flush_logs() -> int:
+    """Flush buffered logs to control plane."""
+    global cp_log_handler
+    if cp_log_handler:
+        return cp_log_handler.flush_to_control_plane()
+    return 0
+
+
+def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
+    """Collect docker container logs and return as list of log entries.
+
+    Args:
+        agent_id: Agent ID for log attribution
+        since_minutes: Collect logs from the last N minutes
+
+    Returns:
+        List of log entry dicts
+    """
+    logs = []
+
+    try:
+        # Get list of running containers
+        result = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return logs
+
+        containers = result.stdout.strip().split("\n")
+        containers = [c for c in containers if c]
+
+        for container in containers:
+            try:
+                # Get logs for this container
+                log_result = subprocess.run(
+                    ["docker", "logs", "--since", f"{since_minutes}m", "--timestamps", container],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+
+                # Combine stdout and stderr
+                output = log_result.stdout + log_result.stderr
+
+                for line in output.strip().split("\n"):
+                    if not line:
+                        continue
+
+                    # Parse timestamp and message
+                    # Docker timestamps look like: 2024-01-15T10:30:00.123456789Z
+                    parts = line.split(" ", 1)
+                    if len(parts) == 2:
+                        timestamp_str, message = parts
+                        try:
+                            # Parse docker timestamp
+                            timestamp_str = timestamp_str.rstrip("Z")
+                            if "." in timestamp_str:
+                                timestamp_str = timestamp_str[:26]  # Truncate nanoseconds
+                            timestamp = datetime.fromisoformat(timestamp_str)
+                        except ValueError:
+                            timestamp = datetime.now(timezone.utc)
+                            message = line
+                    else:
+                        timestamp = datetime.now(timezone.utc)
+                        message = line
+
+                    # Detect log level from message
+                    level = "info"
+                    msg_lower = message.lower()
+                    if "error" in msg_lower or "exception" in msg_lower or "traceback" in msg_lower:
+                        level = "error"
+                    elif "warn" in msg_lower:
+                        level = "warning"
+                    elif "debug" in msg_lower:
+                        level = "debug"
+
+                    logs.append({
+                        "source": "container",
+                        "container_name": container,
+                        "level": level,
+                        "message": message,
+                        "timestamp": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
+                    })
+
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Timeout getting logs for container {container}")
+            except Exception as e:
+                logger.debug(f"Failed to get logs for container {container}: {e}")
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout listing containers")
+    except Exception as e:
+        logger.debug(f"Failed to list containers: {e}")
+
+    return logs
+
+
+def send_container_logs(agent_id: str, since_minutes: int = 1) -> int:
+    """Collect and send container logs to control plane.
+
+    Args:
+        agent_id: Agent ID
+        since_minutes: Collect logs from the last N minutes
+
+    Returns:
+        Number of logs sent
+    """
+    logs = collect_container_logs(agent_id, since_minutes)
+    if not logs:
+        return 0
+
+    try:
+        response = requests.post(
+            f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/logs",
+            json={"logs": logs, "min_level": LOG_MIN_LEVEL},
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()
+        return result.get("stored", 0)
+    except Exception as e:
+        logger.debug(f"Failed to send container logs: {e}")
+        return 0
 
 
 def mount_share_dir():
@@ -1034,6 +1259,11 @@ def run_agent_mode(config: dict):
     if config.get("control_plane_url"):
         CONTROL_PLANE_URL = config["control_plane_url"]
 
+    # Setup logging to control plane
+    log_min_level = config.get("log_min_level", LOG_MIN_LEVEL)
+    setup_control_plane_logging(log_min_level)
+    logger.info(f"Log relay enabled (min_level={log_min_level})")
+
     logger.info("Starting in AGENT mode")
     logger.info(f"Control plane: {CONTROL_PLANE_URL}")
     logger.info(f"Poll interval: {POLL_INTERVAL}s")
@@ -1048,10 +1278,15 @@ def run_agent_mode(config: dict):
     agent_id = None
     cloudflared_proc = None
     tunnel_hostname = None  # Track the tunnel hostname for service registration
+    last_log_flush = time.time()
     try:
         reg_response = register_with_control_plane(attestation, vm_name)
         agent_id = reg_response["agent_id"]
         tunnel_hostname = reg_response.get("hostname")
+
+        # Enable log relay now that we have an agent_id
+        set_log_agent_id(agent_id)
+        logger.info(f"Agent log relay active for {agent_id}")
 
         # Start cloudflared if we got a tunnel token
         if reg_response.get("tunnel_token"):
@@ -1073,6 +1308,9 @@ def run_agent_mode(config: dict):
                     reg_response = register_with_control_plane(attestation, vm_name)
                     agent_id = reg_response["agent_id"]
                     tunnel_hostname = reg_response.get("hostname")
+
+                    # Enable log relay now that we have an agent_id
+                    set_log_agent_id(agent_id)
 
                     # Start cloudflared if we got a tunnel token (and not already running)
                     if reg_response.get("tunnel_token") and cloudflared_proc is None:
@@ -1104,6 +1342,9 @@ def run_agent_mode(config: dict):
                     # Update agent_id and tunnel info from new registration
                     agent_id = reg_response["agent_id"]
                     tunnel_hostname = reg_response.get("hostname")
+
+                    # Update log relay with new agent_id
+                    set_log_agent_id(agent_id)
 
                     # Restart cloudflared with new tunnel token if provided
                     if reg_response.get("tunnel_token"):
@@ -1140,6 +1381,22 @@ def run_agent_mode(config: dict):
             logger.warning(f"Request timeout: {e}")
         except Exception as e:
             logger.error(f"Poll error: {e}")
+
+        # Periodically flush logs to control plane
+        if agent_id and time.time() - last_log_flush >= LOG_FLUSH_INTERVAL:
+            try:
+                # Flush agent logs
+                agent_logs_sent = flush_logs()
+
+                # Collect and send container logs
+                container_logs_sent = send_container_logs(agent_id, since_minutes=1)
+
+                if agent_logs_sent or container_logs_sent:
+                    logger.debug(f"Sent {agent_logs_sent} agent logs, {container_logs_sent} container logs")
+            except Exception as e:
+                logger.debug(f"Log flush error: {e}")
+            finally:
+                last_log_flush = time.time()
 
         time.sleep(POLL_INTERVAL)
 
