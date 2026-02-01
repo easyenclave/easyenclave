@@ -82,6 +82,12 @@ jobs:
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
 
     steps:
+      - name: Fix workspace permissions
+        run: |
+          if [ -d "infra/output" ]; then
+            sudo chown -R "$(id -u):$(id -g)" infra/output/ || true
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
