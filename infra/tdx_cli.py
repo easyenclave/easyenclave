@@ -136,8 +136,10 @@ ssh_pwauth: true
         subprocess.run(
             [
                 "genisoimage",
-                "-output", str(iso_path),
-                "-volid", "cidata",
+                "-output",
+                str(iso_path),
+                "-volid",
+                "cidata",
                 "-joliet",
                 "-rock",
                 str(iso_dir),
@@ -476,7 +478,10 @@ To start a new EasyEnclave network:
                                 with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
                                     if resp.status == 200:
                                         stop_tail.set()
-                                        print(f"\n=== Control plane ready at {url} ===", file=sys.stderr)
+                                        print(
+                                            f"\n=== Control plane ready at {url} ===",
+                                            file=sys.stderr,
+                                        )
                                         break
                             except (urllib.error.URLError, TimeoutError):
                                 pass

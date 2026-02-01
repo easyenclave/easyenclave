@@ -231,13 +231,17 @@ def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
                     elif "debug" in msg_lower:
                         level = "debug"
 
-                    logs.append({
-                        "source": "container",
-                        "container_name": container,
-                        "level": level,
-                        "message": message,
-                        "timestamp": timestamp.isoformat() if hasattr(timestamp, "isoformat") else str(timestamp),
-                    })
+                    logs.append(
+                        {
+                            "source": "container",
+                            "container_name": container,
+                            "level": level,
+                            "message": message,
+                            "timestamp": timestamp.isoformat()
+                            if hasattr(timestamp, "isoformat")
+                            else str(timestamp),
+                        }
+                    )
 
             except subprocess.TimeoutExpired:
                 logger.warning(f"Timeout getting logs for container {container}")
@@ -1403,7 +1407,9 @@ def run_agent_mode(config: dict):
                 container_logs_sent = send_container_logs(agent_id, since_minutes=1)
 
                 if agent_logs_sent or container_logs_sent:
-                    logger.debug(f"Sent {agent_logs_sent} agent logs, {container_logs_sent} container logs")
+                    logger.debug(
+                        f"Sent {agent_logs_sent} agent logs, {container_logs_sent} container logs"
+                    )
             except Exception as e:
                 logger.debug(f"Log flush error: {e}")
             finally:

@@ -470,8 +470,13 @@ class TrustedMrtd(BaseModel):
     """
 
     mrtd: str = Field(..., description="TDX MRTD measurement (hex string)")
-    type: MrtdType = Field(default=MrtdType.AGENT, description="Type: 'agent' for launcher images, 'proxy' for cloudflared, 'app' for workloads")
-    locked: bool = Field(default=False, description="System MRTDs (agent/proxy) cannot be modified via API")
+    type: MrtdType = Field(
+        default=MrtdType.AGENT,
+        description="Type: 'agent' for launcher images, 'proxy' for cloudflared, 'app' for workloads",
+    )
+    locked: bool = Field(
+        default=False, description="System MRTDs (agent/proxy) cannot be modified via API"
+    )
     description: str = Field(default="", description="Human-readable description")
     image_version: str = Field(default="", description="Image version")
 
@@ -501,7 +506,9 @@ class TrustedMrtdCreateRequest(BaseModel):
     """
 
     mrtd: str = Field(..., description="TDX MRTD measurement (hex string)")
-    type: MrtdType = Field(default=MrtdType.AGENT, description="Type: 'agent' for launcher images, 'app' for workloads")
+    type: MrtdType = Field(
+        default=MrtdType.AGENT, description="Type: 'agent' for launcher images, 'app' for workloads"
+    )
     description: str = Field(default="", description="Human-readable description")
     image_version: str = Field(default="", description="Image version")
 

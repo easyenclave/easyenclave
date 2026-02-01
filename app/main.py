@@ -304,7 +304,9 @@ async def recheck_agent_attestation(agent: LauncherAgent) -> tuple[bool, str | N
             return True, None
         # No hostname and no valid token - they need to re-register
         # Don't mark as failed (no tunnel to delete), just note it
-        logger.info(f"Agent {agent.agent_id} has no hostname and token expired, needs re-registration")
+        logger.info(
+            f"Agent {agent.agent_id} has no hostname and token expired, needs re-registration"
+        )
         return True, None  # Return ok so we don't mark as failed
 
     # Quick check: is token expired?
@@ -777,8 +779,12 @@ async def register_agent(request: AgentRegistrationRequest):
                     f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
                 )
             else:
-                verification_error = f"MRTD is type '{trusted_mrtd_info.type}', not 'agent' or 'proxy'"
-                logger.warning(f"Agent MRTD wrong type: {mrtd[:16]}... is '{trusted_mrtd_info.type}' ({request.vm_name})")
+                verification_error = (
+                    f"MRTD is type '{trusted_mrtd_info.type}', not 'agent' or 'proxy'"
+                )
+                logger.warning(
+                    f"Agent MRTD wrong type: {mrtd[:16]}... is '{trusted_mrtd_info.type}' ({request.vm_name})"
+                )
         else:
             verification_error = "MRTD not in trusted list"
             logger.warning(f"Agent MRTD not trusted: {mrtd[:16]}... ({request.vm_name})")
@@ -1229,9 +1235,13 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
                         tunnel_id=tunnel_info["tunnel_id"],
                         hostname=tunnel_info["hostname"],
                     )
-                    logger.info(f"Created tunnel for newly verified agent {agent.agent_id}: {tunnel_info['hostname']}")
+                    logger.info(
+                        f"Created tunnel for newly verified agent {agent.agent_id}: {tunnel_info['hostname']}"
+                    )
                 except Exception as e:
-                    logger.warning(f"Failed to create tunnel for newly verified agent {agent.agent_id}: {e}")
+                    logger.warning(
+                        f"Failed to create tunnel for newly verified agent {agent.agent_id}: {e}"
+                    )
 
     return trusted
 
@@ -1500,7 +1510,9 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
     # 2. Validate version exists
     found_version = app_version_store.get_by_version(name, version)
     if found_version is None:
-        raise HTTPException(status_code=404, detail=f"Version '{version}' not found for app '{name}'")
+        raise HTTPException(
+            status_code=404, detail=f"Version '{version}' not found for app '{name}'"
+        )
 
     # 3. Validate version status is "attested"
     if found_version.status != "attested":

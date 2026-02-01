@@ -253,6 +253,7 @@ class TestTrustedMrtdEndpoints:
     def clear_trusted_mrtd_store(self):
         """Clear trusted MRTD store before and after each test."""
         from app.storage import trusted_mrtd_store
+
         trusted_mrtd_store.clear()
         yield
         trusted_mrtd_store.clear()
@@ -355,6 +356,7 @@ class TestLockedSystemMrtds:
     def setup_system_mrtds(self, monkeypatch):
         """Set up system MRTDs via environment variables."""
         from app.storage import trusted_mrtd_store
+
         trusted_mrtd_store.clear()
 
         # Set environment variables before re-loading system MRTDs

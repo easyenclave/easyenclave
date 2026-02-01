@@ -1217,7 +1217,7 @@ class LogStore:
             # Trim old logs if over limit
             if len(self._logs[log.agent_id]) > self._max_logs_per_agent:
                 # Keep the most recent logs
-                self._logs[log.agent_id] = self._logs[log.agent_id][-self._max_logs_per_agent:]
+                self._logs[log.agent_id] = self._logs[log.agent_id][-self._max_logs_per_agent :]
 
             return log.log_id
 
@@ -1276,7 +1276,7 @@ class LogStore:
 
             # Trim old logs if over limit
             if len(self._logs[agent_id]) > self._max_logs_per_agent:
-                self._logs[agent_id] = self._logs[agent_id][-self._max_logs_per_agent:]
+                self._logs[agent_id] = self._logs[agent_id][-self._max_logs_per_agent :]
 
         return received, stored
 
