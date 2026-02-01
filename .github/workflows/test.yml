@@ -125,3 +125,19 @@ jobs:
       - name: Launch agent
         run: |
           python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --wait
+
+      - name: Wait for agent to be verified
+        run: |
+          echo "Waiting for agent to be verified..."
+          for i in {1..30}; do
+            AGENTS=$(curl -sf https://app.easyenclave.com/api/v1/agents 2>/dev/null || echo '{"agents":[]}')
+            VERIFIED=$(echo "$AGENTS" | jq '[.agents[] | select(.verified == true)] | length')
+            if [ "$VERIFIED" -gt 0 ]; then
+              echo "Found $VERIFIED verified agent(s)"
+              exit 0
+            fi
+            echo "No verified agents yet, waiting... ($i/30)"
+            sleep 10
+          done
+          echo "::error::No verified agents after 5 minutes"
+          exit 1
