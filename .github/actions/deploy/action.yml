@@ -139,6 +139,18 @@ runs:
         fi
         echo "Version $VERSION is attested"
 
+        # Helper: Fetch and display agent logs
+        fetch_agent_logs() {
+          local agent_id="$1"
+          local limit="${2:-50}"
+          echo ""
+          echo "=== Agent Logs (last $limit entries) ==="
+          LOGS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$agent_id/logs?limit=$limit&min_level=INFO" 2>/dev/null || echo '{"logs":[]}')
+          echo "$LOGS" | jq -r '.logs[] | "\(.timestamp) [\(.level)] \(.source): \(.message)"' 2>/dev/null || echo "No logs available"
+          echo "=== End Logs ==="
+          echo ""
+        }
+
         # Helper: Check if agent exists and is available
         check_agent_available() {
           local agent_id="$1"
@@ -245,6 +257,7 @@ runs:
             echo "  Agent status: $AGENT_STATE"
             echo "  Deployment ID: $DEPLOYMENT_ID"
             echo "  Deployment status: $(echo "$DEPLOY_STATUS" | jq -r '.status // "unknown"')"
+            fetch_agent_logs "$AGENT_ID" 100
             exit 1
           fi
 
@@ -260,6 +273,7 @@ runs:
             echo "  Agent ID: $AGENT_ID"
             echo "  Agent status: $AGENT_STATE"
             echo "  Deployment ID: $DEPLOYMENT_ID"
+            fetch_agent_logs "$AGENT_ID" 100
             exit 1
           fi
 
@@ -300,4 +314,5 @@ runs:
         echo "  Agent service_url: $SERVICE_URL"
         echo "  Deployment status: $DEPLOY_STATE"
         echo "  Deployment error: $(echo "$DEPLOY_STATUS" | jq -r '.error // "none"')"
+        fetch_agent_logs "$AGENT_ID" 100
         exit 1
