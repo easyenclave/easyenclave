@@ -189,8 +189,12 @@ ssh_pwauth: true
         if not template.exists():
             raise FileNotFoundError(f"XML template not found: {template}")
 
-        # Create overlay image
+        # Create work directory with permissive access (multiple users may run VMs)
         self.WORKDIR.mkdir(parents=True, exist_ok=True)
+        try:
+            self.WORKDIR.chmod(0o1777)  # sticky bit + world writable (like /tmp)
+        except PermissionError:
+            pass  # Directory owned by another user, proceed anyway
         rand_str = uuid.uuid4().hex[:15]
         overlay_path = self.WORKDIR / f"overlay.{rand_str}.qcow2"
 
@@ -235,7 +239,7 @@ ssh_pwauth: true
         xml_content = xml_content.replace("DOMAIN", self.DOMAIN_PREFIX)
         xml_content = xml_content.replace("HOSTDEV_DEVICES", "")
 
-        xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.xml"
+        xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.{rand_str}.xml"
         xml_path.write_text(xml_content)
 
         # Define and start VM
