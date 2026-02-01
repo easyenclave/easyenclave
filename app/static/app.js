@@ -242,8 +242,13 @@ async function showAppDetails(appName) {
 // Show agent details modal
 async function showAgentDetails(agentId) {
     try {
-        const response = await fetch(`${API_BASE}/agents/${agentId}`);
-        const agent = await response.json();
+        const [agentResponse, attestationResponse] = await Promise.all([
+            fetch(`${API_BASE}/agents/${agentId}`),
+            fetch(`${API_BASE}/agents/${agentId}/attestation`)
+        ]);
+
+        const agent = await agentResponse.json();
+        const attestation = await attestationResponse.json();
 
         const details = document.getElementById('agentDetails');
         details.innerHTML = `
@@ -262,7 +267,46 @@ async function showAgentDetails(agentId) {
 
             <div class="detail-section">
                 <h3>Attestation</h3>
-                ${agent.mrtd ? `<p><strong>MRTD:</strong> <code>${escapeHtml(agent.mrtd)}</code></p>` : '<p>No MRTD</p>'}
+                <table>
+                    ${agent.mrtd ? `<tr><td>MRTD</td><td><code class="mrtd-code">${escapeHtml(agent.mrtd.substring(0, 16))}...</code></td></tr>` : ''}
+                    <tr>
+                        <td>Intel TDX</td>
+                        <td>
+                            ${attestation.intel_ta_verified
+                                ? '<span class="verified-badge">Verified</span>'
+                                : '<span class="unverified-badge">Not Verified</span>'}
+                            <a href="https://portal.trustauthority.intel.com" target="_blank" class="attestation-link">Intel Trust Authority</a>
+                        </td>
+                    </tr>
+                    ${attestation.github_attestation ? `
+                    <tr>
+                        <td>GitHub Source</td>
+                        <td>
+                            <span class="verified-badge">Attested</span>
+                            ${attestation.github_attestation.source_repo ? `
+                                <a href="https://github.com/${escapeHtml(attestation.github_attestation.source_repo)}/commit/${escapeHtml(attestation.github_attestation.source_commit || '')}" target="_blank" class="attestation-link">
+                                    ${escapeHtml(attestation.github_attestation.source_repo)}@${escapeHtml((attestation.github_attestation.source_commit || '').substring(0, 7))}
+                                </a>
+                            ` : ''}
+                        </td>
+                    </tr>
+                    ${attestation.github_attestation.build_workflow ? `
+                    <tr>
+                        <td>Build Workflow</td>
+                        <td>
+                            <a href="${escapeHtml(attestation.github_attestation.build_workflow)}" target="_blank" class="attestation-link">
+                                View GitHub Actions Run
+                            </a>
+                        </td>
+                    </tr>
+                    ` : ''}
+                    ` : `
+                    <tr>
+                        <td>GitHub Source</td>
+                        <td><span class="unverified-badge">No attestation</span></td>
+                    </tr>
+                    `}
+                </table>
                 ${agent.verification_error ? `<p class="error-text">Error: ${escapeHtml(agent.verification_error)}</p>` : ''}
             </div>
 
