@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -22,6 +23,33 @@ from pathlib import Path
 # Control plane mode config
 CONTROL_PLANE_MODE = "control-plane"
 AGENT_MODE = "agent"
+
+
+def tail_log(path: str, stop_event: threading.Event) -> None:
+    """Tail a log file until stop_event is set.
+
+    Args:
+        path: Path to the log file to tail
+        stop_event: Event to signal when to stop tailing
+    """
+    try:
+        # Wait for file to exist
+        while not stop_event.is_set() and not Path(path).exists():
+            time.sleep(0.1)
+        if stop_event.is_set():
+            return
+        with open(path, "r") as f:
+            # Read from beginning to catch boot messages
+            while not stop_event.is_set():
+                line = f.readline()
+                if line:
+                    print(line, end="", file=sys.stderr)
+                else:
+                    time.sleep(0.1)
+    except PermissionError:
+        print(f"Warning: Cannot read {path} (permission denied, try sudo)", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Error reading {path}: {e}", file=sys.stderr)
 
 
 class TDXManager:
@@ -190,8 +218,10 @@ ssh_pwauth: true
         }
         cloud_init_iso = self._create_cloud_init_iso(rand_str, launcher_config)
 
-        # Create serial console log path for debugging
+        # Create serial console log file with world-readable permissions
+        # (libvirt will append to it, preserving permissions)
         serial_log = self.WORKDIR / f"console.{rand_str}.log"
+        serial_log.touch(mode=0o644)
 
         # Generate domain XML
         xml_content = template.read_text()
@@ -422,16 +452,30 @@ To start a new EasyEnclave network:
                         result["ip"] = ip
                         result["control_plane_url"] = url
 
+                        # Start tailing serial log in background
+                        serial_log = result.get("serial_log")
+                        stop_tail = threading.Event()
+                        tail_thread = None
+                        if serial_log:
+                            print(f"\n=== Streaming VM console ({serial_log}) ===", file=sys.stderr)
+                            tail_thread = threading.Thread(
+                                target=tail_log, args=(serial_log, stop_tail)
+                            )
+                            tail_thread.daemon = True
+                            tail_thread.start()
+
                         for _ in range(120):  # 4 minutes for docker build on first boot
                             try:
                                 with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
                                     if resp.status == 200:
-                                        print(f"\nControl plane ready at {url}", file=sys.stderr)
+                                        stop_tail.set()
+                                        print(f"\n=== Control plane ready at {url} ===", file=sys.stderr)
                                         break
                             except (urllib.error.URLError, TimeoutError):
                                 pass
                             time.sleep(2)
                         else:
+                            stop_tail.set()
                             print("Warning: Control plane did not become ready", file=sys.stderr)
 
                         # Always print final result with IP
