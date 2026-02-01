@@ -164,8 +164,8 @@ WorkingDirectory=/opt/launcher
 ExecStart=/usr/bin/python3 /opt/launcher/launcher.py
 Restart=on-failure
 RestartSec=5
-StandardOutput=journal
-StandardError=journal
+StandardOutput=journal+console
+StandardError=journal+console
 
 [Install]
 WantedBy=cloud-init.target

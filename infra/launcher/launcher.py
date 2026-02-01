@@ -24,6 +24,7 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
@@ -570,8 +571,9 @@ def start_cloudflared(tunnel_token: str) -> subprocess.Popen | None:
     try:
         proc = subprocess.Popen(
             ["cloudflared", "tunnel", "run", "--token", tunnel_token],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Let output flow to console for visibility
+            stdout=None,
+            stderr=None,
         )
         logger.info(f"Started cloudflared (PID: {proc.pid})")
         return proc
@@ -921,6 +923,37 @@ def handle_self_update():
 # ==============================================================================
 
 
+def stream_container_logs(cwd: Path, stop_event: threading.Event) -> None:
+    """Stream docker compose logs to stdout in a background thread.
+
+    Args:
+        cwd: Working directory containing docker-compose.yml
+        stop_event: Event to signal when to stop streaming
+    """
+    try:
+        proc = subprocess.Popen(
+            ["docker", "compose", "logs", "-f", "--tail", "100"],
+            cwd=cwd,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        while not stop_event.is_set():
+            if proc.poll() is not None:
+                # Process exited, restart it
+                time.sleep(1)
+                if not stop_event.is_set():
+                    proc = subprocess.Popen(
+                        ["docker", "compose", "logs", "-f", "--tail", "10"],
+                        cwd=cwd,
+                        stdout=sys.stdout,
+                        stderr=sys.stderr,
+                    )
+            time.sleep(0.5)
+        proc.terminate()
+    except Exception as e:
+        logger.warning(f"Container log streaming error: {e}")
+
+
 def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | None:
     """Create Cloudflare tunnel for the control plane.
 
@@ -1035,8 +1068,9 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
         logger.info("Starting cloudflared for control plane...")
         proc = subprocess.Popen(
             ["cloudflared", "tunnel", "run", "--token", tunnel_token],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            # Let output flow to console for visibility
+            stdout=None,
+            stderr=None,
         )
         logger.info(f"Started cloudflared (PID: {proc.pid})")
         logger.info(f"Control plane available at: https://{hostname}")
@@ -1111,33 +1145,40 @@ def run_control_plane_mode(config: dict):
     )
 
     # Build fresh to pick up code changes (no cache)
+    # Output flows to console for visibility during --wait
     logger.info("Building control plane image (no cache)...")
     build_result = subprocess.run(
         ["docker", "compose", "build", "--no-cache"],
         cwd=CONTROL_PLANE_DIR,
         env=env,
-        capture_output=True,
-        text=True,
     )
     if build_result.returncode != 0:
-        logger.warning(f"Build warning: {build_result.stderr}")
+        logger.warning("Docker build failed, check output above")
 
     # Start the control plane
     result = subprocess.run(
         ["docker", "compose", "up", "-d"],
         cwd=CONTROL_PLANE_DIR,
         env=env,
-        capture_output=True,
-        text=True,
     )
 
     if result.returncode != 0:
-        logger.error(f"Docker compose failed: {result.stderr}")
+        logger.error("Docker compose up failed, check output above")
         write_status("control-plane-error")
-        raise RuntimeError(f"Failed to start control plane: {result.stderr}")
+        raise RuntimeError("Failed to start control plane")
 
     logger.info("Control plane started")
     write_status("control-plane-running")
+
+    # Start streaming container logs in background
+    log_stop_event = threading.Event()
+    log_thread = threading.Thread(
+        target=stream_container_logs,
+        args=(CONTROL_PLANE_DIR, log_stop_event),
+        daemon=True,
+    )
+    log_thread.start()
+    logger.info("Container log streaming started")
 
     # Wait for health check
     health_url = f"http://localhost:{port}/health"

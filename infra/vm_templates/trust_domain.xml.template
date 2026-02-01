@@ -68,6 +68,7 @@
   </vsock>
   HOSTDEV_DEVICES
   </devices>
+  <seclabel type='none'/>
   <allowReboot value='no'/>
   <launchSecurity type='tdx'>
     <policy>0x10000000</policy>

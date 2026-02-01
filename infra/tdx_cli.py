@@ -145,6 +145,7 @@ ssh_pwauth: true
             check=True,
             capture_output=True,
         )
+        iso_path.chmod(0o644)
 
         return iso_path
 
@@ -209,6 +210,8 @@ ssh_pwauth: true
             capture_output=True,
             text=True,
         )
+        # Make overlay writable by QEMU (runs as ubuntu per qemu.conf)
+        overlay_path.chmod(0o666)
 
         # Create cloud-init ISO with config
         launcher_config = {
