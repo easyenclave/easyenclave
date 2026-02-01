@@ -38,7 +38,7 @@ def tail_log(path: str, stop_event: threading.Event) -> None:
             time.sleep(0.1)
         if stop_event.is_set():
             return
-        with open(path, "r") as f:
+        with open(path) as f:
             # Read from beginning to catch boot messages
             while not stop_event.is_set():
                 line = f.readline()

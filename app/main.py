@@ -44,7 +44,6 @@ from .models import (
     LauncherAgent,
     LogBatchRequest,
     LogBatchResponse,
-    LogEntry,
     LogLevel,
     LogListResponse,
     LogSource,
