@@ -126,6 +126,35 @@ jobs:
         run: |
           python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --wait
 
+      - name: Trust agent MRTD
+        run: |
+          echo "Waiting for agent to register..."
+          for i in {1..12}; do
+            AGENTS=$(curl -sf https://app.easyenclave.com/api/v1/agents 2>/dev/null || echo '{"agents":[]}')
+            MRTD=$(echo "$AGENTS" | jq -r '.agents[0].mrtd // empty')
+            if [ -n "$MRTD" ]; then
+              echo "Found agent with MRTD: ${MRTD:0:32}..."
+              echo "Adding MRTD to trusted list..."
+              curl -sf -X POST "https://app.easyenclave.com/api/v1/trusted-mrtds" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"mrtd\": \"$MRTD\",
+                  \"mrtd_type\": \"agent\",
+                  \"description\": \"TDX runner agent (CI build)\",
+                  \"source_repo\": \"easyenclave/easyenclave\",
+                  \"source_commit\": \"$GITHUB_SHA\",
+                  \"build_workflow\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"
+                }"
+              echo ""
+              echo "MRTD trusted successfully"
+              exit 0
+            fi
+            echo "No agent yet, waiting... ($i/12)"
+            sleep 5
+          done
+          echo "::error::No agent registered after 1 minute"
+          exit 1
+
       - name: Wait for agent to be verified
         run: |
           echo "Waiting for agent to be verified..."
