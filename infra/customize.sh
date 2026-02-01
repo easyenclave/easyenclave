@@ -154,9 +154,8 @@ fi
 cat > /etc/systemd/system/tdx-launcher.service << 'LAUNCHERSERVICE'
 [Unit]
 Description=TDX VM Launcher Service
-After=local-fs.target docker.service cloud-final.service
+After=cloud-final.service docker.service
 Wants=docker.service
-Requires=cloud-final.service
 
 [Service]
 Type=simple
@@ -169,7 +168,7 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=cloud-init.target
 LAUNCHERSERVICE
 
 # Enable launcher service to start on boot
