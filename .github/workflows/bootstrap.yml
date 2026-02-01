@@ -59,6 +59,13 @@ jobs:
       agent_ids: ${{ steps.agents.outputs.agent_ids }}
 
     steps:
+      - name: Fix workspace permissions
+        run: |
+          # Fix root-owned files from previous build_image.sh runs
+          if [ -d "infra/output" ]; then
+            sudo chown -R "$(id -u):$(id -g)" infra/output/ || true
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -76,6 +83,9 @@ jobs:
           else
             sudo bash infra/build_image.sh
           fi
+
+          # Fix ownership so checkout can clean up later
+          sudo chown -R "$(id -u):$(id -g)" infra/output/
 
           echo "Image rebuilt: infra/output/tdx-runner.qcow2"
 
