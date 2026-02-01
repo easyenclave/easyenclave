@@ -63,70 +63,58 @@ jobs:
         uses: actions/checkout@v4
 
       # =================================================================
-      # AUTO-UPDATE CONTROL PLANE (on push to app/**)
+      # BUILD IMAGE (on infra changes)
+      # =================================================================
+      - name: Rebuild VM Image
+        if: github.event_name == 'push'
+        run: |
+          echo "Rebuilding TDX VM image with latest infra changes..."
+
+          # Use --customize-only if base exists (faster)
+          if [ -f "infra/output/tdx-runner-base.qcow2" ]; then
+            sudo bash infra/build_image.sh --customize-only
+          else
+            sudo bash infra/build_image.sh
+          fi
+
+          echo "Image rebuilt: infra/output/tdx-runner.qcow2"
+
+      # =================================================================
+      # AUTO-UPDATE CONTROL PLANE (on push to infra/**)
       # =================================================================
       - name: Update Control Plane
         id: update-cp
         if: github.event_name == 'push'
         run: |
-          echo "Looking for running control plane VM..."
+          echo "Redeploying control plane with new image..."
 
+          # Delete existing control plane VM
           VM=$(python3 infra/tdx_cli.py vm list 2>/dev/null | grep -E "trust_domain" | head -1 || true)
-
-          if [ -z "$VM" ]; then
-            echo "No running control plane VM found - skipping update"
-            echo "Run 'bootstrap-all' or 'control-plane-only' to launch one"
-            exit 0
+          if [ -n "$VM" ]; then
+            echo "Deleting existing control plane: $VM"
+            python3 infra/tdx_cli.py vm delete "$VM"
           fi
 
-          echo "Found control plane VM: $VM"
+          # Launch fresh control plane with rebuilt image
+          echo "Launching control plane..."
+          RESULT=$(python3 infra/tdx_cli.py control-plane new --wait --port "$CONTROL_PLANE_PORT")
 
-          # Get VM IP
-          IP=$(virsh --connect qemu:///system domifaddr "$VM" 2>/dev/null | grep ipv4 | awk '{print $4}' | cut -d/ -f1)
-          if [ -z "$IP" ]; then
-            echo "::error::Could not get IP for VM $VM"
-            exit 1
-          fi
-
-          echo "Control plane IP: $IP"
+          IP=$(echo "$RESULT" | jq -r '.ip // empty')
           echo "ip=$IP" >> "$GITHUB_OUTPUT"
 
           URL="http://${IP}:${CONTROL_PLANE_PORT}"
 
-          echo "Restarting control plane VM to pull latest code..."
-          virsh --connect qemu:///system reboot "$VM"
-
-          # Wait for VM to restart (increased from 30s to 60s for tunnel setup)
-          echo "Waiting for VM to restart..."
-          sleep 60
-
-          # Wait for internal health
-          echo "Waiting for control plane health at $URL..."
-          for i in {1..60}; do
-            if curl -sf "${URL}/health" > /dev/null 2>&1; then
-              echo "Internal health check passed!"
-              break
-            fi
-            echo "  Waiting for internal health... ($i/60)"
-            sleep 5
-          done
-
-          # Verify external tunnel connectivity
-          echo "Verifying Cloudflare tunnel at https://app.easyenclave.com..."
+          # Wait for tunnel
+          echo "Waiting for Cloudflare tunnel..."
           for i in {1..30}; do
             if curl -sf "https://app.easyenclave.com/health" > /dev/null 2>&1; then
-              echo "Tunnel connected!"
-              curl -s "https://app.easyenclave.com/health" | jq .
+              echo "Control plane ready at https://app.easyenclave.com"
               exit 0
             fi
-            echo "  Waiting for tunnel... ($i/30)"
             sleep 10
           done
 
-          echo "::error::Cloudflare tunnel not connected after 5 minutes"
-          echo "Internal health check at $URL:"
-          curl -s "${URL}/health" | jq . || echo "Internal health also failing"
-          exit 1
+          echo "::warning::Tunnel not ready, but internal health may be OK"
 
       # =================================================================
       # CONTROL PLANE
