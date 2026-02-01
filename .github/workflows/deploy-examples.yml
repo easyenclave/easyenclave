@@ -17,15 +17,67 @@ jobs:
     name: Deploy Private LLM
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push proxy image
+        run: |
+          IMAGE=ghcr.io/${{ github.repository }}/private-llm-proxy:${{ github.sha }}
+          docker build -t "$IMAGE" examples/private-llm/app/
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Generate compose file with pre-built image
+        run: |
+          cat > /tmp/docker-compose.yml << 'EOF'
+          services:
+            ollama:
+              image: ollama/ollama:latest
+              volumes:
+                - ollama_data:/root/.ollama
+              healthcheck:
+                test: ["CMD", "curl", "-f", "http://localhost:11434/"]
+                interval: 10s
+                timeout: 5s
+                retries: 5
+
+            proxy:
+              image: $IMAGE
+              ports:
+                - "8080:8080"
+              environment:
+                - OLLAMA_HOST=http://ollama:11434
+                - MODEL_NAME=qwen2.5:0.5b
+              volumes:
+                - /share:/share:ro
+                - /sys/kernel/config/tsm/report:/sys/kernel/config/tsm/report
+              depends_on:
+                ollama:
+                  condition: service_healthy
+
+          volumes:
+            ollama_data:
+          EOF
+          # Substitute the image
+          sed -i "s|\$IMAGE|$IMAGE|g" /tmp/docker-compose.yml
+          cat /tmp/docker-compose.yml
+
       - name: Deploy to EasyEnclave
         uses: ./.github/actions/deploy
         with:
           app_name: private-llm
-          compose_file: examples/private-llm/docker-compose.yml
+          compose_file: /tmp/docker-compose.yml
           service_name: private-llm
           health_endpoint: /health
