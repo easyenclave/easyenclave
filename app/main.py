@@ -7,7 +7,7 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -47,6 +47,7 @@ from .models import (
     LauncherAgent,
     LogBatchRequest,
     LogBatchResponse,
+    LogEntry,
     LogLevel,
     LogListResponse,
     LogSource,
@@ -75,6 +76,35 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class LogStoreHandler(logging.Handler):
+    """Logging handler that writes to LogStore for admin dashboard."""
+
+    def __init__(self, store, agent_id: str = "control-plane"):
+        super().__init__()
+        self._store = store
+        self._agent_id = agent_id
+
+    def emit(self, record):
+        try:
+            level_map = {
+                "DEBUG": "debug",
+                "INFO": "info",
+                "WARNING": "warning",
+                "ERROR": "error",
+            }
+            level = level_map.get(record.levelname, "info")
+            log = LogEntry(
+                agent_id=self._agent_id,
+                source=LogSource.AGENT,
+                level=LogLevel(level),
+                message=self.format(record),
+                timestamp=datetime.fromtimestamp(record.created, tz=timezone.utc),
+            )
+            self._store.add(log)
+        except Exception:
+            pass
 
 # Admin authentication
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
@@ -414,6 +444,11 @@ async def background_attestation_checker():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - start background tasks."""
+    # Add control plane logs to log_store for admin dashboard
+    handler = LogStoreHandler(log_store)
+    handler.setFormatter(logging.Formatter("%(name)s - %(message)s"))
+    logging.getLogger().addHandler(handler)
+
     # Start background health checkers
     service_health_task = asyncio.create_task(background_health_checker())
     agent_health_task = asyncio.create_task(background_agent_health_checker())
@@ -1096,6 +1131,12 @@ async def get_agent_attestation(agent_id: str):
             intel_ta_claims = extract_intel_ta_claims(agent.intel_ta_token)
         except Exception as e:
             intel_ta_details = {"error": str(e)}
+
+    # Sync verified status if token expired (keeps admin UI in sync with public UI)
+    if agent.verified and not intel_ta_verified:
+        agent_store.set_verified(agent_id, False, error="Intel TA token expired")
+        # Refresh agent object to reflect the update
+        agent = agent_store.get(agent_id)
 
     return {
         "agent_id": agent.agent_id,
