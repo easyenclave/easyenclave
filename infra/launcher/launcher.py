@@ -88,18 +88,20 @@ _admin_tokens: set = set()
 
 def _add_admin_log(level: str, message: str):
     """Add a log entry to admin state."""
-    _admin_state["logs"].append({
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "level": level,
-        "message": message,
-    })
+    _admin_state["logs"].append(
+        {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level,
+            "message": message,
+        }
+    )
     # Keep only last max_logs entries
     if len(_admin_state["logs"]) > _admin_state["max_logs"]:
-        _admin_state["logs"] = _admin_state["logs"][-_admin_state["max_logs"]:]
+        _admin_state["logs"] = _admin_state["logs"][-_admin_state["max_logs"] :]
 
 
 # Admin HTML page (embedded to avoid file dependencies)
-ADMIN_HTML = '''<!DOCTYPE html>
+ADMIN_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -264,7 +266,7 @@ ADMIN_HTML = '''<!DOCTYPE html>
     </script>
 </body>
 </html>
-'''
+"""
 
 
 class AdminRequestHandler(http.server.BaseHTTPRequestHandler):
@@ -311,13 +313,16 @@ class AdminRequestHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/api/status":
-            self._send_json(200, {
-                "agent_id": _admin_state["agent_id"],
-                "vm_name": _admin_state["vm_name"],
-                "status": _admin_state["status"],
-                "deployment_id": _admin_state["deployment_id"],
-                "control_plane": CONTROL_PLANE_URL,
-            })
+            self._send_json(
+                200,
+                {
+                    "agent_id": _admin_state["agent_id"],
+                    "vm_name": _admin_state["vm_name"],
+                    "status": _admin_state["status"],
+                    "deployment_id": _admin_state["deployment_id"],
+                    "control_plane": CONTROL_PLANE_URL,
+                },
+            )
             return
 
         if path == "/api/containers":
@@ -325,7 +330,9 @@ class AdminRequestHandler(http.server.BaseHTTPRequestHandler):
             try:
                 result = subprocess.run(
                     ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
-                    capture_output=True, text=True, timeout=5
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
                 )
                 for line in result.stdout.strip().split("\n"):
                     if line:
@@ -345,8 +352,7 @@ class AdminRequestHandler(http.server.BaseHTTPRequestHandler):
             level_order = ["debug", "info", "warning", "error"]
             min_idx = level_order.index(min_level) if min_level in level_order else 1
             filtered = [
-                log for log in _admin_state["logs"]
-                if level_order.index(log["level"]) >= min_idx
+                log for log in _admin_state["logs"] if level_order.index(log["level"]) >= min_idx
             ]
             self._send_json(200, {"logs": filtered[-200:]})
             return
@@ -377,6 +383,7 @@ class AdminRequestHandler(http.server.BaseHTTPRequestHandler):
 
 def start_admin_server():
     """Start the admin HTTP server in a background thread."""
+
     class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         daemon_threads = True
 
