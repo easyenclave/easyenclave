@@ -1,5 +1,0 @@
-# For local development (install easyenclave[noise] from SDK)
-# pip install -e ../../sdk[noise]
-
-httpx>=0.24.0
-uvicorn>=0.23.0

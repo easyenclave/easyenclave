@@ -119,7 +119,7 @@ jobs:
         run: |
           curl -sf -X POST "https://app.easyenclave.com/api/v1/apps" \
             -H "Content-Type: application/json" \
-            -d '{"name": "private-llm", "description": "Private LLM with E2E encryption", "source_repo": "easyenclave/easyenclave"}' \
+            -d '{"name": "hello-tdx", "description": "Hello TDX example", "source_repo": "easyenclave/easyenclave"}' \
             || echo "App may already exist"
 
       - name: Launch agent
