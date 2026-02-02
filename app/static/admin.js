@@ -303,6 +303,10 @@ async function loadLogs() {
         if (agentId) url += `&agent_id=${agentId}`;
 
         const response = await fetch(url);
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`${response.status}: ${text}`);
+        }
         const data = await response.json();
 
         if (data.logs.length === 0) {
