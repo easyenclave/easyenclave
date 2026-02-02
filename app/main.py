@@ -292,21 +292,21 @@ async def request_fresh_attestation(agent: LauncherAgent) -> tuple[bool, str | N
 async def recheck_agent_attestation(agent: LauncherAgent) -> tuple[bool, str | None]:
     """Re-check agent attestation.
 
+    Intel TA tokens are mandatory for all agents.
+
     Returns:
         Tuple of (attestation_ok, error_message)
     """
     from .ita import ITA_API_KEY
 
-    # If no ITA_API_KEY configured, we can't verify tokens - trust MRTD verification only
+    # ITA_API_KEY is required for control plane to verify agents
     if not ITA_API_KEY:
-        agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
-        return True, None
+        logger.warning(f"ITA_API_KEY not configured - cannot verify agent {agent.agent_id}")
+        return False, "ITA_API_KEY not configured on control plane"
 
-    # If agent has no Intel TA token, we can't verify - trust MRTD verification only
-    # (Agent may have registered before ITA was configured, or ITA wasn't available)
+    # Intel TA token is mandatory for all agents
     if not agent.intel_ta_token:
-        agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
-        return True, None
+        return False, "Agent has no Intel TA token (required)"
 
     # Agents without hostnames can't be refreshed remotely.
     # Trust their existing token until it expires, then they need to re-register.

@@ -491,32 +491,60 @@ def parse_jwt_claims(jwt_token: str) -> dict:
         return {}
 
 
-def generate_initial_attestation() -> dict:
-    """Generate initial TDX attestation for registration."""
+def generate_initial_attestation(config: dict) -> dict:
+    """Generate initial TDX attestation for registration.
+
+    This function requires Intel Trust Authority verification. The agent will
+    crash if it cannot get a valid Intel TA token.
+
+    Args:
+        config: Launcher config with intel_api_key and intel_api_url
+
+    Returns:
+        Attestation dict with TDX quote and Intel TA token
+
+    Raises:
+        RuntimeError: If TDX quote generation or Intel TA verification fails
+    """
     write_status("attesting")
     logger.info("Generating initial TDX attestation...")
 
-    try:
-        quote_b64 = generate_tdx_quote()
-        measurements = parse_tdx_quote(quote_b64)
+    # Get Intel TA credentials from config or environment
+    intel_api_key = config.get("intel_api_key") or os.environ.get("INTEL_API_KEY", "")
+    intel_api_url = config.get("intel_api_url") or os.environ.get(
+        "INTEL_API_URL", "https://api.trustauthority.intel.com"
+    )
 
-        return {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "tdx": {
-                "quote_b64": quote_b64,
-                "measurements": measurements,
-            },
-        }
-    except Exception as e:
-        logger.warning(f"TDX attestation failed: {e}")
-        # Return empty attestation for non-TDX environments
-        return {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "tdx": {
-                "measurements": {},
-                "error": str(e),
-            },
-        }
+    if not intel_api_key:
+        raise RuntimeError(
+            "Intel Trust Authority API key required. "
+            "Set intel_api_key in config or INTEL_API_KEY environment variable."
+        )
+
+    # Generate TDX quote
+    quote_b64 = generate_tdx_quote()
+    measurements = parse_tdx_quote(quote_b64)
+    logger.info(f"Generated TDX quote, MRTD: {measurements.get('mrtd', 'unknown')[:32]}...")
+
+    # Call Intel Trust Authority - this is mandatory
+    logger.info("Calling Intel Trust Authority for attestation...")
+    try:
+        ita_response = call_intel_trust_authority(quote_b64, intel_api_key, intel_api_url)
+        intel_ta_token = ita_response.get("token")
+        if not intel_ta_token:
+            raise RuntimeError("Intel Trust Authority returned no token")
+        logger.info("Intel Trust Authority attestation successful")
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Intel Trust Authority request failed: {e}")
+
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tdx": {
+            "quote_b64": quote_b64,
+            "measurements": measurements,
+            "intel_ta_token": intel_ta_token,
+        },
+    }
 
 
 def register_with_control_plane(attestation: dict, vm_name: str) -> dict:
@@ -603,13 +631,14 @@ def poll_control_plane(agent_id: str) -> dict:
     return response.json()
 
 
-def handle_re_attest(vm_name: str) -> dict | None:
+def handle_re_attest(vm_name: str, config: dict) -> dict | None:
     """Handle re-attestation request from control plane.
 
     Generates fresh TDX attestation and re-registers with the control plane.
 
     Args:
         vm_name: VM name for re-registration
+        config: Launcher config with Intel TA credentials
 
     Returns:
         New registration response or None if failed
@@ -618,8 +647,8 @@ def handle_re_attest(vm_name: str) -> dict | None:
     logger.info("Control plane requested re-attestation...")
 
     try:
-        # Generate fresh TDX attestation
-        attestation = generate_initial_attestation()
+        # Generate fresh TDX attestation (requires Intel TA)
+        attestation = generate_initial_attestation(config)
         logger.info("Generated fresh TDX attestation")
 
         # Re-register with control plane
@@ -1119,7 +1148,7 @@ def run_control_plane_mode(config: dict):
 
     # Generate attestation for the control plane VM
     logger.info("Generating control plane attestation...")
-    attestation = generate_initial_attestation()
+    attestation = generate_initial_attestation(config)
 
     # Save attestation to a file for reference
     attestation_file = CONTROL_PLANE_DIR / "control-plane-attestation.json"
@@ -1286,8 +1315,8 @@ def run_agent_mode(config: dict):
     vm_name = get_vm_name()
     logger.info(f"VM name: {vm_name}")
 
-    # 1. Generate initial attestation
-    attestation = generate_initial_attestation()
+    # 1. Generate initial attestation (requires Intel TA - will crash if fails)
+    attestation = generate_initial_attestation(config)
 
     # 2. Register with control plane
     agent_id = None
@@ -1352,7 +1381,7 @@ def run_agent_mode(config: dict):
             # Handle re-attestation request (attestation failed on control plane)
             if response.get("action") == "re_attest":
                 logger.warning(f"Received re_attest action: {response.get('message')}")
-                reg_response = handle_re_attest(vm_name)
+                reg_response = handle_re_attest(vm_name, config)
                 if reg_response:
                     # Update agent_id and tunnel info from new registration
                     agent_id = reg_response["agent_id"]
