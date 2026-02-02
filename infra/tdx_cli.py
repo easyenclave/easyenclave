@@ -424,6 +424,11 @@ To start a new EasyEnclave network:
         default="https://app.easyenclave.com",
         help="Control plane URL for agent registration (default: https://app.easyenclave.com)",
     )
+    new_parser.add_argument(
+        "--intel-api-key",
+        default=os.environ.get("INTEL_API_KEY", ""),
+        help="Intel Trust Authority API key (or set INTEL_API_KEY env var)",
+    )
     new_parser.add_argument("--wait", action="store_true", help="Wait for agent to get IP")
 
     vm_sub.add_parser("list", help="List TDX VMs")
@@ -501,7 +506,10 @@ To start a new EasyEnclave network:
 
         elif args.command == "vm":
             if args.vm_command == "new":
-                config = {"control_plane_url": args.easyenclave_url}
+                config = {
+                    "control_plane_url": args.easyenclave_url,
+                    "intel_api_key": args.intel_api_key,
+                }
                 result = mgr.vm_new(args.image, config=config)
                 print(json.dumps(result, indent=2))
 
