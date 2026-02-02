@@ -299,6 +299,8 @@ ssh_pwauth: true
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
             "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
+            # Intel Trust Authority for verifying agent attestations
+            "ita_api_key": os.environ.get("ITA_API_KEY"),
         }
         result = self.vm_new(image=image, mode=CONTROL_PLANE_MODE, config=config)
         result["control_plane_port"] = port

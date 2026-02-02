@@ -1169,6 +1169,8 @@ def run_control_plane_mode(config: dict):
         env["CLOUDFLARE_ZONE_ID"] = config["cloudflare_zone_id"]
     if config.get("easyenclave_domain"):
         env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
+    if config.get("ita_api_key"):
+        env["ITA_API_KEY"] = config["ita_api_key"]
 
     # Stop any existing containers
     subprocess.run(
