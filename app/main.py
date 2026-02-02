@@ -799,7 +799,7 @@ async def register_agent(request: AgentRegistrationRequest):
 
     # Check if agent with this vm_name already exists
     existing = agent_store.get_by_vm_name(request.vm_name)
-    if existing:
+    if existing and existing.status != "attestation_failed":
         # Update heartbeat and return existing agent
         # Note: We don't return tunnel_token on re-registration for security
         agent_store.heartbeat(existing.agent_id)
@@ -809,6 +809,9 @@ async def register_agent(request: AgentRegistrationRequest):
             poll_interval=30,
             hostname=existing.hostname,
         )
+    # If agent is in attestation_failed status, allow full re-registration with new attestation
+    if existing and existing.status == "attestation_failed":
+        logger.info(f"Agent {existing.agent_id} re-registering after attestation failure")
 
     # Extract MRTD and Intel TA token from attestation
     mrtd = ""
@@ -871,17 +874,20 @@ async def register_agent(request: AgentRegistrationRequest):
     # Both verifications are required for security - MRTD alone shouldn't be trusted
     verified = mrtd_verified and intel_ta_verified
 
-    # Create agent record
-    agent = LauncherAgent(
-        vm_name=request.vm_name,
-        attestation=request.attestation,
-        mrtd=mrtd,
-        intel_ta_token=intel_ta_token,
-        version=request.version,
-        status="undeployed",
-        verified=verified,
-        verification_error=verification_error,
-    )
+    # Create agent record (reuse existing agent_id if recovering from attestation_failed)
+    agent_kwargs = {
+        "vm_name": request.vm_name,
+        "attestation": request.attestation,
+        "mrtd": mrtd,
+        "intel_ta_token": intel_ta_token,
+        "version": request.version,
+        "status": "undeployed",
+        "verified": verified,
+        "verification_error": verification_error,
+    }
+    if existing:
+        agent_kwargs["agent_id"] = existing.agent_id
+    agent = LauncherAgent(**agent_kwargs)
     agent_id = agent_store.register(agent)
 
     # Create Cloudflare tunnel for verified agents
