@@ -535,7 +535,7 @@ def generate_initial_attestation(config: dict) -> dict:
             raise RuntimeError("Intel Trust Authority returned no token")
         logger.info("Intel Trust Authority attestation successful")
     except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Intel Trust Authority request failed: {e}")
+        raise RuntimeError(f"Intel Trust Authority request failed: {e}") from e
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
