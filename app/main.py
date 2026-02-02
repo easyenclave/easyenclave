@@ -7,7 +7,7 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -100,7 +100,7 @@ class LogStoreHandler(logging.Handler):
                 source=LogSource.AGENT,
                 level=LogLevel(level),
                 message=self.format(record),
-                timestamp=datetime.fromtimestamp(record.created, tz=timezone.utc),
+                timestamp=datetime.utcfromtimestamp(record.created),
             )
             self._store.add(log)
         except Exception:
