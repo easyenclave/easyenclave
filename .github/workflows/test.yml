@@ -138,6 +138,15 @@ jobs:
             -d '{"name": "hello-tdx", "description": "Hello TDX example", "source_repo": "easyenclave/easyenclave"}' \
             || echo "App may already exist"
 
+      - name: Verify secrets
+        run: |
+          if [ -n "$INTEL_API_KEY" ]; then
+            echo "INTEL_API_KEY is set (length: ${#INTEL_API_KEY})"
+          else
+            echo "::error::INTEL_API_KEY is not set!"
+            exit 1
+          fi
+
       - name: Launch agent
         run: |
           python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --wait
