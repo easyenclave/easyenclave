@@ -40,7 +40,7 @@ jobs:
 
       - name: Install actionlint
         run: |
-          curl -sL https://github.com/rhysd/actionlint/releases/download/v1.6.27/actionlint_1.6.27_linux_amd64.tar.gz | tar xz
+          curl -sL https://github.com/rhysd/actionlint/releases/download/v1.7.10/actionlint_1.7.10_linux_amd64.tar.gz | tar xz
           sudo mv actionlint /usr/local/bin/
 
       - name: Run actionlint
