@@ -295,14 +295,27 @@ async def recheck_agent_attestation(agent: LauncherAgent) -> tuple[bool, str | N
     Returns:
         Tuple of (attestation_ok, error_message)
     """
+    from .ita import ITA_API_KEY
+
+    # If no ITA_API_KEY configured, we can't verify tokens - trust MRTD verification only
+    if not ITA_API_KEY:
+        agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
+        return True, None
+
+    # If agent has no Intel TA token, we can't verify - trust MRTD verification only
+    # (Agent may have registered before ITA was configured, or ITA wasn't available)
+    if not agent.intel_ta_token:
+        agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
+        return True, None
+
     # Agents without hostnames can't be refreshed remotely.
     # Trust their existing token until it expires, then they need to re-register.
     if not agent.hostname:
-        if agent.intel_ta_token and not is_token_expired(agent.intel_ta_token):
+        if not is_token_expired(agent.intel_ta_token):
             # Token still valid, keep trusting
             agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
             return True, None
-        # No hostname and no valid token - they need to re-register
+        # No hostname and expired token - they need to re-register
         # Don't mark as failed (no tunnel to delete), just note it
         logger.info(
             f"Agent {agent.agent_id} has no hostname and token expired, needs re-registration"
@@ -323,25 +336,22 @@ async def recheck_agent_attestation(agent: LauncherAgent) -> tuple[bool, str | N
         return False, error
 
     # Periodic deep check: verify existing token
-    if agent.intel_ta_token:
-        result = await verify_attestation_token(agent.intel_ta_token)
-        if result["verified"]:
-            agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
+    result = await verify_attestation_token(agent.intel_ta_token)
+    if result["verified"]:
+        agent_store.update_attestation_status(agent.agent_id, attestation_valid=True)
+        return True, None
+    else:
+        # Token invalid, try to get fresh one
+        logger.info(f"Agent {agent.agent_id} token invalid, requesting fresh attestation")
+        success, new_token, error = await request_fresh_attestation(agent)
+        if success:
+            agent_store.update_attestation_status(
+                agent.agent_id,
+                attestation_valid=True,
+                intel_ta_token=new_token,
+            )
             return True, None
-        else:
-            # Token invalid, try to get fresh one
-            logger.info(f"Agent {agent.agent_id} token invalid, requesting fresh attestation")
-            success, new_token, error = await request_fresh_attestation(agent)
-            if success:
-                agent_store.update_attestation_status(
-                    agent.agent_id,
-                    attestation_valid=True,
-                    intel_ta_token=new_token,
-                )
-                return True, None
-            return False, error or result.get("error", "Token verification failed")
-
-    return False, "No attestation token"
+        return False, error or result.get("error", "Token verification failed")
 
 
 async def handle_attestation_failure(agent: LauncherAgent, error: str):
