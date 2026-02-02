@@ -476,7 +476,7 @@ def parse_jwt_claims(jwt_token: str) -> dict:
 
     try:
         claims = json.loads(base64.b64decode(payload))
-        tdx = claims.get("tdx", {})
+        tdx = claims.get("tdx") or {}
         return {
             "mrtd": tdx.get("tdx_mrtd"),
             "rtmr0": tdx.get("tdx_rtmr0"),
@@ -725,7 +725,7 @@ def setup_workload_from_deployment(deployment: dict):
     logger.info("Wrote docker-compose.yml")
 
     # Write build context files
-    build_context = deployment.get("build_context", {})
+    build_context = deployment.get("build_context") or {}
     for filename, content_b64 in build_context.items():
         content = base64.b64decode(content_b64)
         filepath = WORKLOAD_DIR / filename
@@ -880,7 +880,7 @@ def register_service(config: dict, attestation: dict, tunnel_hostname: str | Non
         "endpoints": {"prod": service_url},
         "source_repo": config.get("source_repo"),
         "source_commit": config.get("source_commit"),
-        "tags": config.get("tags", []),
+        "tags": config.get("tags") or [],
         "mrtd": attestation["tdx"]["measurements"].get("mrtd", ""),
         "intel_ta_token": attestation["tdx"].get("intel_ta_token"),
     }
@@ -909,7 +909,7 @@ def handle_deployment(agent_id: str, deployment: dict, tunnel_hostname: str | No
         tunnel_hostname: Optional Cloudflare tunnel hostname for this agent
     """
     deployment_id = deployment["deployment_id"]
-    config = deployment.get("config", {})
+    config = deployment.get("config") or {}
 
     logger.info(f"Starting deployment: {deployment_id}")
 
@@ -1033,7 +1033,7 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
             timeout=30,
         )
         list_resp.raise_for_status()
-        tunnels = list_resp.json().get("result", [])
+        tunnels = list_resp.json().get("result") or []
 
         if tunnels:
             # Get existing tunnel token
@@ -1250,7 +1250,8 @@ def run_control_plane_mode(config: dict):
             write_status(f"control-plane-ready:app.{domain}")
         else:
             write_status(f"control-plane-ready:{vm_ip}:{port}")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Could not determine control plane URL: {e}")
         write_status("control-plane-ready")
 
     # Monitor the control plane (restart if it crashes)
@@ -1418,7 +1419,8 @@ def run_agent_mode(config: dict):
                     # Continue polling - agent may get another deployment
 
             # Handle self-update if requested
-            if response.get("update", {}).get("check_github"):
+            update = response.get("update")
+            if update is not None and update.get("check_github"):
                 handle_self_update()
 
         except requests.exceptions.ConnectionError as e:
@@ -1426,7 +1428,7 @@ def run_agent_mode(config: dict):
         except requests.exceptions.Timeout as e:
             logger.warning(f"Request timeout: {e}")
         except Exception as e:
-            logger.error(f"Poll error: {e}")
+            logger.exception(f"Poll error: {e}")
 
         # Periodically flush logs to control plane
         if agent_id and time.time() - last_log_flush >= LOG_FLUSH_INTERVAL:
