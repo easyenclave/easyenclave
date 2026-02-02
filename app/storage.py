@@ -1294,6 +1294,12 @@ class LogStore:
         min_priority = LOG_LEVEL_PRIORITY.get(min_level, 1)
         result = []
 
+        # Strip timezone info to avoid comparison errors with naive datetimes
+        if since and since.tzinfo is not None:
+            since = since.replace(tzinfo=None)
+        if until and until.tzinfo is not None:
+            until = until.replace(tzinfo=None)
+
         with self._lock:
             # Determine which agents to search
             if agent_id:
