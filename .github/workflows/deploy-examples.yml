@@ -35,6 +35,8 @@ jobs:
       - name: Build and push proxy image
         run: |
           IMAGE=ghcr.io/${{ github.repository }}/private-llm-proxy:${{ github.sha }}
+          # Copy SDK into build context
+          cp -r sdk/ examples/private-llm/app/sdk/
           docker build -t "$IMAGE" examples/private-llm/app/
           docker push "$IMAGE"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
