@@ -1330,7 +1330,8 @@ class LogStore:
                     result.append(log)
 
             # Sort by timestamp descending (most recent first) and limit
-            result.sort(key=lambda x: x.timestamp, reverse=True)
+            # Normalize to naive datetime for comparison (some logs may be tz-aware, others naive)
+            result.sort(key=lambda x: x.timestamp.replace(tzinfo=None), reverse=True)
             return result[:limit]
 
     def get_agent_logs(self, agent_id: str, limit: int = 100) -> list[LogEntry]:
