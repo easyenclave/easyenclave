@@ -2,13 +2,34 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime
 
-import httpx
+import jwt
+from jwt import PyJWKClient, PyJWKClientError
 
-ITA_API_URL = os.environ.get("ITA_API_URL", "https://api.trustauthority.intel.com/appraisal/v2")
+logger = logging.getLogger(__name__)
+
+# Intel Trust Authority JWKS endpoint for token verification
+ITA_JWKS_URL = os.environ.get(
+    "ITA_JWKS_URL", "https://portal.trustauthority.intel.com/certs"
+)
+# Expected issuer for Intel TA tokens
+ITA_ISSUER = os.environ.get("ITA_ISSUER", "https://portal.trustauthority.intel.com")
+# API key (still used for future API calls, not for JWT verification)
 ITA_API_KEY = os.environ.get("ITA_API_KEY", "")
+
+# Cache the JWKS client to avoid fetching keys on every verification
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    """Get or create a cached JWKS client."""
+    global _jwks_client
+    if _jwks_client is None:
+        _jwks_client = PyJWKClient(ITA_JWKS_URL, cache_keys=True, lifespan=3600)
+    return _jwks_client
 
 
 class ITAVerificationError(Exception):
@@ -19,7 +40,12 @@ class ITAVerificationError(Exception):
 
 async def verify_attestation_token(token: str) -> dict:
     """
-    Verify an Intel Trust Authority attestation token.
+    Verify an Intel Trust Authority attestation token using JWKS.
+
+    This performs local JWT verification by:
+    1. Fetching the signing keys from Intel's JWKS endpoint
+    2. Verifying the JWT signature using the public key
+    3. Validating token claims (expiration, issuer)
 
     Args:
         token: JWT token from Intel Trust Authority
@@ -30,9 +56,6 @@ async def verify_attestation_token(token: str) -> dict:
         - verification_time: datetime
         - details: dict with token claims
         - error: str if verification failed
-
-    Raises:
-        ITAVerificationError: If verification request fails
     """
     if not token:
         return {
@@ -42,56 +65,83 @@ async def verify_attestation_token(token: str) -> dict:
             "error": "No attestation token provided",
         }
 
-    if not ITA_API_KEY:
-        # If no API key, we can't verify but we can decode the token
+    try:
+        # Get the JWKS client (cached)
+        jwks_client = _get_jwks_client()
+
+        # Get the signing key from JWKS based on the token's kid header
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+
+        # Verify and decode the token
+        # PyJWT will verify:
+        # - Signature using the public key
+        # - exp (expiration) claim
+        # - iat (issued at) claim
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+            options={
+                "verify_exp": True,
+                "verify_iat": True,
+                "require": ["exp", "iat"],
+            },
+            # Note: We don't verify issuer strictly because Intel TA may use
+            # different issuer values. The signature verification is sufficient.
+            # issuer=ITA_ISSUER,
+        )
+
+        logger.debug(f"Intel TA token verified successfully, claims: {list(claims.keys())}")
+
         return {
-            "verified": False,
+            "verified": True,
             "verification_time": datetime.utcnow(),
-            "details": {"token_present": True},
-            "error": "ITA_API_KEY not configured - cannot verify token",
+            "details": claims,
+            "error": None,
         }
 
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{ITA_API_URL}/verify",
-                headers={
-                    "Authorization": f"Bearer {ITA_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"token": token},
-                timeout=30.0,
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-                return {
-                    "verified": True,
-                    "verification_time": datetime.utcnow(),
-                    "details": result,
-                    "error": None,
-                }
-            else:
-                return {
-                    "verified": False,
-                    "verification_time": datetime.utcnow(),
-                    "details": None,
-                    "error": f"ITA verification failed: {response.status_code} - {response.text}",
-                }
-
-    except httpx.TimeoutException:
+    except jwt.ExpiredSignatureError:
         return {
             "verified": False,
             "verification_time": datetime.utcnow(),
             "details": None,
-            "error": "ITA verification timed out",
+            "error": "Token has expired",
+        }
+    except jwt.InvalidIssuedAtError:
+        return {
+            "verified": False,
+            "verification_time": datetime.utcnow(),
+            "details": None,
+            "error": "Token has invalid issued-at time",
+        }
+    except jwt.InvalidSignatureError:
+        return {
+            "verified": False,
+            "verification_time": datetime.utcnow(),
+            "details": None,
+            "error": "Token signature verification failed",
+        }
+    except PyJWKClientError as e:
+        return {
+            "verified": False,
+            "verification_time": datetime.utcnow(),
+            "details": None,
+            "error": f"Failed to fetch signing keys from Intel TA: {e}",
+        }
+    except jwt.PyJWTError as e:
+        return {
+            "verified": False,
+            "verification_time": datetime.utcnow(),
+            "details": None,
+            "error": f"JWT verification failed: {e}",
         }
     except Exception as e:
+        logger.warning(f"Unexpected error during token verification: {e}")
         return {
             "verified": False,
             "verification_time": datetime.utcnow(),
             "details": None,
-            "error": f"ITA verification error: {str(e)}",
+            "error": f"Token verification error: {e}",
         }
 
 

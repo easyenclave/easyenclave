@@ -824,9 +824,9 @@ async def register_agent(request: AgentRegistrationRequest):
         # No Intel TA token - still allow registration but note it
         logger.info(f"Agent has no Intel TA token, MRTD-only verification ({request.vm_name})")
 
-    # Agent is fully verified if MRTD is trusted
-    # Intel TA verification is additional assurance but not required if no ITA_API_KEY
-    verified = mrtd_verified
+    # Agent is fully verified only if both MRTD and Intel TA are verified
+    # Both verifications are required for security - MRTD alone shouldn't be trusted
+    verified = mrtd_verified and intel_ta_verified
 
     # Create agent record
     agent = LauncherAgent(
