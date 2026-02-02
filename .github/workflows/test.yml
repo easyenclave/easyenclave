@@ -140,7 +140,7 @@ jobs:
 
       - name: Launch agent
         run: |
-          python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --wait
+          python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --wait
 
       - name: Trust agent MRTD
         run: |
