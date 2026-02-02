@@ -301,6 +301,8 @@ ssh_pwauth: true
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
             # Intel Trust Authority for verifying agent attestations
             "intel_api_key": os.environ.get("INTEL_API_KEY"),
+            # Admin password for control plane dashboard
+            "admin_password": os.environ.get("ADMIN_PASSWORD"),
         }
         result = self.vm_new(image=image, mode=CONTROL_PLANE_MODE, config=config)
         result["control_plane_port"] = port

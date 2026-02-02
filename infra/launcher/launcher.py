@@ -18,15 +18,19 @@ The mode is determined by config.json provisioned via cloud-init.
 
 import base64
 import hashlib
+import http.server
 import json
 import logging
 import os
+import secrets
 import shutil
+import socketserver
 import struct
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,6 +53,10 @@ VERSION = "1.0.0"
 MODE_CONTROL_PLANE = "control-plane"
 MODE_AGENT = "agent"
 
+# Admin server
+ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8081"))
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+
 # Paths
 WORKLOAD_DIR = Path("/home/tdx/workload")
 TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
@@ -64,6 +72,323 @@ LOG_LEVEL_MAP = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
+
+# Global state for admin server
+_admin_state = {
+    "agent_id": None,
+    "vm_name": None,
+    "status": "starting",
+    "deployment_id": None,
+    "attestation": None,
+    "logs": [],
+    "max_logs": 1000,
+}
+_admin_tokens: set = set()
+
+
+def _add_admin_log(level: str, message: str):
+    """Add a log entry to admin state."""
+    _admin_state["logs"].append({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "message": message,
+    })
+    # Keep only last max_logs entries
+    if len(_admin_state["logs"]) > _admin_state["max_logs"]:
+        _admin_state["logs"] = _admin_state["logs"][-_admin_state["max_logs"]:]
+
+
+# Admin HTML page (embedded to avoid file dependencies)
+ADMIN_HTML = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyEnclave Agent Admin</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f3f4f6; color: #1f2937; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+        header { background: #7c3aed; color: white; padding: 20px 0; margin-bottom: 20px; }
+        header h1 { padding: 0 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card h2 { margin-bottom: 15px; color: #374151; font-size: 1.1rem; }
+        table { width: 100%; border-collapse: collapse; }
+        td { padding: 8px 0; border-bottom: 1px solid #e5e7eb; }
+        td:first-child { color: #6b7280; width: 150px; }
+        code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; }
+        .status { padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .status.healthy, .status.deployed { background: #dcfce7; color: #166534; }
+        .status.unhealthy, .status.error { background: #fee2e2; color: #991b1b; }
+        .status.undeployed { background: #e5e7eb; color: #374151; }
+        .log-viewer { background: #1f2937; color: #e5e7eb; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 0.8rem; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+        .log-entry { margin-bottom: 2px; }
+        .log-entry.error { color: #f87171; }
+        .log-entry.warning { color: #fbbf24; }
+        .log-entry.info { color: #60a5fa; }
+        .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+        .btn-primary { background: #7c3aed; color: white; }
+        .btn-primary:hover { background: #6d28d9; }
+        .hidden { display: none; }
+        .login-box { max-width: 350px; margin: 100px auto; }
+        .login-box input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #d1d5db; border-radius: 6px; }
+        .error-msg { background: #fee2e2; color: #991b1b; padding: 10px; border-radius: 6px; margin-bottom: 15px; display: none; }
+        .flex { display: flex; justify-content: space-between; align-items: center; }
+    </style>
+</head>
+<body>
+    <div id="loginPage">
+        <div class="container">
+            <div class="login-box card">
+                <h2>Agent Admin Login</h2>
+                <div id="loginError" class="error-msg"></div>
+                <form onsubmit="login(event)">
+                    <input type="password" id="password" placeholder="Password" required autofocus>
+                    <button type="submit" class="btn btn-primary" style="width:100%">Login</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div id="adminPage" class="hidden">
+        <header><div class="container"><h1>Agent Admin</h1></div></header>
+        <div class="container">
+            <div class="card">
+                <div class="flex">
+                    <h2>Agent Status</h2>
+                    <button class="btn btn-primary" onclick="refresh()">Refresh</button>
+                </div>
+                <table id="statusTable">
+                    <tr><td>Loading...</td><td></td></tr>
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>Containers</h2>
+                <div id="containers">Loading...</div>
+            </div>
+
+            <div class="card">
+                <div class="flex">
+                    <h2>Logs</h2>
+                    <select id="logLevel" onchange="loadLogs()">
+                        <option value="debug">Debug+</option>
+                        <option value="info" selected>Info+</option>
+                        <option value="warning">Warning+</option>
+                        <option value="error">Error only</option>
+                    </select>
+                </div>
+                <div id="logViewer" class="log-viewer">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let token = sessionStorage.getItem("agentToken");
+        if (token) showDashboard();
+
+        async function login(e) {
+            e.preventDefault();
+            const pw = document.getElementById("password").value;
+            const err = document.getElementById("loginError");
+            try {
+                const r = await fetch("/api/login", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({password: pw})
+                });
+                if (r.ok) {
+                    const d = await r.json();
+                    token = d.token;
+                    sessionStorage.setItem("agentToken", token);
+                    showDashboard();
+                } else {
+                    err.textContent = "Invalid password";
+                    err.style.display = "block";
+                }
+            } catch(e) { err.textContent = "Error"; err.style.display = "block"; }
+        }
+
+        function showDashboard() {
+            document.getElementById("loginPage").classList.add("hidden");
+            document.getElementById("adminPage").classList.remove("hidden");
+            refresh();
+        }
+
+        async function apiFetch(url) {
+            const r = await fetch(url, {headers: {"Authorization": "Bearer " + token}});
+            if (r.status === 401) { sessionStorage.removeItem("agentToken"); location.reload(); }
+            return r.json();
+        }
+
+        async function refresh() {
+            try {
+                const s = await apiFetch("/api/status");
+                document.getElementById("statusTable").innerHTML = `
+                    <tr><td>Agent ID</td><td><code>${s.agent_id || "N/A"}</code></td></tr>
+                    <tr><td>VM Name</td><td>${s.vm_name || "N/A"}</td></tr>
+                    <tr><td>Status</td><td><span class="status ${s.status}">${s.status}</span></td></tr>
+                    <tr><td>Deployment</td><td><code>${s.deployment_id || "None"}</code></td></tr>
+                    <tr><td>Control Plane</td><td>${s.control_plane || "N/A"}</td></tr>
+                `;
+
+                const c = await apiFetch("/api/containers");
+                if (c.containers && c.containers.length > 0) {
+                    document.getElementById("containers").innerHTML = "<table>" +
+                        c.containers.map(x => `<tr><td>${x.name}</td><td><span class="status ${x.status}">${x.status}</span></td></tr>`).join("") +
+                        "</table>";
+                } else {
+                    document.getElementById("containers").innerHTML = "<em>No containers running</em>";
+                }
+
+                loadLogs();
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadLogs() {
+            const level = document.getElementById("logLevel").value;
+            const l = await apiFetch("/api/logs?level=" + level);
+            const viewer = document.getElementById("logViewer");
+            if (l.logs && l.logs.length > 0) {
+                viewer.innerHTML = l.logs.map(x => {
+                    const t = new Date(x.timestamp).toLocaleTimeString();
+                    return `<div class="log-entry ${x.level}">${t} [${x.level.toUpperCase()}] ${x.message}</div>`;
+                }).join("");
+                viewer.scrollTop = viewer.scrollHeight;
+            } else {
+                viewer.innerHTML = "No logs";
+            }
+        }
+
+        setInterval(refresh, 30000);
+    </script>
+</body>
+</html>
+'''
+
+
+class AdminRequestHandler(http.server.BaseHTTPRequestHandler):
+    """HTTP request handler for agent admin interface."""
+
+    def log_message(self, format, *args):
+        """Suppress default logging."""
+        pass
+
+    def _send_response(self, code: int, content: str, content_type: str = "text/html"):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content.encode())
+
+    def _send_json(self, code: int, data: dict):
+        content = json.dumps(data)
+        self._send_response(code, content, "application/json")
+
+    def _check_auth(self) -> bool:
+        """Check authorization header."""
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+            return token in _admin_tokens
+        return False
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        if path == "/" or path == "/admin":
+            self._send_response(200, ADMIN_HTML)
+            return
+
+        if path == "/api/login":
+            self._send_json(405, {"error": "Use POST"})
+            return
+
+        # Protected endpoints
+        if not self._check_auth():
+            self._send_json(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/api/status":
+            self._send_json(200, {
+                "agent_id": _admin_state["agent_id"],
+                "vm_name": _admin_state["vm_name"],
+                "status": _admin_state["status"],
+                "deployment_id": _admin_state["deployment_id"],
+                "control_plane": CONTROL_PLANE_URL,
+            })
+            return
+
+        if path == "/api/containers":
+            containers = []
+            try:
+                result = subprocess.run(
+                    ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                for line in result.stdout.strip().split("\n"):
+                    if line:
+                        parts = line.split("\t")
+                        name = parts[0] if parts else "unknown"
+                        status_str = parts[1] if len(parts) > 1 else "unknown"
+                        status = "healthy" if "Up" in status_str else "unhealthy"
+                        containers.append({"name": name, "status": status})
+            except Exception:
+                pass
+            self._send_json(200, {"containers": containers})
+            return
+
+        if path.startswith("/api/logs"):
+            query = urllib.parse.parse_qs(parsed.query)
+            min_level = query.get("level", ["info"])[0]
+            level_order = ["debug", "info", "warning", "error"]
+            min_idx = level_order.index(min_level) if min_level in level_order else 1
+            filtered = [
+                log for log in _admin_state["logs"]
+                if level_order.index(log["level"]) >= min_idx
+            ]
+            self._send_json(200, {"logs": filtered[-200:]})
+            return
+
+        self._send_json(404, {"error": "Not found"})
+
+    def do_POST(self):
+        if self.path == "/api/login":
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length).decode()
+            try:
+                data = json.loads(body)
+                if data.get("password") == ADMIN_PASSWORD:
+                    token = secrets.token_urlsafe(32)
+                    _admin_tokens.add(token)
+                    # Limit tokens
+                    if len(_admin_tokens) > 50:
+                        _admin_tokens.pop()
+                    self._send_json(200, {"token": token})
+                else:
+                    self._send_json(401, {"error": "Invalid password"})
+            except Exception:
+                self._send_json(400, {"error": "Invalid request"})
+            return
+
+        self._send_json(404, {"error": "Not found"})
+
+
+def start_admin_server():
+    """Start the admin HTTP server in a background thread."""
+    class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+    try:
+        server = ThreadedHTTPServer(("0.0.0.0", ADMIN_PORT), AdminRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        logger.info(f"Admin server started on port {ADMIN_PORT}")
+        return server
+    except Exception as e:
+        logger.warning(f"Failed to start admin server: {e}")
+        return None
 
 
 class ControlPlaneLogHandler(logging.Handler):
@@ -102,6 +427,9 @@ class ControlPlaneLogHandler(logging.Handler):
 
             with self._lock:
                 self._buffer.append(log_entry)
+
+            # Also add to admin state for local admin UI
+            _add_admin_log(level_name, self.format(record))
         except Exception:
             self.handleError(record)
 
@@ -327,6 +655,7 @@ def get_vm_name() -> str:
 def write_status(status: str):
     """Log status update (agent reports to control plane via API)."""
     logger.info(f"Status: {status}")
+    _admin_state["status"] = status
 
 
 def generate_tdx_quote(user_data: bytes = None) -> str:
@@ -911,6 +1240,9 @@ def handle_deployment(agent_id: str, deployment: dict, tunnel_hostname: str | No
     deployment_id = deployment["deployment_id"]
     config = deployment.get("config") or {}
 
+    # Update admin state
+    _admin_state["deployment_id"] = deployment_id
+
     logger.info(f"Starting deployment: {deployment_id}")
 
     # Report status: deploying
@@ -1171,6 +1503,8 @@ def run_control_plane_mode(config: dict):
         env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
     if config.get("intel_api_key"):
         env["ITA_API_KEY"] = config["intel_api_key"]
+    if config.get("admin_password"):
+        env["ADMIN_PASSWORD"] = config["admin_password"]
 
     # Stop any existing containers
     subprocess.run(
@@ -1306,6 +1640,10 @@ def run_agent_mode(config: dict):
     if config.get("control_plane_url"):
         CONTROL_PLANE_URL = config["control_plane_url"]
 
+    # Start admin server for local monitoring
+    start_admin_server()
+    _admin_state["status"] = "starting"
+
     # Setup logging to control plane
     log_min_level = config.get("log_min_level", LOG_MIN_LEVEL)
     setup_control_plane_logging(log_min_level)
@@ -1317,6 +1655,7 @@ def run_agent_mode(config: dict):
 
     vm_name = get_vm_name()
     logger.info(f"VM name: {vm_name}")
+    _admin_state["vm_name"] = vm_name
 
     # 1. Generate initial attestation (requires Intel TA - will crash if fails)
     attestation = generate_initial_attestation(config)
@@ -1330,6 +1669,10 @@ def run_agent_mode(config: dict):
         reg_response = register_with_control_plane(attestation, vm_name)
         agent_id = reg_response["agent_id"]
         tunnel_hostname = reg_response.get("hostname")
+
+        # Update admin state
+        _admin_state["agent_id"] = agent_id
+        _admin_state["status"] = "undeployed"
 
         # Enable log relay now that we have an agent_id
         set_log_agent_id(agent_id)
@@ -1355,6 +1698,10 @@ def run_agent_mode(config: dict):
                     reg_response = register_with_control_plane(attestation, vm_name)
                     agent_id = reg_response["agent_id"]
                     tunnel_hostname = reg_response.get("hostname")
+
+                    # Update admin state
+                    _admin_state["agent_id"] = agent_id
+                    _admin_state["status"] = "undeployed"
 
                     # Enable log relay now that we have an agent_id
                     set_log_agent_id(agent_id)
@@ -1389,6 +1736,9 @@ def run_agent_mode(config: dict):
                     # Update agent_id and tunnel info from new registration
                     agent_id = reg_response["agent_id"]
                     tunnel_hostname = reg_response.get("hostname")
+
+                    # Update admin state
+                    _admin_state["agent_id"] = agent_id
 
                     # Update log relay with new agent_id
                     set_log_agent_id(agent_id)

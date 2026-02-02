@@ -14,6 +14,8 @@ services:
       # System MRTDs (locked, cannot be modified via API)
       - SYSTEM_AGENT_MRTD=${SYSTEM_AGENT_MRTD:-}
       - SYSTEM_PROXY_MRTD=${SYSTEM_PROXY_MRTD:-}
+      # Admin authentication (default: admin123)
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
       interval: 30s

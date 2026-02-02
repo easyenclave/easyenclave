@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 from . import cloudflare, proxy
 from .ita import extract_intel_ta_claims, verify_attestation_token
@@ -72,6 +76,11 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Admin authentication
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+# Store valid admin tokens (in production, use Redis or similar)
+_admin_tokens: set[str] = set()
 
 # Health check interval in seconds
 HEALTH_CHECK_INTERVAL = 60
@@ -1826,6 +1835,66 @@ async def clear_agent_logs(agent_id: str):
     logger.info(f"Cleared {count} logs for agent {agent_id}")
 
     return {"status": "cleared", "count": count}
+
+
+# ==============================================================================
+# Admin Authentication and Dashboard
+# ==============================================================================
+
+
+class AdminLoginRequest(BaseModel):
+    """Request model for admin login."""
+
+    password: str
+
+
+def verify_admin_token(authorization: str | None = Header(None)) -> bool:
+    """Verify admin token from Authorization header."""
+    if not authorization:
+        return False
+    if not authorization.startswith("Bearer "):
+        return False
+    token = authorization[7:]
+    return token in _admin_tokens
+
+
+@app.post("/admin/login")
+async def admin_login(request: AdminLoginRequest):
+    """Authenticate admin user and return session token."""
+    if request.password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    # Generate secure token
+    token = secrets.token_urlsafe(32)
+    _admin_tokens.add(token)
+
+    # Limit stored tokens to prevent memory issues (keep last 100)
+    if len(_admin_tokens) > 100:
+        # Remove oldest tokens (convert to list, remove first items)
+        tokens_list = list(_admin_tokens)
+        for old_token in tokens_list[:-100]:
+            _admin_tokens.discard(old_token)
+
+    logger.info("Admin login successful")
+    return {"token": token, "message": "Login successful"}
+
+
+@app.post("/admin/logout")
+async def admin_logout(authorization: str | None = Header(None)):
+    """Invalidate admin session token."""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+        _admin_tokens.discard(token)
+    return {"message": "Logged out"}
+
+
+@app.get("/admin")
+async def serve_admin():
+    """Serve the admin dashboard."""
+    admin_path = STATIC_DIR / "admin.html"
+    if admin_path.exists():
+        return FileResponse(admin_path)
+    raise HTTPException(status_code=404, detail="Admin page not found")
 
 
 # Serve static files and web GUI
