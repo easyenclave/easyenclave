@@ -492,6 +492,9 @@ class TrustedMrtd(BaseModel):
         default=None, description="GitHub Actions workflow URL that built the image"
     )
     image_digest: str | None = Field(default=None, description="Docker image digest (sha256:...)")
+    attestation_url: str | None = Field(
+        default=None, description="GitHub Artifact Attestations URL for SLSA provenance"
+    )
 
     # Metadata
     added_at: datetime = Field(default_factory=datetime.utcnow)
@@ -524,6 +527,9 @@ class TrustedMrtdCreateRequest(BaseModel):
         default=None, description="GitHub Actions workflow URL that built the image"
     )
     image_digest: str | None = Field(default=None, description="Docker image digest (sha256:...)")
+    attestation_url: str | None = Field(
+        default=None, description="GitHub Artifact Attestations URL for SLSA provenance"
+    )
 
 
 class TrustedMrtdListResponse(BaseModel):

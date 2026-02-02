@@ -76,6 +76,11 @@ jobs:
     if: github.event_name == 'push'
     needs: [test, docker]
 
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -95,6 +100,7 @@ jobs:
         run: python3 infra/tdx_cli.py vm delete all || true
 
       - name: Build VM image
+        id: build
         run: |
           if [ -f "infra/output/tdx-runner-base.qcow2" ]; then
             sudo bash infra/build_image.sh --customize-only
@@ -102,6 +108,14 @@ jobs:
             sudo bash infra/build_image.sh
           fi
           sudo chown -R "$(id -u):$(id -g)" infra/output/
+          # Output image digest for attestation
+          echo "digest=$(sha256sum infra/output/tdx-runner-base.qcow2 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}/tdx-runner
+          subject-digest: sha256:${{ steps.build.outputs.digest }}
 
       - name: Deploy control plane
         run: |
@@ -143,7 +157,8 @@ jobs:
                   \"description\": \"TDX runner agent (CI build)\",
                   \"source_repo\": \"easyenclave/easyenclave\",
                   \"source_commit\": \"$GITHUB_SHA\",
-                  \"build_workflow\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\"
+                  \"build_workflow\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
+                  \"attestation_url\": \"https://github.com/$GITHUB_REPOSITORY/attestations\"
                 }"
               echo ""
               echo "MRTD trusted successfully"

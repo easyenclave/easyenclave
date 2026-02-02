@@ -129,3 +129,59 @@ def decode_token_claims(token: str) -> dict | None:
 
     except Exception:
         return None
+
+
+def extract_intel_ta_claims(token: str) -> dict | None:
+    """
+    Extract key Intel Trust Authority claims from the JWT token for display.
+
+    Args:
+        token: JWT token string from Intel Trust Authority
+
+    Returns:
+        dict with extracted claims for UI display:
+        - attester_tcb_status: TCB level (e.g., "UpToDate", "OutOfDate")
+        - attester_type: Type of attestation (e.g., "TDX")
+        - token_expiry: ISO timestamp when token expires
+        - token_issued: ISO timestamp when token was issued
+        - attester_held_data: User data from quote (hex)
+    """
+    claims = decode_token_claims(token)
+    if not claims:
+        return None
+
+    result = {}
+
+    # Extract TCB status
+    if "attester_tcb_status" in claims:
+        result["attester_tcb_status"] = claims["attester_tcb_status"]
+
+    # Extract attester type
+    if "attester_type" in claims:
+        result["attester_type"] = claims["attester_type"]
+
+    # Extract expiration time
+    if "exp" in claims:
+        try:
+            result["token_expiry"] = datetime.utcfromtimestamp(claims["exp"]).isoformat() + "Z"
+        except (ValueError, TypeError, OSError):
+            pass
+
+    # Extract issued time
+    if "iat" in claims:
+        try:
+            result["token_issued"] = datetime.utcfromtimestamp(claims["iat"]).isoformat() + "Z"
+        except (ValueError, TypeError, OSError):
+            pass
+
+    # Extract held data (user data from quote)
+    if "attester_held_data" in claims:
+        result["attester_held_data"] = claims["attester_held_data"]
+
+    # Extract TDX-specific claims if present
+    if "tdx_mrsigner" in claims:
+        result["tdx_mrsigner"] = claims["tdx_mrsigner"]
+    if "tdx_mrtd" in claims:
+        result["tdx_mrtd"] = claims["tdx_mrtd"]
+
+    return result if result else None

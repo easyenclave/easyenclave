@@ -278,6 +278,26 @@ async function showAgentDetails(agentId) {
                             <a href="https://portal.trustauthority.intel.com" target="_blank" class="attestation-link">Intel Trust Authority</a>
                         </td>
                     </tr>
+                    ${attestation.intel_ta_claims ? `
+                    <tr>
+                        <td>TCB Status</td>
+                        <td>
+                            <span class="${attestation.intel_ta_claims.attester_tcb_status === 'UpToDate' ? 'verified-badge' : 'status-badge'}">${escapeHtml(attestation.intel_ta_claims.attester_tcb_status || 'Unknown')}</span>
+                        </td>
+                    </tr>
+                    ${attestation.intel_ta_claims.attester_type ? `
+                    <tr>
+                        <td>Attester Type</td>
+                        <td>${escapeHtml(attestation.intel_ta_claims.attester_type)}</td>
+                    </tr>
+                    ` : ''}
+                    ${attestation.intel_ta_claims.token_expiry ? `
+                    <tr>
+                        <td>Token Expiry</td>
+                        <td>${formatDate(attestation.intel_ta_claims.token_expiry)}</td>
+                    </tr>
+                    ` : ''}
+                    ` : ''}
                     ${attestation.github_attestation ? `
                     <tr>
                         <td>GitHub Source</td>
@@ -296,6 +316,16 @@ async function showAgentDetails(agentId) {
                         <td>
                             <a href="${escapeHtml(attestation.github_attestation.build_workflow)}" target="_blank" class="attestation-link">
                                 View GitHub Actions Run
+                            </a>
+                        </td>
+                    </tr>
+                    ` : ''}
+                    ${attestation.github_attestation.attestation_url ? `
+                    <tr>
+                        <td>SLSA Provenance</td>
+                        <td>
+                            <a href="${escapeHtml(attestation.github_attestation.attestation_url)}" target="_blank" class="attestation-link">
+                                View GitHub Attestations
                             </a>
                         </td>
                     </tr>

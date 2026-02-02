@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import cloudflare, proxy
-from .ita import verify_attestation_token
+from .ita import extract_intel_ta_claims, verify_attestation_token
 from .models import (
     AgentDeployedRequest,
     AgentListResponse,
@@ -1062,16 +1062,20 @@ async def get_agent_attestation(agent_id: str):
             "image_digest": trusted_mrtd.image_digest,
             "image_version": trusted_mrtd.image_version,
             "description": trusted_mrtd.description,
+            "attestation_url": trusted_mrtd.attestation_url,
         }
 
     # Verify Intel TA token if present
     intel_ta_verified = False
     intel_ta_details = None
+    intel_ta_claims = None
     if agent.intel_ta_token:
         try:
             ita_result = await verify_attestation_token(agent.intel_ta_token)
             intel_ta_verified = ita_result["verified"]
             intel_ta_details = ita_result.get("details")
+            # Extract key claims for UI display
+            intel_ta_claims = extract_intel_ta_claims(agent.intel_ta_token)
         except Exception as e:
             intel_ta_details = {"error": str(e)}
 
@@ -1083,6 +1087,7 @@ async def get_agent_attestation(agent_id: str):
         "verification_error": agent.verification_error,
         "intel_ta_verified": intel_ta_verified,
         "intel_ta_details": intel_ta_details,
+        "intel_ta_claims": intel_ta_claims,
         "github_attestation": github_attestation,
         "hostname": agent.hostname,
         "tunnel_id": agent.tunnel_id,
@@ -1216,6 +1221,7 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
         source_tag=request.source_tag,
         build_workflow=request.build_workflow,
         image_digest=request.image_digest,
+        attestation_url=request.attestation_url,
     )
     trusted_mrtd_store.add(trusted)
     logger.info(f"Added trusted MRTD: {request.mrtd[:16]}... ({request.description})")
