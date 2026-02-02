@@ -5,4 +5,4 @@ self-hosted-runner:
 # Ignore attestations permission - actionlint doesn't recognize it yet but it's valid
 # https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds
 ignore:
-  - 'unknown permission scope "attestations"'
+  - 'unknown permission scope .attestations.'
