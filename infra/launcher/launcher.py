@@ -1784,6 +1784,17 @@ def run_agent_mode(config: dict):
             logger.warning(f"Connection error: {e}")
         except requests.exceptions.Timeout as e:
             logger.warning(f"Request timeout: {e}")
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                # Agent was deleted from control plane - re-register
+                logger.warning("Agent not found (404), will re-register...")
+                agent_id = None
+                if cloudflared_proc is not None:
+                    cloudflared_proc.terminate()
+                    cloudflared_proc.wait()
+                    cloudflared_proc = None
+            else:
+                logger.exception(f"HTTP error: {e}")
         except Exception as e:
             logger.exception(f"Poll error: {e}")
 
