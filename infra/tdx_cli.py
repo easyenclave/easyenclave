@@ -422,25 +422,29 @@ ssh_pwauth: true
         mrtd = None
         try:
             # Wait for MRTD to appear in serial log
-            # The launcher logs: "Generated TDX quote, MRTD: <mrtd>..."
+            # The launcher prints: "MRTD_FULL=<96-char hex>" for vm_measure to capture
             start = time.time()
             while time.time() - start < timeout:
                 if serial_log and Path(serial_log).exists():
                     log_content = Path(serial_log).read_text()
 
-                    # Look for MRTD in the log
-                    # Pattern: "MRTD: <96-char hex>..." or "mrtd\": \"<96-char hex>\""
-                    match = re.search(r'MRTD[:\s"]+([a-f0-9]{96})', log_content, re.IGNORECASE)
+                    # Look for full MRTD (printed by launcher for measurement)
+                    # Pattern: "MRTD_FULL=<96-char hex>"
+                    match = re.search(r'MRTD_FULL=([a-f0-9]{96})', log_content, re.IGNORECASE)
                     if match:
                         mrtd = match.group(1)
                         print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)
                         break
 
-                    # Also check for registration rejection (means attestation worked)
-                    if "Registration rejected" in log_content or "403" in log_content:
-                        # MRTD should have been logged before the rejection
-                        # Try one more time to find it
-                        match = re.search(r'MRTD[:\s"]+([a-f0-9]{96})', log_content, re.IGNORECASE)
+                    # Check for attestation failure (Intel TA key missing)
+                    if "Intel Trust Authority API key required" in log_content:
+                        print("Error: INTEL_API_KEY not set", file=sys.stderr)
+                        break
+
+                    # Check for registration rejection (means attestation worked)
+                    if "Registration rejected" in log_content or "MRTD not trusted" in log_content:
+                        # MRTD should have been printed before the rejection
+                        match = re.search(r'MRTD_FULL=([a-f0-9]{96})', log_content, re.IGNORECASE)
                         if match:
                             mrtd = match.group(1)
                             print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)

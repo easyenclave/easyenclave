@@ -986,7 +986,10 @@ def generate_initial_attestation(config: dict) -> dict:
     # Generate TDX quote
     quote_b64 = generate_tdx_quote()
     measurements = parse_tdx_quote(quote_b64)
-    logger.info(f"Generated TDX quote, MRTD: {measurements.get('mrtd', 'unknown')[:32]}...")
+    mrtd = measurements.get('mrtd', 'unknown')
+    logger.info(f"Generated TDX quote, MRTD: {mrtd[:32]}...")
+    # Log full MRTD for vm_measure command to capture
+    print(f"MRTD_FULL={mrtd}", flush=True)
 
     # Call Intel Trust Authority - this is mandatory
     logger.info("Calling Intel Trust Authority for attestation...")
