@@ -1236,6 +1236,8 @@ def register_service(config: dict, attestation: dict, tunnel_hostname: str | Non
         json=payload,
         timeout=30,
     )
+    if not response.ok:
+        logger.error(f"Service registration failed: {response.status_code} {response.text}")
     response.raise_for_status()
     result = response.json()
 
