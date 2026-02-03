@@ -1149,8 +1149,11 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
     """
     write_status("attesting")
 
-    intel_api_key = config.get("intel_api_key", "")
-    intel_api_url = config.get("intel_api_url", "https://api.trustauthority.intel.com")
+    # Check config first, then fall back to environment variable
+    intel_api_key = config.get("intel_api_key") or os.environ.get("INTEL_API_KEY", "")
+    intel_api_url = config.get("intel_api_url") or os.environ.get(
+        "INTEL_API_URL", "https://api.trustauthority.intel.com"
+    )
 
     # Generate TDX quote
     logger.info("Generating TDX quote...")
