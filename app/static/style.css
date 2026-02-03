@@ -342,6 +342,12 @@ header .subtitle {
     font-size: 0.75rem;
 }
 
+.token-expired {
+    color: var(--warning);
+    font-size: 0.75rem;
+    font-style: italic;
+}
+
 .attestation-link {
     color: #2563eb;
     text-decoration: none;

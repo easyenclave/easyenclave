@@ -272,9 +272,10 @@ async function showAgentDetails(agentId) {
                     <tr>
                         <td>Intel TDX</td>
                         <td>
-                            ${attestation.intel_ta_verified
+                            ${attestation.verified
                                 ? '<span class="verified-badge">Verified</span>'
                                 : '<span class="unverified-badge">Not Verified</span>'}
+                            ${attestation.verified && !attestation.intel_ta_verified ? ' <span class="token-expired">(token expired)</span>' : ''}
                             <a href="https://portal.trustauthority.intel.com" target="_blank" class="attestation-link">Intel Trust Authority</a>
                         </td>
                     </tr>
