@@ -597,13 +597,12 @@ def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
     return logs
 
 
-def send_container_logs(agent_id: str, since_minutes: int = 1, min_level: str | None = None) -> int:
+def send_container_logs(agent_id: str, since_minutes: int = 1) -> int:
     """Collect and send container logs to control plane.
 
     Args:
         agent_id: Agent ID
         since_minutes: Collect logs from the last N minutes
-        min_level: Minimum log level to send (from control plane), defaults to LOG_MIN_LEVEL
 
     Returns:
         Number of logs sent
@@ -612,11 +611,10 @@ def send_container_logs(agent_id: str, since_minutes: int = 1, min_level: str | 
     if not logs:
         return 0
 
-    level = min_level or LOG_MIN_LEVEL
     try:
         response = requests.post(
             f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/logs",
-            json={"logs": logs, "min_level": level},
+            json={"logs": logs},
             timeout=10,
         )
         response.raise_for_status()
@@ -1694,7 +1692,6 @@ def run_agent_mode(config: dict):
     cloudflared_proc = None
     tunnel_hostname = None  # Track the tunnel hostname for service registration
     last_log_flush = time.time()
-    log_level_from_cp = None  # Log level from control plane (updated on each poll)
     try:
         reg_response = register_with_control_plane(attestation, vm_name)
         agent_id = reg_response["agent_id"]
@@ -1757,10 +1754,6 @@ def run_agent_mode(config: dict):
 
             # Poll for deployment
             response = poll_control_plane(agent_id)
-
-            # Update log level from control plane
-            if response.get("log_level"):
-                log_level_from_cp = response["log_level"]
 
             # Start cloudflared if poll response includes tunnel info and we don't have it running
             # This handles the case where agent was verified after registration (MRTD trusted later)
@@ -1835,10 +1828,8 @@ def run_agent_mode(config: dict):
                 # Flush agent logs
                 agent_logs_sent = flush_logs()
 
-                # Collect and send container logs (use log level from control plane if available)
-                container_logs_sent = send_container_logs(
-                    agent_id, since_minutes=1, min_level=log_level_from_cp
-                )
+                # Collect and send container logs
+                container_logs_sent = send_container_logs(agent_id, since_minutes=1)
 
                 if agent_logs_sent or container_logs_sent:
                     logger.info(

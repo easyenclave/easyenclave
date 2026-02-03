@@ -367,10 +367,6 @@ class AgentPollResponse(BaseModel):
         default=None,
         description="Hostname for this agent (e.g., agent-xyz.easyenclave.com)",
     )
-    log_level: LogLevel = Field(
-        default=LogLevel.INFO,
-        description="Minimum log level for agent to send",
-    )
 
 
 class AgentStatusRequest(BaseModel):
@@ -706,10 +702,6 @@ class LogBatchRequest(BaseModel):
     """Request model for submitting a batch of logs."""
 
     logs: list[dict] = Field(..., description="List of log entries")
-    min_level: LogLevel = Field(
-        default=LogLevel.INFO,
-        description="Minimum log level to include (client-side filtering)",
-    )
 
 
 class LogBatchResponse(BaseModel):

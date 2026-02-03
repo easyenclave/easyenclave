@@ -106,11 +106,9 @@ class LogStoreHandler(logging.Handler):
         except Exception:
             pass
 
+
 # Admin authentication
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
-
-# Agent log level - controls minimum log level agents should send
-AGENT_LOG_LEVEL = LogLevel(os.environ.get("AGENT_LOG_LEVEL", "info").lower())
 # Store valid admin tokens (in production, use Redis or similar)
 _admin_tokens: set[str] = set()
 
@@ -941,13 +939,12 @@ async def poll_for_deployment(agent_id: str):
         return AgentPollResponse(
             action="re_attest",
             message="Attestation expired or failed, please re-register with fresh attestation",
-            log_level=AGENT_LOG_LEVEL,
         )
 
     if not agent.verified:
         # Unverified agents don't receive deployments
         logger.debug(f"Agent {agent_id} not verified - no deployment")
-        return AgentPollResponse(log_level=AGENT_LOG_LEVEL)
+        return AgentPollResponse()
 
     # Include tunnel info in response if available (for agents verified after registration)
     tunnel_token = agent.tunnel_token
@@ -956,7 +953,7 @@ async def poll_for_deployment(agent_id: str):
     # Check for pending deployment
     deployment = deployment_store.get_pending_for_agent(agent_id)
     if deployment is None:
-        return AgentPollResponse(tunnel_token=tunnel_token, hostname=hostname, log_level=AGENT_LOG_LEVEL)
+        return AgentPollResponse(tunnel_token=tunnel_token, hostname=hostname)
 
     # Mark deployment as assigned
     deployment_store.assign(deployment.deployment_id, agent_id)
@@ -972,7 +969,6 @@ async def poll_for_deployment(agent_id: str):
         },
         tunnel_token=tunnel_token,
         hostname=hostname,
-        log_level=AGENT_LOG_LEVEL,
     )
 
 
@@ -1805,7 +1801,7 @@ async def submit_agent_logs(agent_id: str, request: LogBatchRequest):
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    received, stored = log_store.add_batch(agent_id, request.logs, request.min_level)
+    received, stored = log_store.add_batch(agent_id, request.logs)
     logger.info(f"Received {received} logs from agent {agent_id}, stored {stored}")
 
     return LogBatchResponse(received=received, stored=stored)

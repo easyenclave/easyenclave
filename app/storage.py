@@ -1224,16 +1224,10 @@ class LogStore:
 
             return log.log_id
 
-    def add_batch(
-        self, agent_id: str, logs: list[dict], min_level: LogLevel = LogLevel.INFO
-    ) -> tuple[int, int]:
-        """Add a batch of logs. Returns (received, stored) count.
-
-        Filters logs by minimum level before storing.
-        """
+    def add_batch(self, agent_id: str, logs: list[dict]) -> tuple[int, int]:
+        """Add a batch of logs. Returns (received, stored) count."""
         received = len(logs)
         stored = 0
-        min_priority = LOG_LEVEL_PRIORITY.get(min_level, 1)
 
         with self._lock:
             if agent_id not in self._logs:
@@ -1247,10 +1241,6 @@ class LogStore:
                         level = LogLevel(level_str)
                     except ValueError:
                         level = LogLevel.INFO
-
-                    # Filter by log level
-                    if LOG_LEVEL_PRIORITY.get(level, 1) < min_priority:
-                        continue
 
                     # Parse source
                     source_str = log_dict.get("source", "agent").lower()
