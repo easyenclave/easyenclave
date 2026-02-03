@@ -517,7 +517,12 @@ async def register_service(request: ServiceRegistrationRequest):
     Requires:
     - Valid MRTD (TDX measurement)
     - Valid Intel Trust Authority token
-    - At least one endpoint that responds to health checks
+    - At least one endpoint
+
+    Note: We trust the agent's local health check. The agent has already verified
+    its identity via attestation (Intel TA + MRTD), so there's no security benefit
+    to doing an external health check from the control plane. Additionally, external
+    checks can fail due to DNS/tunnel propagation delays.
     """
     # Require attestation
     if not request.mrtd:
@@ -527,31 +532,13 @@ async def register_service(request: ServiceRegistrationRequest):
             status_code=400, detail="Registration requires Intel Trust Authority token"
         )
 
-    # Verify at least one endpoint is healthy
+    # Verify at least one endpoint
     if not request.endpoints:
         raise HTTPException(status_code=400, detail="Registration requires at least one endpoint")
 
-    health_status = "unknown"
-    health_error = None
-
-    for _env, url in request.endpoints.items():
-        try:
-            # Try /health endpoint
-            health_url = url.rstrip("/") + "/health"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(health_url)
-                if response.status_code == 200:
-                    health_status = "healthy"
-                    break
-        except Exception as e:
-            health_error = str(e)
-            continue
-
-    if health_status != "healthy":
-        raise HTTPException(
-            status_code=400,
-            detail=f"No endpoint responded to health check. Last error: {health_error}",
-        )
+    # Trust the agent's local health check - the agent already verified health
+    # before calling this endpoint, and we trust the agent via attestation
+    health_status = "healthy"
 
     service = ServiceRegistration.from_request(request)
     service.health_status = health_status
