@@ -9,6 +9,15 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
+class LogLevel(str, Enum):
+    """Log level for filtering."""
+
+    DEBUG = "debug"
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+
+
 class ServiceRegistrationRequest(BaseModel):
     """Request model for registering a new service."""
 
@@ -342,10 +351,6 @@ class AgentPollResponse(BaseModel):
         default=None,
         description="Deployment config if available: {deployment_id, compose, build_context, config}",
     )
-    update: dict | None = Field(
-        default=None,
-        description="Update instructions: {check_github: true}",
-    )
     action: str | None = Field(
         default=None,
         description="Action for agent: 're_attest' if attestation failed",
@@ -361,6 +366,10 @@ class AgentPollResponse(BaseModel):
     hostname: str | None = Field(
         default=None,
         description="Hostname for this agent (e.g., agent-xyz.easyenclave.com)",
+    )
+    log_level: LogLevel = Field(
+        default=LogLevel.INFO,
+        description="Minimum log level for agent to send",
     )
 
 
@@ -662,15 +671,6 @@ class DeployFromVersionRequest(BaseModel):
 # ==============================================================================
 # Agent and Workload Logging Models
 # ==============================================================================
-
-
-class LogLevel(str, Enum):
-    """Log level for filtering."""
-
-    DEBUG = "debug"
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
 
 
 class LogSource(str, Enum):

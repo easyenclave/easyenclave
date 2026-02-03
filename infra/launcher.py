@@ -544,28 +544,6 @@ def register_with_easyenclave(config: dict, attestation: dict) -> dict:
     return result
 
 
-def check_for_updated_launcher():
-    """Check if there's an updated launcher in the share directory.
-
-    If launcher.py exists in the share, execute it instead of this one.
-    This allows hot-patching the launcher without rebuilding the VM image.
-    """
-    updated_launcher = SHARE_DIR / "launcher.py"
-    if updated_launcher.exists():
-        logger.info("Found updated launcher in share directory, executing it...")
-        import sys
-
-        # Execute the updated launcher
-        exec(
-            compile(updated_launcher.read_text(), str(updated_launcher), "exec"),
-            {
-                "__name__": "__main__",
-                "__file__": str(updated_launcher),
-            },
-        )
-        sys.exit(0)
-
-
 def main():
     """Main entry point"""
     logger.info("TDX File-based Launcher starting...")
@@ -605,9 +583,6 @@ def main():
     if not SHARE_DIR.exists() or not SHARE_DIR.is_mount():
         logger.error("Share directory not available after 120s")
         return 1
-
-    # Check for updated launcher in share directory
-    check_for_updated_launcher()
 
     try:
         config = wait_for_config()

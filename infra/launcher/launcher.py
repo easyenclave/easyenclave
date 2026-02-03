@@ -516,10 +516,16 @@ def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
             timeout=10,
         )
         if result.returncode != 0:
+            logger.warning(f"docker ps failed with code {result.returncode}: {result.stderr}")
             return logs
 
         containers = result.stdout.strip().split("\n")
         containers = [c for c in containers if c]
+
+        if containers:
+            logger.debug(f"Found {len(containers)} containers: {containers}")
+        else:
+            logger.debug("No running containers found")
 
         for container in containers:
             try:
@@ -581,22 +587,23 @@ def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
             except subprocess.TimeoutExpired:
                 logger.warning(f"Timeout getting logs for container {container}")
             except Exception as e:
-                logger.debug(f"Failed to get logs for container {container}: {e}")
+                logger.warning(f"Failed to get logs for container {container}: {e}")
 
     except subprocess.TimeoutExpired:
         logger.warning("Timeout listing containers")
     except Exception as e:
-        logger.debug(f"Failed to list containers: {e}")
+        logger.warning(f"Failed to list containers: {e}")
 
     return logs
 
 
-def send_container_logs(agent_id: str, since_minutes: int = 1) -> int:
+def send_container_logs(agent_id: str, since_minutes: int = 1, min_level: str | None = None) -> int:
     """Collect and send container logs to control plane.
 
     Args:
         agent_id: Agent ID
         since_minutes: Collect logs from the last N minutes
+        min_level: Minimum log level to send (from control plane), defaults to LOG_MIN_LEVEL
 
     Returns:
         Number of logs sent
@@ -605,17 +612,18 @@ def send_container_logs(agent_id: str, since_minutes: int = 1) -> int:
     if not logs:
         return 0
 
+    level = min_level or LOG_MIN_LEVEL
     try:
         response = requests.post(
             f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/logs",
-            json={"logs": logs, "min_level": LOG_MIN_LEVEL},
+            json={"logs": logs, "min_level": level},
             timeout=10,
         )
         response.raise_for_status()
         result = response.json()
         return result.get("stored", 0)
     except Exception as e:
-        logger.debug(f"Failed to send container logs: {e}")
+        logger.warning(f"Failed to send {len(logs)} container logs: {e}")
         return 0
 
 
@@ -1283,13 +1291,6 @@ def handle_deployment(agent_id: str, deployment: dict, tunnel_hostname: str | No
         raise
 
 
-def handle_self_update():
-    """Check GitHub for latest launcher version and update if newer."""
-    # TODO: Implement self-update from GitHub releases
-    # For now, just log that we would check for updates
-    logger.debug("Self-update check: not implemented yet")
-
-
 # ==============================================================================
 # Control Plane Mode
 # ==============================================================================
@@ -1672,6 +1673,7 @@ def run_agent_mode(config: dict):
     cloudflared_proc = None
     tunnel_hostname = None  # Track the tunnel hostname for service registration
     last_log_flush = time.time()
+    log_level_from_cp = None  # Log level from control plane (updated on each poll)
     try:
         reg_response = register_with_control_plane(attestation, vm_name)
         agent_id = reg_response["agent_id"]
@@ -1735,6 +1737,10 @@ def run_agent_mode(config: dict):
             # Poll for deployment
             response = poll_control_plane(agent_id)
 
+            # Update log level from control plane
+            if response.get("log_level"):
+                log_level_from_cp = response["log_level"]
+
             # Start cloudflared if poll response includes tunnel info and we don't have it running
             # This handles the case where agent was verified after registration (MRTD trusted later)
             if response.get("tunnel_token") and cloudflared_proc is None:
@@ -1784,11 +1790,6 @@ def run_agent_mode(config: dict):
                     logger.error(f"Deployment failed: {e}")
                     # Continue polling - agent may get another deployment
 
-            # Handle self-update if requested
-            update = response.get("update")
-            if update is not None and update.get("check_github"):
-                handle_self_update()
-
         except requests.exceptions.ConnectionError as e:
             logger.warning(f"Connection error: {e}")
         except requests.exceptions.Timeout as e:
@@ -1813,15 +1814,17 @@ def run_agent_mode(config: dict):
                 # Flush agent logs
                 agent_logs_sent = flush_logs()
 
-                # Collect and send container logs
-                container_logs_sent = send_container_logs(agent_id, since_minutes=1)
+                # Collect and send container logs (use log level from control plane if available)
+                container_logs_sent = send_container_logs(
+                    agent_id, since_minutes=1, min_level=log_level_from_cp
+                )
 
                 if agent_logs_sent or container_logs_sent:
-                    logger.debug(
+                    logger.info(
                         f"Sent {agent_logs_sent} agent logs, {container_logs_sent} container logs"
                     )
             except Exception as e:
-                logger.debug(f"Log flush error: {e}")
+                logger.warning(f"Log flush error: {e}")
             finally:
                 last_log_flush = time.time()
 
