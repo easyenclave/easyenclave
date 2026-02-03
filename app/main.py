@@ -1138,11 +1138,11 @@ async def get_agent_attestation(agent_id: str):
         except Exception as e:
             intel_ta_details = {"error": str(e)}
 
-    # Sync verified status if token expired (keeps admin UI in sync with public UI)
-    if agent.verified and not intel_ta_verified:
-        agent_store.set_verified(agent_id, False, error="Intel TA token expired")
-        # Refresh agent object to reflect the update
-        agent = agent_store.get(agent_id)
+    # Note: We do NOT un-verify the agent if the Intel TA token has expired.
+    # The token's expiry (typically 5 minutes) is a limitation of the JWT format,
+    # not an indication that the attestation is invalid. Once an agent is verified
+    # at registration time, it remains verified. The intel_ta_verified field below
+    # indicates whether the token can still be cryptographically verified now.
 
     return {
         "agent_id": agent.agent_id,
