@@ -1665,6 +1665,10 @@ def run_agent_mode(config: dict):
     if config.get("control_plane_url"):
         CONTROL_PLANE_URL = config["control_plane_url"]
 
+    # Set INTEL_API_KEY env var for use by deployment attestation
+    if config.get("intel_api_key") and not os.environ.get("INTEL_API_KEY"):
+        os.environ["INTEL_API_KEY"] = config["intel_api_key"]
+
     # Start admin server for local monitoring
     start_admin_server()
     _admin_state["status"] = "starting"
