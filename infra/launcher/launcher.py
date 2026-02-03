@@ -1735,6 +1735,15 @@ def run_agent_mode(config: dict):
             # Poll for deployment
             response = poll_control_plane(agent_id)
 
+            # Start cloudflared if poll response includes tunnel info and we don't have it running
+            # This handles the case where agent was verified after registration (MRTD trusted later)
+            if response.get("tunnel_token") and cloudflared_proc is None:
+                tunnel_hostname = response.get("hostname", tunnel_hostname)
+                logger.info("Received tunnel token from poll, starting cloudflared...")
+                cloudflared_proc = start_cloudflared(response["tunnel_token"])
+                if cloudflared_proc and tunnel_hostname:
+                    logger.info(f"Agent reachable at: https://{tunnel_hostname}")
+
             # Handle re-attestation request (attestation failed on control plane)
             if response.get("action") == "re_attest":
                 logger.warning(f"Received re_attest action: {response.get('message')}")

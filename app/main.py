@@ -900,11 +900,12 @@ async def register_agent(request: AgentRegistrationRequest):
             tunnel_token = tunnel_info["tunnel_token"]
             hostname = tunnel_info["hostname"]
 
-            # Update agent with tunnel info
+            # Update agent with tunnel info (including token for poll response)
             agent_store.update_tunnel_info(
                 agent_id,
                 tunnel_id=tunnel_info["tunnel_id"],
                 hostname=hostname,
+                tunnel_token=tunnel_token,
             )
             logger.info(f"Created tunnel for agent {agent_id}: {hostname}")
         except Exception as e:
@@ -957,10 +958,14 @@ async def poll_for_deployment(agent_id: str):
         logger.debug(f"Agent {agent_id} not verified - no deployment")
         return AgentPollResponse()
 
+    # Include tunnel info in response if available (for agents verified after registration)
+    tunnel_token = agent.tunnel_token
+    hostname = agent.hostname
+
     # Check for pending deployment
     deployment = deployment_store.get_pending_for_agent(agent_id)
     if deployment is None:
-        return AgentPollResponse()
+        return AgentPollResponse(tunnel_token=tunnel_token, hostname=hostname)
 
     # Mark deployment as assigned
     deployment_store.assign(deployment.deployment_id, agent_id)
@@ -973,7 +978,9 @@ async def poll_for_deployment(agent_id: str):
             "compose": deployment.compose,
             "build_context": deployment.build_context,
             "config": deployment.config,
-        }
+        },
+        tunnel_token=tunnel_token,
+        hostname=hostname,
     )
 
 
@@ -1212,6 +1219,7 @@ async def reset_agent(agent_id: str):
                 agent_id,
                 tunnel_id=tunnel_info["tunnel_id"],
                 hostname=tunnel_info["hostname"],
+                tunnel_token=tunnel_info["tunnel_token"],
             )
             tunnel_created = True
             logger.info(f"Created tunnel for reset agent {agent_id}: {tunnel_info['hostname']}")
@@ -1305,6 +1313,7 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
                         agent.agent_id,
                         tunnel_id=tunnel_info["tunnel_id"],
                         hostname=tunnel_info["hostname"],
+                        tunnel_token=tunnel_info["tunnel_token"],
                     )
                     logger.info(
                         f"Created tunnel for newly verified agent {agent.agent_id}: {tunnel_info['hostname']}"

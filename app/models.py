@@ -257,6 +257,9 @@ class LauncherAgent(BaseModel):
     hostname: str | None = Field(
         default=None, description="Public hostname (e.g., agent-abc123.easyenclave.com)"
     )
+    tunnel_token: str | None = Field(
+        default=None, description="Cloudflare Tunnel token for cloudflared (not exposed in API)"
+    )
 
     # Deployment tracking
     current_deployment_id: str | None = Field(default=None, description="Active deployment ID")
@@ -350,6 +353,14 @@ class AgentPollResponse(BaseModel):
     message: str | None = Field(
         default=None,
         description="Human-readable message for the action",
+    )
+    tunnel_token: str | None = Field(
+        default=None,
+        description="Cloudflare tunnel token for this agent (if verified and tunnel exists)",
+    )
+    hostname: str | None = Field(
+        default=None,
+        description="Hostname for this agent (e.g., agent-xyz.easyenclave.com)",
     )
 
 

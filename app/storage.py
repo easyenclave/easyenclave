@@ -577,6 +577,7 @@ class AgentStore:
         agent_id: str,
         tunnel_id: str,
         hostname: str,
+        tunnel_token: str | None = None,
     ) -> bool:
         """Update agent's Cloudflare tunnel info. Returns False if not found."""
         with self._lock:
@@ -586,6 +587,8 @@ class AgentStore:
             agent_dict = agent.model_dump()
             agent_dict["tunnel_id"] = tunnel_id
             agent_dict["hostname"] = hostname
+            if tunnel_token:
+                agent_dict["tunnel_token"] = tunnel_token
             agent_dict["tunnel_error"] = None  # Clear any previous error
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
