@@ -643,15 +643,15 @@ async def register_agent(request: AgentRegistrationRequest):
     """Register a launcher agent with the control plane.
 
     Launcher agents call this on boot to register themselves.
-    Requires valid TDX attestation to register.
+    Requires valid TDX attestation with Intel Trust Authority verification.
 
     Verification steps:
-    1. MRTD must be in the trusted list (links to auditable GitHub source)
-    2. Intel TA token must be valid (cryptographic proof from Intel)
+    1. Intel TA token required and verified (cryptographic proof from Intel)
+    2. MRTD extracted from verified Intel TA claims
+    3. MRTD must be in the trusted list with type 'agent' or 'proxy'
 
-    If Cloudflare is configured and the agent passes both verifications,
-    a Cloudflare Tunnel is created for the agent, allowing it to be reached
-    via HTTPS at agent-{agent_id}.easyenclave.com.
+    If verification passes and Cloudflare is configured, a tunnel is created
+    for the agent at agent-{agent_id}.easyenclave.com.
     """
     if not request.attestation:
         raise HTTPException(status_code=400, detail="Registration requires attestation")
@@ -675,74 +675,72 @@ async def register_agent(request: AgentRegistrationRequest):
     if existing and existing.status == "attestation_failed":
         logger.info(f"Agent {existing.agent_id} re-registering after attestation failure")
 
-    # Extract MRTD and Intel TA token from attestation
-    mrtd = ""
-    if "tdx" in request.attestation:
-        measurements = request.attestation["tdx"].get("measurements", {})
-        mrtd = measurements.get("mrtd", "")
+    # Extract Intel TA token from attestation
     intel_ta_token = request.attestation.get("tdx", {}).get("intel_ta_token")
 
-    # Step 1: Verify MRTD against trusted list (must be type "agent" or "proxy")
-    mrtd_verified = False
-    verification_error = None
-    trusted_mrtd_info = None
-    if mrtd:
-        trusted_mrtd_info = trusted_mrtd_store.get(mrtd)
-        if trusted_mrtd_info and trusted_mrtd_info.active:
-            # Check that this MRTD is for system infrastructure (agent or proxy), not apps
-            if trusted_mrtd_info.type in (MrtdType.AGENT, MrtdType.PROXY):
-                mrtd_verified = True
-                logger.info(
-                    f"Agent MRTD verified: {mrtd[:16]}... (type: {trusted_mrtd_info.type}) "
-                    f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
-                )
-            else:
-                verification_error = (
-                    f"MRTD is type '{trusted_mrtd_info.type}', not 'agent' or 'proxy'"
-                )
-                logger.warning(
-                    f"Agent MRTD wrong type: {mrtd[:16]}... is '{trusted_mrtd_info.type}' ({request.vm_name})"
-                )
-        else:
-            verification_error = "MRTD not in trusted list"
-            logger.warning(f"Agent MRTD not trusted: {mrtd[:16]}... ({request.vm_name})")
-    else:
-        verification_error = "No MRTD in attestation"
-        logger.warning(f"Agent has no MRTD: {request.vm_name}")
-
-    # Reject registration if MRTD is not trusted
-    # This prevents untrusted agents from polluting the agent list
-    if not (trusted_mrtd_info and trusted_mrtd_info.active):
+    # Step 1: Require and verify Intel TA token
+    # Intel TA provides cryptographic proof from Intel that the TDX quote is valid
+    if not intel_ta_token:
         raise HTTPException(
-            status_code=403,
-            detail=f"Registration rejected: MRTD not trusted: {mrtd[:32]}..."
+            status_code=400,
+            detail="Registration requires Intel Trust Authority token",
         )
 
-    # Step 2: Verify Intel TA token (if MRTD passed and token is present)
-    intel_ta_verified = False
-    if mrtd_verified and intel_ta_token:
-        try:
-            ita_result = await verify_attestation_token(intel_ta_token)
-            if ita_result["verified"]:
-                intel_ta_verified = True
-                logger.info(f"Agent Intel TA token verified ({request.vm_name})")
-            else:
-                verification_error = (
-                    f"Intel TA verification failed: {ita_result.get('error', 'unknown')}"
-                )
-                logger.warning(
-                    f"Agent Intel TA verification failed: {verification_error} ({request.vm_name})"
-                )
-        except Exception as e:
-            verification_error = f"Intel TA verification error: {e}"
-            logger.warning(f"Agent Intel TA verification error: {e} ({request.vm_name})")
-    elif mrtd_verified and not intel_ta_token:
-        # No Intel TA token - still allow registration but note it
-        logger.info(f"Agent has no Intel TA token, MRTD-only verification ({request.vm_name})")
+    verification_error = None
+    ita_result = None
+    try:
+        ita_result = await verify_attestation_token(intel_ta_token)
+        if not ita_result["verified"]:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Intel TA verification failed: {ita_result.get('error', 'unknown')}",
+            )
+        logger.info(f"Agent Intel TA token verified ({request.vm_name})")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Intel TA verification error: {e}",
+        ) from e
 
-    # Agent is fully verified only if both MRTD and Intel TA are verified
-    # Both verifications are required for security - MRTD alone shouldn't be trusted
-    verified = mrtd_verified and intel_ta_verified
+    # Step 2: Extract MRTD from verified Intel TA claims and check trusted list
+    # The MRTD in the JWT is trustworthy because Intel verified the quote
+    ita_claims = ita_result.get("details", {})
+    mrtd = ita_claims.get("tdx_mrtd", "")
+    if not mrtd:
+        # Fallback to attester claims format
+        tdx_claims = ita_claims.get("tdx", {})
+        mrtd = tdx_claims.get("tdx_mrtd", "")
+
+    if not mrtd:
+        raise HTTPException(
+            status_code=403,
+            detail="Intel TA token does not contain MRTD claim",
+        )
+
+    # Check MRTD against trusted list (must be type "agent" or "proxy")
+    trusted_mrtd_info = trusted_mrtd_store.get(mrtd)
+    if not trusted_mrtd_info or not trusted_mrtd_info.active:
+        raise HTTPException(
+            status_code=403,
+            detail=f"MRTD from Intel TA not in trusted list: {mrtd[:32]}...",
+        )
+
+    if trusted_mrtd_info.type not in (MrtdType.AGENT, MrtdType.PROXY):
+        raise HTTPException(
+            status_code=403,
+            detail=f"MRTD is type '{trusted_mrtd_info.type}', not 'agent' or 'proxy'",
+        )
+
+    logger.info(
+        f"Agent MRTD verified from Intel TA: {mrtd[:16]}... (type: {trusted_mrtd_info.type}) "
+        f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
+    )
+
+    # Both Intel TA and MRTD verified - agent is trusted
+    intel_ta_verified = True
+    verified = True
 
     # Create agent record (reuse existing agent_id if recovering from attestation_failed)
     agent_kwargs = {
