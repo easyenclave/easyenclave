@@ -382,6 +382,85 @@ ssh_pwauth: true
 
         return info
 
+    def vm_measure(
+        self,
+        image: str | None = None,
+        timeout: int = 180,
+    ) -> dict:
+        """Boot a temporary VM to capture MRTD, then destroy it.
+
+        This is useful for getting the MRTD before trusting it in the control plane.
+        The VM boots, generates attestation, and the MRTD is extracted from the
+        serial console output.
+
+        Args:
+            image: Path to TDX VM image (auto-detected if not provided)
+            timeout: Max seconds to wait for attestation (default 180)
+
+        Returns:
+            Dict with mrtd and vm_name
+        """
+        import re
+
+        # Boot a temporary VM in agent mode (but it won't be able to register
+        # since MRTD isn't trusted yet - that's the point)
+        # We need to give it a control plane URL that won't work but won't
+        # cause it to crash before generating attestation
+        config = {
+            "control_plane_url": "http://localhost:9999",  # Dummy URL
+            "intel_api_key": os.environ.get("INTEL_API_KEY", ""),
+        }
+
+        print("Booting temporary VM to measure MRTD...", file=sys.stderr)
+        result = self.vm_new(image=image, mode=AGENT_MODE, config=config)
+        vm_name = result["name"]
+        serial_log = result.get("serial_log")
+
+        print(f"VM started: {vm_name}", file=sys.stderr)
+        print(f"Serial log: {serial_log}", file=sys.stderr)
+
+        mrtd = None
+        try:
+            # Wait for MRTD to appear in serial log
+            # The launcher logs: "Generated TDX quote, MRTD: <mrtd>..."
+            start = time.time()
+            while time.time() - start < timeout:
+                if serial_log and Path(serial_log).exists():
+                    log_content = Path(serial_log).read_text()
+
+                    # Look for MRTD in the log
+                    # Pattern: "MRTD: <96-char hex>..." or "mrtd\": \"<96-char hex>\""
+                    match = re.search(r'MRTD[:\s"]+([a-f0-9]{96})', log_content, re.IGNORECASE)
+                    if match:
+                        mrtd = match.group(1)
+                        print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)
+                        break
+
+                    # Also check for registration rejection (means attestation worked)
+                    if "Registration rejected" in log_content or "403" in log_content:
+                        # MRTD should have been logged before the rejection
+                        # Try one more time to find it
+                        match = re.search(r'MRTD[:\s"]+([a-f0-9]{96})', log_content, re.IGNORECASE)
+                        if match:
+                            mrtd = match.group(1)
+                            print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)
+                            break
+
+                time.sleep(2)
+
+            if not mrtd:
+                print("Warning: Could not find MRTD in logs", file=sys.stderr)
+
+        finally:
+            # Always clean up the VM
+            print(f"Destroying temporary VM: {vm_name}", file=sys.stderr)
+            self.vm_delete(vm_name)
+
+        return {
+            "mrtd": mrtd,
+            "vm_name": vm_name,
+        }
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -391,6 +470,7 @@ def main():
 Examples:
   tdx control-plane new               Launch control plane in TDX VM (bootstrap new network)
   tdx vm new                          Create new TDX VM (registers with control plane)
+  tdx vm measure                      Boot temp VM to get MRTD, then destroy
   tdx vm list                         List all TDX VMs
   tdx vm status <name>                Get VM status
   tdx vm delete <name>                Delete a TDX VM
@@ -398,8 +478,10 @@ Examples:
 
 To start a new EasyEnclave network:
   1. tdx control-plane new            Launch control plane
-  2. tdx vm new                       Launch agent VMs that register with control plane
-  3. POST /api/v1/deployments         Deploy workloads via API
+  2. MRTD=$(tdx vm measure)           Get MRTD from temp VM
+  3. curl -X POST .../trusted-mrtds   Trust the MRTD
+  4. tdx vm new                       Launch agent (now can register)
+  5. POST /api/v1/deployments         Deploy workloads via API
         """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -442,6 +524,12 @@ To start a new EasyEnclave network:
 
     del_parser = vm_sub.add_parser("delete", help="Delete TDX VM")
     del_parser.add_argument("name", help="VM name or 'all'")
+
+    measure_parser = vm_sub.add_parser("measure", help="Boot temp VM to capture MRTD")
+    measure_parser.add_argument("-i", "--image", help="Path to TDX image")
+    measure_parser.add_argument(
+        "--timeout", type=int, default=180, help="Timeout in seconds (default 180)"
+    )
 
     args = parser.parse_args()
     workspace = Path(os.environ.get("GITHUB_WORKSPACE", "."))
@@ -540,6 +628,14 @@ To start a new EasyEnclave network:
                         mgr.vm_delete(vm)
                 else:
                     mgr.vm_delete(args.name)
+            elif args.vm_command == "measure":
+                result = mgr.vm_measure(args.image, args.timeout)
+                if result.get("mrtd"):
+                    # Print just the MRTD for easy scripting
+                    print(result["mrtd"])
+                else:
+                    print("Error: Could not capture MRTD", file=sys.stderr)
+                    sys.exit(1)
 
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)

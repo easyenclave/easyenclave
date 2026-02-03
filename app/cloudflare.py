@@ -45,7 +45,7 @@ def is_configured() -> bool:
 
 async def create_tunnel_for_agent(
     agent_id: str,
-    service_port: int = 8080,
+    service_port: int = 8081,
 ) -> TunnelInfo:
     """Create a Cloudflare Tunnel for an agent.
 
@@ -54,9 +54,12 @@ async def create_tunnel_for_agent(
     2. Ingress configuration routing to localhost:{service_port}
     3. A DNS CNAME record for agent-{agent_id}.{domain}
 
+    The tunnel routes to the agent API server (port 8081), which handles
+    /api/* requests itself and proxies other requests to the workload.
+
     Args:
         agent_id: The agent's unique ID
-        service_port: Port the agent's service listens on (default 8080)
+        service_port: Port the agent API server listens on (default 8081)
 
     Returns:
         TunnelInfo with tunnel_id, tunnel_token, and hostname

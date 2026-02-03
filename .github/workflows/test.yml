@@ -119,6 +119,27 @@ jobs:
           subject-name: ghcr.io/${{ github.repository }}/tdx-runner
           subject-digest: sha256:${{ steps.build.outputs.digest }}
 
+      - name: Verify secrets
+        run: |
+          if [ -n "$INTEL_API_KEY" ]; then
+            echo "INTEL_API_KEY is set (length: ${#INTEL_API_KEY})"
+          else
+            echo "::error::INTEL_API_KEY is not set!"
+            exit 1
+          fi
+
+      - name: Measure MRTD
+        id: measure
+        run: |
+          echo "Measuring MRTD from temp VM..."
+          MRTD=$(python3 infra/tdx_cli.py vm measure --timeout 180)
+          if [ -z "$MRTD" ]; then
+            echo "::error::Failed to measure MRTD"
+            exit 1
+          fi
+          echo "MRTD: ${MRTD:0:32}..."
+          echo "mrtd=$MRTD" >> "$GITHUB_OUTPUT"
+
       - name: Deploy control plane
         run: |
           python3 infra/tdx_cli.py control-plane new --wait --port 8080
@@ -131,6 +152,24 @@ jobs:
           done
           echo "::warning::Tunnel not ready"
 
+      - name: Trust agent MRTD
+        run: |
+          MRTD="${{ steps.measure.outputs.mrtd }}"
+          echo "Trusting MRTD: ${MRTD:0:32}..."
+          curl -sf -X POST "https://app.easyenclave.com/api/v1/trusted-mrtds" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"mrtd\": \"$MRTD\",
+              \"type\": \"agent\",
+              \"description\": \"TDX runner agent (CI build)\",
+              \"source_repo\": \"easyenclave/easyenclave\",
+              \"source_commit\": \"$GITHUB_SHA\",
+              \"build_workflow\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
+              \"attestation_url\": \"https://github.com/$GITHUB_REPOSITORY/attestations\"
+            }"
+          echo ""
+          echo "MRTD trusted successfully"
+
       - name: Register example apps
         run: |
           curl -sf -X POST "https://app.easyenclave.com/api/v1/apps" \
@@ -138,52 +177,13 @@ jobs:
             -d '{"name": "hello-tdx", "description": "Hello TDX example", "source_repo": "easyenclave/easyenclave"}' \
             || echo "App may already exist"
 
-      - name: Verify secrets
-        run: |
-          if [ -n "$INTEL_API_KEY" ]; then
-            echo "INTEL_API_KEY is set (length: ${#INTEL_API_KEY})"
-          else
-            echo "::error::INTEL_API_KEY is not set!"
-            exit 1
-          fi
-
       - name: Launch agent
         run: |
           python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --wait
 
-      - name: Trust agent MRTD
+      - name: Wait for agent to register and be verified
         run: |
-          echo "Waiting for agent to register..."
-          for i in {1..12}; do
-            AGENTS=$(curl -sf https://app.easyenclave.com/api/v1/agents 2>/dev/null || echo '{"agents":[]}')
-            MRTD=$(echo "$AGENTS" | jq -r '.agents[0].mrtd // empty')
-            if [ -n "$MRTD" ]; then
-              echo "Found agent with MRTD: ${MRTD:0:32}..."
-              echo "Adding MRTD to trusted list..."
-              curl -sf -X POST "https://app.easyenclave.com/api/v1/trusted-mrtds" \
-                -H "Content-Type: application/json" \
-                -d "{
-                  \"mrtd\": \"$MRTD\",
-                  \"mrtd_type\": \"agent\",
-                  \"description\": \"TDX runner agent (CI build)\",
-                  \"source_repo\": \"easyenclave/easyenclave\",
-                  \"source_commit\": \"$GITHUB_SHA\",
-                  \"build_workflow\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
-                  \"attestation_url\": \"https://github.com/$GITHUB_REPOSITORY/attestations\"
-                }"
-              echo ""
-              echo "MRTD trusted successfully"
-              exit 0
-            fi
-            echo "No agent yet, waiting... ($i/12)"
-            sleep 5
-          done
-          echo "::error::No agent registered after 1 minute"
-          exit 1
-
-      - name: Wait for agent to be verified
-        run: |
-          echo "Waiting for agent to be verified..."
+          echo "Waiting for agent to register and be verified..."
           for i in {1..30}; do
             AGENTS=$(curl -sf https://app.easyenclave.com/api/v1/agents 2>/dev/null || echo '{"agents":[]}')
             VERIFIED=$(echo "$AGENTS" | jq '[.agents[] | select(.verified == true)] | length')

@@ -118,7 +118,11 @@ HEALTH_CHECK_INTERVAL = 60
 
 # Agent health check settings
 AGENT_HEALTH_CHECK_INTERVAL = 30  # Check agents every 30 seconds
+AGENT_ATTESTATION_INTERVAL = 300  # Request fresh attestation every 5 minutes
 AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhealthy
+
+# Track when agents were last attested (for periodic re-attestation)
+_agent_last_attestation: dict[str, datetime] = {}
 
 
 async def check_service_health(service: ServiceRegistration) -> str:
@@ -156,33 +160,108 @@ async def background_health_checker():
         await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
 
-async def check_agent_health(agent: LauncherAgent) -> str:
-    """Check health of a deployed agent's service. Returns health status."""
-    if not agent.service_url:
-        return "unknown"
+async def check_agent_health(
+    agent: LauncherAgent, include_attestation: bool = False
+) -> tuple[str, dict | None]:
+    """Check health of an agent via its tunnel.
+
+    Args:
+        agent: The agent to check
+        include_attestation: If True, request fresh attestation from agent
+
+    Returns:
+        Tuple of (health_status, attestation_dict or None)
+    """
+    if not agent.hostname:
+        return "unknown", None
 
     try:
-        health_url = agent.service_url.rstrip("/") + agent.health_endpoint
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        health_url = f"https://{agent.hostname}/api/health"
+        if include_attestation:
+            health_url += "?attest=true"
+
+        async with httpx.AsyncClient(timeout=30.0 if include_attestation else 10.0) as client:
             response = await client.get(health_url)
             if response.status_code == 200:
-                return "healthy"
-    except Exception:
-        pass
-    return "unhealthy"
+                data = response.json()
+                attestation = data.get("attestation") if include_attestation else None
+                return "healthy", attestation
+    except Exception as e:
+        logger.debug(f"Health check failed for agent {agent.agent_id}: {e}")
+    return "unhealthy", None
 
 
 async def background_agent_health_checker():
-    """Background task to check health of deployed agents and handle reassignment."""
+    """Background task to check health of agents and periodically refresh attestation.
+
+    Health checks:
+    - Fast health check every 30 seconds: GET /api/health
+    - Attestation refresh every 5 minutes: GET /api/health?attest=true
+
+    This implements the CP-initiated health checking for the push/pull model.
+    Agents with tunnels are checked directly via their Cloudflare tunnel hostname.
+    """
     while True:
         try:
-            # Check health of all deployed agents
-            deployed_agents = agent_store.get_deployed_agents()
-            for agent in deployed_agents:
+            now = datetime.utcnow()
+
+            # Check all agents with tunnels (not just deployed ones)
+            all_agents = agent_store.list()
+            for agent in all_agents:
+                if not agent.hostname:
+                    continue  # Skip agents without tunnels
+
                 try:
-                    status = await check_agent_health(agent)
+                    # Determine if we need fresh attestation
+                    last_attest = _agent_last_attestation.get(agent.agent_id)
+                    need_attestation = (
+                        last_attest is None
+                        or (now - last_attest).total_seconds() > AGENT_ATTESTATION_INTERVAL
+                    )
+
+                    # Check health (with attestation if needed)
+                    status, attestation = await check_agent_health(
+                        agent, include_attestation=need_attestation
+                    )
                     agent_store.update_health(agent.agent_id, status)
-                    logger.debug(f"Agent {agent.agent_id} health: {status}")
+
+                    if need_attestation and status == "healthy":
+                        _agent_last_attestation[agent.agent_id] = now
+                        if attestation:
+                            # Verify and update attestation
+                            intel_ta_token = attestation.get("tdx", {}).get("intel_ta_token")
+                            if intel_ta_token:
+                                try:
+                                    result = await verify_attestation_token(intel_ta_token)
+                                    if result["verified"]:
+                                        agent_store.update_attestation(
+                                            agent.agent_id,
+                                            intel_ta_token=intel_ta_token,
+                                            verified=True,
+                                        )
+                                        logger.debug(
+                                            f"Agent {agent.agent_id} attestation refreshed"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"Agent {agent.agent_id} attestation failed: "
+                                            f"{result.get('error')}"
+                                        )
+                                        agent_store.update_attestation(
+                                            agent.agent_id,
+                                            intel_ta_token=intel_ta_token,
+                                            verified=False,
+                                            error=result.get("error"),
+                                        )
+                                except Exception as e:
+                                    logger.warning(
+                                        f"Failed to verify attestation for {agent.agent_id}: {e}"
+                                    )
+
+                    logger.debug(
+                        f"Agent {agent.agent_id} health: {status}"
+                        + (" (attested)" if need_attestation and status == "healthy" else "")
+                    )
                 except Exception as e:
                     logger.warning(f"Health check failed for agent {agent.agent_id}: {e}")
 
@@ -630,6 +709,14 @@ async def register_agent(request: AgentRegistrationRequest):
     else:
         verification_error = "No MRTD in attestation"
         logger.warning(f"Agent has no MRTD: {request.vm_name}")
+
+    # Reject registration if MRTD is not trusted
+    # This prevents untrusted agents from polluting the agent list
+    if not (trusted_mrtd_info and trusted_mrtd_info.active):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Registration rejected: MRTD not trusted: {mrtd[:32]}..."
+        )
 
     # Step 2: Verify Intel TA token (if MRTD passed and token is present)
     intel_ta_verified = False
@@ -1381,12 +1468,13 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
     This is the only way to create deployments. The app must be registered
     and the version must be "attested" (passed source inspection).
 
-    Flow:
+    Flow (push model):
     1. Validate app exists
     2. Validate version exists and status is "attested"
-    3. Validate agent exists, is verified, and available
-    4. Create deployment using version's compose
-    5. Return deployment_id
+    3. Validate agent exists, is verified, has tunnel, and available
+    4. Create deployment record
+    5. Push deployment to agent via POST /api/deploy
+    6. Return deployment_id with status from agent
     """
     # 1. Validate app exists
     found_app = app_store.get_by_name(name)
@@ -1424,32 +1512,75 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
             detail=f"Agent not verified: {agent.verification_error or 'MRTD not trusted'}",
         )
 
-    # 6. Check if agent is available
+    # 6. Check if agent has a tunnel hostname
+    if not agent.hostname:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a tunnel hostname - cannot push deployment",
+        )
+
+    # 7. Check if agent is available
     if agent.status not in ("undeployed", "deployed"):
         raise HTTPException(
             status_code=400, detail=f"Agent is not available (status: {agent.status})"
         )
 
-    # 7. Build deployment config
+    # 8. Build deployment config
     config = request.config or {}
     # Default service_name to app name if not provided
     if "service_name" not in config:
         config["service_name"] = name
 
-    # 8. Create deployment
+    # 9. Create deployment record
     deployment = Deployment(
         compose=found_version.compose,
         config=config,
         agent_id=request.agent_id,
-        status="pending",
+        status="pushing",
     )
     deployment_id = deployment_store.create(deployment)
     logger.info(
-        f"Deployment created from app version: {deployment_id} "
-        f"({name}@{version} -> agent {request.agent_id})"
+        f"Deployment created: {deployment_id} ({name}@{version} -> agent {request.agent_id})"
     )
 
-    return DeploymentCreateResponse(deployment_id=deployment_id, status="pending")
+    # 10. Push deployment to agent
+    try:
+        agent_url = f"https://{agent.hostname}/api/deploy"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                agent_url,
+                json={
+                    "deployment_id": deployment_id,
+                    "compose": found_version.compose,
+                    "build_context": found_version.build_context if hasattr(found_version, 'build_context') else None,
+                    "config": config,
+                },
+            )
+
+            if response.status_code == 202:
+                # Agent accepted the deployment
+                deployment_store.update_status(deployment_id, "deploying")
+                agent_store.update_status(request.agent_id, "deploying", deployment_id)
+                logger.info(f"Deployment {deployment_id} pushed to agent {request.agent_id}")
+                return DeploymentCreateResponse(deployment_id=deployment_id, status="deploying")
+            else:
+                # Agent rejected the deployment
+                error_detail = response.text
+                deployment_store.complete(deployment_id, status="failed", error=error_detail)
+                logger.error(f"Agent rejected deployment: {error_detail}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Agent rejected deployment: {error_detail}",
+                )
+
+    except httpx.RequestError as e:
+        # Network error reaching agent
+        deployment_store.complete(deployment_id, status="failed", error=str(e))
+        logger.error(f"Failed to reach agent: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to reach agent at {agent.hostname}: {e}",
+        ) from e
 
 
 # ==============================================================================
@@ -1625,8 +1756,78 @@ async def submit_agent_logs(agent_id: str, request: LogBatchRequest):
     return LogBatchResponse(received=received, stored=stored)
 
 
-@app.get("/api/v1/agents/{agent_id}/logs", response_model=LogListResponse)
+@app.get("/api/v1/agents/{agent_id}/logs")
 async def get_agent_logs(
+    agent_id: str,
+    since: str = Query("5m", description="Logs since (e.g., '5m', '1h')"),
+    container: str | None = Query(None, description="Filter by container name"),
+):
+    """Get logs for a specific agent (pull model).
+
+    Fetches logs directly from the agent via its tunnel.
+    Returns logs from deployed containers.
+    """
+    agent = agent_store.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not agent.hostname:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a tunnel hostname - cannot pull logs",
+        )
+
+    try:
+        agent_url = f"https://{agent.hostname}/api/logs"
+        params = {"since": since}
+        if container:
+            params["container"] = container
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(agent_url, params=params)
+            response.raise_for_status()
+            return response.json()
+
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to reach agent at {agent.hostname}: {e}",
+        ) from e
+
+
+@app.get("/api/v1/agents/{agent_id}/stats")
+async def get_agent_stats(agent_id: str):
+    """Get system stats for a specific agent (pull model).
+
+    Fetches stats directly from the agent via its tunnel.
+    Returns CPU, memory, disk, and network stats.
+    """
+    agent = agent_store.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not agent.hostname:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a tunnel hostname - cannot pull stats",
+        )
+
+    try:
+        agent_url = f"https://{agent.hostname}/api/stats"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(agent_url)
+            response.raise_for_status()
+            return response.json()
+
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to reach agent at {agent.hostname}: {e}",
+        ) from e
+
+
+@app.get("/api/v1/agents/{agent_id}/logs/stored", response_model=LogListResponse)
+async def get_agent_logs_stored(
     agent_id: str,
     source: LogSource | None = Query(None, description="Filter by source: 'agent' or 'container'"),
     container_name: str | None = Query(None, description="Filter by container name"),
@@ -1635,10 +1836,10 @@ async def get_agent_logs(
     until: datetime | None = Query(None, description="Logs until this time"),
     limit: int = Query(100, description="Maximum number of logs to return", le=1000),
 ):
-    """Get logs for a specific agent.
+    """Get stored logs for a specific agent (legacy).
 
-    Returns logs from both the agent and its deployed containers.
-    Logs are returned in reverse chronological order (most recent first).
+    Returns logs that were previously pushed by agents (before pull model).
+    For new deployments, use GET /api/v1/agents/{agent_id}/logs instead.
     """
     agent = agent_store.get(agent_id)
     if agent is None:

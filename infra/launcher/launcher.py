@@ -104,6 +104,429 @@ def _add_admin_log(level: str, message: str):
         _admin_state["logs"] = _admin_state["logs"][-_admin_state["max_logs"] :]
 
 
+# Workload port for proxying
+WORKLOAD_PORT = int(os.environ.get("WORKLOAD_PORT", "8080"))
+
+# API authentication - control plane uses this secret to authenticate
+API_SECRET = os.environ.get("AGENT_API_SECRET", "")
+
+
+class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
+    """HTTP request handler for agent API (push/pull model).
+
+    Handles:
+    - GET /api/health - fast health check
+    - GET /api/health?attest=true - health + fresh ITA token
+    - POST /api/deploy - receive and execute deployment
+    - POST /api/undeploy - stop workload
+    - GET /api/logs - return docker logs
+    - GET /api/stats - return system metrics
+    - GET /admin - admin dashboard
+    - /* - proxy to workload on port 8080
+    """
+
+    # Reference to launcher config (set by start_agent_api_server)
+    launcher_config: dict = {}
+
+    def log_message(self, format, *args):
+        """Log to our logger instead of stderr."""
+        logger.debug(f"API: {args[0]}")
+
+    def _send_json(self, code: int, data: dict):
+        """Send JSON response."""
+        content = json.dumps(data).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(content)))
+        self.end_headers()
+        self.wfile.write(content)
+
+    def _send_html(self, code: int, content: str):
+        """Send HTML response."""
+        content_bytes = content.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(content_bytes)))
+        self.end_headers()
+        self.wfile.write(content_bytes)
+
+    def _check_api_auth(self) -> bool:
+        """Check API authentication for control plane requests."""
+        if not API_SECRET:
+            return True  # No secret configured, allow all
+        auth = self.headers.get("X-Agent-Secret", "")
+        return auth == API_SECRET
+
+    def _check_admin_auth(self) -> bool:
+        """Check admin authentication."""
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            token = auth[7:]
+            return token in _admin_tokens
+        return False
+
+    def _get_health(self, include_attestation: bool = False) -> dict:
+        """Get health status, optionally with fresh attestation."""
+        result = {
+            "status": _admin_state["status"],
+            "agent_id": _admin_state["agent_id"],
+            "vm_name": _admin_state["vm_name"],
+            "deployment_id": _admin_state["deployment_id"],
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Check container status
+        containers = []
+        try:
+            proc = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in proc.stdout.strip().split("\n"):
+                if line:
+                    parts = line.split("\t")
+                    containers.append({
+                        "name": parts[0] if parts else "unknown",
+                        "status": "running" if "Up" in (parts[1] if len(parts) > 1 else "") else "stopped",
+                    })
+        except Exception as e:
+            logger.debug(f"Failed to get container status: {e}")
+        result["containers"] = containers
+
+        # Generate fresh attestation if requested
+        if include_attestation:
+            try:
+                attestation = generate_initial_attestation(self.launcher_config)
+                result["attestation"] = attestation
+            except Exception as e:
+                result["attestation_error"] = str(e)
+                logger.warning(f"Failed to generate attestation: {e}")
+
+        return result
+
+    def _get_logs(self, since: str = "5m", container: str = None) -> dict:
+        """Get docker logs."""
+        logs = []
+        try:
+            # Get container list
+            proc = subprocess.run(
+                ["docker", "ps", "--format", "{{.Names}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            containers = [c for c in proc.stdout.strip().split("\n") if c]
+
+            # Filter to specific container if requested
+            if container:
+                containers = [c for c in containers if container in c]
+
+            for cname in containers:
+                try:
+                    log_proc = subprocess.run(
+                        ["docker", "logs", "--since", since, "--timestamps", cname],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    for line in (log_proc.stdout + log_proc.stderr).strip().split("\n"):
+                        if line:
+                            logs.append({"container": cname, "line": line})
+                except Exception as e:
+                    logger.debug(f"Failed to get logs for {cname}: {e}")
+
+        except Exception as e:
+            logger.warning(f"Failed to get logs: {e}")
+
+        return {"logs": logs, "count": len(logs)}
+
+    def _get_stats(self) -> dict:
+        """Get system stats."""
+        return collect_system_stats()
+
+    def _proxy_to_workload(self):
+        """Proxy request to workload on port 8080."""
+        import http.client
+
+        try:
+            # Read request body if present
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length > 0 else None
+
+            # Connect to workload
+            conn = http.client.HTTPConnection("127.0.0.1", WORKLOAD_PORT, timeout=30)
+
+            # Forward headers (except Host)
+            headers = {}
+            for name, value in self.headers.items():
+                if name.lower() not in ("host", "connection"):
+                    headers[name] = value
+
+            # Make request
+            conn.request(self.command, self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+
+            # Send response
+            self.send_response(resp.status)
+            for name, value in resp.getheaders():
+                if name.lower() not in ("transfer-encoding", "connection"):
+                    self.send_header(name, value)
+            self.end_headers()
+
+            # Stream response body
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+
+            conn.close()
+
+        except ConnectionRefusedError:
+            self._send_json(502, {"error": "Workload not running"})
+        except Exception as e:
+            self._send_json(502, {"error": f"Proxy error: {e}"})
+
+    def do_GET(self):
+        """Handle GET requests."""
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
+
+        # API endpoints
+        if path == "/api/health":
+            include_attest = query.get("attest", ["false"])[0].lower() == "true"
+            self._send_json(200, self._get_health(include_attestation=include_attest))
+            return
+
+        if path == "/api/logs":
+            if not self._check_api_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            since = query.get("since", ["5m"])[0]
+            container = query.get("container", [None])[0]
+            self._send_json(200, self._get_logs(since=since, container=container))
+            return
+
+        if path == "/api/stats":
+            if not self._check_api_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            self._send_json(200, self._get_stats())
+            return
+
+        if path == "/api/status":
+            # Alias for health without attestation
+            self._send_json(200, self._get_health(include_attestation=False))
+            return
+
+        # Admin endpoints (require admin auth)
+        if path == "/admin" or path == "/":
+            self._send_html(200, ADMIN_HTML)
+            return
+
+        if path == "/api/admin/logs":
+            if not self._check_admin_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            level = query.get("level", ["info"])[0]
+            level_order = ["debug", "info", "warning", "error"]
+            min_idx = level_order.index(level) if level in level_order else 1
+            filtered = [log for log in _admin_state["logs"]
+                       if level_order.index(log["level"]) >= min_idx]
+            self._send_json(200, {"logs": filtered[-200:]})
+            return
+
+        if path == "/api/admin/containers":
+            if not self._check_admin_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            health = self._get_health()
+            self._send_json(200, {"containers": health.get("containers", [])})
+            return
+
+        # Proxy everything else to workload
+        self._proxy_to_workload()
+
+    def do_POST(self):
+        """Handle POST requests."""
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+
+        # Read body
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b""
+
+        # Admin login (no auth required)
+        if path == "/api/login":
+            try:
+                data = json.loads(body)
+                if data.get("password") == ADMIN_PASSWORD:
+                    token = secrets.token_urlsafe(32)
+                    _admin_tokens.add(token)
+                    if len(_admin_tokens) > 50:
+                        _admin_tokens.pop()
+                    self._send_json(200, {"token": token})
+                else:
+                    self._send_json(401, {"error": "Invalid password"})
+            except Exception:
+                self._send_json(400, {"error": "Invalid request"})
+            return
+
+        # API endpoints requiring auth
+        if not self._check_api_auth():
+            self._send_json(401, {"error": "Unauthorized"})
+            return
+
+        if path == "/api/deploy":
+            try:
+                deployment = json.loads(body)
+                # Handle deployment in background thread
+                thread = threading.Thread(
+                    target=self._handle_deploy,
+                    args=(deployment,),
+                    daemon=True,
+                )
+                thread.start()
+                self._send_json(202, {"status": "accepted", "deployment_id": deployment.get("deployment_id")})
+            except Exception as e:
+                self._send_json(400, {"error": str(e)})
+            return
+
+        if path == "/api/undeploy":
+            try:
+                self._handle_undeploy()
+                self._send_json(200, {"status": "undeployed"})
+            except Exception as e:
+                self._send_json(500, {"error": str(e)})
+            return
+
+        # Proxy everything else to workload
+        self._proxy_to_workload()
+
+    def do_PUT(self):
+        """Proxy PUT to workload."""
+        self._proxy_to_workload()
+
+    def do_DELETE(self):
+        """Proxy DELETE to workload."""
+        self._proxy_to_workload()
+
+    def do_PATCH(self):
+        """Proxy PATCH to workload."""
+        self._proxy_to_workload()
+
+    def _handle_deploy(self, deployment: dict):
+        """Handle deployment (runs in background thread)."""
+        deployment_id = deployment.get("deployment_id", "unknown")
+        config = deployment.get("config") or {}
+
+        logger.info(f"Starting deployment: {deployment_id}")
+        _admin_state["deployment_id"] = deployment_id
+        _admin_state["status"] = "deploying"
+
+        try:
+            # Setup workload from deployment config
+            setup_workload_from_deployment(deployment)
+
+            # Run compose
+            run_compose(config)
+
+            # Wait for health
+            health_status = wait_for_health(config)
+
+            # Generate attestation
+            attestation = get_tdx_attestation(self.launcher_config, health_status)
+
+            # Notify control plane of success
+            self._notify_deployment_complete(deployment_id, attestation, config)
+
+            _admin_state["status"] = "deployed"
+            _admin_state["attestation"] = attestation
+            logger.info(f"Deployment complete: {deployment_id}")
+
+        except Exception as e:
+            logger.error(f"Deployment failed: {e}")
+            _admin_state["status"] = "error"
+            self._notify_deployment_failed(deployment_id, str(e))
+
+    def _handle_undeploy(self):
+        """Stop the current workload."""
+        logger.info("Undeploying workload...")
+        _admin_state["status"] = "undeploying"
+
+        try:
+            if WORKLOAD_DIR.exists():
+                subprocess.run(
+                    ["docker", "compose", "down"],
+                    cwd=WORKLOAD_DIR,
+                    capture_output=True,
+                    timeout=60,
+                )
+            _admin_state["status"] = "undeployed"
+            _admin_state["deployment_id"] = None
+            _admin_state["attestation"] = None
+            logger.info("Workload undeployed")
+        except Exception as e:
+            logger.error(f"Undeploy failed: {e}")
+            _admin_state["status"] = "error"
+            raise
+
+    def _notify_deployment_complete(self, deployment_id: str, attestation: dict, config: dict):
+        """Notify control plane that deployment is complete."""
+        try:
+            # Register service if configured
+            service_id = ""
+            if config.get("service_name"):
+                tunnel_hostname = _admin_state.get("hostname")
+                service_id = register_service(config, attestation, tunnel_hostname)
+
+            # Notify control plane
+            requests.post(
+                f"{CONTROL_PLANE_URL}/api/v1/agents/{_admin_state['agent_id']}/deployed",
+                json={
+                    "deployment_id": deployment_id,
+                    "service_id": service_id,
+                    "attestation": attestation,
+                },
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify deployment complete: {e}")
+
+    def _notify_deployment_failed(self, deployment_id: str, error: str):
+        """Notify control plane that deployment failed."""
+        try:
+            requests.post(
+                f"{CONTROL_PLANE_URL}/api/v1/agents/{_admin_state['agent_id']}/status",
+                json={
+                    "status": "error",
+                    "deployment_id": deployment_id,
+                    "error": error,
+                },
+                timeout=30,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to notify deployment failure: {e}")
+
+
+def start_agent_api_server(config: dict) -> http.server.HTTPServer:
+    """Start the agent API HTTP server.
+
+    Args:
+        config: Launcher configuration
+
+    Returns:
+        HTTPServer instance
+    """
+    AgentAPIHandler.launcher_config = config
+
+    class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+
+    server = ThreadedHTTPServer(("0.0.0.0", ADMIN_PORT), AgentAPIHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    logger.info(f"Agent API server started on port {ADMIN_PORT}")
+    return server
+
+
 # Admin HTML page (embedded to avoid file dependencies)
 ADMIN_HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -273,234 +696,6 @@ ADMIN_HTML = """<!DOCTYPE html>
 """
 
 
-class AdminRequestHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP request handler for agent admin interface."""
-
-    def log_message(self, format, *args):
-        """Suppress default logging."""
-        pass
-
-    def _send_response(self, code: int, content: str, content_type: str = "text/html"):
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(content)))
-        self.end_headers()
-        self.wfile.write(content.encode())
-
-    def _send_json(self, code: int, data: dict):
-        content = json.dumps(data)
-        self._send_response(code, content, "application/json")
-
-    def _check_auth(self) -> bool:
-        """Check authorization header."""
-        auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-            return token in _admin_tokens
-        return False
-
-    def do_GET(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-
-        if path == "/" or path == "/admin":
-            self._send_response(200, ADMIN_HTML)
-            return
-
-        if path == "/api/login":
-            self._send_json(405, {"error": "Use POST"})
-            return
-
-        # Protected endpoints
-        if not self._check_auth():
-            self._send_json(401, {"error": "Unauthorized"})
-            return
-
-        if path == "/api/status":
-            self._send_json(
-                200,
-                {
-                    "agent_id": _admin_state["agent_id"],
-                    "vm_name": _admin_state["vm_name"],
-                    "status": _admin_state["status"],
-                    "deployment_id": _admin_state["deployment_id"],
-                    "control_plane": CONTROL_PLANE_URL,
-                },
-            )
-            return
-
-        if path == "/api/containers":
-            containers = []
-            try:
-                result = subprocess.run(
-                    ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                for line in result.stdout.strip().split("\n"):
-                    if line:
-                        parts = line.split("\t")
-                        name = parts[0] if parts else "unknown"
-                        status_str = parts[1] if len(parts) > 1 else "unknown"
-                        status = "healthy" if "Up" in status_str else "unhealthy"
-                        containers.append({"name": name, "status": status})
-            except Exception:
-                pass
-            self._send_json(200, {"containers": containers})
-            return
-
-        if path.startswith("/api/logs"):
-            query = urllib.parse.parse_qs(parsed.query)
-            min_level = query.get("level", ["info"])[0]
-            level_order = ["debug", "info", "warning", "error"]
-            min_idx = level_order.index(min_level) if min_level in level_order else 1
-            filtered = [
-                log for log in _admin_state["logs"] if level_order.index(log["level"]) >= min_idx
-            ]
-            self._send_json(200, {"logs": filtered[-200:]})
-            return
-
-        self._send_json(404, {"error": "Not found"})
-
-    def do_POST(self):
-        if self.path == "/api/login":
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode()
-            try:
-                data = json.loads(body)
-                if data.get("password") == ADMIN_PASSWORD:
-                    token = secrets.token_urlsafe(32)
-                    _admin_tokens.add(token)
-                    # Limit tokens
-                    if len(_admin_tokens) > 50:
-                        _admin_tokens.pop()
-                    self._send_json(200, {"token": token})
-                else:
-                    self._send_json(401, {"error": "Invalid password"})
-            except Exception:
-                self._send_json(400, {"error": "Invalid request"})
-            return
-
-        self._send_json(404, {"error": "Not found"})
-
-
-def start_admin_server():
-    """Start the admin HTTP server in a background thread."""
-
-    class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-        daemon_threads = True
-
-    try:
-        server = ThreadedHTTPServer(("0.0.0.0", ADMIN_PORT), AdminRequestHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        logger.info(f"Admin server started on port {ADMIN_PORT}")
-        return server
-    except Exception as e:
-        logger.warning(f"Failed to start admin server: {e}")
-        return None
-
-
-class ControlPlaneLogHandler(logging.Handler):
-    """Custom log handler that buffers logs and sends them to the control plane."""
-
-    def __init__(self):
-        super().__init__()
-        self._buffer: list[dict] = []
-        self._lock = threading.Lock()
-        self._agent_id: str | None = None
-        self.setLevel(logging.DEBUG)  # Capture all logs
-
-    def set_agent_id(self, agent_id: str):
-        """Set the agent ID for log submission."""
-        self._agent_id = agent_id
-
-    def emit(self, record: logging.LogRecord):
-        """Buffer a log record."""
-        try:
-            level_name = record.levelname.lower()
-            if level_name == "warn":
-                level_name = "warning"
-
-            log_entry = {
-                "source": "agent",
-                "level": level_name,
-                "message": self.format(record),
-                "timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
-                "metadata": {
-                    "module": record.module,
-                    "funcName": record.funcName,
-                    "lineno": record.lineno,
-                },
-            }
-
-            with self._lock:
-                self._buffer.append(log_entry)
-
-            # Also add to admin state for local admin UI
-            _add_admin_log(level_name, self.format(record))
-        except Exception:
-            self.handleError(record)
-
-    def flush_to_control_plane(self) -> int:
-        """Send buffered logs to control plane. Returns number of logs sent."""
-        if not self._agent_id:
-            return 0
-
-        with self._lock:
-            if not self._buffer:
-                return 0
-            logs_to_send = self._buffer.copy()
-            self._buffer.clear()
-
-        try:
-            response = requests.post(
-                f"{CONTROL_PLANE_URL}/api/v1/agents/{self._agent_id}/logs",
-                json={"logs": logs_to_send},
-                timeout=10,
-            )
-            response.raise_for_status()
-            result = response.json()
-            return result.get("stored", 0)
-        except Exception as e:
-            # Put logs back in buffer if send failed
-            with self._lock:
-                self._buffer = logs_to_send + self._buffer
-            logger.debug(f"Failed to send logs: {e}")
-            return 0
-
-
-# Global control plane log handler
-cp_log_handler: ControlPlaneLogHandler | None = None
-
-
-def setup_control_plane_logging():
-    """Setup logging to send agent logs to control plane."""
-    global cp_log_handler
-    cp_log_handler = ControlPlaneLogHandler()
-    cp_log_handler.setFormatter(logging.Formatter("%(message)s"))
-    logging.getLogger().addHandler(cp_log_handler)
-
-
-def set_log_agent_id(agent_id: str):
-    """Set the agent ID for log submission."""
-    global cp_log_handler
-    if cp_log_handler:
-        cp_log_handler.set_agent_id(agent_id)
-
-
-def get_buffered_logs() -> list[dict]:
-    """Get buffered logs and clear the buffer."""
-    global cp_log_handler
-    if cp_log_handler:
-        with cp_log_handler._lock:
-            logs = cp_log_handler._buffer.copy()
-            cp_log_handler._buffer.clear()
-            return logs
-    return []
-
-
 def collect_system_stats() -> dict:
     """Collect system stats using psutil."""
     if psutil is None:
@@ -548,108 +743,6 @@ def collect_system_stats() -> dict:
     except Exception as e:
         logger.debug(f"Failed to collect stats: {e}")
         return {}
-
-
-def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
-    """Collect docker container logs and return as list of log entries.
-
-    Args:
-        agent_id: Agent ID for log attribution
-        since_minutes: Collect logs from the last N minutes
-
-    Returns:
-        List of log entry dicts
-    """
-    logs = []
-
-    try:
-        # Get list of running containers
-        result = subprocess.run(
-            ["docker", "ps", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode != 0:
-            logger.warning(f"docker ps failed with code {result.returncode}: {result.stderr}")
-            return logs
-
-        containers = result.stdout.strip().split("\n")
-        containers = [c for c in containers if c]
-
-        if containers:
-            logger.debug(f"Found {len(containers)} containers: {containers}")
-        else:
-            logger.debug("No running containers found")
-
-        for container in containers:
-            try:
-                # Get logs for this container
-                log_result = subprocess.run(
-                    ["docker", "logs", "--since", f"{since_minutes}m", "--timestamps", container],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-
-                # Combine stdout and stderr
-                output = log_result.stdout + log_result.stderr
-
-                for line in output.strip().split("\n"):
-                    if not line:
-                        continue
-
-                    # Parse timestamp and message
-                    # Docker timestamps look like: 2024-01-15T10:30:00.123456789Z
-                    parts = line.split(" ", 1)
-                    if len(parts) == 2:
-                        timestamp_str, message = parts
-                        try:
-                            # Parse docker timestamp
-                            timestamp_str = timestamp_str.rstrip("Z")
-                            if "." in timestamp_str:
-                                timestamp_str = timestamp_str[:26]  # Truncate nanoseconds
-                            timestamp = datetime.fromisoformat(timestamp_str)
-                        except ValueError:
-                            timestamp = datetime.now(timezone.utc)
-                            message = line
-                    else:
-                        timestamp = datetime.now(timezone.utc)
-                        message = line
-
-                    # Detect log level from message
-                    level = "info"
-                    msg_lower = message.lower()
-                    if "error" in msg_lower or "exception" in msg_lower or "traceback" in msg_lower:
-                        level = "error"
-                    elif "warn" in msg_lower:
-                        level = "warning"
-                    elif "debug" in msg_lower:
-                        level = "debug"
-
-                    logs.append(
-                        {
-                            "source": "container",
-                            "container_name": container,
-                            "level": level,
-                            "message": message,
-                            "timestamp": timestamp.isoformat()
-                            if hasattr(timestamp, "isoformat")
-                            else str(timestamp),
-                        }
-                    )
-
-            except subprocess.TimeoutExpired:
-                logger.warning(f"Timeout getting logs for container {container}")
-            except Exception as e:
-                logger.warning(f"Failed to get logs for container {container}: {e}")
-
-    except subprocess.TimeoutExpired:
-        logger.warning("Timeout listing containers")
-    except Exception as e:
-        logger.warning(f"Failed to list containers: {e}")
-
-    return logs
 
 
 def get_launcher_config() -> dict:
@@ -983,80 +1076,6 @@ def start_cloudflared(tunnel_token: str) -> subprocess.Popen | None:
         return None
 
 
-def poll_control_plane(
-    agent_id: str,
-    intel_ta_token: str | None = None,
-    stats: dict | None = None,
-    logs: list[dict] | None = None,
-) -> dict:
-    """Poll control plane with attestation, stats, and logs.
-
-    Args:
-        agent_id: Agent ID from registration
-        intel_ta_token: Fresh Intel TA token for continuous attestation
-        stats: System stats (CPU, memory, disk, etc.)
-        logs: Log entries since last poll
-
-    Returns:
-        Response dict with deployment and tunnel info
-    """
-    payload = {}
-    if intel_ta_token:
-        payload["intel_ta_token"] = intel_ta_token
-    if stats:
-        payload["stats"] = stats
-    if logs:
-        payload["logs"] = logs
-
-    response = requests.post(
-        f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/poll",
-        json=payload,
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def report_status(agent_id: str, status: str, deployment_id: str, error: str = None):
-    """Report status to control plane.
-
-    Args:
-        agent_id: Agent ID
-        status: New status
-        deployment_id: Deployment ID being updated
-        error: Error message if status is error
-    """
-    requests.post(
-        f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/status",
-        json={
-            "status": status,
-            "deployment_id": deployment_id,
-            "error": error,
-        },
-        timeout=30,
-    )
-
-
-def report_deployed(agent_id: str, deployment_id: str, service_id: str, attestation: dict):
-    """Report successful deployment to control plane.
-
-    Args:
-        agent_id: Agent ID
-        deployment_id: Completed deployment ID
-        service_id: Registered service ID
-        attestation: Workload attestation
-    """
-    requests.post(
-        f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/deployed",
-        json={
-            "deployment_id": deployment_id,
-            "service_id": service_id,
-            "attestation": attestation,
-        },
-        timeout=30,
-    )
-
-
 def setup_workload_from_deployment(deployment: dict):
     """Setup workload directory from deployment config.
 
@@ -1260,65 +1279,6 @@ def register_service(config: dict, attestation: dict, tunnel_hostname: str | Non
     service_id = result.get("service_id", "")
     logger.info(f"Registered service: {service_id}")
     return service_id
-
-
-def handle_deployment(agent_id: str, deployment: dict, tunnel_hostname: str | None = None):
-    """Execute a deployment from the control plane.
-
-    Args:
-        agent_id: Agent ID
-        deployment: Deployment dict with deployment_id, compose, build_context, config
-        tunnel_hostname: Optional Cloudflare tunnel hostname for this agent
-    """
-    deployment_id = deployment["deployment_id"]
-    config = deployment.get("config") or {}
-
-    # Update admin state
-    _admin_state["deployment_id"] = deployment_id
-
-    logger.info(f"Starting deployment: {deployment_id}")
-
-    # Report status: deploying
-    report_status(agent_id, "deploying", deployment_id)
-
-    try:
-        # Setup workload from deployment config
-        setup_workload_from_deployment(deployment)
-
-        # Run compose
-        run_compose(config)
-
-        # Wait for health
-        health_status = wait_for_health(config)
-
-        # Generate attestation
-        attestation = get_tdx_attestation(config, health_status)
-
-        # Register service with discovery (use tunnel hostname if available)
-        service_id = register_service(config, attestation, tunnel_hostname)
-
-        # Report success
-        report_deployed(agent_id, deployment_id, service_id, attestation)
-        write_status("deployed")
-        logger.info(f"Deployment complete: {deployment_id}")
-
-    except requests.exceptions.HTTPError as e:
-        # Extract response body for better error messages
-        error_detail = str(e)
-        if e.response is not None:
-            try:
-                error_detail = f"{e}: {e.response.text}"
-            except Exception:
-                pass
-        logger.error(f"Deployment failed: {error_detail}")
-        report_status(agent_id, "error", deployment_id, error=error_detail)
-        write_status("error")
-        raise
-    except Exception as e:
-        logger.error(f"Deployment failed: {e}")
-        report_status(agent_id, "error", deployment_id, error=str(e))
-        write_status("error")
-        raise
 
 
 # ==============================================================================
@@ -1667,7 +1627,14 @@ def run_control_plane_mode(config: dict):
 
 
 def run_agent_mode(config: dict):
-    """Run in agent mode - poll control plane for deployments.
+    """Run in agent mode - wait for control plane to push deployments.
+
+    This implements the push/pull model:
+    1. Agent registers once with control plane (with attestation)
+    2. Agent starts HTTP API server on tunnel
+    3. Control plane pushes deployments via POST /api/deploy
+    4. Control plane pulls logs/stats via GET /api/logs, /api/stats
+    5. Control plane checks health via GET /api/health?attest=true
 
     Args:
         config: Launcher config (may contain control_plane_url override)
@@ -1682,17 +1649,10 @@ def run_agent_mode(config: dict):
     if config.get("intel_api_key") and not os.environ.get("INTEL_API_KEY"):
         os.environ["INTEL_API_KEY"] = config["intel_api_key"]
 
-    # Start admin server for local monitoring
-    start_admin_server()
     _admin_state["status"] = "starting"
 
-    # Setup logging to control plane
-    setup_control_plane_logging()
-    logger.info("Log relay enabled")
-
-    logger.info("Starting in AGENT mode")
+    logger.info("Starting in AGENT mode (push/pull)")
     logger.info(f"Control plane: {CONTROL_PLANE_URL}")
-    logger.info(f"Poll interval: {POLL_INTERVAL}s")
 
     vm_name = get_vm_name()
     logger.info(f"VM name: {vm_name}")
@@ -1700,139 +1660,74 @@ def run_agent_mode(config: dict):
 
     # 1. Generate initial attestation (requires Intel TA - will crash if fails)
     attestation = generate_initial_attestation(config)
+    _admin_state["attestation"] = attestation
 
-    # 2. Register with control plane
+    # 2. Register with control plane (with retry)
     agent_id = None
     cloudflared_proc = None
-    tunnel_hostname = None  # Track the tunnel hostname for service registration
-    last_attestation = time.time()  # Track when we last sent attestation
-    current_intel_ta_token = attestation["tdx"].get("intel_ta_token")  # Current token
-    try:
-        reg_response = register_with_control_plane(attestation, vm_name)
-        agent_id = reg_response["agent_id"]
-        tunnel_hostname = reg_response.get("hostname")
+    tunnel_hostname = None
 
-        # Update admin state
-        _admin_state["agent_id"] = agent_id
-        _admin_state["status"] = "undeployed"
+    for attempt in range(10):
+        try:
+            reg_response = register_with_control_plane(attestation, vm_name)
+            agent_id = reg_response["agent_id"]
+            tunnel_hostname = reg_response.get("hostname")
 
-        # Enable log relay now that we have an agent_id
-        set_log_agent_id(agent_id)
-        logger.info(f"Agent log relay active for {agent_id}")
+            _admin_state["agent_id"] = agent_id
+            _admin_state["hostname"] = tunnel_hostname
+            logger.info(f"Registered as agent: {agent_id}")
 
-        # Start cloudflared if we got a tunnel token
-        if reg_response.get("tunnel_token"):
-            cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
-            if cloudflared_proc and tunnel_hostname:
-                logger.info(f"Agent reachable at: https://{tunnel_hostname}")
-    except Exception as e:
-        logger.error(f"Failed to register with control plane: {e}")
-        logger.info("Will retry registration in poll loop...")
+            # Start cloudflared if we got a tunnel token
+            if reg_response.get("tunnel_token"):
+                cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
+                if cloudflared_proc and tunnel_hostname:
+                    logger.info(f"Agent API available at: https://{tunnel_hostname}")
 
+            break
+
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and e.response.status_code == 403:
+                # MRTD not trusted - fatal error, don't retry
+                logger.error(f"Registration rejected (MRTD not trusted): {e.response.text}")
+                _admin_state["status"] = "rejected"
+                raise RuntimeError("Registration rejected: MRTD not trusted") from e
+            logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
+        except Exception as e:
+            logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
+
+        if attempt < 9:
+            time.sleep(10)
+    else:
+        raise RuntimeError("Failed to register with control plane after 10 attempts")
+
+    # 3. Start API server (handles deployments, logs, stats, health)
+    _admin_state["status"] = "undeployed"
     write_status("undeployed")
 
-    # 3. Main loop - poll for work
+    start_agent_api_server(config)
+    logger.info("Agent ready - waiting for commands from control plane")
+
+    # 4. Monitor loop (just keep cloudflared running)
     while True:
         try:
-            # Try to register if not registered
-            if agent_id is None:
-                try:
-                    reg_response = register_with_control_plane(attestation, vm_name)
-                    agent_id = reg_response["agent_id"]
-                    tunnel_hostname = reg_response.get("hostname")
-
-                    # Update admin state
-                    _admin_state["agent_id"] = agent_id
-                    _admin_state["status"] = "undeployed"
-
-                    # Enable log relay now that we have an agent_id
-                    set_log_agent_id(agent_id)
-
-                    # Start cloudflared if we got a tunnel token (and not already running)
-                    if reg_response.get("tunnel_token") and cloudflared_proc is None:
-                        cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
-                        if cloudflared_proc and tunnel_hostname:
-                            logger.info(f"Agent reachable at: https://{tunnel_hostname}")
-                except Exception as e:
-                    logger.warning(f"Registration failed, will retry: {e}")
-                    time.sleep(POLL_INTERVAL)
-                    continue
-
             # Check if cloudflared is still running
             if cloudflared_proc is not None:
                 poll_result = cloudflared_proc.poll()
                 if poll_result is not None:
-                    logger.warning(
-                        f"cloudflared exited with code {poll_result}, will restart on next registration"
-                    )
-                    cloudflared_proc = None
+                    logger.warning(f"cloudflared exited with code {poll_result}, restarting...")
+                    # Re-register to get fresh tunnel token
+                    try:
+                        reg_response = register_with_control_plane(attestation, vm_name)
+                        if reg_response.get("tunnel_token"):
+                            cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
+                    except Exception as e:
+                        logger.error(f"Failed to restart tunnel: {e}")
+                        cloudflared_proc = None
 
-            # Generate fresh attestation if needed
-            token_to_send = None
-            if time.time() - last_attestation >= ATTESTATION_INTERVAL:
-                try:
-                    logger.info("Generating fresh attestation for poll...")
-                    fresh_attestation = generate_initial_attestation(config)
-                    current_intel_ta_token = fresh_attestation["tdx"].get("intel_ta_token")
-                    token_to_send = current_intel_ta_token
-                    last_attestation = time.time()
-                    logger.info("Fresh attestation generated")
-                except Exception as e:
-                    logger.warning(f"Failed to generate fresh attestation: {e}")
-
-            # Collect system stats
-            stats = collect_system_stats()
-
-            # Collect logs (agent logs + container logs)
-            logs = get_buffered_logs()
-            container_logs = collect_container_logs(agent_id, since_minutes=1)
-            logs.extend(container_logs)
-
-            # Poll with attestation, stats, and logs
-            response = poll_control_plane(
-                agent_id,
-                intel_ta_token=token_to_send,
-                stats=stats if stats else None,
-                logs=logs if logs else None,
-            )
-
-            # Start cloudflared if poll response includes tunnel info and we don't have it running
-            # This handles the case where agent was verified after registration (MRTD trusted later)
-            if response.get("tunnel_token") and cloudflared_proc is None:
-                tunnel_hostname = response.get("hostname", tunnel_hostname)
-                logger.info("Received tunnel token from poll, starting cloudflared...")
-                cloudflared_proc = start_cloudflared(response["tunnel_token"])
-                if cloudflared_proc and tunnel_hostname:
-                    logger.info(f"Agent reachable at: https://{tunnel_hostname}")
-
-            # Handle deployment if available
-            if response.get("deployment"):
-                try:
-                    # Pass tunnel hostname so services can be registered with the public URL
-                    handle_deployment(agent_id, response["deployment"], tunnel_hostname)
-                except Exception as e:
-                    logger.error(f"Deployment failed: {e}")
-                    # Continue polling - agent may get another deployment
-
-        except requests.exceptions.ConnectionError as e:
-            logger.warning(f"Connection error: {e}")
-        except requests.exceptions.Timeout as e:
-            logger.warning(f"Request timeout: {e}")
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None and e.response.status_code == 404:
-                # Agent was deleted from control plane - re-register
-                logger.warning("Agent not found (404), will re-register...")
-                agent_id = None
-                if cloudflared_proc is not None:
-                    cloudflared_proc.terminate()
-                    cloudflared_proc.wait()
-                    cloudflared_proc = None
-            else:
-                logger.exception(f"HTTP error: {e}")
         except Exception as e:
-            logger.exception(f"Poll error: {e}")
+            logger.error(f"Monitor error: {e}")
 
-        time.sleep(POLL_INTERVAL)
+        time.sleep(30)
 
 
 def main():
