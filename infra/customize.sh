@@ -20,7 +20,8 @@ apt-get install -y \
     wget \
     git \
     python3 \
-    python3-requests
+    python3-requests \
+    python3-psutil
 
 # Install libtdx-attest-dev for quote generation (optional)
 # This may be from Intel's repository - not always available

@@ -747,6 +747,15 @@ async def poll_for_deployment(agent_id: str, request: AgentPollRequest):
         except Exception as e:
             logger.warning(f"Failed to verify attestation for {agent_id}: {e}")
 
+    # Update stats if provided
+    if request.stats:
+        agent_store.update_stats(agent_id, request.stats)
+
+    # Store logs if provided
+    if request.logs:
+        stored = log_store.add_batch(agent_id, request.logs)
+        logger.debug(f"Stored {stored[1]} logs from agent {agent_id}")
+
     # Reload agent to get updated state
     agent = agent_store.get(agent_id)
 

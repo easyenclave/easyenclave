@@ -678,6 +678,17 @@ class AgentStore:
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
 
+    def update_stats(self, agent_id: str, stats: dict) -> bool:
+        """Update agent's system stats. Returns False if not found."""
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return False
+            agent_dict = agent.model_dump()
+            agent_dict["stats"] = stats
+            self._agents[agent_id] = LauncherAgent(**agent_dict)
+            return True
+
     def mark_attestation_failed(
         self,
         agent_id: str,

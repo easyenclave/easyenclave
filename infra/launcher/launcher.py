@@ -36,6 +36,11 @@ from pathlib import Path
 
 import requests
 
+try:
+    import psutil
+except ImportError:
+    psutil = None
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -45,7 +50,6 @@ logger = logging.getLogger(__name__)
 # Configuration
 CONTROL_PLANE_URL = os.environ.get("EASYENCLAVE_URL", "https://app.easyenclave.com")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
-LOG_FLUSH_INTERVAL = int(os.environ.get("LOG_FLUSH_INTERVAL", "10"))  # Send logs every 10s
 ATTESTATION_INTERVAL = int(os.environ.get("ATTESTATION_INTERVAL", "300"))  # Re-attest every 5 min
 VERSION = "1.0.0"
 
@@ -486,12 +490,64 @@ def set_log_agent_id(agent_id: str):
         cp_log_handler.set_agent_id(agent_id)
 
 
-def flush_logs() -> int:
-    """Flush buffered logs to control plane."""
+def get_buffered_logs() -> list[dict]:
+    """Get buffered logs and clear the buffer."""
     global cp_log_handler
     if cp_log_handler:
-        return cp_log_handler.flush_to_control_plane()
-    return 0
+        with cp_log_handler._lock:
+            logs = cp_log_handler._buffer.copy()
+            cp_log_handler._buffer.clear()
+            return logs
+    return []
+
+
+def collect_system_stats() -> dict:
+    """Collect system stats using psutil."""
+    if psutil is None:
+        return {}
+
+    try:
+        # CPU
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        load_avg = list(os.getloadavg()) if hasattr(os, "getloadavg") else []
+
+        # Memory
+        mem = psutil.virtual_memory()
+        memory_percent = mem.percent
+        memory_used_gb = mem.used / (1024**3)
+        memory_total_gb = mem.total / (1024**3)
+
+        # Disk
+        disk = psutil.disk_usage("/")
+        disk_percent = disk.percent
+        disk_used_gb = disk.used / (1024**3)
+        disk_total_gb = disk.total / (1024**3)
+
+        # Network (bytes since boot)
+        net = psutil.net_io_counters()
+        net_bytes_sent = net.bytes_sent
+        net_bytes_recv = net.bytes_recv
+
+        # Uptime
+        boot_time = psutil.boot_time()
+        uptime_seconds = time.time() - boot_time
+
+        return {
+            "cpu_percent": round(cpu_percent, 1),
+            "load_avg": [round(x, 2) for x in load_avg],
+            "memory_percent": round(memory_percent, 1),
+            "memory_used_gb": round(memory_used_gb, 2),
+            "memory_total_gb": round(memory_total_gb, 2),
+            "disk_percent": round(disk_percent, 1),
+            "disk_used_gb": round(disk_used_gb, 2),
+            "disk_total_gb": round(disk_total_gb, 2),
+            "net_bytes_sent": net_bytes_sent,
+            "net_bytes_recv": net_bytes_recv,
+            "uptime_seconds": int(uptime_seconds),
+        }
+    except Exception as e:
+        logger.debug(f"Failed to collect stats: {e}")
+        return {}
 
 
 def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
@@ -594,34 +650,6 @@ def collect_container_logs(agent_id: str, since_minutes: int = 1) -> list[dict]:
         logger.warning(f"Failed to list containers: {e}")
 
     return logs
-
-
-def send_container_logs(agent_id: str, since_minutes: int = 1) -> int:
-    """Collect and send container logs to control plane.
-
-    Args:
-        agent_id: Agent ID
-        since_minutes: Collect logs from the last N minutes
-
-    Returns:
-        Number of logs sent
-    """
-    logs = collect_container_logs(agent_id, since_minutes)
-    if not logs:
-        return 0
-
-    try:
-        response = requests.post(
-            f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/logs",
-            json={"logs": logs},
-            timeout=10,
-        )
-        response.raise_for_status()
-        result = response.json()
-        return result.get("stored", 0)
-    except Exception as e:
-        logger.warning(f"Failed to send {len(logs)} container logs: {e}")
-        return 0
 
 
 def get_launcher_config() -> dict:
@@ -955,12 +983,19 @@ def start_cloudflared(tunnel_token: str) -> subprocess.Popen | None:
         return None
 
 
-def poll_control_plane(agent_id: str, intel_ta_token: str | None = None) -> dict:
-    """Poll control plane for deployment with optional attestation.
+def poll_control_plane(
+    agent_id: str,
+    intel_ta_token: str | None = None,
+    stats: dict | None = None,
+    logs: list[dict] | None = None,
+) -> dict:
+    """Poll control plane with attestation, stats, and logs.
 
     Args:
         agent_id: Agent ID from registration
         intel_ta_token: Fresh Intel TA token for continuous attestation
+        stats: System stats (CPU, memory, disk, etc.)
+        logs: Log entries since last poll
 
     Returns:
         Response dict with deployment and tunnel info
@@ -968,6 +1003,10 @@ def poll_control_plane(agent_id: str, intel_ta_token: str | None = None) -> dict
     payload = {}
     if intel_ta_token:
         payload["intel_ta_token"] = intel_ta_token
+    if stats:
+        payload["stats"] = stats
+    if logs:
+        payload["logs"] = logs
 
     response = requests.post(
         f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/poll",
@@ -1666,7 +1705,6 @@ def run_agent_mode(config: dict):
     agent_id = None
     cloudflared_proc = None
     tunnel_hostname = None  # Track the tunnel hostname for service registration
-    last_log_flush = time.time()
     last_attestation = time.time()  # Track when we last sent attestation
     current_intel_ta_token = attestation["tdx"].get("intel_ta_token")  # Current token
     try:
@@ -1742,8 +1780,21 @@ def run_agent_mode(config: dict):
                 except Exception as e:
                     logger.warning(f"Failed to generate fresh attestation: {e}")
 
-            # Poll for deployment with attestation
-            response = poll_control_plane(agent_id, intel_ta_token=token_to_send)
+            # Collect system stats
+            stats = collect_system_stats()
+
+            # Collect logs (agent logs + container logs)
+            logs = get_buffered_logs()
+            container_logs = collect_container_logs(agent_id, since_minutes=1)
+            logs.extend(container_logs)
+
+            # Poll with attestation, stats, and logs
+            response = poll_control_plane(
+                agent_id,
+                intel_ta_token=token_to_send,
+                stats=stats if stats else None,
+                logs=logs if logs else None,
+            )
 
             # Start cloudflared if poll response includes tunnel info and we don't have it running
             # This handles the case where agent was verified after registration (MRTD trusted later)
@@ -1780,24 +1831,6 @@ def run_agent_mode(config: dict):
                 logger.exception(f"HTTP error: {e}")
         except Exception as e:
             logger.exception(f"Poll error: {e}")
-
-        # Periodically flush logs to control plane
-        if agent_id and time.time() - last_log_flush >= LOG_FLUSH_INTERVAL:
-            try:
-                # Flush agent logs
-                agent_logs_sent = flush_logs()
-
-                # Collect and send container logs
-                container_logs_sent = send_container_logs(agent_id, since_minutes=1)
-
-                if agent_logs_sent or container_logs_sent:
-                    logger.info(
-                        f"Sent {agent_logs_sent} agent logs, {container_logs_sent} container logs"
-                    )
-            except Exception as e:
-                logger.warning(f"Log flush error: {e}")
-            finally:
-                last_log_flush = time.time()
 
         time.sleep(POLL_INTERVAL)
 

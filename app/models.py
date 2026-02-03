@@ -288,6 +288,12 @@ class LauncherAgent(BaseModel):
         default=None, description="When the agent became unhealthy (for reassignment logic)"
     )
 
+    # System stats (updated on each poll)
+    stats: dict | None = Field(
+        default=None,
+        description="System stats: cpu_percent, memory_percent, disk_percent, load_avg, etc.",
+    )
+
     # Lifecycle
     registered_at: datetime = Field(default_factory=datetime.utcnow)
     last_heartbeat: datetime = Field(default_factory=datetime.utcnow)
@@ -345,11 +351,19 @@ class AgentRegistrationResponse(BaseModel):
 
 
 class AgentPollRequest(BaseModel):
-    """Request model for agent polling with optional attestation."""
+    """Request model for agent polling with attestation, stats, and logs."""
 
     intel_ta_token: str | None = Field(
         default=None,
         description="Fresh Intel Trust Authority token for continuous attestation",
+    )
+    stats: dict | None = Field(
+        default=None,
+        description="System stats: cpu_percent, memory_percent, disk_percent, etc.",
+    )
+    logs: list[dict] | None = Field(
+        default=None,
+        description="Log entries since last poll",
     )
 
 
