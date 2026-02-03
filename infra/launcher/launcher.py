@@ -1286,6 +1286,18 @@ def handle_deployment(agent_id: str, deployment: dict, tunnel_hostname: str | No
         write_status("deployed")
         logger.info(f"Deployment complete: {deployment_id}")
 
+    except requests.exceptions.HTTPError as e:
+        # Extract response body for better error messages
+        error_detail = str(e)
+        if e.response is not None:
+            try:
+                error_detail = f"{e}: {e.response.text}"
+            except Exception:
+                pass
+        logger.error(f"Deployment failed: {error_detail}")
+        report_status(agent_id, "error", deployment_id, error=error_detail)
+        write_status("error")
+        raise
     except Exception as e:
         logger.error(f"Deployment failed: {e}")
         report_status(agent_id, "error", deployment_id, error=str(e))
