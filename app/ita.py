@@ -75,10 +75,16 @@ async def verify_attestation_token(token: str) -> dict:
         # - Signature using the public key
         # - exp (expiration) claim
         # - iat (issued at) claim
+        # Intel TA may use various algorithms - allow all common secure ones
         claims = jwt.decode(
             token,
             signing_key.key,
-            algorithms=["RS256", "RS384", "RS512", "ES256", "ES384", "ES512"],
+            algorithms=[
+                "RS256", "RS384", "RS512",  # RSA PKCS1
+                "ES256", "ES384", "ES512",  # ECDSA
+                "PS256", "PS384", "PS512",  # RSA PSS
+                "EdDSA",  # Edwards curve (Ed25519, Ed448)
+            ],
             options={
                 "verify_exp": True,
                 "verify_iat": True,
