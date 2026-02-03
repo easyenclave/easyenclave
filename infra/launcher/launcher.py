@@ -1153,6 +1153,12 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
         "INTEL_API_URL", "https://api.trustauthority.intel.com"
     )
 
+    if not intel_api_key:
+        raise RuntimeError(
+            "Intel API key required for attestation. "
+            "Set intel_api_key in config or INTEL_API_KEY environment variable."
+        )
+
     # Generate TDX quote
     logger.info("Generating TDX quote...")
     quote_b64 = generate_tdx_quote()
@@ -1160,11 +1166,21 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
     # Parse local measurements from quote
     measurements = parse_tdx_quote(quote_b64)
 
+    # Call Intel Trust Authority - this is mandatory
+    logger.info("Calling Intel Trust Authority...")
+    ita_response = call_intel_trust_authority(quote_b64, intel_api_key, intel_api_url)
+    intel_ta_token = ita_response.get("token")
+    if not intel_ta_token:
+        raise RuntimeError("Intel Trust Authority returned no token")
+
+    logger.info("Intel TA attestation successful")
+
     result = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "tdx": {
             "quote_b64": quote_b64,
             "measurements": measurements,
+            "intel_ta_token": intel_ta_token,
         },
         "workload": {
             "compose_hash": f"sha256:{compute_compose_hash()}",
@@ -1172,23 +1188,10 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
         },
     }
 
-    # Call Intel Trust Authority if API key provided
-    if intel_api_key:
-        try:
-            logger.info("Calling Intel Trust Authority...")
-            ita_response = call_intel_trust_authority(quote_b64, intel_api_key, intel_api_url)
-            token = ita_response.get("token")
-            if token:
-                result["tdx"]["intel_ta_token"] = token
-                jwt_measurements = parse_jwt_claims(token)
-                if jwt_measurements:
-                    result["tdx"]["verified_measurements"] = jwt_measurements
-                logger.info("Intel TA attestation successful")
-        except Exception as e:
-            logger.warning(f"Intel TA call failed: {e}")
-            result["tdx"]["intel_ta_error"] = str(e)
-    else:
-        logger.info("No Intel API key - local measurements only")
+    # Parse verified measurements from JWT
+    jwt_measurements = parse_jwt_claims(intel_ta_token)
+    if jwt_measurements:
+        result["tdx"]["verified_measurements"] = jwt_measurements
 
     return result
 
