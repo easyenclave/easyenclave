@@ -344,20 +344,21 @@ class AgentRegistrationResponse(BaseModel):
     )
 
 
+class AgentPollRequest(BaseModel):
+    """Request model for agent polling with optional attestation."""
+
+    intel_ta_token: str | None = Field(
+        default=None,
+        description="Fresh Intel Trust Authority token for continuous attestation",
+    )
+
+
 class AgentPollResponse(BaseModel):
     """Response model for agent polling."""
 
     deployment: dict | None = Field(
         default=None,
         description="Deployment config if available: {deployment_id, compose, build_context, config}",
-    )
-    action: str | None = Field(
-        default=None,
-        description="Action for agent: 're_attest' if attestation failed",
-    )
-    message: str | None = Field(
-        default=None,
-        description="Human-readable message for the action",
     )
     tunnel_token: str | None = Field(
         default=None,

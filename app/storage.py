@@ -657,6 +657,27 @@ class AgentStore:
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
 
+    def update_attestation(
+        self,
+        agent_id: str,
+        intel_ta_token: str,
+        verified: bool,
+        error: str | None = None,
+    ) -> bool:
+        """Update agent's attestation from poll. Returns False if not found."""
+        with self._lock:
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                return False
+            agent_dict = agent.model_dump()
+            agent_dict["intel_ta_token"] = intel_ta_token
+            agent_dict["verified"] = verified
+            agent_dict["last_attestation_check"] = datetime.utcnow()
+            agent_dict["attestation_valid"] = verified
+            agent_dict["attestation_error"] = error
+            self._agents[agent_id] = LauncherAgent(**agent_dict)
+            return True
+
     def mark_attestation_failed(
         self,
         agent_id: str,

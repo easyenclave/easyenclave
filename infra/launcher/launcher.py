@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 CONTROL_PLANE_URL = os.environ.get("EASYENCLAVE_URL", "https://app.easyenclave.com")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 LOG_FLUSH_INTERVAL = int(os.environ.get("LOG_FLUSH_INTERVAL", "10"))  # Send logs every 10s
-LOG_MIN_LEVEL = os.environ.get("LOG_MIN_LEVEL", "info").lower()  # Default to INFO level
+ATTESTATION_INTERVAL = int(os.environ.get("ATTESTATION_INTERVAL", "300"))  # Re-attest every 5 min
 VERSION = "1.0.0"
 
 # Modes
@@ -401,13 +401,12 @@ def start_admin_server():
 class ControlPlaneLogHandler(logging.Handler):
     """Custom log handler that buffers logs and sends them to the control plane."""
 
-    def __init__(self, min_level: str = "info"):
+    def __init__(self):
         super().__init__()
         self._buffer: list[dict] = []
         self._lock = threading.Lock()
         self._agent_id: str | None = None
-        self._min_level = min_level
-        self.setLevel(LOG_LEVEL_MAP.get(min_level, logging.INFO))
+        self.setLevel(logging.DEBUG)  # Capture all logs
 
     def set_agent_id(self, agent_id: str):
         """Set the agent ID for log submission."""
@@ -454,7 +453,7 @@ class ControlPlaneLogHandler(logging.Handler):
         try:
             response = requests.post(
                 f"{CONTROL_PLANE_URL}/api/v1/agents/{self._agent_id}/logs",
-                json={"logs": logs_to_send, "min_level": self._min_level},
+                json={"logs": logs_to_send},
                 timeout=10,
             )
             response.raise_for_status()
@@ -472,10 +471,10 @@ class ControlPlaneLogHandler(logging.Handler):
 cp_log_handler: ControlPlaneLogHandler | None = None
 
 
-def setup_control_plane_logging(min_level: str = "info"):
+def setup_control_plane_logging():
     """Setup logging to send agent logs to control plane."""
     global cp_log_handler
-    cp_log_handler = ControlPlaneLogHandler(min_level)
+    cp_log_handler = ControlPlaneLogHandler()
     cp_log_handler.setFormatter(logging.Formatter("%(message)s"))
     logging.getLogger().addHandler(cp_log_handler)
 
@@ -956,53 +955,27 @@ def start_cloudflared(tunnel_token: str) -> subprocess.Popen | None:
         return None
 
 
-def poll_control_plane(agent_id: str) -> dict:
-    """Poll control plane for deployment.
+def poll_control_plane(agent_id: str, intel_ta_token: str | None = None) -> dict:
+    """Poll control plane for deployment with optional attestation.
 
     Args:
         agent_id: Agent ID from registration
+        intel_ta_token: Fresh Intel TA token for continuous attestation
 
     Returns:
-        Response dict with deployment, update instructions, and/or action
+        Response dict with deployment and tunnel info
     """
-    response = requests.get(
+    payload = {}
+    if intel_ta_token:
+        payload["intel_ta_token"] = intel_ta_token
+
+    response = requests.post(
         f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/poll",
+        json=payload,
         timeout=30,
     )
     response.raise_for_status()
     return response.json()
-
-
-def handle_re_attest(vm_name: str, config: dict) -> dict | None:
-    """Handle re-attestation request from control plane.
-
-    Generates fresh TDX attestation and re-registers with the control plane.
-
-    Args:
-        vm_name: VM name for re-registration
-        config: Launcher config with Intel TA credentials
-
-    Returns:
-        New registration response or None if failed
-    """
-    write_status("re-attesting")
-    logger.info("Control plane requested re-attestation...")
-
-    try:
-        # Generate fresh TDX attestation (requires Intel TA)
-        attestation = generate_initial_attestation(config)
-        logger.info("Generated fresh TDX attestation")
-
-        # Re-register with control plane
-        reg_response = register_with_control_plane(attestation, vm_name)
-        logger.info(f"Re-registered as agent: {reg_response['agent_id']}")
-
-        return reg_response
-
-    except Exception as e:
-        logger.error(f"Re-attestation failed: {e}")
-        write_status("re-attest-failed")
-        return None
 
 
 def report_status(agent_id: str, status: str, deployment_id: str, error: str = None):
@@ -1675,9 +1648,8 @@ def run_agent_mode(config: dict):
     _admin_state["status"] = "starting"
 
     # Setup logging to control plane
-    log_min_level = config.get("log_min_level", LOG_MIN_LEVEL)
-    setup_control_plane_logging(log_min_level)
-    logger.info(f"Log relay enabled (min_level={log_min_level})")
+    setup_control_plane_logging()
+    logger.info("Log relay enabled")
 
     logger.info("Starting in AGENT mode")
     logger.info(f"Control plane: {CONTROL_PLANE_URL}")
@@ -1695,6 +1667,8 @@ def run_agent_mode(config: dict):
     cloudflared_proc = None
     tunnel_hostname = None  # Track the tunnel hostname for service registration
     last_log_flush = time.time()
+    last_attestation = time.time()  # Track when we last sent attestation
+    current_intel_ta_token = attestation["tdx"].get("intel_ta_token")  # Current token
     try:
         reg_response = register_with_control_plane(attestation, vm_name)
         agent_id = reg_response["agent_id"]
@@ -1755,8 +1729,21 @@ def run_agent_mode(config: dict):
                     )
                     cloudflared_proc = None
 
-            # Poll for deployment
-            response = poll_control_plane(agent_id)
+            # Generate fresh attestation if needed
+            token_to_send = None
+            if time.time() - last_attestation >= ATTESTATION_INTERVAL:
+                try:
+                    logger.info("Generating fresh attestation for poll...")
+                    fresh_attestation = generate_initial_attestation(config)
+                    current_intel_ta_token = fresh_attestation["tdx"].get("intel_ta_token")
+                    token_to_send = current_intel_ta_token
+                    last_attestation = time.time()
+                    logger.info("Fresh attestation generated")
+                except Exception as e:
+                    logger.warning(f"Failed to generate fresh attestation: {e}")
+
+            # Poll for deployment with attestation
+            response = poll_control_plane(agent_id, intel_ta_token=token_to_send)
 
             # Start cloudflared if poll response includes tunnel info and we don't have it running
             # This handles the case where agent was verified after registration (MRTD trusted later)
@@ -1766,37 +1753,6 @@ def run_agent_mode(config: dict):
                 cloudflared_proc = start_cloudflared(response["tunnel_token"])
                 if cloudflared_proc and tunnel_hostname:
                     logger.info(f"Agent reachable at: https://{tunnel_hostname}")
-
-            # Handle re-attestation request (attestation failed on control plane)
-            if response.get("action") == "re_attest":
-                logger.warning(f"Received re_attest action: {response.get('message')}")
-                reg_response = handle_re_attest(vm_name, config)
-                if reg_response:
-                    # Update agent_id and tunnel info from new registration
-                    agent_id = reg_response["agent_id"]
-                    tunnel_hostname = reg_response.get("hostname")
-
-                    # Update admin state
-                    _admin_state["agent_id"] = agent_id
-
-                    # Update log relay with new agent_id
-                    set_log_agent_id(agent_id)
-
-                    # Restart cloudflared with new tunnel token if provided
-                    if reg_response.get("tunnel_token"):
-                        if cloudflared_proc is not None:
-                            cloudflared_proc.terminate()
-                            cloudflared_proc.wait()
-                        cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
-                        if cloudflared_proc and tunnel_hostname:
-                            logger.info(f"Agent reachable at: https://{tunnel_hostname}")
-
-                    write_status("undeployed")
-                else:
-                    # Re-attestation failed, wait and retry
-                    logger.error("Re-attestation failed, will retry...")
-                    time.sleep(POLL_INTERVAL)
-                continue
 
             # Handle deployment if available
             if response.get("deployment"):
