@@ -147,59 +147,6 @@ async def create_tunnel_for_agent(
         )
 
 
-async def update_tunnel_ingress(
-    tunnel_id: str,
-    hostname: str,
-    service_port: int = 8081,
-) -> bool:
-    """Update tunnel ingress configuration.
-
-    Use this to fix tunnels that have wrong port configuration.
-
-    Args:
-        tunnel_id: The tunnel UUID
-        hostname: Full hostname (e.g., "agent-abc123.easyenclave.com")
-        service_port: Port the agent API server listens on (default 8081)
-
-    Returns:
-        True if updated successfully, False on error
-    """
-    if not is_configured():
-        logger.warning("Cloudflare not configured, cannot update tunnel")
-        return False
-
-    headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            logger.info(f"Updating tunnel {tunnel_id} ingress to port {service_port}")
-            config_resp = await client.put(
-                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations",
-                headers=headers,
-                json={
-                    "config": {
-                        "ingress": [
-                            {
-                                "hostname": hostname,
-                                "service": f"http://localhost:{service_port}",
-                            },
-                            {"service": "http_status:404"},
-                        ]
-                    }
-                },
-            )
-            config_resp.raise_for_status()
-            logger.info(f"Updated tunnel ingress: {hostname} -> localhost:{service_port}")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to update tunnel ingress: {e}")
-            return False
-
-
 async def delete_tunnel(tunnel_id: str) -> bool:
     """Delete a Cloudflare Tunnel.
 
