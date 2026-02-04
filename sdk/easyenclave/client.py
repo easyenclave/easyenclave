@@ -1,28 +1,10 @@
 """EasyEnclave SDK Client - Client library for the EasyEnclave discovery service.
 
-This module provides the main client for interacting with EasyEnclave:
-
-1. EasyEnclaveClient - Main client for control plane operations
-   - Connects to control plane with optional TDX attestation verification
-   - Discovers proxy endpoints for service routing
-   - Provides service discovery and registration
-
-2. ServiceClient - Client for calling a specific service through the proxy
-   - Routes requests through the attested control plane
-   - Provides simple HTTP methods (get, post, etc.)
-
 Trust Model:
-    Client --> Control Plane (verify attestation) --> Proxy --> Service
-
-    1. Client connects to CP and verifies its TDX attestation
-    2. Client gets proxy endpoint from CP (default: CP itself)
-    3. Client routes service requests through proxy
-    4. Proxy forwards to services via Cloudflare tunnels
+    Client --> Control Plane (verify attestation via /health) --> Proxy --> Service
 """
 
 from __future__ import annotations
-
-import secrets
 
 import httpx
 
@@ -150,27 +132,14 @@ class ServiceClient:
 
 
 class EasyEnclaveClient:
-    """Client for interacting with the EasyEnclave discovery service.
+    """Client for the EasyEnclave control plane.
 
-    This client implements the chain-of-trust model:
-    1. Connects to the control plane
-    2. Optionally verifies the CP's TDX attestation
-    3. Discovers proxy endpoints for service routing
-    4. Provides methods for service discovery and registration
+    Connects to the control plane, optionally verifies its TDX attestation,
+    and provides service discovery and proxying — all from a single /health call.
 
     Example:
-        # Connect with attestation verification
-        client = EasyEnclaveClient("https://app.easyenclave.com", verify=True)
-
-        # Get a service client
-        my_service = client.service("my-app")
-
-        # Call the service through the proxy
-        response = my_service.get("/api/data")
-        print(response.json())
-
-        # Discover services
-        services = client.discover(tags=["api"])
+        client = EasyEnclaveClient("https://app.easyenclave.com")
+        response = client.service("my-app").get("/api/data")
     """
 
     def __init__(
@@ -183,9 +152,9 @@ class EasyEnclaveClient:
         """Connect to EasyEnclave control plane.
 
         Args:
-            control_plane_url: URL of the control plane (e.g., "https://app.easyenclave.com")
+            control_plane_url: URL of the control plane
             verify: Whether to verify the control plane's TDX attestation
-            expected_mrtd: Expected MRTD for verification (optional, for pinning)
+            expected_mrtd: Expected MRTD value (optional, for pinning)
             timeout: Request timeout in seconds
 
         Raises:
@@ -195,86 +164,39 @@ class EasyEnclaveClient:
         self.cp_url = control_plane_url.rstrip("/")
         self.timeout = timeout
         self._client = httpx.Client(timeout=timeout)
-
-        # Verification result (set if verify=True)
         self.verification_result: VerificationResult | None = None
 
-        # Check health first
-        self._check_health()
-
-        # Verify control plane attestation if requested
-        if verify:
-            self._verify_control_plane(expected_mrtd)
-
-        # Discover proxy endpoint
-        self.proxy_url = self._get_proxy_url()
-
-    def _check_health(self) -> None:
-        """Check if the control plane is healthy."""
+        # Single call to /health gets status + attestation + proxy_url
         try:
             response = self._client.get(f"{self.cp_url}/health")
             response.raise_for_status()
-            data = response.json()
-            if data.get("status") != "healthy":
-                raise EasyEnclaveError(f"Control plane unhealthy: {data.get('status')}")
+            health = response.json()
         except httpx.HTTPError as e:
             raise EasyEnclaveError(f"Failed to connect to control plane: {e}") from e
 
-    def _verify_control_plane(self, expected_mrtd: str | None = None) -> None:
-        """Verify the control plane's TDX attestation.
+        if health.get("status") != "healthy":
+            raise EasyEnclaveError(f"Control plane unhealthy: {health.get('status')}")
 
-        This requests an attestation from the CP with a random nonce,
-        then verifies the quote locally. The nonce prevents replay attacks.
+        self.proxy_url = health.get("proxy_url", self.cp_url)
 
-        Args:
-            expected_mrtd: Expected MRTD value (optional)
+        if verify:
+            attestation = health.get("attestation")
+            if not attestation:
+                raise ControlPlaneNotVerifiedError(
+                    "Control plane did not return attestation (not running in TDX?)"
+                )
 
-        Raises:
-            ControlPlaneNotVerifiedError: If verification fails
-        """
-        # Generate random nonce
-        nonce = secrets.token_hex(16)
+            quote_b64 = attestation.get("quote_b64")
+            if not quote_b64:
+                raise ControlPlaneNotVerifiedError("No quote in attestation response")
 
-        try:
-            response = self._client.get(
-                f"{self.cp_url}/api/v1/attestation",
-                params={"nonce": nonce},
-            )
-            response.raise_for_status()
-            data = response.json()
-        except httpx.HTTPError as e:
-            raise ControlPlaneNotVerifiedError(f"Failed to get attestation: {e}") from e
+            result = verify_quote_local(quote_b64, expected_mrtd=expected_mrtd)
+            self.verification_result = result
 
-        # Check for error (CP not in TDX)
-        if "error" in data:
-            raise ControlPlaneNotVerifiedError(f"Control plane attestation failed: {data['error']}")
-
-        # Verify the quote
-        quote_b64 = data.get("quote_b64")
-        if not quote_b64:
-            raise ControlPlaneNotVerifiedError("No quote in attestation response")
-
-        result = verify_quote_local(
-            quote_b64,
-            nonce=nonce,
-            expected_mrtd=expected_mrtd,
-        )
-
-        self.verification_result = result
-
-        if not result.verified:
-            raise ControlPlaneNotVerifiedError(f"Attestation verification failed: {result.error}")
-
-    def _get_proxy_url(self) -> str:
-        """Get the proxy endpoint from the control plane."""
-        try:
-            response = self._client.get(f"{self.cp_url}/api/v1/proxy")
-            response.raise_for_status()
-            data = response.json()
-            return data.get("proxy_url", self.cp_url)
-        except httpx.HTTPError:
-            # Fall back to CP URL if proxy endpoint not available
-            return self.cp_url
+            if not result.verified:
+                raise ControlPlaneNotVerifiedError(
+                    f"Attestation verification failed: {result.error}"
+                )
 
     def service(self, service_name: str) -> ServiceClient:
         """Get a client for a specific service.

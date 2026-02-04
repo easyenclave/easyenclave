@@ -13,13 +13,6 @@ setup(
         "httpx>=0.24.0",
     ],
     extras_require={
-        "noise": [
-            "noiseprotocol>=0.3.1",
-            "cryptography>=41.0.0",
-            "websockets>=12.0",
-            "fastapi>=0.100.0",
-            "requests>=2.28.0",
-        ],
         "dev": [
             "pytest>=7.0.0",
             "pytest-asyncio>=0.21.0",
