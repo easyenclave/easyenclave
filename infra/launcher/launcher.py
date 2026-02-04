@@ -1517,6 +1517,10 @@ def run_control_plane_mode(config: dict):
         env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
     if config.get("intel_api_key"):
         env["ITA_API_KEY"] = config["intel_api_key"]
+    if config.get("trusted_agent_mrtds"):
+        env["TRUSTED_AGENT_MRTDS"] = config["trusted_agent_mrtds"]
+    if config.get("trusted_proxy_mrtds"):
+        env["TRUSTED_PROXY_MRTDS"] = config["trusted_proxy_mrtds"]
     if config.get("admin_password"):
         env["ADMIN_PASSWORD"] = config["admin_password"]
 

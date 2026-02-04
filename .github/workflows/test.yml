@@ -145,6 +145,8 @@ jobs:
           echo "mrtd=$MRTD" >> "$GITHUB_OUTPUT"
 
       - name: Deploy control plane
+        env:
+          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtd }}
         run: |
           python3 infra/tdx_cli.py control-plane new --wait --port 8080
 
@@ -155,24 +157,6 @@ jobs:
             sleep 10
           done
           echo "::warning::Tunnel not ready"
-
-      - name: Trust agent MRTD
-        run: |
-          MRTD="${{ steps.measure.outputs.mrtd }}"
-          echo "Trusting MRTD: ${MRTD:0:32}..."
-          curl -sf -X POST "https://app.easyenclave.com/api/v1/trusted-mrtds" \
-            -H "Content-Type: application/json" \
-            -d "{
-              \"mrtd\": \"$MRTD\",
-              \"type\": \"agent\",
-              \"description\": \"TDX runner agent (CI build)\",
-              \"source_repo\": \"easyenclave/easyenclave\",
-              \"source_commit\": \"$GITHUB_SHA\",
-              \"build_workflow\": \"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID\",
-              \"attestation_url\": \"https://github.com/$GITHUB_REPOSITORY/attestations\"
-            }"
-          echo ""
-          echo "MRTD trusted successfully"
 
       - name: Launch agent
         run: |
