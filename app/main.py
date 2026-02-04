@@ -1458,7 +1458,6 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
     logger.info(f"Version created: {name}@{request.version} ({new_version.version_id})")
 
     # TODO: Re-enable source inspection once GitHub token auth is implemented
-    # See source_inspector.py for the inspection logic
 
     # Proceed to attestation
     # For now, mark as attested (attestation happens during deployment)
@@ -2001,16 +2000,6 @@ class AdminLoginRequest(BaseModel):
     """Request model for admin login."""
 
     password: str
-
-
-def verify_admin_token(authorization: str | None = Header(None)) -> bool:
-    """Verify admin token from Authorization header."""
-    if not authorization:
-        return False
-    if not authorization.startswith("Bearer "):
-        return False
-    token = authorization[7:]
-    return token in _admin_tokens
 
 
 @app.post("/admin/login")

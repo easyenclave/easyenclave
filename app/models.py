@@ -451,20 +451,6 @@ class Deployment(BaseModel):
     completed_at: datetime | None = Field(default=None)
 
 
-class DeploymentCreateRequest(BaseModel):
-    """Request model for creating a deployment."""
-
-    compose: str = Field(..., description="Base64 encoded docker-compose.yml")
-    build_context: dict[str, str] = Field(
-        default_factory=dict, description="filename -> base64 content"
-    )
-    config: dict = Field(
-        default_factory=dict,
-        description="Deployment config: service_name, service_url, health_endpoint, intel_api_key, etc.",
-    )
-    agent_id: str = Field(..., description="Target agent ID (required)")
-
-
 class DeploymentCreateResponse(BaseModel):
     """Response model for deployment creation."""
 
@@ -724,18 +710,6 @@ class LogBatchResponse(BaseModel):
 
     received: int = Field(..., description="Number of logs received")
     stored: int = Field(..., description="Number of logs stored")
-
-
-class LogQueryParams(BaseModel):
-    """Query parameters for fetching logs."""
-
-    agent_id: str | None = Field(default=None, description="Filter by agent ID")
-    source: LogSource | None = Field(default=None, description="Filter by source")
-    container_name: str | None = Field(default=None, description="Filter by container name")
-    min_level: LogLevel = Field(default=LogLevel.INFO, description="Minimum log level")
-    since: datetime | None = Field(default=None, description="Logs since this time")
-    until: datetime | None = Field(default=None, description="Logs until this time")
-    limit: int = Field(default=100, description="Maximum number of logs to return")
 
 
 class LogListResponse(BaseModel):
