@@ -255,6 +255,41 @@ async def process_pending_reassignments():
             )
 
 
+# Cached control plane attestation (generated at startup, refreshed periodically)
+_cached_attestation: dict | None = None
+
+CP_ATTESTATION_REFRESH_INTERVAL = 300  # 5 minutes
+
+
+def _refresh_cp_attestation():
+    """Generate a fresh TDX quote and cache it."""
+    global _cached_attestation
+    result = generate_tdx_quote()
+    if result.error:
+        _cached_attestation = None
+        logger.debug(f"CP attestation not available: {result.error}")
+    else:
+        _cached_attestation = {
+            "quote_b64": result.quote_b64,
+            "mrtd": result.measurements.get("mrtd") if result.measurements else None,
+            "generated_at": datetime.utcnow().isoformat(),
+        }
+        logger.info("CP attestation quote generated")
+
+
+async def background_cp_attestation_refresher():
+    """Periodically refresh the cached CP attestation quote."""
+    while True:
+        await asyncio.sleep(CP_ATTESTATION_REFRESH_INTERVAL)
+        _refresh_cp_attestation()
+
+
+def _get_proxy_url() -> str:
+    """Get the proxy URL for service routing."""
+    domain = os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com")
+    return f"https://app.{domain}"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - start background tasks."""
@@ -262,22 +297,24 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized")
 
+    # Generate initial CP attestation
+    _refresh_cp_attestation()
+
     # Start background health checkers
     service_health_task = asyncio.create_task(background_health_checker())
     agent_health_task = asyncio.create_task(background_agent_health_checker())
+    attestation_task = asyncio.create_task(background_cp_attestation_refresher())
     logger.info("Started background health checkers (services + agents)")
     yield
     # Shutdown
     service_health_task.cancel()
     agent_health_task.cancel()
-    try:
-        await service_health_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await agent_health_task
-    except asyncio.CancelledError:
-        pass
+    attestation_task.cancel()
+    for task in [service_health_task, agent_health_task, attestation_task]:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 # Create FastAPI app
@@ -309,10 +346,12 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Health check endpoint (required by launcher)
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with attestation and proxy info."""
     return HealthResponse(
         status="healthy",
         timestamp=datetime.utcnow(),
+        attestation=_cached_attestation,
+        proxy_url=_get_proxy_url(),
     )
 
 
@@ -518,7 +557,6 @@ async def register_agent(request: AgentRegistrationRequest):
     # Create Cloudflare tunnel for verified agents
     tunnel_token = None
     hostname = None
-    tunnel_error = None
     if verified and cloudflare.is_configured():
         try:
             tunnel_info = await cloudflare.create_tunnel_for_agent(agent_id)
@@ -534,14 +572,16 @@ async def register_agent(request: AgentRegistrationRequest):
             )
             logger.info(f"Created tunnel for agent {agent_id}: {hostname}")
         except Exception as e:
-            tunnel_error = str(e)
-            logger.warning(f"Failed to create tunnel for agent {agent_id}: {e}")
-            # Store the error on the agent so it's visible in the API
-            agent_store.update_tunnel_error(agent_id, tunnel_error)
+            # A tunnelless agent is useless — clean up and fail
+            agent_store.delete(agent_id)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to create tunnel: {e}",
+            ) from e
 
     logger.info(
         f"Agent registered: {agent_id} ({request.vm_name}) "
-        f"verified={verified} intel_ta={intel_ta_verified} tunnel_error={tunnel_error}"
+        f"verified={verified} intel_ta={intel_ta_verified}"
     )
 
     return AgentRegistrationResponse(
@@ -707,7 +747,10 @@ async def reset_agent(agent_id: str):
             tunnel_created = True
             logger.info(f"Created tunnel for reset agent {agent_id}: {tunnel_info['hostname']}")
         except Exception as e:
-            logger.warning(f"Failed to create tunnel for reset agent {agent_id}: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Failed to create tunnel: {e}",
+            ) from e
 
     return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
 
@@ -836,6 +879,7 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
                 )
             except Exception as e:
                 logger.warning(f"Failed to create tunnel for newly verified agent {aid}: {e}")
+                agent_store.update_tunnel_error(aid, str(e))
 
     return trusted
 
@@ -1229,25 +1273,8 @@ async def get_control_plane_attestation(
 
 @app.get("/api/v1/proxy")
 async def get_proxy_endpoint():
-    """Get the proxy endpoint for routing service traffic.
-
-    In the chain-of-trust model, clients first verify the control plane's
-    attestation, then use this endpoint to discover where to route service
-    traffic. The proxy (typically the control plane itself) forwards requests
-    to services via Cloudflare tunnels.
-
-    Returns:
-        - proxy_url: Primary proxy URL (default: this control plane)
-        - proxies: List of available proxy URLs (for future scaling)
-    """
-    import os
-
-    # Get domain from environment or use default
-    domain = os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com")
-
-    # Default proxy is the control plane itself
-    proxy_url = f"https://app.{domain}"
-
+    """Get the proxy endpoint for routing service traffic."""
+    proxy_url = _get_proxy_url()
     return {
         "proxy_url": proxy_url,
         "proxies": [proxy_url],
