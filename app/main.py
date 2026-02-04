@@ -1120,6 +1120,52 @@ async def reset_agent(agent_id: str):
     return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
 
 
+@app.post("/api/v1/agents/{agent_id}/fix-tunnel")
+async def fix_agent_tunnel(agent_id: str):
+    """Fix tunnel configuration for an agent.
+
+    Updates the tunnel ingress to route to port 8081 (agent API server).
+    Use this if the agent's logs/stats endpoints return workload content
+    instead of the expected JSON API responses.
+    """
+    agent = agent_store.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    if not agent.tunnel_id or not agent.hostname:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a tunnel configured",
+        )
+
+    if not cloudflare.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Cloudflare is not configured on this control plane",
+        )
+
+    # Update tunnel ingress to correct port
+    success = await cloudflare.update_tunnel_ingress(
+        tunnel_id=agent.tunnel_id,
+        hostname=agent.hostname,
+        service_port=8081,
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to update tunnel configuration",
+        )
+
+    logger.info(f"Fixed tunnel configuration for agent {agent_id}")
+    return {
+        "status": "fixed",
+        "agent_id": agent_id,
+        "hostname": agent.hostname,
+        "message": "Tunnel now routes to agent API on port 8081",
+    }
+
+
 # ==============================================================================
 # Deployment API - List and track deployments
 # ==============================================================================
@@ -1784,12 +1830,36 @@ async def get_agent_logs(
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(agent_url, params=params)
             response.raise_for_status()
-            return response.json()
+
+            # Verify we got JSON, not the workload response
+            content_type = response.headers.get("content-type", "")
+            if "application/json" not in content_type:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Agent returned non-JSON response (content-type: {content_type}). "
+                    "The tunnel may be routing to the workload instead of the agent API.",
+                )
+
+            try:
+                return response.json()
+            except Exception as e:
+                # Response body wasn't valid JSON
+                body_preview = response.text[:100] if response.text else "(empty)"
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Agent returned invalid JSON: {body_preview}. "
+                    "The tunnel may be routing to the workload instead of the agent API.",
+                ) from e
 
     except httpx.RequestError as e:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to reach agent at {agent.hostname}: {e}",
+        ) from e
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Agent returned error {e.response.status_code}: {e.response.text[:200]}",
         ) from e
 
 
@@ -1815,12 +1885,35 @@ async def get_agent_stats(agent_id: str):
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(agent_url)
             response.raise_for_status()
-            return response.json()
+
+            # Verify we got JSON, not the workload response
+            content_type = response.headers.get("content-type", "")
+            if "application/json" not in content_type:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Agent returned non-JSON response (content-type: {content_type}). "
+                    "The tunnel may be routing to the workload instead of the agent API.",
+                )
+
+            try:
+                return response.json()
+            except Exception as e:
+                body_preview = response.text[:100] if response.text else "(empty)"
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Agent returned invalid JSON: {body_preview}. "
+                    "The tunnel may be routing to the workload instead of the agent API.",
+                ) from e
 
     except httpx.RequestError as e:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to reach agent at {agent.hostname}: {e}",
+        ) from e
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Agent returned error {e.response.status_code}: {e.response.text[:200]}",
         ) from e
 
 

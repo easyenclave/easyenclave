@@ -101,7 +101,7 @@ async function loadAgents() {
                         <th>Health</th>
                         <th>Verified</th>
                         <th>MRTD</th>
-                        <th>Registered</th>
+                        <th>Hostname</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
@@ -113,8 +113,10 @@ async function loadAgents() {
                             <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>
                             <td>${agent.verified ? '<span class="verified-badge">Verified</span>' : '<span class="unverified-badge">Unverified</span>'}</td>
                             <td><code>${agent.mrtd ? agent.mrtd.substring(0, 16) + '...' : 'N/A'}</code></td>
-                            <td>${new Date(agent.registered_at).toLocaleString()}</td>
+                            <td>${agent.hostname ? `<a href="https://${agent.hostname}" target="_blank">${agent.hostname}</a>` : 'No tunnel'}</td>
                             <td class="action-buttons">
+                                ${agent.hostname ? `<button class="btn-small btn-info" onclick="showAgentDetails('${agent.agent_id}', '${agent.vm_name}')">Details</button>` : ''}
+                                ${agent.hostname ? `<button class="btn-small btn-secondary" onclick="fixAgentTunnel('${agent.agent_id}')">Fix Tunnel</button>` : ''}
                                 <button class="btn-small btn-secondary" onclick="resetAgent('${agent.agent_id}')">Reset</button>
                                 <button class="btn-small btn-danger" onclick="deleteAgent('${agent.agent_id}')">Delete</button>
                             </td>
@@ -152,6 +154,24 @@ async function resetAgent(agentId) {
             loadAgents();
         } else {
             alert('Failed to reset agent');
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+async function fixAgentTunnel(agentId) {
+    if (!confirm('Fix tunnel configuration? This updates the tunnel to route to the agent API server.')) return;
+
+    try {
+        const response = await adminFetch(`/api/v1/agents/${agentId}/fix-tunnel`, { method: 'POST' });
+        if (response.ok) {
+            const data = await response.json();
+            alert(`Tunnel fixed: ${data.message}`);
+            loadAgents();
+        } else {
+            const err = await response.json();
+            alert('Failed to fix tunnel: ' + (err.detail || 'Unknown error'));
         }
     } catch (error) {
         alert('Error: ' + error.message);
@@ -408,4 +428,117 @@ async function resetFailedAgents() {
     } catch (error) {
         alert('Error: ' + error.message);
     }
+}
+
+// Agent details modal - pull logs and stats from agent
+let currentAgentId = null;
+
+async function showAgentDetails(agentId, vmName) {
+    currentAgentId = agentId;
+    document.getElementById('agentModalTitle').textContent = `Agent: ${vmName}`;
+    document.getElementById('agentModal').classList.remove('hidden');
+
+    // Load stats and logs
+    await Promise.all([loadAgentStats(agentId), loadAgentLogs(agentId)]);
+}
+
+function closeAgentModal() {
+    document.getElementById('agentModal').classList.add('hidden');
+    currentAgentId = null;
+}
+
+async function loadAgentStats(agentId) {
+    const container = document.getElementById('agentStats');
+    container.innerHTML = '<div class="loading">Loading stats...</div>';
+
+    try {
+        const response = await fetch(`/api/v1/agents/${agentId}/stats`);
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`${response.status}: ${text.substring(0, 100)}`);
+        }
+        const stats = await response.json();
+
+        container.innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">CPU Usage</div>
+                <div class="stat-value">${stats.cpu_percent || 0}%</div>
+                <div class="stat-detail">Load: ${(stats.load_avg || [0, 0, 0]).map(l => l.toFixed(2)).join(', ')}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Memory</div>
+                <div class="stat-value">${stats.memory_percent || 0}%</div>
+                <div class="stat-detail">${(stats.memory_used_gb || 0).toFixed(1)} / ${(stats.memory_total_gb || 0).toFixed(1)} GB</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Disk</div>
+                <div class="stat-value">${stats.disk_percent || 0}%</div>
+                <div class="stat-detail">${(stats.disk_used_gb || 0).toFixed(1)} / ${(stats.disk_total_gb || 0).toFixed(1)} GB</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Network</div>
+                <div class="stat-value">↑ ${formatBytes(stats.net_bytes_sent || 0)}</div>
+                <div class="stat-detail">↓ ${formatBytes(stats.net_bytes_recv || 0)}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Uptime</div>
+                <div class="stat-value">${formatUptime(stats.uptime_seconds || 0)}</div>
+            </div>
+        `;
+    } catch (error) {
+        container.innerHTML = `<div class="error">Error loading stats: ${error.message}</div>`;
+    }
+}
+
+async function loadAgentLogs(agentId) {
+    const container = document.getElementById('agentLogs');
+    const since = document.getElementById('modalLogSince').value;
+    container.innerHTML = 'Loading logs...';
+
+    try {
+        const response = await fetch(`/api/v1/agents/${agentId}/logs?since=${since}`);
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(`${response.status}: ${text.substring(0, 100)}`);
+        }
+        const data = await response.json();
+
+        if (!data.logs || data.logs.length === 0) {
+            container.innerHTML = 'No logs found';
+            return;
+        }
+
+        container.innerHTML = data.logs.map(log => {
+            const line = log.line || log.message || JSON.stringify(log);
+            const containerName = log.container || 'unknown';
+            return `<div class="log-entry">[${containerName}] ${line}</div>`;
+        }).join('');
+
+        container.scrollTop = container.scrollHeight;
+    } catch (error) {
+        container.innerHTML = `Error loading logs: ${error.message}`;
+    }
+}
+
+function refreshAgentLogs() {
+    if (currentAgentId) {
+        loadAgentLogs(currentAgentId);
+    }
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function formatUptime(seconds) {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${mins}m`;
+    return `${mins}m`;
 }
