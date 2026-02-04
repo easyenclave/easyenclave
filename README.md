@@ -192,12 +192,7 @@ easyenclave/
 
 ## Future Enhancements
 
-- [ ] SQLite storage (replace in-memory dicts, fix persistence)
 - [ ] S3 backup/restore for persistence
-- [ ] Periodic health checks of registered services
-- [ ] Webhook notifications on registration/deregistration
-- [ ] Service groups/namespaces
-- [ ] Rate limiting
-- [ ] Authentication for registration and deployment
 - [ ] Accounting (credit for work, debit to deploy)
-- [ ] Use the private LLM to replace the hack searches for some obvious prompts
+- [ ] private llm example using sdk
+- [ ] private evm example

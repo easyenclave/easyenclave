@@ -233,11 +233,11 @@
                     <ul>
                         <li><strong>Agents have no public IP</strong> - They connect outbound to Cloudflare, which routes inbound traffic to them</li>
                         <li><strong>Control plane manages tunnels</strong> - When an agent registers, the CP creates a Cloudflare tunnel and DNS record</li>
-                        <li><strong>Cloudflare sees encrypted traffic</strong> - HTTPS terminates at Cloudflare edge, but with Direct Attestation, traffic is double-encrypted</li>
+                        <li><strong>Cloudflare sees encrypted traffic</strong> - HTTPS terminates at Cloudflare edge, re-encrypted to the agent via tunnel</li>
                         <li><strong>Tunnel deletion = instant revocation</strong> - If attestation fails, CP deletes the tunnel immediately cutting off access</li>
                     </ul>
                     <div class="cloudflare-note">
-                        <strong>Note:</strong> Cloudflare is trusted for availability (routing) but not for confidentiality (with Noise Protocol). Even if Cloudflare is compromised, Direct Attestation ensures E2E encryption to the TEE.
+                        <strong>Note:</strong> Cloudflare is trusted for availability (routing). The control plane continuously re-attests agents, and revokes tunnel access immediately if attestation fails.
                     </div>
                 </div>
 
@@ -348,34 +348,28 @@ fetch("https://app.easyenclave.com/proxy/my-app/api/data")</code></pre>
                 <div class="attestation-level">
                     <div class="level-header">
                         <span class="level-number">B</span>
-                        <h3>Direct Attestation (SDK)</h3>
+                        <h3>Client Verification (SDK)</h3>
                     </div>
                     <div class="level-content">
-                        <p class="level-desc">For clients that <strong>can</strong> do attestation: applications using the EasyEnclave SDK. The SDK establishes a Noise Protocol channel and verifies attestation is bound to the encryption key.</p>
+                        <p class="level-desc">For clients that want to <strong>independently verify</strong> attestation: use the EasyEnclave SDK to verify the control plane's TDX quote and check service attestation status directly.</p>
                         <div class="level-how">
                             <h4>How it works:</h4>
                             <ul>
-                                <li>SDK initiates Noise Protocol handshake via WebSocket</li>
-                                <li>Service returns its Noise public key + TDX attestation</li>
-                                <li>Attestation report_data contains hash of the Noise public key</li>
-                                <li>SDK verifies: genuine TDX quote + key binding + MRTD</li>
-                                <li>This is <strong>mutual attestation</strong> - both sides verified</li>
+                                <li>SDK connects to control plane and requests its TDX quote with a nonce</li>
+                                <li>SDK verifies the quote locally (MRTD, nonce freshness)</li>
+                                <li>SDK calls services through the verified proxy</li>
+                                <li>Control plane continuously re-attests agents every 5 minutes</li>
                             </ul>
                         </div>
-                        <pre><code>from easyenclave.noise import NoiseClient
+                        <pre><code>from easyenclave import EasyEnclaveClient
 
-async with NoiseClient("wss://my-app.easyenclave.com/ws/noise") as client:
-    # This does:
-    # 1. Noise handshake - get service's public key
-    # 2. Request attestation with nonce
-    # 3. Verify TDX quote contains hash(noise_pubkey)
-    # 4. Verify MRTD is in trusted list
-    result = await client.verify()
+client = EasyEnclaveClient("https://app.easyenclave.com", verify=True)
 
-    if result.secure:
-        # E2E encrypted channel verified to be inside TDX
-        response = await client.call("api", {"secret": "data"})</code></pre>
-                        <p class="level-note"><strong>Key insight:</strong> The Noise public key is generated inside the TEE. By binding it to the attestation, we prove the encryption terminates inside the enclave, not at a proxy or Cloudflare edge.</p>
+# Control plane TDX attestation verified on connect.
+# All services routed through the attested proxy.
+my_service = client.service("my-app")
+response = my_service.post("/api/data", json={"input": "secret"})</code></pre>
+                        <p class="level-note"><strong>Key insight:</strong> The SDK verifies the control plane is running in a genuine TDX enclave, then trusts its proxy to only route to attested agents. No special code needed in your service.</p>
                     </div>
                 </div>
             </div>
@@ -402,13 +396,13 @@ async with NoiseClient("wss://my-app.easyenclave.com/ws/noise") as client:
                             <td>Trust control plane to verify agents</td>
                         </tr>
                         <tr>
-                            <td><strong>SDK (highest security)</strong></td>
-                            <td>Direct Attestation</td>
-                            <td>E2E encryption with key binding to TEE</td>
+                            <td><strong>SDK client</strong></td>
+                            <td>Client Verification</td>
+                            <td>Independently verify CP attestation + proxy through verified CP</td>
                         </tr>
                     </tbody>
                 </table>
-                <p class="level-note" style="margin-top: 20px;">Most users should use Proxy Trust - it requires no special code and works with any HTTP client. Use Direct Attestation when you need cryptographic proof that your data is encrypted to a verified enclave.</p>
+                <p class="level-note" style="margin-top: 20px;">Most users should use Proxy Trust - it requires no special code and works with any HTTP client. Use Client Verification when you want your application to independently verify the control plane's TDX attestation.</p>
             </div>
         </div>
     </section>
@@ -442,13 +436,13 @@ async with NoiseClient("wss://my-app.easyenclave.com/ws/noise") as client:
                 <div class="step">
                     <div class="step-number">3</div>
                     <div class="step-content">
-                        <h3>Connect with E2E Encryption</h3>
-                        <p>Use our SDK for encrypted connections with attestation verification.</p>
-                        <pre><code>from easyenclave.noise import NoiseClient
+                        <h3>Connect to Your App</h3>
+                        <p>Use any HTTP client, or the SDK for attestation verification.</p>
+                        <pre><code>from easyenclave import EasyEnclaveClient
 
-async with NoiseClient("wss://my-app.easyenclave.com/ws/noise") as client:
-    result = await client.verify()  # Verify attestation
-    response = await client.call("api", {"data": "secret"})</code></pre>
+client = EasyEnclaveClient("https://app.easyenclave.com")
+response = client.service("my-app").get("/api/data")
+print(response.json())</code></pre>
                     </div>
                 </div>
             </div>
