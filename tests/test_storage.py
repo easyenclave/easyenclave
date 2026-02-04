@@ -26,15 +26,15 @@ def sample_service():
 
 
 class TestInMemoryStore:
-    def test_register(self, store, sample_service):
-        """Test service registration."""
-        service_id = store.register(sample_service)
-        assert service_id == sample_service.service_id
-        assert store.count() == 1
+    def test_upsert_new(self, store, sample_service):
+        """Test service upsert (new)."""
+        service_id, is_new = store.upsert(sample_service)
+        assert is_new is True
+        assert len(store.list()) == 1
 
     def test_get(self, store, sample_service):
         """Test getting a service by ID."""
-        store.register(sample_service)
+        store.upsert(sample_service)
         retrieved = store.get(sample_service.service_id)
         assert retrieved is not None
         assert retrieved.name == sample_service.name
@@ -46,9 +46,9 @@ class TestInMemoryStore:
 
     def test_delete(self, store, sample_service):
         """Test deleting a service."""
-        store.register(sample_service)
+        store.upsert(sample_service)
         assert store.delete(sample_service.service_id) is True
-        assert store.count() == 0
+        assert len(store.list()) == 0
 
     def test_delete_not_found(self, store):
         """Test deleting a non-existent service."""
@@ -58,8 +58,8 @@ class TestInMemoryStore:
         """Test listing all services."""
         s1 = ServiceRegistration(name="service-1")
         s2 = ServiceRegistration(name="service-2")
-        store.register(s1)
-        store.register(s2)
+        store.upsert(s1)
+        store.upsert(s2)
 
         services = store.list()
         assert len(services) == 2
@@ -68,8 +68,8 @@ class TestInMemoryStore:
         """Test filtering by name."""
         s1 = ServiceRegistration(name="alpha-service")
         s2 = ServiceRegistration(name="beta-service")
-        store.register(s1)
-        store.register(s2)
+        store.upsert(s1)
+        store.upsert(s2)
 
         services = store.list({"name": "alpha"})
         assert len(services) == 1
@@ -79,8 +79,8 @@ class TestInMemoryStore:
         """Test filtering by tags."""
         s1 = ServiceRegistration(name="service-1", tags=["api", "web"])
         s2 = ServiceRegistration(name="service-2", tags=["backend"])
-        store.register(s1)
-        store.register(s2)
+        store.upsert(s1)
+        store.upsert(s2)
 
         services = store.list({"tags": ["api"]})
         assert len(services) == 1
@@ -92,8 +92,8 @@ class TestInMemoryStore:
         s2 = ServiceRegistration(
             name="service-2", endpoints={"staging": "https://staging.example.com"}
         )
-        store.register(s1)
-        store.register(s2)
+        store.upsert(s1)
+        store.upsert(s2)
 
         services = store.list({"environment": "prod"})
         assert len(services) == 1
@@ -103,8 +103,8 @@ class TestInMemoryStore:
         """Test filtering by MRTD."""
         s1 = ServiceRegistration(name="service-1", mrtd="mrtd-123")
         s2 = ServiceRegistration(name="service-2", mrtd="mrtd-456")
-        store.register(s1)
-        store.register(s2)
+        store.upsert(s1)
+        store.upsert(s2)
 
         services = store.list({"mrtd": "mrtd-123"})
         assert len(services) == 1
@@ -114,8 +114,8 @@ class TestInMemoryStore:
         """Test searching services."""
         s1 = ServiceRegistration(name="payment-service", description="Handles payments")
         s2 = ServiceRegistration(name="user-service", description="User management")
-        store.register(s1)
-        store.register(s2)
+        store.upsert(s1)
+        store.upsert(s2)
 
         # Search by name
         results = store.search("payment")
@@ -131,8 +131,8 @@ class TestInMemoryStore:
         """Test searching by tag."""
         s1 = ServiceRegistration(name="service-1", tags=["authentication"])
         s2 = ServiceRegistration(name="service-2", tags=["database"])
-        store.register(s1)
-        store.register(s2)
+        store.upsert(s1)
+        store.upsert(s2)
 
         results = store.search("auth")
         assert len(results) == 1
@@ -140,7 +140,7 @@ class TestInMemoryStore:
 
     def test_update(self, store, sample_service):
         """Test updating a service."""
-        store.register(sample_service)
+        store.upsert(sample_service)
         updated = store.update(sample_service.service_id, health_status="healthy")
 
         assert updated is not None
@@ -154,6 +154,6 @@ class TestInMemoryStore:
 
     def test_clear(self, store, sample_service):
         """Test clearing all services."""
-        store.register(sample_service)
+        store.upsert(sample_service)
         store.clear()
-        assert store.count() == 0
+        assert len(store.list()) == 0

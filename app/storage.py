@@ -6,7 +6,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from sqlmodel import func, select
+from sqlmodel import select
 
 from .database import get_db
 from .db_models import (
@@ -25,11 +25,6 @@ AGENT_OFFLINE_TIMEOUT = timedelta(minutes=5)
 
 class ServiceStore:
     """Storage for service registrations."""
-
-    def register(self, service: Service) -> str:
-        with get_db() as session:
-            session.add(service)
-        return service.service_id
 
     def get(self, service_id: str) -> Service | None:
         with get_db() as session:
@@ -129,10 +124,6 @@ class ServiceStore:
                     results.append(s)
             return results
 
-    def count(self) -> int:
-        with get_db() as session:
-            return session.exec(select(func.count()).select_from(Service)).one()
-
     def clear(self) -> None:
         with get_db() as session:
             for s in session.exec(select(Service)).all():
@@ -179,15 +170,6 @@ class AgentStore:
             if deployment_id is not None:
                 agent.current_deployment_id = deployment_id
             agent.last_heartbeat = datetime.utcnow()
-            session.add(agent)
-            return True
-
-    def set_deployment(self, agent_id: str, deployment_id: str | None) -> bool:
-        with get_db() as session:
-            agent = session.get(Agent, agent_id)
-            if not agent:
-                return False
-            agent.current_deployment_id = deployment_id
             session.add(agent)
             return True
 
@@ -258,15 +240,6 @@ class AgentStore:
             session.add(agent)
             return True
 
-    def update_tunnel_error(self, agent_id: str, error: str) -> bool:
-        with get_db() as session:
-            agent = session.get(Agent, agent_id)
-            if not agent:
-                return False
-            agent.tunnel_error = error
-            session.add(agent)
-            return True
-
     def get_unhealthy_agents(self, unhealthy_timeout: timedelta) -> list[Agent]:
         with get_db() as session:
             agents = session.exec(
@@ -327,30 +300,6 @@ class AgentStore:
             session.add(agent)
             return True
 
-    def update_stats(self, agent_id: str, stats: dict) -> bool:
-        with get_db() as session:
-            agent = session.get(Agent, agent_id)
-            if not agent:
-                return False
-            agent.stats = stats
-            session.add(agent)
-            return True
-
-    def mark_attestation_failed(self, agent_id: str, error: str, clear_tunnel: bool = True) -> bool:
-        with get_db() as session:
-            agent = session.get(Agent, agent_id)
-            if not agent:
-                return False
-            agent.status = "attestation_failed"
-            agent.attestation_valid = False
-            agent.attestation_error = error
-            agent.last_attestation_check = datetime.utcnow()
-            if clear_tunnel:
-                agent.tunnel_id = None
-                agent.hostname = None
-            session.add(agent)
-            return True
-
     def clear(self) -> None:
         with get_db() as session:
             for a in session.exec(select(Agent)).all():
@@ -368,26 +317,6 @@ class DeploymentStore:
     def get(self, deployment_id: str) -> Deployment | None:
         with get_db() as session:
             return session.get(Deployment, deployment_id)
-
-    def get_pending_for_agent(self, agent_id: str) -> Deployment | None:
-        with get_db() as session:
-            return session.exec(
-                select(Deployment)
-                .where(Deployment.agent_id == agent_id, Deployment.status == "pending")
-                .order_by(Deployment.created_at.asc())
-                .limit(1)
-            ).first()
-
-    def assign(self, deployment_id: str, agent_id: str) -> bool:
-        with get_db() as session:
-            d = session.get(Deployment, deployment_id)
-            if not d:
-                return False
-            d.status = "assigned"
-            d.agent_id = agent_id
-            d.started_at = datetime.utcnow()
-            session.add(d)
-            return True
 
     def update_status(self, deployment_id: str, status: str, error: str | None = None) -> bool:
         with get_db() as session:
@@ -462,14 +391,6 @@ class DeploymentStore:
                 session.exec(select(Deployment).where(Deployment.status == "reassigning")).all()
             )
 
-    def delete(self, deployment_id: str) -> bool:
-        with get_db() as session:
-            d = session.get(Deployment, deployment_id)
-            if d:
-                session.delete(d)
-                return True
-            return False
-
     def clear(self) -> None:
         with get_db() as session:
             for d in session.exec(select(Deployment)).all():
@@ -522,10 +443,6 @@ class AppStore:
             session.add(app)
         return app.app_id
 
-    def get(self, app_id: str) -> App | None:
-        with get_db() as session:
-            return session.get(App, app_id)
-
     def get_by_name(self, name: str) -> App | None:
         with get_db() as session:
             return session.exec(select(App).where(App.name == name)).first()
@@ -540,19 +457,6 @@ class AppStore:
                 filter_tags = set(filters["tags"])
                 apps = [a for a in apps if filter_tags & set(a.tags or [])]
         return apps
-
-    def update(self, app_id: str, **updates) -> App | None:
-        with get_db() as session:
-            app = session.get(App, app_id)
-            if not app:
-                return None
-            for key, value in updates.items():
-                if hasattr(app, key):
-                    setattr(app, key, value)
-            session.add(app)
-            session.commit()
-            session.refresh(app)
-            return app
 
     def delete(self, app_id: str) -> bool:
         with get_db() as session:
@@ -598,19 +502,6 @@ class AppVersionStore:
                 ).all()
             )
 
-    def update(self, version_id: str, **updates) -> AppVersion | None:
-        with get_db() as session:
-            v = session.get(AppVersion, version_id)
-            if not v:
-                return None
-            for key, value in updates.items():
-                if hasattr(v, key):
-                    setattr(v, key, value)
-            session.add(v)
-            session.commit()
-            session.refresh(v)
-            return v
-
     def update_status(
         self,
         version_id: str,
@@ -632,14 +523,6 @@ class AppVersionStore:
                 v.rejection_reason = rejection_reason
             session.add(v)
             return True
-
-    def delete(self, version_id: str) -> bool:
-        with get_db() as session:
-            v = session.get(AppVersion, version_id)
-            if v:
-                session.delete(v)
-                return True
-            return False
 
     def clear(self) -> None:
         with get_db() as session:
