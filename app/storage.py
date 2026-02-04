@@ -429,7 +429,11 @@ class AgentStore:
                 select(Agent).where(Agent.status == "deployed", Agent.unhealthy_since.isnot(None))
             ).all()
             now = datetime.utcnow()
-            return [a for a in agents if a.unhealthy_since and now - a.unhealthy_since > unhealthy_timeout]
+            return [
+                a
+                for a in agents
+                if a.unhealthy_since and now - a.unhealthy_since > unhealthy_timeout
+            ]
 
     def reset_for_reassignment(self, agent_id: str) -> bool:
         with get_db() as session:
@@ -446,7 +450,11 @@ class AgentStore:
             return True
 
     def update_attestation_status(
-        self, agent_id: str, attestation_valid: bool, error: str | None = None, intel_ta_token: str | None = None
+        self,
+        agent_id: str,
+        attestation_valid: bool,
+        error: str | None = None,
+        intel_ta_token: str | None = None,
     ) -> bool:
         with get_db() as session:
             agent = session.get(Agent, agent_id)
@@ -606,7 +614,9 @@ class DeploymentStore:
 
     def get_for_reassignment(self) -> list[Deployment]:
         with get_db() as session:
-            return list(session.exec(select(Deployment).where(Deployment.status == "reassigning")).all())
+            return list(
+                session.exec(select(Deployment).where(Deployment.status == "reassigning")).all()
+            )
 
     def delete(self, deployment_id: str) -> bool:
         with get_db() as session:
@@ -786,7 +796,9 @@ class AppVersionStore:
     def get_by_version(self, app_name: str, version: str) -> AppVersion | None:
         with get_db() as session:
             return session.exec(
-                select(AppVersion).where(AppVersion.app_name == app_name, AppVersion.version == version)
+                select(AppVersion).where(
+                    AppVersion.app_name == app_name, AppVersion.version == version
+                )
             ).first()
 
     def list_for_app(self, app_name: str) -> list[AppVersion]:
