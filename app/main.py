@@ -23,6 +23,7 @@ from . import cloudflare, proxy
 from .database import init_db
 from .ita import extract_intel_ta_claims, verify_attestation_token
 from .models import (
+    Agent,
     AgentDeployedRequest,
     AgentListResponse,
     AgentPollRequest,
@@ -48,10 +49,9 @@ from .models import (
     JobStatusResponse,
     JobSubmitRequest,
     JobSubmitResponse,
-    LauncherAgent,
     MrtdType,
+    Service,
     ServiceListResponse,
-    ServiceRegistration,
     ServiceRegistrationRequest,
     TrustedMrtd,
     TrustedMrtdCreateRequest,
@@ -92,7 +92,7 @@ AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhea
 _agent_last_attestation: dict[str, datetime] = {}
 
 
-async def check_service_health(service: ServiceRegistration) -> str:
+async def check_service_health(service: Service) -> str:
     """Check health of a single service. Returns health status."""
     for _env, url in service.endpoints.items():
         try:
@@ -128,7 +128,7 @@ async def background_health_checker():
 
 
 async def check_agent_health(
-    agent: LauncherAgent, include_attestation: bool = False
+    agent: Agent, include_attestation: bool = False
 ) -> tuple[str, dict | None]:
     """Check health of an agent via its tunnel.
 
@@ -249,7 +249,7 @@ async def background_agent_health_checker():
         await asyncio.sleep(AGENT_HEALTH_CHECK_INTERVAL)
 
 
-async def handle_agent_reassignment(agent: LauncherAgent):
+async def handle_agent_reassignment(agent: Agent):
     """Handle reassignment of an unhealthy agent's deployment."""
     deployment_id = agent.current_deployment_id
     if not deployment_id:
@@ -351,7 +351,7 @@ async def health_check():
 
 
 # API v1 endpoints
-@app.post("/api/v1/register", response_model=ServiceRegistration)
+@app.post("/api/v1/register", response_model=Service)
 async def register_service(request: ServiceRegistrationRequest):
     """Register a new service with the discovery service.
 
@@ -379,11 +379,20 @@ async def register_service(request: ServiceRegistrationRequest):
 
     # Trust the agent's local health check - the agent already verified health
     # before calling this endpoint, and we trust the agent via attestation
-    health_status = "healthy"
-
-    service = ServiceRegistration.from_request(request)
-    service.health_status = health_status
-    service.last_health_check = datetime.utcnow()
+    service = Service(
+        name=request.name,
+        description=request.description,
+        source_repo=request.source_repo,
+        source_commit=request.source_commit,
+        compose_hash=request.compose_hash,
+        endpoints=request.endpoints,
+        mrtd=request.mrtd,
+        attestation_json=request.attestation_json,
+        intel_ta_token=request.intel_ta_token,
+        tags=request.tags,
+        health_status="healthy",
+        last_health_check=datetime.utcnow(),
+    )
 
     # Upsert: update existing service with same name, or create new
     service_id, is_new = store.upsert(service)
@@ -436,7 +445,7 @@ async def list_services(
     return ServiceListResponse(services=services, total=len(services))
 
 
-@app.get("/api/v1/services/{service_id}", response_model=ServiceRegistration)
+@app.get("/api/v1/services/{service_id}", response_model=Service)
 async def get_service(service_id: str):
     """Get details for a specific service."""
     service = store.get(service_id)
@@ -720,7 +729,7 @@ async def register_agent(request: AgentRegistrationRequest):
     }
     if existing:
         agent_kwargs["agent_id"] = existing.agent_id
-    agent = LauncherAgent(**agent_kwargs)
+    agent = Agent(**agent_kwargs)
     agent_id = agent_store.register(agent)
 
     # Create Cloudflare tunnel for verified agents
@@ -922,7 +931,7 @@ async def list_agents(
     return AgentListResponse(agents=agents, total=len(agents))
 
 
-@app.get("/api/v1/agents/{agent_id}", response_model=LauncherAgent)
+@app.get("/api/v1/agents/{agent_id}", response_model=Agent)
 async def get_agent(agent_id: str):
     """Get details for a specific agent."""
     agent = agent_store.get(agent_id)

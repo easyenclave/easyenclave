@@ -31,7 +31,7 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
 
 def get_session() -> Session:
     """Create a new database session."""
-    return Session(engine)
+    return Session(engine, expire_on_commit=False)
 
 
 @contextmanager

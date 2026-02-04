@@ -1,4 +1,8 @@
-"""SQLModel database models for EasyEnclave storage."""
+"""SQLModel database models for EasyEnclave storage.
+
+These models serve as both SQLAlchemy ORM models AND Pydantic models,
+eliminating the need for separate data classes.
+"""
 
 from __future__ import annotations
 
@@ -11,30 +15,23 @@ from sqlmodel import JSON, Column, Field, SQLModel
 
 
 def generate_uuid() -> str:
-    """Generate a new UUID string."""
     return str(uuid.uuid4())
 
 
 def utcnow() -> datetime:
-    """Get current UTC time."""
     return datetime.utcnow()
 
 
 class MrtdType(str, Enum):
-    """Type of trusted MRTD - agent launcher vs app workload."""
+    """Type of trusted MRTD."""
 
     AGENT = "agent"
     PROXY = "proxy"
     APP = "app"
 
 
-# =============================================================================
-# Database Tables (SQLModel with table=True)
-# =============================================================================
-
-
-class ServiceDB(SQLModel, table=True):
-    """Database model for service registrations."""
+class Service(SQLModel, table=True):
+    """Service registration."""
 
     __tablename__ = "services"
 
@@ -54,8 +51,8 @@ class ServiceDB(SQLModel, table=True):
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
 
-class WorkerDB(SQLModel, table=True):
-    """Database model for standby workers."""
+class Worker(SQLModel, table=True):
+    """Standby worker."""
 
     __tablename__ = "workers"
 
@@ -68,8 +65,8 @@ class WorkerDB(SQLModel, table=True):
     current_job_id: str | None = None
 
 
-class JobDB(SQLModel, table=True):
-    """Database model for jobs."""
+class Job(SQLModel, table=True):
+    """Job in the queue."""
 
     __tablename__ = "jobs"
 
@@ -88,8 +85,8 @@ class JobDB(SQLModel, table=True):
     queue_order: int | None = Field(default=None, index=True)
 
 
-class AgentDB(SQLModel, table=True):
-    """Database model for launcher agents."""
+class Agent(SQLModel, table=True):
+    """Launcher agent."""
 
     __tablename__ = "agents"
 
@@ -120,8 +117,8 @@ class AgentDB(SQLModel, table=True):
     attestation_error: str | None = None
 
 
-class DeploymentDB(SQLModel, table=True):
-    """Database model for deployments."""
+class Deployment(SQLModel, table=True):
+    """Deployment record."""
 
     __tablename__ = "deployments"
 
@@ -139,8 +136,8 @@ class DeploymentDB(SQLModel, table=True):
     completed_at: datetime | None = None
 
 
-class TrustedMrtdDB(SQLModel, table=True):
-    """Database model for trusted MRTD measurements."""
+class TrustedMrtd(SQLModel, table=True):
+    """Trusted MRTD measurement."""
 
     __tablename__ = "trusted_mrtds"
 
@@ -160,8 +157,8 @@ class TrustedMrtdDB(SQLModel, table=True):
     active: bool = Field(default=True)
 
 
-class AppDB(SQLModel, table=True):
-    """Database model for apps."""
+class App(SQLModel, table=True):
+    """App in the catalog."""
 
     __tablename__ = "apps"
 
@@ -174,8 +171,8 @@ class AppDB(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
-class AppVersionDB(SQLModel, table=True):
-    """Database model for app versions."""
+class AppVersion(SQLModel, table=True):
+    """Published app version."""
 
     __tablename__ = "app_versions"
 
@@ -191,8 +188,3 @@ class AppVersionDB(SQLModel, table=True):
     status: str = Field(default="pending", index=True)
     rejection_reason: str | None = None
     published_at: datetime = Field(default_factory=utcnow)
-
-    class Config:
-        """SQLModel config."""
-
-        # Unique constraint on (app_name, version) is handled by Alembic migration
