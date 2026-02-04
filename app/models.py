@@ -9,15 +9,6 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
-class LogLevel(str, Enum):
-    """Log level for filtering."""
-
-    DEBUG = "debug"
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-
-
 class ServiceRegistrationRequest(BaseModel):
     """Request model for registering a new service."""
 
@@ -351,7 +342,7 @@ class AgentRegistrationResponse(BaseModel):
 
 
 class AgentPollRequest(BaseModel):
-    """Request model for agent polling with attestation, stats, and logs."""
+    """Request model for agent polling with attestation and stats."""
 
     intel_ta_token: str | None = Field(
         default=None,
@@ -360,10 +351,6 @@ class AgentPollRequest(BaseModel):
     stats: dict | None = Field(
         default=None,
         description="System stats: cpu_percent, memory_percent, disk_percent, etc.",
-    )
-    logs: list[dict] | None = Field(
-        default=None,
-        description="Log entries since last poll",
     )
 
 
@@ -665,55 +652,3 @@ class DeployFromVersionRequest(BaseModel):
     )
 
 
-# ==============================================================================
-# Agent and Workload Logging Models
-# ==============================================================================
-
-
-class LogSource(str, Enum):
-    """Source of the log entry."""
-
-    AGENT = "agent"  # Launcher agent logs
-    CONTAINER = "container"  # Docker container logs
-
-
-class LogEntry(BaseModel):
-    """A single log entry from an agent or container."""
-
-    log_id: str = Field(
-        default_factory=lambda: str(uuid.uuid4()), description="Unique log identifier"
-    )
-    agent_id: str = Field(..., description="Agent that generated/collected this log")
-    source: LogSource = Field(..., description="Source: 'agent' or 'container'")
-    container_name: str | None = Field(
-        default=None, description="Container name (if source is container)"
-    )
-    level: LogLevel = Field(default=LogLevel.INFO, description="Log level")
-    message: str = Field(..., description="Log message")
-    timestamp: datetime = Field(
-        default_factory=datetime.utcnow, description="When the log was generated"
-    )
-    received_at: datetime = Field(
-        default_factory=datetime.utcnow, description="When the control plane received it"
-    )
-    metadata: dict = Field(default_factory=dict, description="Additional metadata")
-
-
-class LogBatchRequest(BaseModel):
-    """Request model for submitting a batch of logs."""
-
-    logs: list[dict] = Field(..., description="List of log entries")
-
-
-class LogBatchResponse(BaseModel):
-    """Response model for log batch submission."""
-
-    received: int = Field(..., description="Number of logs received")
-    stored: int = Field(..., description="Number of logs stored")
-
-
-class LogListResponse(BaseModel):
-    """Response model for listing logs."""
-
-    logs: list[LogEntry]
-    total: int

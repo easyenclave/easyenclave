@@ -13,9 +13,6 @@ from .models import (
     Deployment,
     Job,
     LauncherAgent,
-    LogEntry,
-    LogLevel,
-    LogSource,
     MrtdType,
     ServiceRegistration,
     TrustedMrtd,
@@ -240,16 +237,6 @@ class WorkerStore:
             worker_dict["last_heartbeat"] = datetime.utcnow()
             self._workers[worker_id] = Worker(**worker_dict)
             return True
-
-    def get_available_worker(self) -> Worker | None:
-        """Get an available worker. Returns None if no workers available."""
-        with self._lock:
-            for worker in self._workers.values():
-                if worker.status == "available":
-                    # Check if worker is still active (has recent heartbeat)
-                    if datetime.utcnow() - worker.last_heartbeat < WORKER_OFFLINE_TIMEOUT:
-                        return worker
-            return None
 
     def mark_busy(self, worker_id: str, job_id: str) -> bool:
         """Mark a worker as busy with a job. Returns False if not found."""
@@ -604,11 +591,6 @@ class AgentStore:
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
 
-    def get_deployed_agents(self) -> list[LauncherAgent]:
-        """Get all deployed agents for health checking."""
-        with self._lock:
-            return [a for a in self._agents.values() if a.status == "deployed"]
-
     def get_unhealthy_agents(self, unhealthy_timeout: timedelta) -> list[LauncherAgent]:
         """Get agents that have been unhealthy longer than the timeout."""
         with self._lock:
@@ -710,11 +692,6 @@ class AgentStore:
                 agent_dict["hostname"] = None
             self._agents[agent_id] = LauncherAgent(**agent_dict)
             return True
-
-    def get_agents_for_attestation_check(self) -> list[LauncherAgent]:
-        """Get deployed agents that need attestation check."""
-        with self._lock:
-            return [a for a in self._agents.values() if a.status == "deployed" and a.verified]
 
     def clear(self) -> None:
         """Clear all agents (useful for testing)."""
@@ -1217,171 +1194,6 @@ class AppVersionStore:
             self._version_index.clear()
 
 
-# Log level priority for filtering
-LOG_LEVEL_PRIORITY = {
-    LogLevel.DEBUG: 0,
-    LogLevel.INFO: 1,
-    LogLevel.WARNING: 2,
-    LogLevel.ERROR: 3,
-}
-
-# Maximum number of logs to keep in memory per agent
-MAX_LOGS_PER_AGENT = 1000
-
-
-class LogStore:
-    """Thread-safe in-memory storage for agent and container logs.
-
-    Keeps recent logs in memory with automatic cleanup of old entries.
-    Logs are indexed by agent_id for efficient retrieval.
-    """
-
-    def __init__(self, max_logs_per_agent: int = MAX_LOGS_PER_AGENT):
-        self._logs: dict[str, list[LogEntry]] = {}  # agent_id -> [logs]
-        self._lock = threading.Lock()
-        self._max_logs_per_agent = max_logs_per_agent
-
-    def add(self, log: LogEntry) -> str:
-        """Add a log entry. Returns the log_id."""
-        with self._lock:
-            if log.agent_id not in self._logs:
-                self._logs[log.agent_id] = []
-
-            self._logs[log.agent_id].append(log)
-
-            # Trim old logs if over limit
-            if len(self._logs[log.agent_id]) > self._max_logs_per_agent:
-                # Keep the most recent logs
-                self._logs[log.agent_id] = self._logs[log.agent_id][-self._max_logs_per_agent :]
-
-            return log.log_id
-
-    def add_batch(self, agent_id: str, logs: list[dict]) -> tuple[int, int]:
-        """Add a batch of logs. Returns (received, stored) count."""
-        received = len(logs)
-        stored = 0
-
-        with self._lock:
-            if agent_id not in self._logs:
-                self._logs[agent_id] = []
-
-            for log_dict in logs:
-                try:
-                    # Parse log level
-                    level_str = log_dict.get("level", "info").lower()
-                    try:
-                        level = LogLevel(level_str)
-                    except ValueError:
-                        level = LogLevel.INFO
-
-                    # Parse source
-                    source_str = log_dict.get("source", "agent").lower()
-                    try:
-                        source = LogSource(source_str)
-                    except ValueError:
-                        source = LogSource.AGENT
-
-                    # Create log entry
-                    log = LogEntry(
-                        agent_id=agent_id,
-                        source=source,
-                        container_name=log_dict.get("container_name"),
-                        level=level,
-                        message=log_dict.get("message", ""),
-                        timestamp=datetime.fromisoformat(log_dict["timestamp"])
-                        if "timestamp" in log_dict
-                        else datetime.utcnow(),
-                        metadata=log_dict.get("metadata", {}),
-                    )
-                    self._logs[agent_id].append(log)
-                    stored += 1
-                except Exception as e:
-                    logger.warning(f"Failed to parse log entry: {e}")
-                    continue
-
-            # Trim old logs if over limit
-            if len(self._logs[agent_id]) > self._max_logs_per_agent:
-                self._logs[agent_id] = self._logs[agent_id][-self._max_logs_per_agent :]
-
-        return received, stored
-
-    def query(
-        self,
-        agent_id: str | None = None,
-        source: LogSource | None = None,
-        container_name: str | None = None,
-        min_level: LogLevel = LogLevel.INFO,
-        since: datetime | None = None,
-        until: datetime | None = None,
-        limit: int = 100,
-    ) -> list[LogEntry]:
-        """Query logs with filters."""
-        min_priority = LOG_LEVEL_PRIORITY.get(min_level, 1)
-        result = []
-
-        # Strip timezone info to avoid comparison errors with naive datetimes
-        if since and since.tzinfo is not None:
-            since = since.replace(tzinfo=None)
-        if until and until.tzinfo is not None:
-            until = until.replace(tzinfo=None)
-
-        with self._lock:
-            # Determine which agents to search
-            if agent_id:
-                agent_ids = [agent_id] if agent_id in self._logs else []
-            else:
-                agent_ids = list(self._logs.keys())
-
-            for aid in agent_ids:
-                for log in self._logs.get(aid, []):
-                    # Filter by level
-                    if LOG_LEVEL_PRIORITY.get(log.level, 1) < min_priority:
-                        continue
-
-                    # Filter by source
-                    if source and log.source != source:
-                        continue
-
-                    # Filter by container name
-                    if container_name and log.container_name != container_name:
-                        continue
-
-                    # Filter by time range
-                    if since and log.timestamp < since:
-                        continue
-                    if until and log.timestamp > until:
-                        continue
-
-                    result.append(log)
-
-            # Sort by timestamp descending (most recent first) and limit
-            # Normalize to naive datetime for comparison (some logs may be tz-aware, others naive)
-            result.sort(key=lambda x: x.timestamp.replace(tzinfo=None), reverse=True)
-            return result[:limit]
-
-    def get_agent_logs(self, agent_id: str, limit: int = 100) -> list[LogEntry]:
-        """Get recent logs for a specific agent."""
-        with self._lock:
-            logs = self._logs.get(agent_id, [])
-            # Return most recent logs first
-            return list(reversed(logs[-limit:]))
-
-    def clear_agent_logs(self, agent_id: str) -> int:
-        """Clear all logs for an agent. Returns count cleared."""
-        with self._lock:
-            if agent_id in self._logs:
-                count = len(self._logs[agent_id])
-                del self._logs[agent_id]
-                return count
-            return 0
-
-    def clear(self) -> None:
-        """Clear all logs."""
-        with self._lock:
-            self._logs.clear()
-
-
 # Global app store instances
 app_store = AppStore()
 app_version_store = AppVersionStore()
-log_store = LogStore()

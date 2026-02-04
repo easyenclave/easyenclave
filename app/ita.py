@@ -13,10 +13,6 @@ logger = logging.getLogger(__name__)
 
 # Intel Trust Authority JWKS endpoint for token verification
 ITA_JWKS_URL = os.environ.get("ITA_JWKS_URL", "https://portal.trustauthority.intel.com/certs")
-# Expected issuer for Intel TA tokens
-ITA_ISSUER = os.environ.get("ITA_ISSUER", "https://portal.trustauthority.intel.com")
-# API key (still used for future API calls, not for JWT verification)
-ITA_API_KEY = os.environ.get("ITA_API_KEY", "")
 
 # Cache the JWKS client to avoid fetching keys on every verification
 _jwks_client: PyJWKClient | None = None

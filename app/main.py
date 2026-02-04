@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -46,12 +48,6 @@ from .models import (
     JobSubmitRequest,
     JobSubmitResponse,
     LauncherAgent,
-    LogBatchRequest,
-    LogBatchResponse,
-    LogEntry,
-    LogLevel,
-    LogListResponse,
-    LogSource,
     MrtdType,
     ServiceListResponse,
     ServiceRegistration,
@@ -70,42 +66,12 @@ from .storage import (
     app_version_store,
     deployment_store,
     job_store,
-    log_store,
     store,
     trusted_mrtd_store,
     worker_store,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class LogStoreHandler(logging.Handler):
-    """Logging handler that writes to LogStore for admin dashboard."""
-
-    def __init__(self, store, agent_id: str = "control-plane"):
-        super().__init__()
-        self._store = store
-        self._agent_id = agent_id
-
-    def emit(self, record):
-        try:
-            level_map = {
-                "DEBUG": "debug",
-                "INFO": "info",
-                "WARNING": "warning",
-                "ERROR": "error",
-            }
-            level = level_map.get(record.levelname, "info")
-            log = LogEntry(
-                agent_id=self._agent_id,
-                source=LogSource.AGENT,
-                level=LogLevel(level),
-                message=self.format(record),
-                timestamp=datetime.utcfromtimestamp(record.created),
-            )
-            self._store.add(log)
-        except Exception:
-            pass
 
 
 # Admin authentication
@@ -325,11 +291,6 @@ async def process_pending_reassignments():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - start background tasks."""
-    # Add control plane logs to log_store for admin dashboard
-    handler = LogStoreHandler(log_store)
-    handler.setFormatter(logging.Formatter("%(name)s - %(message)s"))
-    logging.getLogger().addHandler(handler)
-
     # Start background health checkers
     service_health_task = asyncio.create_task(background_health_checker())
     agent_health_task = asyncio.create_task(background_agent_health_checker())
@@ -686,7 +647,6 @@ async def register_agent(request: AgentRegistrationRequest):
             detail="Registration requires Intel Trust Authority token",
         )
 
-    verification_error = None
     ita_result = None
     try:
         ita_result = await verify_attestation_token(intel_ta_token)
@@ -751,7 +711,7 @@ async def register_agent(request: AgentRegistrationRequest):
         "version": request.version,
         "status": "undeployed",
         "verified": verified,
-        "verification_error": verification_error,
+        "verification_error": None,
     }
     if existing:
         agent_kwargs["agent_id"] = existing.agent_id
@@ -835,11 +795,6 @@ async def poll_for_deployment(agent_id: str, request: AgentPollRequest):
     # Update stats if provided
     if request.stats:
         agent_store.update_stats(agent_id, request.stats)
-
-    # Store logs if provided
-    if request.logs:
-        stored = log_store.add_batch(agent_id, request.logs)
-        logger.debug(f"Stored {stored[1]} logs from agent {agent_id}")
 
     # Reload agent to get updated state
     agent = agent_store.get(agent_id)
@@ -1595,9 +1550,7 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
                 json={
                     "deployment_id": deployment_id,
                     "compose": found_version.compose,
-                    "build_context": found_version.build_context
-                    if hasattr(found_version, "build_context")
-                    else None,
+                    "build_context": getattr(found_version, "build_context", None),
                     "config": config,
                 },
             )
@@ -1652,11 +1605,6 @@ async def get_control_plane_attestation(
         - measurements: Parsed TDX measurements from the quote
         - nonce: Echoed nonce (if provided)
     """
-    import base64
-    import os
-    import time
-    from pathlib import Path
-
     TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
 
     result = {
@@ -1784,23 +1732,6 @@ async def proxy_service_request(
 # ==============================================================================
 
 
-@app.post("/api/v1/agents/{agent_id}/logs", response_model=LogBatchResponse)
-async def submit_agent_logs(agent_id: str, request: LogBatchRequest):
-    """Submit a batch of logs from an agent.
-
-    Agents can submit both their own logs and container logs from deployed workloads.
-    Logs are filtered by the min_level parameter before storage.
-    """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    received, stored = log_store.add_batch(agent_id, request.logs)
-    logger.info(f"Received {received} logs from agent {agent_id}, stored {stored}")
-
-    return LogBatchResponse(received=received, stored=stored)
-
-
 @app.get("/api/v1/agents/{agent_id}/logs")
 async def get_agent_logs(
     agent_id: str,
@@ -1918,77 +1849,28 @@ async def get_agent_stats(agent_id: str):
         ) from e
 
 
-@app.get("/api/v1/agents/{agent_id}/logs/stored", response_model=LogListResponse)
-async def get_agent_logs_stored(
-    agent_id: str,
-    source: LogSource | None = Query(None, description="Filter by source: 'agent' or 'container'"),
-    container_name: str | None = Query(None, description="Filter by container name"),
-    min_level: LogLevel = Query(LogLevel.INFO, description="Minimum log level"),
-    since: datetime | None = Query(None, description="Logs since this time"),
-    until: datetime | None = Query(None, description="Logs until this time"),
-    limit: int = Query(100, description="Maximum number of logs to return", le=1000),
+@app.get("/api/v1/logs/control-plane")
+async def get_control_plane_logs(
+    lines: int = Query(100, description="Number of lines to return", le=1000),
 ):
-    """Get stored logs for a specific agent (legacy).
+    """Get recent control plane logs from file."""
+    log_file = Path("/var/log/easyenclave/control-plane.log")
+    if not log_file.exists():
+        log_file = Path("control-plane.log")
 
-    Returns logs that were previously pushed by agents (before pull model).
-    For new deployments, use GET /api/v1/agents/{agent_id}/logs instead.
-    """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    if not log_file.exists():
+        return {"logs": [], "source": "file_not_found"}
 
-    logs = log_store.query(
-        agent_id=agent_id,
-        source=source,
-        container_name=container_name,
-        min_level=min_level,
-        since=since,
-        until=until,
-        limit=limit,
-    )
-
-    return LogListResponse(logs=logs, total=len(logs))
-
-
-@app.get("/api/v1/logs", response_model=LogListResponse)
-async def query_logs(
-    agent_id: str | None = Query(None, description="Filter by agent ID"),
-    source: LogSource | None = Query(None, description="Filter by source: 'agent' or 'container'"),
-    container_name: str | None = Query(None, description="Filter by container name"),
-    min_level: LogLevel = Query(LogLevel.INFO, description="Minimum log level"),
-    since: datetime | None = Query(None, description="Logs since this time"),
-    until: datetime | None = Query(None, description="Logs until this time"),
-    limit: int = Query(100, description="Maximum number of logs to return", le=1000),
-):
-    """Query logs across all agents.
-
-    Returns logs from agents and containers, filtered by the provided parameters.
-    Logs are returned in reverse chronological order (most recent first).
-    """
-    logs = log_store.query(
-        agent_id=agent_id,
-        source=source,
-        container_name=container_name,
-        min_level=min_level,
-        since=since,
-        until=until,
-        limit=limit,
-    )
-
-    return LogListResponse(logs=logs, total=len(logs))
-
-
-@app.delete("/api/v1/agents/{agent_id}/logs")
-async def clear_agent_logs(agent_id: str):
-    """Clear all logs for an agent."""
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    count = log_store.clear_agent_logs(agent_id)
-    logger.info(f"Cleared {count} logs for agent {agent_id}")
-
-    return {"status": "cleared", "count": count}
+    try:
+        with open(log_file) as f:
+            all_lines = f.readlines()
+            return {
+                "logs": all_lines[-lines:],
+                "source": str(log_file),
+                "total_lines": len(all_lines),
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read logs: {e}") from e
 
 
 # ==============================================================================
