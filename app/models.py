@@ -650,5 +650,3 @@ class DeployFromVersionRequest(BaseModel):
         default=None,
         description="Override config: service_url, health_endpoint, etc.",
     )
-
-

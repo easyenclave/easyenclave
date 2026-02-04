@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import cloudflare, proxy
+from .database import init_db
 from .ita import extract_intel_ta_claims, verify_attestation_token
 from .models import (
     AgentDeployedRequest,
@@ -291,6 +292,10 @@ async def process_pending_reassignments():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - start background tasks."""
+    # Initialize database
+    init_db()
+    logger.info("Database initialized")
+
     # Start background health checkers
     service_health_task = asyncio.create_task(background_health_checker())
     agent_health_task = asyncio.create_task(background_agent_health_checker())

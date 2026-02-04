@@ -1,17 +1,16 @@
-"""Tests for in-memory storage."""
+"""Tests for SQLite-backed storage."""
 
 import pytest
 
 from app.models import ServiceRegistration
-from app.storage import InMemoryStore
 
 
 @pytest.fixture
 def store():
-    """Create a fresh store for each test."""
-    s = InMemoryStore()
-    yield s
-    s.clear()
+    """Get the global store (already cleared by conftest fixture)."""
+    from app.storage import store as global_store
+
+    return global_store
 
 
 @pytest.fixture

@@ -6,15 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.storage import store
-
-
-@pytest.fixture(autouse=True)
-def clear_store():
-    """Clear the store before and after each test."""
-    store.clear()
-    yield
-    store.clear()
 
 
 @pytest.fixture
@@ -249,15 +240,6 @@ class TestVerifyEndpoint:
 class TestTrustedMrtdEndpoints:
     """Tests for trusted MRTD API endpoints."""
 
-    @pytest.fixture(autouse=True)
-    def clear_trusted_mrtd_store(self):
-        """Clear trusted MRTD store before and after each test."""
-        from app.storage import trusted_mrtd_store
-
-        trusted_mrtd_store.clear()
-        yield
-        trusted_mrtd_store.clear()
-
     def test_add_trusted_mrtd(self, client):
         """Test adding a trusted MRTD."""
         response = client.post(
@@ -357,8 +339,6 @@ class TestLockedSystemMrtds:
         """Set up system MRTDs via environment variables."""
         from app.storage import trusted_mrtd_store
 
-        trusted_mrtd_store.clear()
-
         # Set environment variables before re-loading system MRTDs
         monkeypatch.setenv("SYSTEM_AGENT_MRTD", "system-agent-mrtd-123")
         monkeypatch.setenv("SYSTEM_PROXY_MRTD", "system-proxy-mrtd-456")
@@ -367,8 +347,6 @@ class TestLockedSystemMrtds:
         trusted_mrtd_store._load_system_mrtds()
 
         yield
-
-        trusted_mrtd_store.clear()
 
     def test_system_mrtds_loaded_on_startup(self, client):
         """Test that system MRTDs are loaded from environment."""

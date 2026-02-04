@@ -18,3 +18,8 @@ plan
 *.log
 /tmp/
 
+# SQLite database
+easyenclave.db
+easyenclave.db-wal
+easyenclave.db-shm
+
