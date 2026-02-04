@@ -148,9 +148,7 @@ async def refresh_agent_attestation(agent_id: str, attestation: dict) -> bool:
             logger.debug(f"Agent {agent_id} attestation refreshed")
             return True
         else:
-            logger.warning(
-                f"Agent {agent_id} attestation failed: {result.get('error')}"
-            )
+            logger.warning(f"Agent {agent_id} attestation failed: {result.get('error')}")
             agent_store.update_attestation(
                 agent_id,
                 intel_ta_token=intel_ta_token,
@@ -163,9 +161,7 @@ async def refresh_agent_attestation(agent_id: str, attestation: dict) -> bool:
         return False
 
 
-def reverify_agents_for_mrtd(
-    mrtd: str, verified: bool, error: str | None = None
-) -> list[str]:
+def reverify_agents_for_mrtd(mrtd: str, verified: bool, error: str | None = None) -> list[str]:
     """Update verification status for all agents matching a given MRTD.
 
     Returns list of agent_ids that were updated.
@@ -213,21 +209,11 @@ def generate_tdx_quote(nonce: str | None = None) -> TdxQuoteResult:
             measurements = {}
             if len(quote) >= 584:
                 td_report_offset = 48
-                measurements["mrtd"] = quote[
-                    td_report_offset + 136 : td_report_offset + 184
-                ].hex()
-                measurements["rtmr0"] = quote[
-                    td_report_offset + 328 : td_report_offset + 376
-                ].hex()
-                measurements["rtmr1"] = quote[
-                    td_report_offset + 376 : td_report_offset + 424
-                ].hex()
-                measurements["rtmr2"] = quote[
-                    td_report_offset + 424 : td_report_offset + 472
-                ].hex()
-                measurements["rtmr3"] = quote[
-                    td_report_offset + 472 : td_report_offset + 520
-                ].hex()
+                measurements["mrtd"] = quote[td_report_offset + 136 : td_report_offset + 184].hex()
+                measurements["rtmr0"] = quote[td_report_offset + 328 : td_report_offset + 376].hex()
+                measurements["rtmr1"] = quote[td_report_offset + 376 : td_report_offset + 424].hex()
+                measurements["rtmr2"] = quote[td_report_offset + 424 : td_report_offset + 472].hex()
+                measurements["rtmr3"] = quote[td_report_offset + 472 : td_report_offset + 520].hex()
 
             return TdxQuoteResult(quote_b64=quote_b64, measurements=measurements)
 

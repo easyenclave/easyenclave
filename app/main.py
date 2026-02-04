@@ -484,7 +484,7 @@ async def register_agent(request: AgentRegistrationRequest):
     try:
         verification = await verify_agent_registration(request.attestation)
     except AttestationError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.detail)
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     mrtd = verification.mrtd
     intel_ta_token = verification.intel_ta_token
     trusted_mrtd_info = verification.trusted_mrtd_info
@@ -831,7 +831,9 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
                     hostname=tunnel_info["hostname"],
                     tunnel_token=tunnel_info["tunnel_token"],
                 )
-                logger.info(f"Created tunnel for newly verified agent {aid}: {tunnel_info['hostname']}")
+                logger.info(
+                    f"Created tunnel for newly verified agent {aid}: {tunnel_info['hostname']}"
+                )
             except Exception as e:
                 logger.warning(f"Failed to create tunnel for newly verified agent {aid}: {e}")
 
@@ -906,7 +908,9 @@ async def delete_trusted_mrtd(mrtd: str):
         raise HTTPException(status_code=404, detail="Trusted MRTD not found")
 
     # Mark agents with this MRTD as unverified
-    for aid in reverify_agents_for_mrtd(mrtd, verified=False, error="MRTD removed from trusted list"):
+    for aid in reverify_agents_for_mrtd(
+        mrtd, verified=False, error="MRTD removed from trusted list"
+    ):
         logger.info(f"Agent {aid} unverified (MRTD deleted)")
 
     logger.info(f"Deleted trusted MRTD: {mrtd[:16]}...")
