@@ -14,17 +14,14 @@ from .db_models import (
     App,
     AppVersion,
     Deployment,
-    Job,
     MrtdType,
     Service,
     TrustedMrtd,
-    Worker,
 )
 
 logger = logging.getLogger(__name__)
 
 UNHEALTHY_TIMEOUT = timedelta(hours=1)
-WORKER_OFFLINE_TIMEOUT = timedelta(minutes=2)
 AGENT_OFFLINE_TIMEOUT = timedelta(minutes=5)
 
 
@@ -142,147 +139,6 @@ class ServiceStore:
         with get_db() as session:
             for s in session.exec(select(Service)).all():
                 session.delete(s)
-
-
-class WorkerStore:
-    """Storage for standby workers."""
-
-    def register(self, worker: Worker) -> str:
-        with get_db() as session:
-            session.add(worker)
-        return worker.worker_id
-
-    def get(self, worker_id: str) -> Worker | None:
-        with get_db() as session:
-            return session.get(Worker, worker_id)
-
-    def heartbeat(self, worker_id: str) -> bool:
-        with get_db() as session:
-            worker = session.get(Worker, worker_id)
-            if not worker:
-                return False
-            worker.last_heartbeat = datetime.utcnow()
-            session.add(worker)
-            return True
-
-    def mark_busy(self, worker_id: str, job_id: str) -> bool:
-        with get_db() as session:
-            worker = session.get(Worker, worker_id)
-            if not worker:
-                return False
-            worker.status = "busy"
-            worker.current_job_id = job_id
-            session.add(worker)
-            return True
-
-    def mark_available(self, worker_id: str) -> bool:
-        with get_db() as session:
-            worker = session.get(Worker, worker_id)
-            if not worker:
-                return False
-            worker.status = "available"
-            worker.current_job_id = None
-            session.add(worker)
-            return True
-
-    def list(self) -> list[Worker]:
-        with get_db() as session:
-            return list(session.exec(select(Worker)).all())
-
-    def delete(self, worker_id: str) -> bool:
-        with get_db() as session:
-            worker = session.get(Worker, worker_id)
-            if worker:
-                session.delete(worker)
-                return True
-            return False
-
-    def clear(self) -> None:
-        with get_db() as session:
-            for w in session.exec(select(Worker)).all():
-                session.delete(w)
-
-
-class JobStore:
-    """Storage for jobs."""
-
-    def submit(self, job: Job) -> str:
-        with get_db() as session:
-            job.queue_order = session.exec(
-                select(func.coalesce(func.max(Job.queue_order), 0) + 1)
-            ).one()
-            session.add(job)
-        return job.job_id
-
-    def get(self, job_id: str) -> Job | None:
-        with get_db() as session:
-            return session.get(Job, job_id)
-
-    def get_next_job(self) -> Job | None:
-        with get_db() as session:
-            return session.exec(
-                select(Job).where(Job.status == "queued").order_by(Job.queue_order.asc()).limit(1)
-            ).first()
-
-    def assign_job(self, job_id: str, worker_id: str) -> bool:
-        with get_db() as session:
-            job = session.get(Job, job_id)
-            if not job:
-                return False
-            job.status = "assigned"
-            job.worker_id = worker_id
-            job.started_at = datetime.utcnow()
-            session.add(job)
-            return True
-
-    def update_status(self, job_id: str, status: str) -> bool:
-        with get_db() as session:
-            job = session.get(Job, job_id)
-            if not job:
-                return False
-            job.status = status
-            session.add(job)
-            return True
-
-    def complete_job(
-        self,
-        job_id: str,
-        status: str,
-        attestation: dict | None = None,
-        service_id: str | None = None,
-        error: str | None = None,
-    ) -> bool:
-        with get_db() as session:
-            job = session.get(Job, job_id)
-            if not job:
-                return False
-            job.status = status
-            job.completed_at = datetime.utcnow()
-            job.attestation = attestation
-            job.service_id = service_id
-            job.error = error
-            session.add(job)
-            return True
-
-    def list(self, status: str | None = None) -> list[Job]:
-        with get_db() as session:
-            stmt = select(Job)
-            if status:
-                stmt = stmt.where(Job.status == status)
-            return list(session.exec(stmt).all())
-
-    def delete(self, job_id: str) -> bool:
-        with get_db() as session:
-            job = session.get(Job, job_id)
-            if job:
-                session.delete(job)
-                return True
-            return False
-
-    def clear(self) -> None:
-        with get_db() as session:
-            for j in session.exec(select(Job)).all():
-                session.delete(j)
 
 
 class AgentStore:
@@ -862,8 +718,6 @@ class AppVersionStore:
 
 # Global store instances
 store = ServiceStore()
-worker_store = WorkerStore()
-job_store = JobStore()
 agent_store = AgentStore()
 deployment_store = DeploymentStore()
 trusted_mrtd_store = TrustedMrtdStore()

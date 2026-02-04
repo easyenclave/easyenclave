@@ -51,40 +51,6 @@ class Service(SQLModel, table=True):
     tags: list[str] = Field(default_factory=list, sa_column=Column(JSON))
 
 
-class Worker(SQLModel, table=True):
-    """Standby worker."""
-
-    __tablename__ = "workers"
-
-    worker_id: str = Field(default_factory=generate_uuid, primary_key=True)
-    attestation: dict[str, Any] = Field(sa_column=Column(JSON))
-    capabilities: list[str] = Field(default_factory=lambda: ["docker"], sa_column=Column(JSON))
-    registered_at: datetime = Field(default_factory=utcnow)
-    last_heartbeat: datetime = Field(default_factory=utcnow)
-    status: str = Field(default="available")
-    current_job_id: str | None = None
-
-
-class Job(SQLModel, table=True):
-    """Job in the queue."""
-
-    __tablename__ = "jobs"
-
-    job_id: str = Field(default_factory=generate_uuid, primary_key=True)
-    compose: str
-    build_context: dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
-    config: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
-    status: str = Field(default="queued", index=True)
-    worker_id: str | None = None
-    submitted_at: datetime = Field(default_factory=utcnow)
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    attestation: dict | None = Field(default=None, sa_column=Column(JSON))
-    service_id: str | None = None
-    error: str | None = None
-    queue_order: int | None = Field(default=None, index=True)
-
-
 class Agent(SQLModel, table=True):
     """Launcher agent."""
 

@@ -319,8 +319,7 @@ async function loadLogs() {
     const minLevel = document.getElementById('logLevelFilter').value;
 
     try {
-        let url = `/api/v1/logs?min_level=${minLevel}&limit=200`;
-        if (agentId) url += `&agent_id=${agentId}`;
+        let url = `/api/v1/logs/control-plane?lines=200`;
 
         const response = await fetch(url);
         if (!response.ok) {

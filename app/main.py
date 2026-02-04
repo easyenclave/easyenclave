@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 import secrets
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,14 +18,21 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import cloudflare, proxy
+from .attestation import (
+    AttestationError,
+    build_attestation_chain,
+    generate_tdx_quote,
+    refresh_agent_attestation,
+    reverify_agents_for_mrtd,
+    verify_agent_registration,
+)
+from .crud import build_filters, get_or_404
 from .database import init_db
-from .ita import extract_intel_ta_claims, verify_attestation_token
+from .ita import verify_attestation_token
 from .models import (
     Agent,
     AgentDeployedRequest,
     AgentListResponse,
-    AgentPollRequest,
-    AgentPollResponse,
     AgentRegistrationRequest,
     AgentRegistrationResponse,
     AgentStatusRequest,
@@ -43,12 +48,6 @@ from .models import (
     DeploymentCreateResponse,
     DeploymentListResponse,
     HealthResponse,
-    Job,
-    JobCompleteRequest,
-    JobPollResponse,
-    JobStatusResponse,
-    JobSubmitRequest,
-    JobSubmitResponse,
     MrtdType,
     Service,
     ServiceListResponse,
@@ -57,19 +56,14 @@ from .models import (
     TrustedMrtdCreateRequest,
     TrustedMrtdListResponse,
     VerificationResponse,
-    Worker,
-    WorkerRegistrationRequest,
-    WorkerRegistrationResponse,
 )
 from .storage import (
     agent_store,
     app_store,
     app_version_store,
     deployment_store,
-    job_store,
     store,
     trusted_mrtd_store,
-    worker_store,
 )
 
 logger = logging.getLogger(__name__)
@@ -195,35 +189,7 @@ async def background_agent_health_checker():
                     if need_attestation and status == "healthy":
                         _agent_last_attestation[agent.agent_id] = now
                         if attestation:
-                            # Verify and update attestation
-                            intel_ta_token = attestation.get("tdx", {}).get("intel_ta_token")
-                            if intel_ta_token:
-                                try:
-                                    result = await verify_attestation_token(intel_ta_token)
-                                    if result["verified"]:
-                                        agent_store.update_attestation(
-                                            agent.agent_id,
-                                            intel_ta_token=intel_ta_token,
-                                            verified=True,
-                                        )
-                                        logger.debug(
-                                            f"Agent {agent.agent_id} attestation refreshed"
-                                        )
-                                    else:
-                                        logger.warning(
-                                            f"Agent {agent.agent_id} attestation failed: "
-                                            f"{result.get('error')}"
-                                        )
-                                        agent_store.update_attestation(
-                                            agent.agent_id,
-                                            intel_ta_token=intel_ta_token,
-                                            verified=False,
-                                            error=result.get("error"),
-                                        )
-                                except Exception as e:
-                                    logger.warning(
-                                        f"Failed to verify attestation for {agent.agent_id}: {e}"
-                                    )
+                            await refresh_agent_attestation(agent.agent_id, attestation)
 
                     logger.debug(
                         f"Agent {agent.agent_id} health: {status}"
@@ -427,20 +393,10 @@ async def list_services(
         if not include_down:
             services = [s for s in services if not store._is_timed_out(s)]
     else:
-        # Build filters dict
-        filters = {}
-        if name:
-            filters["name"] = name
-        if tags:
-            filters["tags"] = [t.strip() for t in tags.split(",")]
-        if environment:
-            filters["environment"] = environment
-        if mrtd:
-            filters["mrtd"] = mrtd
-        if health_status:
-            filters["health_status"] = health_status
-
-        services = store.list(filters if filters else None, include_down=include_down)
+        filters = build_filters(
+            name=name, tags=tags, environment=environment, mrtd=mrtd, health_status=health_status
+        )
+        services = store.list(filters, include_down=include_down)
 
     return ServiceListResponse(services=services, total=len(services))
 
@@ -448,26 +404,21 @@ async def list_services(
 @app.get("/api/v1/services/{service_id}", response_model=Service)
 async def get_service(service_id: str):
     """Get details for a specific service."""
-    service = store.get(service_id)
-    if service is None:
-        raise HTTPException(status_code=404, detail="Service not found")
-    return service
+    return get_or_404(store, service_id, "Service")
 
 
 @app.delete("/api/v1/services/{service_id}")
 async def delete_service(service_id: str):
     """Deregister a service."""
-    if not store.delete(service_id):
-        raise HTTPException(status_code=404, detail="Service not found")
-    return {"status": "deleted", "service_id": service_id}
+    from .crud import delete_or_404
+
+    return delete_or_404(store, service_id, "Service", "service_id")
 
 
 @app.get("/api/v1/services/{service_id}/verify", response_model=VerificationResponse)
 async def verify_service(service_id: str):
     """Verify a service's attestation via Intel Trust Authority."""
-    service = store.get(service_id)
-    if service is None:
-        raise HTTPException(status_code=404, detail="Service not found")
+    service = get_or_404(store, service_id, "Service")
 
     if not service.intel_ta_token:
         return VerificationResponse(
@@ -484,127 +435,6 @@ async def verify_service(service_id: str):
         verification_time=result["verification_time"],
         details=result["details"],
         error=result["error"],
-    )
-
-
-# ==============================================================================
-# Job Queue API - Workers and Jobs
-# ==============================================================================
-
-
-@app.post("/api/v1/workers/register", response_model=WorkerRegistrationResponse)
-async def register_worker(request: WorkerRegistrationRequest):
-    """Register a standby worker with the service.
-
-    Workers are TDX VMs that poll for jobs and execute workloads.
-    Requires valid TDX attestation to register.
-    """
-    if not request.attestation:
-        raise HTTPException(status_code=400, detail="Registration requires attestation")
-
-    worker = Worker(
-        attestation=request.attestation,
-        capabilities=request.capabilities,
-    )
-    worker_id = worker_store.register(worker)
-    logger.info(f"Worker registered: {worker_id}")
-
-    return WorkerRegistrationResponse(worker_id=worker_id, poll_interval=30)
-
-
-@app.get("/api/v1/jobs/poll", response_model=JobPollResponse)
-async def poll_for_job(worker_id: str = Query(..., description="Worker ID")):
-    """Poll for available jobs.
-
-    Workers call this endpoint periodically to check for jobs.
-    If a job is available, it's assigned to the worker and returned.
-    """
-    # Update worker heartbeat
-    if not worker_store.heartbeat(worker_id):
-        raise HTTPException(status_code=404, detail="Worker not found")
-
-    # Check if there's a job available
-    job = job_store.get_next_job()
-    if job is None:
-        return JobPollResponse()
-
-    # Assign job to worker
-    job_store.assign_job(job.job_id, worker_id)
-    worker_store.mark_busy(worker_id, job.job_id)
-    logger.info(f"Job {job.job_id} assigned to worker {worker_id}")
-
-    return JobPollResponse(
-        job_id=job.job_id,
-        compose=job.compose,
-        build_context=job.build_context,
-        config=job.config,
-    )
-
-
-@app.post("/api/v1/jobs/submit", response_model=JobSubmitResponse)
-async def submit_job(request: JobSubmitRequest):
-    """Submit a job to the queue.
-
-    Jobs are picked up by standby workers for execution.
-    """
-    if not request.compose:
-        raise HTTPException(status_code=400, detail="Job requires compose file (base64 encoded)")
-
-    job = Job(
-        compose=request.compose,
-        build_context=request.build_context,
-        config=request.config,
-    )
-    job_id = job_store.submit(job)
-    logger.info(f"Job submitted: {job_id}")
-
-    return JobSubmitResponse(job_id=job_id, status="queued")
-
-
-@app.post("/api/v1/jobs/{job_id}/complete")
-async def complete_job(job_id: str, request: JobCompleteRequest):
-    """Report job completion.
-
-    Workers call this after executing a job to report results.
-    """
-    job = job_store.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    # Complete the job
-    job_store.complete_job(
-        job_id=job_id,
-        status=request.status,
-        attestation=request.attestation,
-        service_id=request.service_id,
-        error=request.error,
-    )
-
-    # Mark worker as available
-    if job.worker_id:
-        worker_store.mark_available(job.worker_id)
-
-    logger.info(f"Job {job_id} completed with status: {request.status}")
-
-    return {"status": "ok", "job_id": job_id}
-
-
-@app.get("/api/v1/jobs/{job_id}", response_model=JobStatusResponse)
-async def get_job_status(job_id: str):
-    """Get job status and results."""
-    job = job_store.get(job_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    return JobStatusResponse(
-        job_id=job.job_id,
-        status=job.status,
-        submitted_at=job.submitted_at,
-        started_at=job.started_at,
-        completed_at=job.completed_at,
-        attestation=job.attestation,
-        service_id=job.service_id,
-        error=job.error,
     )
 
 
@@ -650,63 +480,16 @@ async def register_agent(request: AgentRegistrationRequest):
     if existing and existing.status == "attestation_failed":
         logger.info(f"Agent {existing.agent_id} re-registering after attestation failure")
 
-    # Extract Intel TA token from attestation
-    intel_ta_token = request.attestation.get("tdx", {}).get("intel_ta_token")
-
-    # Step 1: Require and verify Intel TA token
-    # Intel TA provides cryptographic proof from Intel that the TDX quote is valid
-    if not intel_ta_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Registration requires Intel Trust Authority token",
-        )
-
-    ita_result = None
+    # Verify attestation (Intel TA token + MRTD trusted list)
     try:
-        ita_result = await verify_attestation_token(intel_ta_token)
-        if not ita_result["verified"]:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Intel TA verification failed: {ita_result.get('error', 'unknown')}",
-            )
-        logger.info(f"Agent Intel TA token verified ({request.vm_name})")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Intel TA verification error: {e}",
-        ) from e
+        verification = await verify_agent_registration(request.attestation)
+    except AttestationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    mrtd = verification.mrtd
+    intel_ta_token = verification.intel_ta_token
+    trusted_mrtd_info = verification.trusted_mrtd_info
 
-    # Step 2: Extract MRTD from verified Intel TA claims and check trusted list
-    # The MRTD in the JWT is trustworthy because Intel verified the quote
-    ita_claims = ita_result.get("details", {})
-    mrtd = ita_claims.get("tdx_mrtd", "")
-    if not mrtd:
-        # Fallback to attester claims format
-        tdx_claims = ita_claims.get("tdx", {})
-        mrtd = tdx_claims.get("tdx_mrtd", "")
-
-    if not mrtd:
-        raise HTTPException(
-            status_code=403,
-            detail="Intel TA token does not contain MRTD claim",
-        )
-
-    # Check MRTD against trusted list (must be type "agent" or "proxy")
-    trusted_mrtd_info = trusted_mrtd_store.get(mrtd)
-    if not trusted_mrtd_info or not trusted_mrtd_info.active:
-        raise HTTPException(
-            status_code=403,
-            detail=f"MRTD from Intel TA not in trusted list: {mrtd[:32]}...",
-        )
-
-    if trusted_mrtd_info.type not in (MrtdType.AGENT, MrtdType.PROXY):
-        raise HTTPException(
-            status_code=403,
-            detail=f"MRTD is type '{trusted_mrtd_info.type}', not 'agent' or 'proxy'",
-        )
-
+    logger.info(f"Agent Intel TA token verified ({request.vm_name})")
     logger.info(
         f"Agent MRTD verified from Intel TA: {mrtd[:16]}... (type: {trusted_mrtd_info.type}) "
         f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
@@ -769,90 +552,13 @@ async def register_agent(request: AgentRegistrationRequest):
     )
 
 
-@app.post("/api/v1/agents/{agent_id}/poll", response_model=AgentPollResponse)
-async def poll_for_deployment(agent_id: str, request: AgentPollRequest):
-    """Poll for available deployments with continuous attestation.
-
-    Launcher agents call this periodically to check for work and provide
-    fresh attestation. If a deployment is available, it's returned for execution.
-    Only verified agents receive deployments.
-    """
-    # Update heartbeat
-    if not agent_store.heartbeat(agent_id):
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    agent = agent_store.get(agent_id)
-
-    # Verify attestation if provided
-    if request.intel_ta_token:
-        try:
-            result = await verify_attestation_token(request.intel_ta_token)
-            if result["verified"]:
-                # Update agent with fresh token
-                agent_store.update_attestation(
-                    agent_id,
-                    intel_ta_token=request.intel_ta_token,
-                    verified=True,
-                )
-                logger.debug(f"Agent {agent_id} attestation verified")
-            else:
-                logger.warning(f"Agent {agent_id} attestation failed: {result.get('error')}")
-                agent_store.update_attestation(
-                    agent_id,
-                    intel_ta_token=request.intel_ta_token,
-                    verified=False,
-                    error=result.get("error"),
-                )
-        except Exception as e:
-            logger.warning(f"Failed to verify attestation for {agent_id}: {e}")
-
-    # Update stats if provided
-    if request.stats:
-        agent_store.update_stats(agent_id, request.stats)
-
-    # Reload agent to get updated state
-    agent = agent_store.get(agent_id)
-
-    if not agent.verified:
-        # Unverified agents don't receive deployments
-        logger.debug(f"Agent {agent_id} not verified - no deployment")
-        return AgentPollResponse()
-
-    # Include tunnel info in response if available
-    tunnel_token = agent.tunnel_token
-    hostname = agent.hostname
-
-    # Check for pending deployment
-    deployment = deployment_store.get_pending_for_agent(agent_id)
-    if deployment is None:
-        return AgentPollResponse(tunnel_token=tunnel_token, hostname=hostname)
-
-    # Mark deployment as assigned
-    deployment_store.assign(deployment.deployment_id, agent_id)
-    agent_store.update_status(agent_id, "deploying", deployment.deployment_id)
-    logger.info(f"Deployment {deployment.deployment_id} assigned to agent {agent_id}")
-
-    return AgentPollResponse(
-        deployment={
-            "deployment_id": deployment.deployment_id,
-            "compose": deployment.compose,
-            "build_context": deployment.build_context,
-            "config": deployment.config,
-        },
-        tunnel_token=tunnel_token,
-        hostname=hostname,
-    )
-
-
 @app.post("/api/v1/agents/{agent_id}/status")
 async def update_agent_status(agent_id: str, request: AgentStatusRequest):
     """Update agent status during deployment.
 
     Agents call this to report deployment progress.
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    get_or_404(agent_store, agent_id, "Agent")
 
     # Update agent status
     agent_store.update_status(agent_id, request.status, request.deployment_id)
@@ -875,9 +581,7 @@ async def agent_deployment_complete(agent_id: str, request: AgentDeployedRequest
 
     Agents call this after successfully deploying a workload.
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = get_or_404(agent_store, agent_id, "Agent")
 
     # Get deployment to extract service_url for health checking
     deployment = deployment_store.get(request.deployment_id)
@@ -921,40 +625,14 @@ async def list_agents(
     vm_name: str | None = Query(None, description="Filter by VM name (partial match)"),
 ):
     """List all registered launcher agents."""
-    filters = {}
-    if status:
-        filters["status"] = status
-    if vm_name:
-        filters["vm_name"] = vm_name
-
-    agents = agent_store.list(filters if filters else None)
+    agents = agent_store.list(build_filters(status=status, vm_name=vm_name))
     return AgentListResponse(agents=agents, total=len(agents))
 
 
 @app.get("/api/v1/agents/{agent_id}", response_model=Agent)
 async def get_agent(agent_id: str):
     """Get details for a specific agent."""
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return agent
-
-
-@app.post("/api/v1/agents/{agent_id}/undeploy")
-async def undeploy_agent(agent_id: str):
-    """Tell an agent to undeploy its workload.
-
-    Resets the agent to undeployed state so it can accept new deployments.
-    """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Reset agent to undeployed
-    agent_store.update_status(agent_id, "undeployed", deployment_id=None)
-    logger.info(f"Agent {agent_id} undeployed")
-
-    return {"status": "ok", "agent_id": agent_id}
+    return get_or_404(agent_store, agent_id, "Agent")
 
 
 @app.get("/api/v1/agents/{agent_id}/attestation")
@@ -972,59 +650,8 @@ async def get_agent_attestation(agent_id: str):
     - github_attestation: Source repo, commit, tag, workflow URL (if available)
     - hostname: Cloudflare tunnel hostname (if available)
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    # Get trusted MRTD info for GitHub attestation
-    github_attestation = None
-    trusted_mrtd = trusted_mrtd_store.get(agent.mrtd) if agent.mrtd else None
-    if trusted_mrtd:
-        github_attestation = {
-            "source_repo": trusted_mrtd.source_repo,
-            "source_commit": trusted_mrtd.source_commit,
-            "source_tag": trusted_mrtd.source_tag,
-            "build_workflow": trusted_mrtd.build_workflow,
-            "image_digest": trusted_mrtd.image_digest,
-            "image_version": trusted_mrtd.image_version,
-            "description": trusted_mrtd.description,
-            "attestation_url": trusted_mrtd.attestation_url,
-        }
-
-    # Verify Intel TA token if present
-    intel_ta_verified = False
-    intel_ta_details = None
-    intel_ta_claims = None
-    if agent.intel_ta_token:
-        try:
-            ita_result = await verify_attestation_token(agent.intel_ta_token)
-            intel_ta_verified = ita_result["verified"]
-            intel_ta_details = ita_result.get("details")
-            # Extract key claims for UI display
-            intel_ta_claims = extract_intel_ta_claims(agent.intel_ta_token)
-        except Exception as e:
-            intel_ta_details = {"error": str(e)}
-
-    # Note: We do NOT un-verify the agent if the Intel TA token has expired.
-    # The token's expiry (typically 5 minutes) is a limitation of the JWT format,
-    # not an indication that the attestation is invalid. Once an agent is verified
-    # at registration time, it remains verified. The intel_ta_verified field below
-    # indicates whether the token can still be cryptographically verified now.
-
-    return {
-        "agent_id": agent.agent_id,
-        "vm_name": agent.vm_name,
-        "mrtd": agent.mrtd,
-        "verified": agent.verified,
-        "verification_error": agent.verification_error,
-        "intel_ta_verified": intel_ta_verified,
-        "intel_ta_details": intel_ta_details,
-        "intel_ta_claims": intel_ta_claims,
-        "github_attestation": github_attestation,
-        "hostname": agent.hostname,
-        "tunnel_id": agent.tunnel_id,
-        "registered_at": agent.registered_at.isoformat(),
-    }
+    agent = get_or_404(agent_store, agent_id, "Agent")
+    return await build_attestation_chain(agent)
 
 
 @app.delete("/api/v1/agents/{agent_id}")
@@ -1033,9 +660,7 @@ async def delete_agent(agent_id: str):
 
     This also cleans up the agent's Cloudflare tunnel and DNS record if present.
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = get_or_404(agent_store, agent_id, "Agent")
 
     # Clean up Cloudflare tunnel if present
     if agent.tunnel_id and cloudflare.is_configured():
@@ -1061,9 +686,7 @@ async def reset_agent(agent_id: str):
     This is useful to recover agents stuck in attestation_failed status.
     If the agent doesn't have a tunnel and is verified, creates one.
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = get_or_404(agent_store, agent_id, "Agent")
 
     # Reset status to undeployed
     agent_store.update_status(agent_id, "undeployed", None)
@@ -1097,9 +720,7 @@ async def fix_agent_tunnel(agent_id: str):
     Use this if the agent's logs/stats endpoints return workload content
     instead of the expected JSON API responses.
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = get_or_404(agent_store, agent_id, "Agent")
 
     if not agent.tunnel_id or not agent.hostname:
         raise HTTPException(
@@ -1146,23 +767,14 @@ async def list_deployments(
     agent_id: str | None = Query(None, description="Filter by agent ID"),
 ):
     """List all deployments."""
-    filters = {}
-    if status:
-        filters["status"] = status
-    if agent_id:
-        filters["agent_id"] = agent_id
-
-    deployments = deployment_store.list(filters if filters else None)
+    deployments = deployment_store.list(build_filters(status=status, agent_id=agent_id))
     return DeploymentListResponse(deployments=deployments, total=len(deployments))
 
 
 @app.get("/api/v1/deployments/{deployment_id}", response_model=Deployment)
 async def get_deployment(deployment_id: str):
     """Get details for a specific deployment."""
-    deployment = deployment_store.get(deployment_id)
-    if deployment is None:
-        raise HTTPException(status_code=404, detail="Deployment not found")
-    return deployment
+    return get_or_404(deployment_store, deployment_id, "Deployment")
 
 
 # ==============================================================================
@@ -1206,28 +818,22 @@ async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
     logger.info(f"Added trusted MRTD: {request.mrtd[:16]}... ({request.description})")
 
     # Re-verify any unverified agents that now match and create tunnels
-    for agent in agent_store.list():
-        if not agent.verified and agent.mrtd == request.mrtd:
-            agent_store.set_verified(agent.agent_id, True)
-            logger.info(f"Agent {agent.agent_id} now verified")
-
-            # Create tunnel for newly verified agent if they don't have one
-            if not agent.hostname and cloudflare.is_configured():
-                try:
-                    tunnel_info = await cloudflare.create_tunnel_for_agent(agent.agent_id)
-                    agent_store.update_tunnel_info(
-                        agent.agent_id,
-                        tunnel_id=tunnel_info["tunnel_id"],
-                        hostname=tunnel_info["hostname"],
-                        tunnel_token=tunnel_info["tunnel_token"],
-                    )
-                    logger.info(
-                        f"Created tunnel for newly verified agent {agent.agent_id}: {tunnel_info['hostname']}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to create tunnel for newly verified agent {agent.agent_id}: {e}"
-                    )
+    updated_ids = reverify_agents_for_mrtd(request.mrtd, verified=True)
+    for aid in updated_ids:
+        logger.info(f"Agent {aid} now verified")
+        a = agent_store.get(aid)
+        if a and not a.hostname and cloudflare.is_configured():
+            try:
+                tunnel_info = await cloudflare.create_tunnel_for_agent(aid)
+                agent_store.update_tunnel_info(
+                    aid,
+                    tunnel_id=tunnel_info["tunnel_id"],
+                    hostname=tunnel_info["hostname"],
+                    tunnel_token=tunnel_info["tunnel_token"],
+                )
+                logger.info(f"Created tunnel for newly verified agent {aid}: {tunnel_info['hostname']}")
+            except Exception as e:
+                logger.warning(f"Failed to create tunnel for newly verified agent {aid}: {e}")
 
     return trusted
 
@@ -1247,10 +853,7 @@ async def list_trusted_mrtds(
 @app.get("/api/v1/trusted-mrtds/{mrtd}", response_model=TrustedMrtd)
 async def get_trusted_mrtd(mrtd: str):
     """Get details for a specific trusted MRTD."""
-    trusted = trusted_mrtd_store.get(mrtd)
-    if trusted is None:
-        raise HTTPException(status_code=404, detail="Trusted MRTD not found")
-    return trusted
+    return get_or_404(trusted_mrtd_store, mrtd, "Trusted MRTD")
 
 
 @app.post("/api/v1/trusted-mrtds/{mrtd}/deactivate")
@@ -1269,10 +872,8 @@ async def deactivate_trusted_mrtd(mrtd: str):
         raise HTTPException(status_code=404, detail="Trusted MRTD not found")
 
     # Mark agents with this MRTD as unverified
-    for agent in agent_store.list():
-        if agent.mrtd == mrtd and agent.verified:
-            agent_store.set_verified(agent.agent_id, False, error="MRTD deactivated")
-            logger.info(f"Agent {agent.agent_id} unverified (MRTD deactivated)")
+    for aid in reverify_agents_for_mrtd(mrtd, verified=False, error="MRTD deactivated"):
+        logger.info(f"Agent {aid} unverified (MRTD deactivated)")
 
     logger.info(f"Deactivated trusted MRTD: {mrtd[:16]}...")
     return {"status": "deactivated", "mrtd": mrtd}
@@ -1285,10 +886,8 @@ async def activate_trusted_mrtd(mrtd: str):
         raise HTTPException(status_code=404, detail="Trusted MRTD not found")
 
     # Re-verify agents with this MRTD
-    for agent in agent_store.list():
-        if agent.mrtd == mrtd and not agent.verified:
-            agent_store.set_verified(agent.agent_id, True)
-            logger.info(f"Agent {agent.agent_id} re-verified (MRTD activated)")
+    for aid in reverify_agents_for_mrtd(mrtd, verified=True):
+        logger.info(f"Agent {aid} re-verified (MRTD activated)")
 
     logger.info(f"Activated trusted MRTD: {mrtd[:16]}...")
     return {"status": "activated", "mrtd": mrtd}
@@ -1307,10 +906,8 @@ async def delete_trusted_mrtd(mrtd: str):
         raise HTTPException(status_code=404, detail="Trusted MRTD not found")
 
     # Mark agents with this MRTD as unverified
-    for agent in agent_store.list():
-        if agent.mrtd == mrtd and agent.verified:
-            agent_store.set_verified(agent.agent_id, False, error="MRTD removed from trusted list")
-            logger.info(f"Agent {agent.agent_id} unverified (MRTD deleted)")
+    for aid in reverify_agents_for_mrtd(mrtd, verified=False, error="MRTD removed from trusted list"):
+        logger.info(f"Agent {aid} unverified (MRTD deleted)")
 
     logger.info(f"Deleted trusted MRTD: {mrtd[:16]}...")
     return {"status": "deleted", "mrtd": mrtd}
@@ -1355,13 +952,7 @@ async def list_apps(
     tags: str | None = Query(None, description="Filter by tags (comma-separated)"),
 ):
     """List all apps in the catalog."""
-    filters = {}
-    if name:
-        filters["name"] = name
-    if tags:
-        filters["tags"] = [t.strip() for t in tags.split(",")]
-
-    apps = app_store.list(filters if filters else None)
+    apps = app_store.list(build_filters(name=name, tags=tags))
     return AppListResponse(apps=apps, total=len(apps))
 
 
@@ -1619,66 +1210,16 @@ async def get_control_plane_attestation(
         - measurements: Parsed TDX measurements from the quote
         - nonce: Echoed nonce (if provided)
     """
-    TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
-
+    quote_result = generate_tdx_quote(nonce)
     result = {
         "timestamp": datetime.utcnow().isoformat(),
         "nonce": nonce,
     }
-
-    # Try to generate TDX quote
-    if TSM_REPORT_PATH.exists():
-        try:
-            report_id = f"quote_{os.getpid()}_{int(time.time())}"
-            report_dir = TSM_REPORT_PATH / report_id
-
-            report_dir.mkdir()
-            try:
-                # Prepare user data (nonce)
-                if nonce:
-                    inblob = nonce.encode().ljust(64, b"\0")[:64]
-                else:
-                    inblob = b"\0" * 64
-                (report_dir / "inblob").write_bytes(inblob)
-
-                # Read generated quote
-                quote = (report_dir / "outblob").read_bytes()
-                quote_b64 = base64.b64encode(quote).decode()
-
-                # Parse measurements from quote
-                measurements = {}
-                if len(quote) >= 584:
-                    td_report_offset = 48
-                    measurements["mrtd"] = quote[
-                        td_report_offset + 136 : td_report_offset + 184
-                    ].hex()
-                    measurements["rtmr0"] = quote[
-                        td_report_offset + 328 : td_report_offset + 376
-                    ].hex()
-                    measurements["rtmr1"] = quote[
-                        td_report_offset + 376 : td_report_offset + 424
-                    ].hex()
-                    measurements["rtmr2"] = quote[
-                        td_report_offset + 424 : td_report_offset + 472
-                    ].hex()
-                    measurements["rtmr3"] = quote[
-                        td_report_offset + 472 : td_report_offset + 520
-                    ].hex()
-
-                result["quote_b64"] = quote_b64
-                result["measurements"] = measurements
-
-            finally:
-                if report_dir.exists():
-                    report_dir.rmdir()
-
-        except Exception as e:
-            logger.warning(f"TDX attestation generation failed: {e}")
-            result["error"] = f"TDX attestation failed: {e}"
+    if quote_result.error:
+        result["error"] = quote_result.error
     else:
-        # Not running in TDX
-        result["error"] = "TDX not available (control plane not in TEE)"
-
+        result["quote_b64"] = quote_result.quote_b64
+        result["measurements"] = quote_result.measurements
     return result
 
 
@@ -1757,9 +1298,7 @@ async def get_agent_logs(
     Fetches logs directly from the agent via its tunnel.
     Returns logs from deployed containers.
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = get_or_404(agent_store, agent_id, "Agent")
 
     if not agent.hostname:
         raise HTTPException(
@@ -1816,9 +1355,7 @@ async def get_agent_stats(agent_id: str):
     Fetches stats directly from the agent via its tunnel.
     Returns CPU, memory, disk, and network stats.
     """
-    agent = agent_store.get(agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = get_or_404(agent_store, agent_id, "Agent")
 
     if not agent.hostname:
         raise HTTPException(

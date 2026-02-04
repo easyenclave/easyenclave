@@ -16,15 +16,12 @@ from .db_models import (  # noqa: F401
     App,
     AppVersion,
     Deployment,
-    Job,
     Service,
     TrustedMrtd,
-    Worker,
 )
 
 # Aliases for backward compatibility
 ServiceRegistration = Service
-LauncherAgent = Agent
 
 
 class MrtdType(str, Enum):
@@ -81,71 +78,6 @@ class HealthResponse(BaseModel):
 
 
 # =============================================================================
-# Worker/Job API
-# =============================================================================
-
-
-class WorkerRegistrationRequest(BaseModel):
-    """Request for worker registration."""
-
-    attestation: dict
-    capabilities: list[str] = Field(default_factory=lambda: ["docker"])
-
-
-class WorkerRegistrationResponse(BaseModel):
-    """Response for worker registration."""
-
-    worker_id: str
-    poll_interval: int = 30
-
-
-class JobSubmitRequest(BaseModel):
-    """Request for job submission."""
-
-    compose: str
-    build_context: dict[str, str] = Field(default_factory=dict)
-    config: dict = Field(default_factory=dict)
-
-
-class JobSubmitResponse(BaseModel):
-    """Response for job submission."""
-
-    job_id: str
-    status: str = "queued"
-
-
-class JobPollResponse(BaseModel):
-    """Response for job polling."""
-
-    job_id: str | None = None
-    compose: str | None = None
-    build_context: dict[str, str] | None = None
-    config: dict | None = None
-
-
-class JobCompleteRequest(BaseModel):
-    """Request for job completion."""
-
-    status: str
-    attestation: dict | None = None
-    service_id: str | None = None
-    error: str | None = None
-
-
-class JobStatusResponse(BaseModel):
-    """Response for job status."""
-
-    job_id: str
-    status: str
-    submitted_at: datetime
-    started_at: datetime | None = None
-    completed_at: datetime | None = None
-    attestation: dict | None = None
-    service_id: str | None = None
-    error: str | None = None
-
-
-# =============================================================================
 # Agent API
 # =============================================================================
 
@@ -163,21 +95,6 @@ class AgentRegistrationResponse(BaseModel):
 
     agent_id: str
     poll_interval: int = 30
-    tunnel_token: str | None = None
-    hostname: str | None = None
-
-
-class AgentPollRequest(BaseModel):
-    """Request for agent polling."""
-
-    intel_ta_token: str | None = None
-    stats: dict | None = None
-
-
-class AgentPollResponse(BaseModel):
-    """Response for agent polling."""
-
-    deployment: dict | None = None
     tunnel_token: str | None = None
     hostname: str | None = None
 
