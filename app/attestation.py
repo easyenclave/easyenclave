@@ -16,8 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ita import extract_intel_ta_claims, verify_attestation_token
-from .models import MrtdType, TrustedMrtd
-from .storage import agent_store, trusted_mrtd_store
+from .storage import agent_store, get_trusted_mrtd
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ class AgentVerificationResult:
 
     mrtd: str
     intel_ta_token: str
-    trusted_mrtd_info: TrustedMrtd
+    mrtd_type: str  # "agent" or "proxy"
 
 
 @dataclass
@@ -109,21 +108,21 @@ async def verify_agent_registration(attestation: dict) -> AgentVerificationResul
         )
 
     # Step 3: Check MRTD against trusted list
-    trusted_mrtd_info = trusted_mrtd_store.get(mrtd)
-    if not trusted_mrtd_info or not trusted_mrtd_info.active:
+    mrtd_type = get_trusted_mrtd(mrtd)
+    if not mrtd_type:
         raise AttestationError(
-            detail=f"MRTD from Intel TA not in trusted list: {mrtd[:32]}...",
+            detail=f"MRTD not in trusted list: {mrtd[:32]}...",
         )
 
-    if trusted_mrtd_info.type not in (MrtdType.AGENT, MrtdType.PROXY):
+    if mrtd_type not in ("agent", "proxy"):
         raise AttestationError(
-            detail=f"MRTD is type '{trusted_mrtd_info.type}', not 'agent' or 'proxy'",
+            detail=f"MRTD is type '{mrtd_type}', not 'agent' or 'proxy'",
         )
 
     return AgentVerificationResult(
         mrtd=mrtd,
         intel_ta_token=intel_ta_token,
-        trusted_mrtd_info=trusted_mrtd_info,
+        mrtd_type=mrtd_type,
     )
 
 
@@ -159,23 +158,6 @@ async def refresh_agent_attestation(agent_id: str, attestation: dict) -> bool:
     except Exception as e:
         logger.warning(f"Failed to verify attestation for {agent_id}: {e}")
         return False
-
-
-def reverify_agents_for_mrtd(mrtd: str, verified: bool, error: str | None = None) -> list[str]:
-    """Update verification status for all agents matching a given MRTD.
-
-    Returns list of agent_ids that were updated.
-    """
-    updated = []
-    for agent in agent_store.list():
-        if agent.mrtd == mrtd:
-            if verified and not agent.verified:
-                agent_store.set_verified(agent.agent_id, True)
-                updated.append(agent.agent_id)
-            elif not verified and agent.verified:
-                agent_store.set_verified(agent.agent_id, False, error=error)
-                updated.append(agent.agent_id)
-    return updated
 
 
 def generate_tdx_quote(nonce: str | None = None) -> TdxQuoteResult:
@@ -229,26 +211,11 @@ def generate_tdx_quote(nonce: str | None = None) -> TdxQuoteResult:
 async def build_attestation_chain(agent) -> dict:
     """Build the full attestation chain for an agent.
 
-    Looks up trusted MRTD for GitHub source metadata, re-verifies Intel TA
-    token (may be expired), and extracts claims for UI display.
+    Re-verifies Intel TA token (may be expired) and extracts claims for
+    UI display.
 
     Returns a dict with the complete attestation chain.
     """
-    # Get trusted MRTD info for GitHub attestation
-    github_attestation = None
-    trusted_mrtd = trusted_mrtd_store.get(agent.mrtd) if agent.mrtd else None
-    if trusted_mrtd:
-        github_attestation = {
-            "source_repo": trusted_mrtd.source_repo,
-            "source_commit": trusted_mrtd.source_commit,
-            "source_tag": trusted_mrtd.source_tag,
-            "build_workflow": trusted_mrtd.build_workflow,
-            "image_digest": trusted_mrtd.image_digest,
-            "image_version": trusted_mrtd.image_version,
-            "description": trusted_mrtd.description,
-            "attestation_url": trusted_mrtd.attestation_url,
-        }
-
     # Verify Intel TA token if present
     intel_ta_verified = False
     intel_ta_details = None
@@ -273,12 +240,12 @@ async def build_attestation_chain(agent) -> dict:
         "agent_id": agent.agent_id,
         "vm_name": agent.vm_name,
         "mrtd": agent.mrtd,
+        "mrtd_type": get_trusted_mrtd(agent.mrtd) if agent.mrtd else None,
         "verified": agent.verified,
         "verification_error": agent.verification_error,
         "intel_ta_verified": intel_ta_verified,
         "intel_ta_details": intel_ta_details,
         "intel_ta_claims": intel_ta_claims,
-        "github_attestation": github_attestation,
         "hostname": agent.hostname,
         "tunnel_id": agent.tunnel_id,
         "registered_at": agent.registered_at.isoformat(),

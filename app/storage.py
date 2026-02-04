@@ -8,15 +8,13 @@ from datetime import datetime, timedelta
 
 from sqlmodel import func, select
 
-from .database import get_db, init_db
+from .database import get_db
 from .db_models import (
     Agent,
     App,
     AppVersion,
     Deployment,
-    MrtdType,
     Service,
-    TrustedMrtd,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,16 +218,6 @@ class AgentStore:
                     continue
                 return agent
         return None
-
-    def set_verified(self, agent_id: str, verified: bool, error: str | None = None) -> bool:
-        with get_db() as session:
-            agent = session.get(Agent, agent_id)
-            if not agent:
-                return False
-            agent.verified = verified
-            agent.verification_error = error
-            session.add(agent)
-            return True
 
     def update_health(
         self,
@@ -488,99 +476,42 @@ class DeploymentStore:
                 session.delete(d)
 
 
-class TrustedMrtdStore:
-    """Storage for trusted MRTD measurements."""
+# ==============================================================================
+# Trusted MRTD lookup (env-var-only, no DB)
+# ==============================================================================
 
-    def __init__(self):
-        self._load_system_mrtds()
+_trusted_mrtds: dict[str, str] = {}  # mrtd_hash -> type ("agent" or "proxy")
 
-    def _load_system_mrtds(self):
-        try:
-            init_db()
-        except Exception:
-            pass
 
-        for env_var, mrtd_type, desc in [
-            ("SYSTEM_AGENT_MRTD", MrtdType.AGENT, "System agent launcher image"),
-            ("SYSTEM_PROXY_MRTD", MrtdType.PROXY, "System cloudflared proxy image"),
-        ]:
-            mrtd = os.environ.get(env_var)
+def load_trusted_mrtds():
+    """Load trusted MRTDs from environment variables."""
+    global _trusted_mrtds
+    _trusted_mrtds = {}
+    for env_var, mrtd_type in [
+        ("TRUSTED_AGENT_MRTDS", "agent"),
+        ("TRUSTED_PROXY_MRTDS", "proxy"),
+        # Backward compat with old single-value env vars
+        ("SYSTEM_AGENT_MRTD", "agent"),
+        ("SYSTEM_PROXY_MRTD", "proxy"),
+    ]:
+        val = os.environ.get(env_var, "")
+        for mrtd in val.split(","):
+            mrtd = mrtd.strip()
             if mrtd:
-                self._upsert_system_mrtd(
-                    TrustedMrtd(mrtd=mrtd, type=mrtd_type.value, locked=True, description=desc)
-                )
-                logger.info(f"Loaded system {mrtd_type.value} MRTD: {mrtd[:16]}...")
+                _trusted_mrtds[mrtd] = mrtd_type
+    if _trusted_mrtds:
+        for mrtd_hash, mrtd_type in _trusted_mrtds.items():
+            logger.info(f"Loaded trusted {mrtd_type} MRTD: {mrtd_hash[:16]}...")
 
-    def _upsert_system_mrtd(self, trusted: TrustedMrtd) -> None:
-        with get_db() as session:
-            existing = session.get(TrustedMrtd, trusted.mrtd)
-            if existing:
-                existing.type = trusted.type
-                existing.locked = trusted.locked
-                existing.description = trusted.description
-                existing.active = trusted.active
-                session.add(existing)
-            else:
-                session.add(trusted)
 
-    def add(self, trusted: TrustedMrtd) -> str:
-        with get_db() as session:
-            session.add(trusted)
-        return trusted.mrtd
+def get_trusted_mrtd(mrtd: str) -> str | None:
+    """Return type if trusted, None if not."""
+    return _trusted_mrtds.get(mrtd)
 
-    def get(self, mrtd: str) -> TrustedMrtd | None:
-        with get_db() as session:
-            return session.get(TrustedMrtd, mrtd)
 
-    def is_trusted(self, mrtd: str) -> bool:
-        trusted = self.get(mrtd)
-        return trusted is not None and trusted.active
-
-    def list(self, include_inactive: bool = False) -> list[TrustedMrtd]:
-        with get_db() as session:
-            stmt = select(TrustedMrtd)
-            if not include_inactive:
-                stmt = stmt.where(TrustedMrtd.active == True)  # noqa: E712
-            return list(session.exec(stmt).all())
-
-    def deactivate(self, mrtd: str) -> tuple[bool, str | None]:
-        trusted = self.get(mrtd)
-        if not trusted:
-            return False, None
-        if trusted.locked:
-            return False, "Cannot deactivate system MRTD"
-        with get_db() as session:
-            t = session.get(TrustedMrtd, mrtd)
-            if t:
-                t.active = False
-                session.add(t)
-        return True, None
-
-    def activate(self, mrtd: str) -> bool:
-        with get_db() as session:
-            t = session.get(TrustedMrtd, mrtd)
-            if not t:
-                return False
-            t.active = True
-            session.add(t)
-            return True
-
-    def delete(self, mrtd: str) -> tuple[bool, str | None]:
-        trusted = self.get(mrtd)
-        if not trusted:
-            return False, None
-        if trusted.locked:
-            return False, "Cannot delete system MRTD"
-        with get_db() as session:
-            t = session.get(TrustedMrtd, mrtd)
-            if t:
-                session.delete(t)
-        return True, None
-
-    def clear(self) -> None:
-        with get_db() as session:
-            for t in session.exec(select(TrustedMrtd)).all():
-                session.delete(t)
+def list_trusted_mrtds() -> dict[str, str]:
+    """Return all trusted MRTDs as {mrtd_hash: type}."""
+    return dict(_trusted_mrtds)
 
 
 class AppStore:
@@ -720,6 +651,8 @@ class AppVersionStore:
 store = ServiceStore()
 agent_store = AgentStore()
 deployment_store = DeploymentStore()
-trusted_mrtd_store = TrustedMrtdStore()
 app_store = AppStore()
 app_version_store = AppVersionStore()
+
+# Load trusted MRTDs from env vars at import time
+load_trusted_mrtds()

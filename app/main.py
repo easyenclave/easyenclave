@@ -23,7 +23,6 @@ from .attestation import (
     build_attestation_chain,
     generate_tdx_quote,
     refresh_agent_attestation,
-    reverify_agents_for_mrtd,
     verify_agent_registration,
 )
 from .crud import build_filters, get_or_404
@@ -48,13 +47,9 @@ from .models import (
     DeploymentCreateResponse,
     DeploymentListResponse,
     HealthResponse,
-    MrtdType,
     Service,
     ServiceListResponse,
     ServiceRegistrationRequest,
-    TrustedMrtd,
-    TrustedMrtdCreateRequest,
-    TrustedMrtdListResponse,
     VerificationResponse,
 )
 from .storage import (
@@ -62,8 +57,8 @@ from .storage import (
     app_store,
     app_version_store,
     deployment_store,
+    list_trusted_mrtds,
     store,
-    trusted_mrtd_store,
 )
 
 logger = logging.getLogger(__name__)
@@ -526,12 +521,10 @@ async def register_agent(request: AgentRegistrationRequest):
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     mrtd = verification.mrtd
     intel_ta_token = verification.intel_ta_token
-    trusted_mrtd_info = verification.trusted_mrtd_info
 
     logger.info(f"Agent Intel TA token verified ({request.vm_name})")
     logger.info(
-        f"Agent MRTD verified from Intel TA: {mrtd[:16]}... (type: {trusted_mrtd_info.type}) "
-        f"(source: {trusted_mrtd_info.source_repo}@{trusted_mrtd_info.source_commit[:8] if trusted_mrtd_info.source_commit else 'unknown'})"
+        f"Agent MRTD verified from Intel TA: {mrtd[:16]}... (type: {verification.mrtd_type})"
     )
 
     # Both Intel TA and MRTD verified - agent is trusted
@@ -755,50 +748,6 @@ async def reset_agent(agent_id: str):
     return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
 
 
-@app.post("/api/v1/agents/{agent_id}/fix-tunnel")
-async def fix_agent_tunnel(agent_id: str):
-    """Fix tunnel configuration for an agent.
-
-    Updates the tunnel ingress to route to port 8081 (agent API server).
-    Use this if the agent's logs/stats endpoints return workload content
-    instead of the expected JSON API responses.
-    """
-    agent = get_or_404(agent_store, agent_id, "Agent")
-
-    if not agent.tunnel_id or not agent.hostname:
-        raise HTTPException(
-            status_code=400,
-            detail="Agent does not have a tunnel configured",
-        )
-
-    if not cloudflare.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="Cloudflare is not configured on this control plane",
-        )
-
-    # Update tunnel ingress to correct port
-    success = await cloudflare.update_tunnel_ingress(
-        tunnel_id=agent.tunnel_id,
-        hostname=agent.hostname,
-        service_port=8081,
-    )
-
-    if not success:
-        raise HTTPException(
-            status_code=502,
-            detail="Failed to update tunnel configuration",
-        )
-
-    logger.info(f"Fixed tunnel configuration for agent {agent_id}")
-    return {
-        "status": "fixed",
-        "agent_id": agent_id,
-        "hostname": agent.hostname,
-        "message": "Tunnel now routes to agent API on port 8081",
-    }
-
-
 # ==============================================================================
 # Deployment API - List and track deployments
 # ==============================================================================
@@ -821,144 +770,23 @@ async def get_deployment(deployment_id: str):
 
 
 # ==============================================================================
-# Trusted MRTD API - Manage trusted launcher measurements
+# Trusted MRTD API - Read-only, loaded from environment variables
 # ==============================================================================
 
 
-@app.post("/api/v1/trusted-mrtds", response_model=TrustedMrtd)
-async def add_trusted_mrtd(request: TrustedMrtdCreateRequest):
-    """Add a trusted MRTD to the allowlist.
+@app.get("/api/v1/trusted-mrtds")
+async def get_trusted_mrtds():
+    """List all trusted MRTDs (loaded from environment variables).
 
-    Only agents with MRTDs in this list can receive deployments.
-    This ensures only known-good launcher images can run workloads.
-
-    Note: System MRTDs (agent/proxy) are pre-loaded from environment variables
-    and cannot be added or modified via this API.
+    Trusted MRTDs are configured via TRUSTED_AGENT_MRTDS and TRUSTED_PROXY_MRTDS
+    environment variables (comma-separated). To change the trusted list, update
+    env vars and redeploy.
     """
-    if not request.mrtd:
-        raise HTTPException(status_code=400, detail="MRTD is required")
-
-    # Check if already exists
-    existing = trusted_mrtd_store.get(request.mrtd)
-    if existing:
-        if existing.locked:
-            raise HTTPException(status_code=403, detail="Cannot modify system MRTD")
-        raise HTTPException(status_code=409, detail="MRTD already in trusted list")
-
-    trusted = TrustedMrtd(
-        mrtd=request.mrtd,
-        type=request.type,
-        description=request.description,
-        image_version=request.image_version,
-        source_repo=request.source_repo,
-        source_commit=request.source_commit,
-        source_tag=request.source_tag,
-        build_workflow=request.build_workflow,
-        image_digest=request.image_digest,
-        attestation_url=request.attestation_url,
-    )
-    trusted_mrtd_store.add(trusted)
-    logger.info(f"Added trusted MRTD: {request.mrtd[:16]}... ({request.description})")
-
-    # Re-verify any unverified agents that now match and create tunnels
-    updated_ids = reverify_agents_for_mrtd(request.mrtd, verified=True)
-    for aid in updated_ids:
-        logger.info(f"Agent {aid} now verified")
-        a = agent_store.get(aid)
-        if a and not a.hostname and cloudflare.is_configured():
-            try:
-                tunnel_info = await cloudflare.create_tunnel_for_agent(aid)
-                agent_store.update_tunnel_info(
-                    aid,
-                    tunnel_id=tunnel_info["tunnel_id"],
-                    hostname=tunnel_info["hostname"],
-                    tunnel_token=tunnel_info["tunnel_token"],
-                )
-                logger.info(
-                    f"Created tunnel for newly verified agent {aid}: {tunnel_info['hostname']}"
-                )
-            except Exception as e:
-                logger.warning(f"Failed to create tunnel for newly verified agent {aid}: {e}")
-                agent_store.update_tunnel_error(aid, str(e))
-
-    return trusted
-
-
-@app.get("/api/v1/trusted-mrtds", response_model=TrustedMrtdListResponse)
-async def list_trusted_mrtds(
-    include_inactive: bool = Query(False, description="Include inactive MRTDs"),
-    type: MrtdType | None = Query(None, description="Filter by type: 'agent' or 'app'"),
-):
-    """List all trusted MRTDs, optionally filtered by type."""
-    mrtds = trusted_mrtd_store.list(include_inactive=include_inactive)
-    if type is not None:
-        mrtds = [m for m in mrtds if m.type == type]
-    return TrustedMrtdListResponse(trusted_mrtds=mrtds, total=len(mrtds))
-
-
-@app.get("/api/v1/trusted-mrtds/{mrtd}", response_model=TrustedMrtd)
-async def get_trusted_mrtd(mrtd: str):
-    """Get details for a specific trusted MRTD."""
-    return get_or_404(trusted_mrtd_store, mrtd, "Trusted MRTD")
-
-
-@app.post("/api/v1/trusted-mrtds/{mrtd}/deactivate")
-async def deactivate_trusted_mrtd(mrtd: str):
-    """Deactivate a trusted MRTD.
-
-    Agents with this MRTD will no longer be verified for new deployments.
-    Existing deployments are not affected.
-
-    Note: System MRTDs (agent/proxy) cannot be deactivated.
-    """
-    success, error = trusted_mrtd_store.deactivate(mrtd)
-    if error:
-        raise HTTPException(status_code=403, detail=error)
-    if not success:
-        raise HTTPException(status_code=404, detail="Trusted MRTD not found")
-
-    # Mark agents with this MRTD as unverified
-    for aid in reverify_agents_for_mrtd(mrtd, verified=False, error="MRTD deactivated"):
-        logger.info(f"Agent {aid} unverified (MRTD deactivated)")
-
-    logger.info(f"Deactivated trusted MRTD: {mrtd[:16]}...")
-    return {"status": "deactivated", "mrtd": mrtd}
-
-
-@app.post("/api/v1/trusted-mrtds/{mrtd}/activate")
-async def activate_trusted_mrtd(mrtd: str):
-    """Activate a previously deactivated trusted MRTD."""
-    if not trusted_mrtd_store.activate(mrtd):
-        raise HTTPException(status_code=404, detail="Trusted MRTD not found")
-
-    # Re-verify agents with this MRTD
-    for aid in reverify_agents_for_mrtd(mrtd, verified=True):
-        logger.info(f"Agent {aid} re-verified (MRTD activated)")
-
-    logger.info(f"Activated trusted MRTD: {mrtd[:16]}...")
-    return {"status": "activated", "mrtd": mrtd}
-
-
-@app.delete("/api/v1/trusted-mrtds/{mrtd}")
-async def delete_trusted_mrtd(mrtd: str):
-    """Delete a trusted MRTD from the allowlist.
-
-    Note: System MRTDs (agent/proxy) cannot be deleted.
-    """
-    success, error = trusted_mrtd_store.delete(mrtd)
-    if error:
-        raise HTTPException(status_code=403, detail=error)
-    if not success:
-        raise HTTPException(status_code=404, detail="Trusted MRTD not found")
-
-    # Mark agents with this MRTD as unverified
-    for aid in reverify_agents_for_mrtd(
-        mrtd, verified=False, error="MRTD removed from trusted list"
-    ):
-        logger.info(f"Agent {aid} unverified (MRTD deleted)")
-
-    logger.info(f"Deleted trusted MRTD: {mrtd[:16]}...")
-    return {"status": "deleted", "mrtd": mrtd}
+    mrtds = list_trusted_mrtds()
+    return {
+        "trusted_mrtds": [{"mrtd": k, "type": v} for k, v in mrtds.items()],
+        "total": len(mrtds),
+    }
 
 
 # ==============================================================================

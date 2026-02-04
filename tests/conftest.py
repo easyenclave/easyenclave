@@ -41,14 +41,12 @@ def clear_all_stores():
         app_version_store,
         deployment_store,
         store,
-        trusted_mrtd_store,
     )
 
     # Clear before test
     store.clear()
     agent_store.clear()
     deployment_store.clear()
-    trusted_mrtd_store.clear()
     app_store.clear()
     app_version_store.clear()
 
@@ -58,6 +56,5 @@ def clear_all_stores():
     store.clear()
     agent_store.clear()
     deployment_store.clear()
-    trusted_mrtd_store.clear()
     app_store.clear()
     app_version_store.clear()

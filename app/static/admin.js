@@ -116,7 +116,6 @@ async function loadAgents() {
                             <td>${agent.hostname ? `<a href="https://${agent.hostname}" target="_blank">${agent.hostname}</a>` : 'No tunnel'}</td>
                             <td class="action-buttons">
                                 ${agent.hostname ? `<button class="btn-small btn-info" onclick="showAgentDetails('${agent.agent_id}', '${agent.vm_name}')">Details</button>` : ''}
-                                ${agent.hostname ? `<button class="btn-small btn-secondary" onclick="fixAgentTunnel('${agent.agent_id}')">Fix Tunnel</button>` : ''}
                                 <button class="btn-small btn-secondary" onclick="resetAgent('${agent.agent_id}')">Reset</button>
                                 <button class="btn-small btn-danger" onclick="deleteAgent('${agent.agent_id}')">Delete</button>
                             </td>
@@ -160,33 +159,15 @@ async function resetAgent(agentId) {
     }
 }
 
-async function fixAgentTunnel(agentId) {
-    if (!confirm('Fix tunnel configuration? This updates the tunnel to route to the agent API server.')) return;
-
-    try {
-        const response = await adminFetch(`/api/v1/agents/${agentId}/fix-tunnel`, { method: 'POST' });
-        if (response.ok) {
-            const data = await response.json();
-            alert(`Tunnel fixed: ${data.message}`);
-            loadAgents();
-        } else {
-            const err = await response.json();
-            alert('Failed to fix tunnel: ' + (err.detail || 'Unknown error'));
-        }
-    } catch (error) {
-        alert('Error: ' + error.message);
-    }
-}
-
-// MRTDs management
+// MRTDs (read-only, loaded from env vars)
 async function loadMrtds() {
     const container = document.getElementById('mrtdsAdminList');
     try {
-        const response = await fetch('/api/v1/trusted-mrtds?include_inactive=true');
+        const response = await fetch('/api/v1/trusted-mrtds');
         const data = await response.json();
 
         if (data.trusted_mrtds.length === 0) {
-            container.innerHTML = '<div class="empty">No trusted MRTDs</div>';
+            container.innerHTML = '<div class="empty">No trusted MRTDs configured</div>';
             return;
         }
 
@@ -196,29 +177,13 @@ async function loadMrtds() {
                     <tr>
                         <th>MRTD</th>
                         <th>Type</th>
-                        <th>Description</th>
-                        <th>Source</th>
-                        <th>Status</th>
-                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     ${data.trusted_mrtds.map(mrtd => `
-                        <tr style="${!mrtd.active ? 'opacity: 0.5' : ''}">
+                        <tr>
                             <td><code>${mrtd.mrtd.substring(0, 24)}...</code></td>
-                            <td><span class="status-badge">${mrtd.type || 'agent'}</span></td>
-                            <td>${mrtd.description || '-'}</td>
-                            <td>${mrtd.source_repo ? `<a href="https://github.com/${mrtd.source_repo}" target="_blank">${mrtd.source_repo}</a>` : '-'}</td>
-                            <td>${mrtd.active ? '<span class="verified-badge">Active</span>' : '<span class="unverified-badge">Inactive</span>'}</td>
-                            <td class="action-buttons">
-                                ${mrtd.locked ? '<span style="color: var(--gray-400)">Locked</span>' : `
-                                    ${mrtd.active ?
-                                        `<button class="btn-small btn-warning" onclick="deactivateMrtd('${mrtd.mrtd}')">Deactivate</button>` :
-                                        `<button class="btn-small btn-secondary" onclick="activateMrtd('${mrtd.mrtd}')">Activate</button>`
-                                    }
-                                    <button class="btn-small btn-danger" onclick="deleteMrtd('${mrtd.mrtd}')">Delete</button>
-                                `}
-                            </td>
+                            <td><span class="status-badge">${mrtd.type}</span></td>
                         </tr>
                     `).join('')}
                 </tbody>
@@ -226,77 +191,6 @@ async function loadMrtds() {
         `;
     } catch (error) {
         container.innerHTML = `<div class="error">Error loading MRTDs: ${error.message}</div>`;
-    }
-}
-
-async function addMrtd(event) {
-    event.preventDefault();
-    const mrtd = document.getElementById('newMrtd').value;
-    const type = document.getElementById('newMrtdType').value;
-    const description = document.getElementById('newMrtdDesc').value;
-
-    try {
-        const response = await adminFetch('/api/v1/trusted-mrtds', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mrtd, type, description })
-        });
-
-        if (response.ok) {
-            document.getElementById('newMrtd').value = '';
-            document.getElementById('newMrtdDesc').value = '';
-            loadMrtds();
-        } else {
-            const err = await response.json();
-            alert('Failed: ' + (err.detail || 'Unknown error'));
-        }
-    } catch (error) {
-        alert('Error: ' + error.message);
-    }
-}
-
-async function deactivateMrtd(mrtd) {
-    if (!confirm('Deactivate this MRTD? Agents with this MRTD will no longer be verified.')) return;
-
-    try {
-        const response = await adminFetch(`/api/v1/trusted-mrtds/${encodeURIComponent(mrtd)}/deactivate`, { method: 'POST' });
-        if (response.ok) {
-            loadMrtds();
-        } else {
-            const err = await response.json();
-            alert('Failed: ' + (err.detail || 'Unknown error'));
-        }
-    } catch (error) {
-        alert('Error: ' + error.message);
-    }
-}
-
-async function activateMrtd(mrtd) {
-    try {
-        const response = await adminFetch(`/api/v1/trusted-mrtds/${encodeURIComponent(mrtd)}/activate`, { method: 'POST' });
-        if (response.ok) {
-            loadMrtds();
-        } else {
-            alert('Failed to activate MRTD');
-        }
-    } catch (error) {
-        alert('Error: ' + error.message);
-    }
-}
-
-async function deleteMrtd(mrtd) {
-    if (!confirm('Delete this MRTD from the trusted list?')) return;
-
-    try {
-        const response = await adminFetch(`/api/v1/trusted-mrtds/${encodeURIComponent(mrtd)}`, { method: 'DELETE' });
-        if (response.ok) {
-            loadMrtds();
-        } else {
-            const err = await response.json();
-            alert('Failed: ' + (err.detail || 'Unknown error'));
-        }
-    } catch (error) {
-        alert('Error: ' + error.message);
     }
 }
 

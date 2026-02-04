@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from enum import Enum
 from typing import Any
 
 from sqlmodel import JSON, Column, Field, SQLModel
@@ -20,14 +19,6 @@ def generate_uuid() -> str:
 
 def utcnow() -> datetime:
     return datetime.utcnow()
-
-
-class MrtdType(str, Enum):
-    """Type of trusted MRTD."""
-
-    AGENT = "agent"
-    PROXY = "proxy"
-    APP = "app"
 
 
 class Service(SQLModel, table=True):
@@ -100,27 +91,6 @@ class Deployment(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None
     completed_at: datetime | None = None
-
-
-class TrustedMrtd(SQLModel, table=True):
-    """Trusted MRTD measurement."""
-
-    __tablename__ = "trusted_mrtds"
-
-    mrtd: str = Field(primary_key=True)
-    type: str = Field(default="agent")
-    locked: bool = Field(default=False)
-    description: str = Field(default="")
-    image_version: str = Field(default="")
-    source_repo: str | None = None
-    source_commit: str | None = None
-    source_tag: str | None = None
-    build_workflow: str | None = None
-    image_digest: str | None = None
-    attestation_url: str | None = None
-    added_at: datetime = Field(default_factory=utcnow)
-    added_by: str = Field(default="")
-    active: bool = Field(default=True)
 
 
 class App(SQLModel, table=True):

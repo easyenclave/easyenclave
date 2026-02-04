@@ -6,7 +6,6 @@ Data models are in db_models.py (SQLModel classes that serve as both ORM and Pyd
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
 
 from pydantic import BaseModel, Field
 
@@ -17,19 +16,10 @@ from .db_models import (  # noqa: F401
     AppVersion,
     Deployment,
     Service,
-    TrustedMrtd,
 )
 
 # Aliases for backward compatibility
 ServiceRegistration = Service
-
-
-class MrtdType(str, Enum):
-    """Type of trusted MRTD."""
-
-    AGENT = "agent"
-    PROXY = "proxy"
-    APP = "app"
 
 
 # =============================================================================
@@ -75,6 +65,8 @@ class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
     version: str = "0.1.0"
+    attestation: dict | None = None
+    proxy_url: str | None = None
 
 
 # =============================================================================
@@ -138,33 +130,6 @@ class DeploymentListResponse(BaseModel):
     """Response for listing deployments."""
 
     deployments: list[Deployment]
-    total: int
-
-
-# =============================================================================
-# Trusted MRTD API
-# =============================================================================
-
-
-class TrustedMrtdCreateRequest(BaseModel):
-    """Request for adding a trusted MRTD."""
-
-    mrtd: str
-    type: MrtdType = MrtdType.AGENT
-    description: str = ""
-    image_version: str = ""
-    source_repo: str | None = None
-    source_commit: str | None = None
-    source_tag: str | None = None
-    build_workflow: str | None = None
-    image_digest: str | None = None
-    attestation_url: str | None = None
-
-
-class TrustedMrtdListResponse(BaseModel):
-    """Response for listing trusted MRTDs."""
-
-    trusted_mrtds: list[TrustedMrtd]
     total: int
 
 

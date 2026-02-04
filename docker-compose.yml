@@ -11,9 +11,9 @@ services:
       - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
       - CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID:-}
       - EASYENCLAVE_DOMAIN=${EASYENCLAVE_DOMAIN:-easyenclave.com}
-      # System MRTDs (locked, cannot be modified via API)
-      - SYSTEM_AGENT_MRTD=${SYSTEM_AGENT_MRTD:-}
-      - SYSTEM_PROXY_MRTD=${SYSTEM_PROXY_MRTD:-}
+      # Trusted MRTDs (comma-separated for rolling updates)
+      - TRUSTED_AGENT_MRTDS=${TRUSTED_AGENT_MRTDS:-${SYSTEM_AGENT_MRTD:-}}
+      - TRUSTED_PROXY_MRTDS=${TRUSTED_PROXY_MRTDS:-${SYSTEM_PROXY_MRTD:-}}
       # Admin authentication (default: admin123)
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
     healthcheck:

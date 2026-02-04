@@ -238,198 +238,65 @@ class TestVerifyEndpoint:
 
 
 class TestTrustedMrtdEndpoints:
-    """Tests for trusted MRTD API endpoints."""
+    """Tests for read-only trusted MRTD endpoint."""
 
-    def test_add_trusted_mrtd(self, client):
-        """Test adding a trusted MRTD."""
-        response = client.post(
-            "/api/v1/trusted-mrtds",
-            json={
-                "mrtd": "abc123def456",
-                "type": "app",
-                "description": "Test app MRTD",
-            },
-        )
+    def test_list_empty(self, client):
+        """Test listing when no MRTDs configured."""
+        response = client.get("/api/v1/trusted-mrtds")
         assert response.status_code == 200
         data = response.json()
-        assert data["mrtd"] == "abc123def456"
-        assert data["type"] == "app"
-        assert data["locked"] is False
+        assert data["total"] == 0
+        assert data["trusted_mrtds"] == []
 
-    def test_add_duplicate_mrtd_fails(self, client):
-        """Test that adding a duplicate MRTD fails."""
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "abc123def456", "type": "app"},
-        )
-        response = client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "abc123def456", "type": "app"},
-        )
-        assert response.status_code == 409
+    def test_list_from_env_vars(self, client, monkeypatch):
+        """Test that MRTDs are loaded from env vars."""
+        from app.storage import load_trusted_mrtds
 
-    def test_list_trusted_mrtds(self, client):
-        """Test listing trusted MRTDs."""
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "mrtd1", "type": "app"},
-        )
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "mrtd2", "type": "agent"},
-        )
+        monkeypatch.setenv("TRUSTED_AGENT_MRTDS", "abc123,def456")
+        monkeypatch.setenv("TRUSTED_PROXY_MRTDS", "ghi789")
+        load_trusted_mrtds()
+
+        response = client.get("/api/v1/trusted-mrtds")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total"] == 3
+
+        mrtds = {m["mrtd"]: m["type"] for m in data["trusted_mrtds"]}
+        assert mrtds["abc123"] == "agent"
+        assert mrtds["def456"] == "agent"
+        assert mrtds["ghi789"] == "proxy"
+
+        # Cleanup
+        monkeypatch.delenv("TRUSTED_AGENT_MRTDS")
+        monkeypatch.delenv("TRUSTED_PROXY_MRTDS")
+        load_trusted_mrtds()
+
+    def test_backward_compat_env_vars(self, client, monkeypatch):
+        """Test backward compat with old SYSTEM_AGENT_MRTD / SYSTEM_PROXY_MRTD."""
+        from app.storage import load_trusted_mrtds
+
+        monkeypatch.setenv("SYSTEM_AGENT_MRTD", "old-agent-mrtd")
+        monkeypatch.setenv("SYSTEM_PROXY_MRTD", "old-proxy-mrtd")
+        load_trusted_mrtds()
 
         response = client.get("/api/v1/trusted-mrtds")
         assert response.status_code == 200
         data = response.json()
         assert data["total"] == 2
 
-    def test_list_trusted_mrtds_filter_by_type(self, client):
-        """Test filtering trusted MRTDs by type."""
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "mrtd1", "type": "app"},
-        )
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "mrtd2", "type": "agent"},
-        )
+        mrtds = {m["mrtd"]: m["type"] for m in data["trusted_mrtds"]}
+        assert mrtds["old-agent-mrtd"] == "agent"
+        assert mrtds["old-proxy-mrtd"] == "proxy"
 
-        response = client.get("/api/v1/trusted-mrtds?type=app")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["total"] == 1
-        assert data["trusted_mrtds"][0]["type"] == "app"
+        # Cleanup
+        monkeypatch.delenv("SYSTEM_AGENT_MRTD")
+        monkeypatch.delenv("SYSTEM_PROXY_MRTD")
+        load_trusted_mrtds()
 
-    def test_delete_trusted_mrtd(self, client):
-        """Test deleting a trusted MRTD."""
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "abc123def456", "type": "app"},
-        )
-
-        response = client.delete("/api/v1/trusted-mrtds/abc123def456")
-        assert response.status_code == 200
-
-        # Verify it's deleted
-        response = client.get("/api/v1/trusted-mrtds/abc123def456")
-        assert response.status_code == 404
-
-    def test_deactivate_trusted_mrtd(self, client):
-        """Test deactivating a trusted MRTD."""
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "abc123def456", "type": "app"},
-        )
-
-        response = client.post("/api/v1/trusted-mrtds/abc123def456/deactivate")
-        assert response.status_code == 200
-
-        # Verify it's deactivated
-        response = client.get("/api/v1/trusted-mrtds/abc123def456")
-        assert response.status_code == 200
-        assert response.json()["active"] is False
-
-
-class TestLockedSystemMrtds:
-    """Tests for locked system MRTD protection."""
-
-    @pytest.fixture(autouse=True)
-    def setup_system_mrtds(self, monkeypatch):
-        """Set up system MRTDs via environment variables."""
-        from app.storage import trusted_mrtd_store
-
-        # Set environment variables before re-loading system MRTDs
-        monkeypatch.setenv("SYSTEM_AGENT_MRTD", "system-agent-mrtd-123")
-        monkeypatch.setenv("SYSTEM_PROXY_MRTD", "system-proxy-mrtd-456")
-
-        # Reload system MRTDs
-        trusted_mrtd_store._load_system_mrtds()
-
-        yield
-
-    def test_system_mrtds_loaded_on_startup(self, client):
-        """Test that system MRTDs are loaded from environment."""
-        response = client.get("/api/v1/trusted-mrtds")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["total"] == 2
-
-        mrtds = {m["mrtd"]: m for m in data["trusted_mrtds"]}
-        assert "system-agent-mrtd-123" in mrtds
-        assert "system-proxy-mrtd-456" in mrtds
-
-        # Verify they are locked
-        assert mrtds["system-agent-mrtd-123"]["locked"] is True
-        assert mrtds["system-proxy-mrtd-456"]["locked"] is True
-
-        # Verify types
-        assert mrtds["system-agent-mrtd-123"]["type"] == "agent"
-        assert mrtds["system-proxy-mrtd-456"]["type"] == "proxy"
-
-    def test_cannot_delete_locked_mrtd(self, client):
-        """Test that locked system MRTDs cannot be deleted."""
-        response = client.delete("/api/v1/trusted-mrtds/system-agent-mrtd-123")
-        assert response.status_code == 403
-        assert "system mrtd" in response.json()["detail"].lower()
-
-        # Verify it still exists
-        response = client.get("/api/v1/trusted-mrtds/system-agent-mrtd-123")
-        assert response.status_code == 200
-
-    def test_cannot_deactivate_locked_mrtd(self, client):
-        """Test that locked system MRTDs cannot be deactivated."""
-        response = client.post("/api/v1/trusted-mrtds/system-agent-mrtd-123/deactivate")
-        assert response.status_code == 403
-        assert "system mrtd" in response.json()["detail"].lower()
-
-        # Verify it's still active
-        response = client.get("/api/v1/trusted-mrtds/system-agent-mrtd-123")
-        assert response.status_code == 200
-        assert response.json()["active"] is True
-
-    def test_cannot_add_mrtd_with_same_value_as_locked(self, client):
-        """Test that you cannot add an MRTD with the same value as a locked one."""
-        response = client.post(
-            "/api/v1/trusted-mrtds",
-            json={
-                "mrtd": "system-agent-mrtd-123",
-                "type": "app",
-                "description": "Trying to overwrite",
-            },
-        )
-        assert response.status_code == 403
-        assert "system mrtd" in response.json()["detail"].lower()
-
-    def test_regular_mrtds_can_still_be_deleted(self, client):
-        """Test that regular (non-locked) MRTDs can still be deleted."""
-        # Add a regular MRTD
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "regular-mrtd-789", "type": "app"},
-        )
-
-        # Delete it
-        response = client.delete("/api/v1/trusted-mrtds/regular-mrtd-789")
-        assert response.status_code == 200
-
-        # Verify it's deleted
-        response = client.get("/api/v1/trusted-mrtds/regular-mrtd-789")
-        assert response.status_code == 404
-
-    def test_regular_mrtds_can_still_be_deactivated(self, client):
-        """Test that regular (non-locked) MRTDs can still be deactivated."""
-        # Add a regular MRTD
-        client.post(
-            "/api/v1/trusted-mrtds",
-            json={"mrtd": "regular-mrtd-789", "type": "app"},
-        )
-
-        # Deactivate it
-        response = client.post("/api/v1/trusted-mrtds/regular-mrtd-789/deactivate")
-        assert response.status_code == 200
-
-        # Verify it's deactivated
-        response = client.get("/api/v1/trusted-mrtds/regular-mrtd-789")
-        assert response.status_code == 200
-        assert response.json()["active"] is False
+    def test_crud_endpoints_removed(self, client):
+        """Test that CRUD endpoints no longer exist."""
+        assert client.post("/api/v1/trusted-mrtds", json={"mrtd": "x"}).status_code == 405
+        assert client.get("/api/v1/trusted-mrtds/some-mrtd").status_code in (404, 405)
+        assert client.post("/api/v1/trusted-mrtds/x/deactivate").status_code in (404, 405)
+        assert client.post("/api/v1/trusted-mrtds/x/activate").status_code in (404, 405)
+        assert client.delete("/api/v1/trusted-mrtds/x").status_code in (404, 405)
