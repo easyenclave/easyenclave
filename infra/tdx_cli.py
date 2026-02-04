@@ -430,7 +430,7 @@ ssh_pwauth: true
 
                     # Look for full MRTD (printed by launcher for measurement)
                     # Pattern: "MRTD_FULL=<96-char hex>"
-                    match = re.search(r'MRTD_FULL=([a-f0-9]{96})', log_content, re.IGNORECASE)
+                    match = re.search(r"MRTD_FULL=([a-f0-9]{96})", log_content, re.IGNORECASE)
                     if match:
                         mrtd = match.group(1)
                         print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)
@@ -444,7 +444,7 @@ ssh_pwauth: true
                     # Check for registration rejection (means attestation worked)
                     if "Registration rejected" in log_content or "MRTD not trusted" in log_content:
                         # MRTD should have been printed before the rejection
-                        match = re.search(r'MRTD_FULL=([a-f0-9]{96})', log_content, re.IGNORECASE)
+                        match = re.search(r"MRTD_FULL=([a-f0-9]{96})", log_content, re.IGNORECASE)
                         if match:
                             mrtd = match.group(1)
                             print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)

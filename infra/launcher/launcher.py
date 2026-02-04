@@ -180,15 +180,21 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         try:
             proc = subprocess.run(
                 ["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             for line in proc.stdout.strip().split("\n"):
                 if line:
                     parts = line.split("\t")
-                    containers.append({
-                        "name": parts[0] if parts else "unknown",
-                        "status": "running" if "Up" in (parts[1] if len(parts) > 1 else "") else "stopped",
-                    })
+                    containers.append(
+                        {
+                            "name": parts[0] if parts else "unknown",
+                            "status": "running"
+                            if "Up" in (parts[1] if len(parts) > 1 else "")
+                            else "stopped",
+                        }
+                    )
         except Exception as e:
             logger.debug(f"Failed to get container status: {e}")
         result["containers"] = containers
@@ -211,7 +217,9 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             # Get container list
             proc = subprocess.run(
                 ["docker", "ps", "--format", "{{.Names}}"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
             containers = [c for c in proc.stdout.strip().split("\n") if c]
 
@@ -223,7 +231,9 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                 try:
                     log_proc = subprocess.run(
                         ["docker", "logs", "--since", since, "--timestamps", cname],
-                        capture_output=True, text=True, timeout=30,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
                     )
                     for line in (log_proc.stdout + log_proc.stderr).strip().split("\n"):
                         if line:
@@ -328,8 +338,9 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             level = query.get("level", ["info"])[0]
             level_order = ["debug", "info", "warning", "error"]
             min_idx = level_order.index(level) if level in level_order else 1
-            filtered = [log for log in _admin_state["logs"]
-                       if level_order.index(log["level"]) >= min_idx]
+            filtered = [
+                log for log in _admin_state["logs"] if level_order.index(log["level"]) >= min_idx
+            ]
             self._send_json(200, {"logs": filtered[-200:]})
             return
 
@@ -384,7 +395,9 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                     daemon=True,
                 )
                 thread.start()
-                self._send_json(202, {"status": "accepted", "deployment_id": deployment.get("deployment_id")})
+                self._send_json(
+                    202, {"status": "accepted", "deployment_id": deployment.get("deployment_id")}
+                )
             except Exception as e:
                 self._send_json(400, {"error": str(e)})
             return
@@ -986,7 +999,7 @@ def generate_initial_attestation(config: dict) -> dict:
     # Generate TDX quote
     quote_b64 = generate_tdx_quote()
     measurements = parse_tdx_quote(quote_b64)
-    mrtd = measurements.get('mrtd', 'unknown')
+    mrtd = measurements.get("mrtd", "unknown")
     logger.info(f"Generated TDX quote, MRTD: {mrtd[:32]}...")
     # Log full MRTD for vm_measure command to capture
     print(f"MRTD_FULL={mrtd}", flush=True)
