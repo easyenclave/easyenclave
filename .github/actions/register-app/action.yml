@@ -60,6 +60,15 @@ runs:
           SOURCE_REPO="${{ github.repository }}"
         fi
 
+        # Check if app already exists
+        EXISTING=$(curl -s "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.name }}")
+        if echo "$EXISTING" | jq -e '.app_id' > /dev/null 2>&1; then
+          APP_ID=$(echo "$EXISTING" | jq -r '.app_id')
+          echo "App '${{ inputs.name }}' already registered ($APP_ID)"
+          echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
+          exit 0
+        fi
+
         # Register the app
         RESPONSE=$(curl -s -X POST "${{ inputs.control_plane_url }}/api/v1/apps" \
           -H "Content-Type: application/json" \
