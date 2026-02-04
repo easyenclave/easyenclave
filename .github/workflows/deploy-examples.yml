@@ -12,14 +12,48 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy-hello-tdx:
-    name: Deploy Hello TDX
+  test-unregistered-app-fails:
+    name: Test - Unregistered app deploy fails
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Deploy unregistered app (should fail)
+        id: deploy
+        uses: ./.github/actions/deploy
+        continue-on-error: true
+        with:
+          app_name: unregistered-test-app
+          compose_file: examples/hello-tdx/docker-compose.yml
+          service_name: hello-tdx
+          health_endpoint: /
+
+      - name: Verify deploy failed
+        run: |
+          if [ "${{ steps.deploy.outcome }}" != "failure" ]; then
+            echo "::error::Expected deploy to fail for unregistered app, but it succeeded"
+            exit 1
+          fi
+          echo "Deploy correctly failed for unregistered app"
+
+  deploy-hello-tdx:
+    name: Deploy Hello TDX
+    runs-on: ubuntu-latest
+    needs: test-unregistered-app-fails
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Register app
+        uses: ./.github/actions/register-app
+        with:
+          name: hello-tdx
+          description: "Hello TDX - Example app demonstrating TDX attestation"
 
       - name: Deploy to EasyEnclave
         uses: ./.github/actions/deploy
