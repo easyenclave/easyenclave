@@ -33,10 +33,14 @@ jobs:
         run: |
           pip install -e sdk/
 
-      - name: Run linting
+      - name: Install linting tools
         run: |
           pip install ruff
-          ruff check app/ sdk/ tests/ infra/
+          curl -sL https://github.com/rhysd/actionlint/releases/download/v1.7.10/actionlint_1.7.10_linux_amd64.tar.gz | tar xz
+          sudo mv actionlint /usr/local/bin/
+
+      - name: Run linting
+        run: ./scripts/lint.sh
 
       - name: Run tests
         run: |
@@ -169,13 +173,6 @@ jobs:
             }"
           echo ""
           echo "MRTD trusted successfully"
-
-      - name: Register example apps
-        run: |
-          curl -sf -X POST "https://app.easyenclave.com/api/v1/apps" \
-            -H "Content-Type: application/json" \
-            -d '{"name": "hello-tdx", "description": "Hello TDX example", "source_repo": "easyenclave/easyenclave"}' \
-            || echo "App may already exist"
 
       - name: Launch agent
         run: |

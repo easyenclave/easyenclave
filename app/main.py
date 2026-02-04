@@ -1596,7 +1596,9 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
                 json={
                     "deployment_id": deployment_id,
                     "compose": found_version.compose,
-                    "build_context": found_version.build_context if hasattr(found_version, 'build_context') else None,
+                    "build_context": found_version.build_context
+                    if hasattr(found_version, "build_context")
+                    else None,
                     "config": config,
                 },
             )

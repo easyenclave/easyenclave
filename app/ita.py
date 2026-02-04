@@ -80,9 +80,15 @@ async def verify_attestation_token(token: str) -> dict:
             token,
             signing_key.key,
             algorithms=[
-                "RS256", "RS384", "RS512",  # RSA PKCS1
-                "ES256", "ES384", "ES512",  # ECDSA
-                "PS256", "PS384", "PS512",  # RSA PSS
+                "RS256",
+                "RS384",
+                "RS512",  # RSA PKCS1
+                "ES256",
+                "ES384",
+                "ES512",  # ECDSA
+                "PS256",
+                "PS384",
+                "PS512",  # RSA PSS
                 "EdDSA",  # Edwards curve (Ed25519, Ed448)
             ],
             options={
