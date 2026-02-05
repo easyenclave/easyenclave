@@ -309,22 +309,22 @@ MEASUREMENT_CHECK_INTERVAL = 30  # seconds
 
 
 async def send_measurement_request(measure_url: str, version: AppVersion, callback_base: str):
-    """Send a measurement request to the measuring enclave."""
+    """Send a measurement request to the measuring enclave.
+
+    Raises on failure so the caller can avoid marking the version as attesting.
+    """
     callback_url = callback_base.rstrip("/") + "/api/v1/internal/measurement-callback"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                measure_url,
-                json={
-                    "version_id": version.version_id,
-                    "compose": version.compose,
-                    "callback_url": callback_url,
-                },
-            )
-            resp.raise_for_status()
-            logger.info(f"Sent measurement request for {version.app_name}@{version.version}")
-    except Exception as e:
-        logger.error(f"Failed to send measurement request for {version.version_id}: {e}")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            measure_url,
+            json={
+                "version_id": version.version_id,
+                "compose": version.compose,
+                "callback_url": callback_url,
+            },
+        )
+        resp.raise_for_status()
+        logger.info(f"Sent measurement request for {version.app_name}@{version.version}")
 
 
 async def background_measurement_processor():
@@ -342,8 +342,13 @@ async def background_measurement_processor():
                     # Send to measurer
                     url = list(measurer.endpoints.values())[0]
                     measure_url = url.rstrip("/") + "/api/measure"
-                    await send_measurement_request(measure_url, version, cp_url)
-                    app_version_store.update_status(version.version_id, status="attesting")
+                    try:
+                        await send_measurement_request(measure_url, version, cp_url)
+                        app_version_store.update_status(version.version_id, status="attesting")
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to send measurement request for {version.version_id}: {e}"
+                        )
         except Exception as e:
             logger.error(f"Measurement processor error: {e}")
         await asyncio.sleep(MEASUREMENT_CHECK_INTERVAL)
