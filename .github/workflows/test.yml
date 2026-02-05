@@ -204,22 +204,31 @@ jobs:
             -H "Authorization: Bearer $ADMIN_TOKEN"
           echo "Manually attested measuring-enclave@$VERSION"
 
-          # Find an available, healthy agent (wait for tunnel DNS to propagate)
-          echo "Waiting for a healthy agent..."
-          AGENT_ID=""
+          # Find a verified agent with a tunnel
+          AGENT_JSON=$(curl -sf "$CP_URL/api/v1/agents" | \
+            jq -r '[.agents[] | select(.verified == true and .hostname != null)] | .[0]')
+          AGENT_ID=$(echo "$AGENT_JSON" | jq -r '.agent_id')
+          AGENT_HOST=$(echo "$AGENT_JSON" | jq -r '.hostname')
+
+          if [ "$AGENT_ID" = "null" ] || [ -z "$AGENT_ID" ]; then
+            echo "::error::No verified agent with tunnel available"
+            exit 1
+          fi
+          echo "Found agent $AGENT_ID at $AGENT_HOST"
+
+          # Wait for the agent tunnel to be reachable
+          echo "Waiting for agent tunnel to become reachable..."
           for i in {1..30}; do
-            AGENT_ID=$(curl -sf "$CP_URL/api/v1/agents" | \
-              jq -r '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy")] | .[0].agent_id')
-            if [ "$AGENT_ID" != "null" ] && [ -n "$AGENT_ID" ]; then
-              echo "Found healthy agent: $AGENT_ID"
+            if curl -sf "https://$AGENT_HOST/api/health" > /dev/null 2>&1; then
+              echo "Agent tunnel is reachable"
               break
             fi
-            echo "  No healthy agents yet ($i/30)"
+            echo "  Agent tunnel not ready yet ($i/30)"
             sleep 10
           done
 
-          if [ "$AGENT_ID" = "null" ] || [ -z "$AGENT_ID" ]; then
-            echo "::error::No healthy agent available for measuring enclave"
+          if ! curl -sf "https://$AGENT_HOST/api/health" > /dev/null 2>&1; then
+            echo "::error::Agent tunnel not reachable after 5 minutes"
             exit 1
           fi
 
