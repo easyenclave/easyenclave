@@ -86,6 +86,7 @@ jobs:
       id-token: write
       attestations: write
       contents: read
+      packages: write
 
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -172,6 +173,14 @@ jobs:
           echo "::error::No verified agents after 5 minutes"
           exit 1
 
+      - name: Build and push measuring enclave image
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE="ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}"
+          docker build -t "$IMAGE" apps/measuring-enclave/
+          docker push "$IMAGE"
+          echo "Pushed $IMAGE"
+
       - name: Bootstrap measuring enclave
         env:
           CP_URL: https://app.easyenclave.com
@@ -190,8 +199,9 @@ jobs:
             -d '{"name": "measuring-enclave", "description": "Measuring enclave for app version attestation"}' \
             || echo "App may already exist"
 
-          # Publish its version with compose from repo
-          COMPOSE_B64=$(base64 -w 0 apps/measuring-enclave/docker-compose.yml)
+          # Publish its version with compose referencing the pushed image
+          IMAGE="ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}"
+          COMPOSE_B64=$(printf 'services:\n  measuring-enclave:\n    image: %s\n    ports:\n      - "8080:8080"\n' "$IMAGE" | base64 -w 0)
           VERSION="bootstrap-$(date -u +%Y%m%d-%H%M%S)"
           PUBLISH_RESP=$(curl -sf -X POST "$CP_URL/api/v1/apps/measuring-enclave/versions" \
             -H "Content-Type: application/json" \
