@@ -204,12 +204,22 @@ jobs:
             -H "Authorization: Bearer $ADMIN_TOKEN"
           echo "Manually attested measuring-enclave@$VERSION"
 
-          # Find an available agent
-          AGENT_ID=$(curl -sf "$CP_URL/api/v1/agents" | \
-            jq -r '[.agents[] | select(.verified == true and .hostname != null)] | .[0].agent_id')
+          # Find an available, healthy agent (wait for tunnel DNS to propagate)
+          echo "Waiting for a healthy agent..."
+          AGENT_ID=""
+          for i in {1..30}; do
+            AGENT_ID=$(curl -sf "$CP_URL/api/v1/agents" | \
+              jq -r '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy")] | .[0].agent_id')
+            if [ "$AGENT_ID" != "null" ] && [ -n "$AGENT_ID" ]; then
+              echo "Found healthy agent: $AGENT_ID"
+              break
+            fi
+            echo "  No healthy agents yet ($i/30)"
+            sleep 10
+          done
 
           if [ "$AGENT_ID" = "null" ] || [ -z "$AGENT_ID" ]; then
-            echo "::error::No verified agent available for measuring enclave"
+            echo "::error::No healthy agent available for measuring enclave"
             exit 1
           fi
 
