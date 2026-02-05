@@ -97,12 +97,38 @@ runs:
         source_commit: ${{ github.sha }}
         control_plane_url: ${{ inputs.control_plane_url }}
 
-    - name: Verify version is attested
+    - name: Wait for version to be attested
       shell: bash
       run: |
-        if [ "${{ steps.publish.outputs.status }}" != "attested" ]; then
-          echo "::error::Version status is '${{ steps.publish.outputs.status }}', expected 'attested'"
-          exit 1
+        # Wait for measuring enclave to attest the version
+        VERSION_STATUS="${{ steps.publish.outputs.status }}"
+        if [ "$VERSION_STATUS" = "attested" ]; then
+          echo "Version already attested"
+        else
+          echo "Version status: $VERSION_STATUS - waiting for measurement..."
+          for i in {1..60}; do  # 5 min timeout (60 * 5s)
+            VERSION_JSON=$(curl -sf \
+              "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/${{ steps.version.outputs.version }}" \
+              2>/dev/null || echo '{}')
+            VERSION_STATUS=$(echo "$VERSION_JSON" | jq -r '.status // "unknown"')
+
+            if [ "$VERSION_STATUS" = "attested" ]; then
+              echo "Version attested!"
+              break
+            elif [ "$VERSION_STATUS" = "failed" ] || [ "$VERSION_STATUS" = "rejected" ]; then
+              REASON=$(echo "$VERSION_JSON" | jq -r '.rejection_reason // "Unknown"')
+              echo "::error::Measurement failed: $REASON"
+              exit 1
+            fi
+
+            echo "  Status: $VERSION_STATUS ($i/60)"
+            sleep 5
+          done
+
+          if [ "$VERSION_STATUS" != "attested" ]; then
+            echo "::error::Timed out waiting for measurement (status: $VERSION_STATUS)"
+            exit 1
+          fi
         fi
         echo "Version ${{ steps.version.outputs.version }} is attested"
 

@@ -190,3 +190,12 @@ class DeployFromVersionRequest(BaseModel):
 
     agent_id: str
     config: dict | None = None
+
+
+class MeasurementCallbackRequest(BaseModel):
+    """Callback from measuring enclave with results."""
+
+    version_id: str
+    status: str  # "success" or "failed"
+    error: str | None = None
+    measurement: dict | None = None  # {compose_hash, resolved_images}

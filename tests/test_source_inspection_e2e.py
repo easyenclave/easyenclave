@@ -315,7 +315,7 @@ async def test_publish_without_source_repo_skips_inspection():
             },
         )
 
-        # Publish should succeed without inspection
+        # Publish should succeed (stays pending until measuring enclave processes it)
         compose_b64 = base64.b64encode(b"services: {}").decode()
         response = await client.post(
             "/api/v1/apps/no-source-app/versions",
@@ -328,12 +328,12 @@ async def test_publish_without_source_repo_skips_inspection():
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "attested"
+        assert data["status"] == "pending"
 
 
 @pytest.mark.asyncio
 async def test_publish_without_source_commit_skips_inspection():
-    """Test that publishing without source_commit skips inspection."""
+    """Test that publishing without source_commit stays pending."""
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Register app with source_repo
@@ -345,7 +345,7 @@ async def test_publish_without_source_commit_skips_inspection():
             },
         )
 
-        # Publish without source_commit should succeed without inspection
+        # Publish without source_commit stays pending until measured
         compose_b64 = base64.b64encode(b"services: {}").decode()
         response = await client.post(
             "/api/v1/apps/no-commit-app/versions",
@@ -358,7 +358,7 @@ async def test_publish_without_source_commit_skips_inspection():
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "attested"
+        assert data["status"] == "pending"
 
 
 @pytest.mark.asyncio

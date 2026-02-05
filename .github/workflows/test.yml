@@ -171,3 +171,65 @@ jobs:
           done
           echo "::error::No verified agents after 5 minutes"
           exit 1
+
+      - name: Bootstrap measuring enclave
+        env:
+          CP_URL: https://app.easyenclave.com
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD || 'admin123' }}
+        run: |
+          set -e
+
+          # Login to get admin token
+          ADMIN_TOKEN=$(curl -sf "$CP_URL/admin/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$ADMIN_PASSWORD\"}" | jq -r '.token')
+
+          # Register measuring-enclave app
+          curl -sf -X POST "$CP_URL/api/v1/apps" \
+            -H "Content-Type: application/json" \
+            -d '{"name": "measuring-enclave", "description": "Measuring enclave for app version attestation"}' \
+            || echo "App may already exist"
+
+          # Publish its version with compose from repo
+          COMPOSE_B64=$(base64 -w 0 apps/measuring-enclave/docker-compose.yml)
+          VERSION="bootstrap-$(date -u +%Y%m%d-%H%M%S)"
+          PUBLISH_RESP=$(curl -sf -X POST "$CP_URL/api/v1/apps/measuring-enclave/versions" \
+            -H "Content-Type: application/json" \
+            -d "{\"version\": \"$VERSION\", \"compose\": \"$COMPOSE_B64\"}")
+          VERSION_ID=$(echo "$PUBLISH_RESP" | jq -r '.version_id')
+          echo "Published measuring-enclave@$VERSION ($VERSION_ID)"
+
+          # Manual attest (bootstrap - no measurer exists yet)
+          curl -sf -X POST "$CP_URL/api/v1/apps/measuring-enclave/versions/$VERSION/attest" \
+            -H "Authorization: Bearer $ADMIN_TOKEN"
+          echo "Manually attested measuring-enclave@$VERSION"
+
+          # Find an available agent
+          AGENT_ID=$(curl -sf "$CP_URL/api/v1/agents" | \
+            jq -r '[.agents[] | select(.verified == true and .hostname != null)] | .[0].agent_id')
+
+          if [ "$AGENT_ID" = "null" ] || [ -z "$AGENT_ID" ]; then
+            echo "::error::No verified agent available for measuring enclave"
+            exit 1
+          fi
+
+          # Deploy measuring enclave
+          curl -sf -X POST "$CP_URL/api/v1/apps/measuring-enclave/versions/$VERSION/deploy" \
+            -H "Content-Type: application/json" \
+            -d "{\"agent_id\": \"$AGENT_ID\", \"config\": {\"service_name\": \"measuring-enclave\"}}"
+          echo "Deployed measuring-enclave to agent $AGENT_ID"
+
+          # Wait for measuring enclave service to be healthy
+          echo "Waiting for measuring enclave to become healthy..."
+          for i in {1..60}; do
+            SVC=$(curl -sf "$CP_URL/api/v1/services?name=measuring-enclave" 2>/dev/null || echo '{"services":[]}')
+            HEALTHY=$(echo "$SVC" | jq '[.services[] | select(.health_status == "healthy")] | length')
+            if [ "$HEALTHY" -gt 0 ]; then
+              echo "Measuring enclave is healthy!"
+              exit 0
+            fi
+            echo "  Waiting... ($i/60)"
+            sleep 5
+          done
+          echo "::error::Measuring enclave not healthy after 5 minutes"
+          exit 1

@@ -48,6 +48,7 @@ from .models import (
     DeploymentCreateResponse,
     DeploymentListResponse,
     HealthResponse,
+    MeasurementCallbackRequest,
     Service,
     ServiceListResponse,
     ServiceRegistrationRequest,
@@ -304,6 +305,50 @@ async def background_cp_attestation_refresher():
         _refresh_cp_attestation()
 
 
+MEASUREMENT_CHECK_INTERVAL = 30  # seconds
+
+
+async def send_measurement_request(measure_url: str, version: AppVersion, callback_base: str):
+    """Send a measurement request to the measuring enclave."""
+    callback_url = callback_base.rstrip("/") + "/api/v1/internal/measurement-callback"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                measure_url,
+                json={
+                    "version_id": version.version_id,
+                    "compose": version.compose,
+                    "callback_url": callback_url,
+                },
+            )
+            resp.raise_for_status()
+            logger.info(f"Sent measurement request for {version.app_name}@{version.version}")
+    except Exception as e:
+        logger.error(f"Failed to send measurement request for {version.version_id}: {e}")
+
+
+async def background_measurement_processor():
+    """Send pending app versions to the measuring enclave for measurement."""
+    while True:
+        try:
+            # Find the measuring enclave service
+            measurer = store.get_by_name("measuring-enclave")
+            if measurer and measurer.health_status == "healthy":
+                # Find pending versions
+                pending = app_version_store.list_by_status("pending")
+                for version in pending:
+                    # Determine callback base URL
+                    cp_url = os.environ.get("EASYENCLAVE_CP_URL", "https://app.easyenclave.com")
+                    # Send to measurer
+                    url = list(measurer.endpoints.values())[0]
+                    measure_url = url.rstrip("/") + "/api/measure"
+                    await send_measurement_request(measure_url, version, cp_url)
+                    app_version_store.update_status(version.version_id, status="attesting")
+        except Exception as e:
+            logger.error(f"Measurement processor error: {e}")
+        await asyncio.sleep(MEASUREMENT_CHECK_INTERVAL)
+
+
 def _get_proxy_url() -> str:
     """Get the proxy URL for service routing."""
     domain = os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com")
@@ -324,13 +369,15 @@ async def lifespan(app: FastAPI):
     service_health_task = asyncio.create_task(background_health_checker())
     agent_health_task = asyncio.create_task(background_agent_health_checker())
     attestation_task = asyncio.create_task(background_cp_attestation_refresher())
-    logger.info("Started background health checkers (services + agents)")
+    measurement_task = asyncio.create_task(background_measurement_processor())
+    logger.info("Started background tasks (health checkers, measurement processor)")
     yield
     # Shutdown
     service_health_task.cancel()
     agent_health_task.cancel()
     attestation_task.cancel()
-    for task in [service_health_task, agent_health_task, attestation_task]:
+    measurement_task.cancel()
+    for task in [service_health_task, agent_health_task, attestation_task, measurement_task]:
         try:
             await task
         except asyncio.CancelledError:
@@ -918,25 +965,16 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
     app_version_store.create(new_version)
     logger.info(f"Version created: {name}@{request.version} ({new_version.version_id})")
 
-    # TODO: Re-enable source inspection once GitHub token auth is implemented
-
-    # Proceed to attestation
-    # For now, mark as attested (attestation happens during deployment)
-    app_version_store.update_status(
-        new_version.version_id,
-        status="attested",
-    )
-
-    attested = app_version_store.get(new_version.version_id)
+    # Version stays "pending" until the measuring enclave processes it
     return AppVersionResponse(
-        version_id=attested.version_id,
-        app_name=attested.app_name,
-        version=attested.version,
-        mrtd=attested.mrtd,
-        attestation=attested.attestation,
-        status=attested.status,
-        rejection_reason=attested.rejection_reason,
-        published_at=attested.published_at,
+        version_id=new_version.version_id,
+        app_name=new_version.app_name,
+        version=new_version.version,
+        mrtd=new_version.mrtd,
+        attestation=new_version.attestation,
+        status=new_version.status,
+        rejection_reason=new_version.rejection_reason,
+        published_at=new_version.published_at,
     )
 
 
@@ -963,6 +1001,54 @@ async def get_app_version(name: str, version: str):
         raise HTTPException(status_code=404, detail="Version not found")
 
     return found_version
+
+
+@app.post("/api/v1/apps/{name}/versions/{version}/attest")
+async def manual_attest_version(name: str, version: str, authorization: str | None = Header(None)):
+    """Manually attest an app version (admin only).
+
+    Used to bootstrap the measuring enclave itself (chicken-and-egg problem).
+    """
+    # Require admin auth
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Admin authentication required")
+    token = authorization[7:]
+    if token not in _admin_tokens:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+    found_version = app_version_store.get_by_version(name, version)
+    if found_version is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    app_version_store.update_status(found_version.version_id, status="attested")
+    logger.info(f"Manually attested: {name}@{version}")
+    return {"status": "attested", "version_id": found_version.version_id}
+
+
+@app.post("/api/v1/internal/measurement-callback")
+async def measurement_callback(request: MeasurementCallbackRequest):
+    """Receive measurement results from the measuring enclave."""
+    found_version = app_version_store.get(request.version_id)
+    if not found_version:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    if request.status == "success":
+        app_version_store.update_status(
+            request.version_id,
+            status="attested",
+            attestation=request.measurement,
+        )
+        logger.info(f"Measurement success: {found_version.app_name}@{found_version.version}")
+    else:
+        app_version_store.update_status(
+            request.version_id,
+            status="failed",
+            rejection_reason=request.error,
+        )
+        logger.warning(
+            f"Measurement failed: {found_version.app_name}@{found_version.version}: {request.error}"
+        )
+    return {"status": "ok"}
 
 
 @app.post("/api/v1/apps/{name}/versions/{version}/deploy", response_model=DeploymentCreateResponse)

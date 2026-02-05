@@ -524,6 +524,16 @@ class AppVersionStore:
             session.add(v)
             return True
 
+    def list_by_status(self, status: str) -> list[AppVersion]:
+        with get_db() as session:
+            return list(
+                session.exec(
+                    select(AppVersion)
+                    .where(AppVersion.status == status)
+                    .order_by(AppVersion.published_at)
+                ).all()
+            )
+
     def clear(self) -> None:
         with get_db() as session:
             for v in session.exec(select(AppVersion)).all():
