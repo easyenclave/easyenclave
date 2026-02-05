@@ -56,7 +56,6 @@ function showDashboard() {
     document.getElementById('loginPage').classList.add('hidden');
     document.getElementById('adminPage').classList.remove('hidden');
     loadAgents();
-    populateAgentFilter();
 }
 
 // Tab navigation
@@ -66,10 +65,21 @@ function showAdminTab(tabName) {
     document.getElementById(`${tabName}-admin-tab`).classList.remove('hidden');
     event.target.classList.add('active');
 
+    // Stop log auto-refresh when leaving logs tab
+    if (tabName !== 'logs' && logAutoRefreshTimer) {
+        clearInterval(logAutoRefreshTimer);
+        logAutoRefreshTimer = null;
+    }
+
     // Load data for tab
     if (tabName === 'agents') loadAgents();
     else if (tabName === 'mrtds') loadMrtds();
-    else if (tabName === 'logs') loadLogs();
+    else if (tabName === 'logs') {
+        loadLogs();
+        if (document.getElementById('logAutoRefresh').checked) {
+            logAutoRefreshTimer = setInterval(loadLogs, 5000);
+        }
+    }
     else if (tabName === 'system') loadSystem();
 }
 
@@ -200,41 +210,44 @@ async function loadMrtds() {
 }
 
 // Logs viewer
-async function populateAgentFilter() {
-    try {
-        const data = await fetchJSON('/api/v1/agents');
-        const select = document.getElementById('logAgentFilter');
-        select.innerHTML = '<option value="">All Agents</option>' +
-            data.agents.map(a => `<option value="${a.agent_id}">${a.vm_name}</option>`).join('');
-    } catch (error) {
-        console.error('Failed to load agents for filter:', error);
-    }
-}
+let logAutoRefreshTimer = null;
 
 async function loadLogs() {
     const container = document.getElementById('logsViewer');
-    const agentId = document.getElementById('logAgentFilter').value;
     const minLevel = document.getElementById('logLevelFilter').value;
+    const lines = document.getElementById('logLinesFilter').value;
 
     try {
-        let url = `/api/v1/logs/control-plane?lines=200`;
-        const data = await fetchJSON(url);
+        const data = await fetchJSON(`/api/v1/logs/control-plane?lines=${lines}&min_level=${minLevel}`);
 
         if (data.logs.length === 0) {
             container.innerHTML = 'No logs found';
             return;
         }
 
+        const wasAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 20;
+
         container.innerHTML = data.logs.map(log => {
             const levelClass = log.level.toLowerCase();
             const time = new Date(log.timestamp).toLocaleTimeString();
-            const source = log.container_name ? `[${log.container_name}]` : '[agent]';
-            return `<div class="log-entry ${levelClass}">${time} ${log.level.toUpperCase().padEnd(7)} ${source} ${log.message}</div>`;
+            const source = `[${log.logger.split('.').pop()}]`;
+            return `<div class="log-entry ${levelClass}">${time} ${log.level.padEnd(7)} ${source} ${log.message}</div>`;
         }).join('');
 
-        container.scrollTop = container.scrollHeight;
+        if (wasAtBottom) {
+            container.scrollTop = container.scrollHeight;
+        }
     } catch (error) {
         container.innerHTML = `Error loading logs: ${error.message}`;
+    }
+}
+
+function toggleLogAutoRefresh() {
+    if (document.getElementById('logAutoRefresh').checked) {
+        logAutoRefreshTimer = setInterval(loadLogs, 5000);
+    } else {
+        clearInterval(logAutoRefreshTimer);
+        logAutoRefreshTimer = null;
     }
 }
 

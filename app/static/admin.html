@@ -280,17 +280,23 @@
             <!-- Logs Tab -->
             <section id="logs-admin-tab" class="tab-content hidden">
                 <div class="section-header">
-                    <h2>System Logs</h2>
+                    <h2>Control Plane Logs</h2>
                     <div>
-                        <select id="logAgentFilter" onchange="loadLogs()">
-                            <option value="">All Agents</option>
-                        </select>
                         <select id="logLevelFilter" onchange="loadLogs()">
-                            <option value="debug">Debug+</option>
-                            <option value="info" selected>Info+</option>
-                            <option value="warning">Warning+</option>
-                            <option value="error">Error+</option>
+                            <option value="DEBUG">Debug+</option>
+                            <option value="INFO" selected>Info+</option>
+                            <option value="WARNING">Warning+</option>
+                            <option value="ERROR">Error+</option>
                         </select>
+                        <select id="logLinesFilter" onchange="loadLogs()">
+                            <option value="100">100 lines</option>
+                            <option value="200" selected>200 lines</option>
+                            <option value="500">500 lines</option>
+                            <option value="1000">1000 lines</option>
+                        </select>
+                        <label style="margin-left: 10px; cursor: pointer;">
+                            <input type="checkbox" id="logAutoRefresh" onchange="toggleLogAutoRefresh()" checked> Auto-refresh
+                        </label>
                         <button class="btn-primary" onclick="loadLogs()">Refresh</button>
                     </div>
                 </div>

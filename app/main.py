@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import os
 import secrets
@@ -62,6 +63,30 @@ from .storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# In-memory log buffer for the admin logs viewer
+class _MemoryLogHandler(logging.Handler):
+    """Captures recent log records in a bounded deque."""
+
+    def __init__(self, capacity: int = 2000):
+        super().__init__()
+        self.records: collections.deque[dict] = collections.deque(maxlen=capacity)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(
+            {
+                "timestamp": datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+            }
+        )
+
+
+_log_handler = _MemoryLogHandler()
+_log_handler.setLevel(logging.DEBUG)
+logging.getLogger().addHandler(_log_handler)
 
 
 # Admin authentication
@@ -1262,25 +1287,14 @@ async def get_agent_stats(agent_id: str):
 @app.get("/api/v1/logs/control-plane")
 async def get_control_plane_logs(
     lines: int = Query(100, description="Number of lines to return", le=1000),
+    min_level: str = Query("INFO", description="Minimum log level"),
 ):
-    """Get recent control plane logs from file."""
-    log_file = Path("/var/log/easyenclave/control-plane.log")
-    if not log_file.exists():
-        log_file = Path("control-plane.log")
-
-    if not log_file.exists():
-        return {"logs": [], "source": "file_not_found"}
-
-    try:
-        with open(log_file) as f:
-            all_lines = f.readlines()
-            return {
-                "logs": all_lines[-lines:],
-                "source": str(log_file),
-                "total_lines": len(all_lines),
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read logs: {e}") from e
+    """Get recent control plane logs from in-memory buffer."""
+    level_num = getattr(logging, min_level.upper(), logging.INFO)
+    filtered = [
+        rec for rec in _log_handler.records if getattr(logging, rec["level"], 0) >= level_num
+    ]
+    return {"logs": filtered[-lines:], "total": len(filtered)}
 
 
 # ==============================================================================
