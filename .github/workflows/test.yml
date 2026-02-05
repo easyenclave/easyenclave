@@ -104,9 +104,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Delete all VMs
-        run: python3 infra/tdx_cli.py vm delete all || true
-
       - name: Build VM image
         id: build
         run: |
@@ -136,6 +133,9 @@ jobs:
           fi
           echo "MRTD: ${MRTD:0:32}..."
           echo "mrtd=$MRTD" >> "$GITHUB_OUTPUT"
+
+      - name: Delete all VMs
+        run: python3 infra/tdx_cli.py vm delete all || true
 
       - name: Deploy control plane
         env:
