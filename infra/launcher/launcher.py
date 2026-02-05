@@ -674,7 +674,7 @@ ADMIN_HTML = """<!DOCTYPE html>
                     <tr><td>Control Plane</td><td>${s.control_plane || "N/A"}</td></tr>
                 `;
 
-                const c = await apiFetch("/api/containers");
+                const c = await apiFetch("/api/admin/containers");
                 if (c.containers && c.containers.length > 0) {
                     document.getElementById("containers").innerHTML = "<table>" +
                         c.containers.map(x => `<tr><td>${x.name}</td><td><span class="status ${x.status}">${x.status}</span></td></tr>`).join("") +
@@ -689,7 +689,7 @@ ADMIN_HTML = """<!DOCTYPE html>
 
         async function loadLogs() {
             const level = document.getElementById("logLevel").value;
-            const l = await apiFetch("/api/logs?level=" + level);
+            const l = await apiFetch("/api/admin/logs?level=" + level);
             const viewer = document.getElementById("logViewer");
             if (l.logs && l.logs.length > 0) {
                 viewer.innerHTML = l.logs.map(x => {
