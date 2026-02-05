@@ -176,24 +176,29 @@ jobs:
           echo "::error::Tunnel not ready after 5 minutes"
           exit 1
 
-      - name: Launch agent
+      - name: Launch agents
         run: |
-          python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --wait
+          # Launch 3 agents in parallel (measuring enclave, example app, private LLM)
+          for _i in 1 2 3; do
+            python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --wait &
+          done
+          wait
+          echo "All 3 agents launched"
 
-      - name: Wait for agent to register and be verified
+      - name: Wait for agents to register and be verified
         run: |
-          echo "Waiting for agent to register and be verified..."
+          echo "Waiting for 3 agents to register and be verified..."
           for i in {1..30}; do
             AGENTS=$(curl -sf https://app.easyenclave.com/api/v1/agents 2>/dev/null || echo '{"agents":[]}')
             VERIFIED=$(echo "$AGENTS" | jq '[.agents[] | select(.verified == true)] | length')
-            if [ "$VERIFIED" -gt 0 ]; then
-              echo "Found $VERIFIED verified agent(s)"
+            if [ "$VERIFIED" -ge 3 ]; then
+              echo "All $VERIFIED agent(s) verified"
               exit 0
             fi
-            echo "No verified agents yet, waiting... ($i/30)"
+            echo "$VERIFIED/3 agents verified, waiting... ($i/30)"
             sleep 10
           done
-          echo "::error::No verified agents after 5 minutes"
+          echo "::error::Not all agents verified after 5 minutes"
           exit 1
 
       - name: Bootstrap measuring enclave
