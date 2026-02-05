@@ -76,8 +76,9 @@ function showAdminTab(tabName) {
     else if (tabName === 'mrtds') loadMrtds();
     else if (tabName === 'logs') {
         loadLogs();
+        loadContainerLogs();
         if (document.getElementById('logAutoRefresh').checked) {
-            logAutoRefreshTimer = setInterval(loadLogs, 5000);
+            logAutoRefreshTimer = setInterval(() => { loadLogs(); loadContainerLogs(); }, 5000);
         }
     }
     else if (tabName === 'system') loadSystem();
@@ -242,9 +243,40 @@ async function loadLogs() {
     }
 }
 
+async function loadContainerLogs() {
+    const container = document.getElementById('containerLogsViewer');
+    const since = document.getElementById('containerLogSince').value;
+
+    try {
+        const data = await fetchJSON(`/api/v1/logs/containers?since=${since}`);
+
+        if (data.error) {
+            container.innerHTML = `<span style="color: #fbbf24;">${data.error}</span>`;
+            return;
+        }
+
+        if (!data.logs || data.logs.length === 0) {
+            container.innerHTML = 'No container logs found';
+            return;
+        }
+
+        const wasAtBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 20;
+
+        container.innerHTML = data.logs.map(log => {
+            return `<div class="log-entry">[${log.container}] ${log.line}</div>`;
+        }).join('');
+
+        if (wasAtBottom) {
+            container.scrollTop = container.scrollHeight;
+        }
+    } catch (error) {
+        container.innerHTML = `Error loading container logs: ${error.message}`;
+    }
+}
+
 function toggleLogAutoRefresh() {
     if (document.getElementById('logAutoRefresh').checked) {
-        logAutoRefreshTimer = setInterval(loadLogs, 5000);
+        logAutoRefreshTimer = setInterval(() => { loadLogs(); loadContainerLogs(); }, 5000);
     } else {
         clearInterval(logAutoRefreshTimer);
         logAutoRefreshTimer = null;

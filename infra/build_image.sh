@@ -101,17 +101,14 @@ create_base_image() {
     qemu-img convert -f qcow2 -O qcow2 "$CLOUD_IMAGE" "$BASE_IMAGE"
     qemu-img resize "$BASE_IMAGE" "$IMAGE_SIZE"
 
-    # Basic setup for cloud image (set password, enable SSH)
-    log_info "Configuring base image for TDX use..."
+    # Sealed mode: lock passwords and disable SSH (cloud-init --debug can re-enable)
+    log_info "Configuring base image for TDX use (sealed mode)..."
     sudo virt-customize -a "$BASE_IMAGE" \
-        --root-password password:tdxrunner \
         --run-command 'useradd -m -s /bin/bash -G sudo ubuntu || true' \
-        --password ubuntu:password:ubuntu \
         --run-command 'echo "ubuntu ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/ubuntu' \
-        --run-command 'systemctl enable ssh' \
-        --run-command 'sed -i "s/#PermitRootLogin.*/PermitRootLogin yes/" /etc/ssh/sshd_config' \
-        --run-command 'sed -i "s/PasswordAuthentication no/PasswordAuthentication yes/" /etc/ssh/sshd_config' \
-        --ssh-inject ubuntu:string:"$(cat ~/.ssh/id_rsa.pub 2>/dev/null || echo '')" \
+        --run-command 'passwd -l root' \
+        --run-command 'passwd -l ubuntu' \
+        --run-command 'systemctl disable ssh || true' \
         --firstboot-command 'growpart /dev/sda 1 && resize2fs /dev/sda1 || true' \
         || {
             log_error "Base image configuration failed"

@@ -98,12 +98,13 @@ class TDXManager:
         """Get XML template path."""
         return self.infra_dir / "vm_templates" / "trust_domain.xml.template"
 
-    def _create_cloud_init_iso(self, vm_id: str, config: dict) -> Path:
+    def _create_cloud_init_iso(self, vm_id: str, config: dict, debug: bool = False) -> Path:
         """Create NoCloud ISO with VM configuration.
 
         Args:
             vm_id: Unique VM identifier
             config: Configuration dict to pass to launcher
+            debug: If True, enable SSH and set password for debugging
 
         Returns:
             Path to cloud-init ISO
@@ -118,12 +119,16 @@ write_files:
     content: '{json.dumps(config)}'
     owner: root:root
     permissions: '0644'
-
-# Enable login for debugging
+"""
+        if debug:
+            user_data += """
 password: tdx
 chpasswd:
   expire: false
 ssh_pwauth: true
+runcmd:
+  - systemctl enable ssh
+  - systemctl start ssh
 """
         (iso_dir / "user-data").write_text(user_data)
 
@@ -170,6 +175,7 @@ ssh_pwauth: true
         image: str | None = None,
         mode: str = AGENT_MODE,
         config: dict | None = None,
+        debug: bool = False,
     ) -> dict:
         """Create and boot a new TDX VM.
 
@@ -225,7 +231,7 @@ ssh_pwauth: true
             "vm_id": rand_str,
             **(config or {}),
         }
-        cloud_init_iso = self._create_cloud_init_iso(rand_str, launcher_config)
+        cloud_init_iso = self._create_cloud_init_iso(rand_str, launcher_config, debug=debug)
 
         # Create serial console log file with world-readable permissions
         # (libvirt will append to it, preserving permissions)
@@ -269,7 +275,9 @@ ssh_pwauth: true
             "info": result.stdout,
         }
 
-    def control_plane_new(self, image: str | None = None, port: int = 8080) -> dict:
+    def control_plane_new(
+        self, image: str | None = None, port: int = 8080, debug: bool = False
+    ) -> dict:
         """Launch a control plane in a TDX VM.
 
         This bootstraps a new EasyEnclave network. The control plane runs
@@ -307,7 +315,7 @@ ssh_pwauth: true
             # Admin password for control plane dashboard
             "admin_password": os.environ.get("ADMIN_PASSWORD"),
         }
-        result = self.vm_new(image=image, mode=CONTROL_PLANE_MODE, config=config)
+        result = self.vm_new(image=image, mode=CONTROL_PLANE_MODE, config=config, debug=debug)
         result["control_plane_port"] = port
 
         # Add expected hostname if Cloudflare is configured
@@ -415,7 +423,7 @@ ssh_pwauth: true
         }
 
         print("Booting temporary VM to measure MRTD...", file=sys.stderr)
-        result = self.vm_new(image=image, mode=AGENT_MODE, config=config)
+        result = self.vm_new(image=image, mode=AGENT_MODE, config=config, debug=True)
         vm_name = result["name"]
         serial_log = result.get("serial_log")
 
@@ -505,6 +513,9 @@ To start a new EasyEnclave network:
     cp_new_parser.add_argument(
         "--wait", action="store_true", help="Wait for control plane to be ready"
     )
+    cp_new_parser.add_argument(
+        "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
+    )
 
     # VM commands
     vm_parser = subparsers.add_parser("vm", help="VM lifecycle management")
@@ -523,6 +534,9 @@ To start a new EasyEnclave network:
         help="Intel Trust Authority API key (or set INTEL_API_KEY env var)",
     )
     new_parser.add_argument("--wait", action="store_true", help="Wait for agent to get IP")
+    new_parser.add_argument(
+        "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
+    )
 
     vm_sub.add_parser("list", help="List TDX VMs")
 
@@ -546,7 +560,7 @@ To start a new EasyEnclave network:
         if args.command == "control-plane":
             if args.cp_command == "new":
                 print("Launching control plane in TDX VM...", file=sys.stderr)
-                result = mgr.control_plane_new(args.image, args.port)
+                result = mgr.control_plane_new(args.image, args.port, debug=args.debug)
 
                 if args.wait:
                     print("\nWaiting for VM to get IP...", file=sys.stderr)
@@ -609,7 +623,7 @@ To start a new EasyEnclave network:
                     "control_plane_url": args.easyenclave_url,
                     "intel_api_key": args.intel_api_key,
                 }
-                result = mgr.vm_new(args.image, config=config)
+                result = mgr.vm_new(args.image, config=config, debug=args.debug)
                 print(json.dumps(result, indent=2))
 
                 if args.wait:

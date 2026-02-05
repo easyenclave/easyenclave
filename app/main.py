@@ -1297,6 +1297,68 @@ async def get_control_plane_logs(
     return {"logs": filtered[-lines:], "total": len(filtered)}
 
 
+@app.get("/api/v1/logs/containers")
+async def get_container_logs(
+    since: str = Query("5m", description="Logs since (e.g., '5m', '1h')"),
+    container: str | None = Query(None, description="Filter by container name"),
+    lines: int = Query(200, description="Max lines per container", le=1000),
+):
+    """Get Docker container logs from the host via mounted docker socket.
+
+    Returns logs from running containers. Requires docker.sock to be mounted.
+    Gracefully returns empty if the docker CLI is unavailable.
+    """
+    import shutil
+
+    if not shutil.which("docker"):
+        return {"logs": [], "count": 0, "error": "docker CLI not available"}
+
+    # List running containers
+    try:
+        ps_proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "ps",
+            "--format",
+            "{{.Names}}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        ps_stdout, ps_stderr = await asyncio.wait_for(ps_proc.communicate(), timeout=10)
+    except (asyncio.TimeoutError, OSError) as e:
+        return {"logs": [], "count": 0, "error": f"Failed to list containers: {e}"}
+
+    if ps_proc.returncode != 0:
+        err = ps_stderr.decode(errors="replace").strip()
+        return {"logs": [], "count": 0, "error": f"docker ps failed: {err}"}
+
+    container_names = [n for n in ps_stdout.decode().strip().split("\n") if n]
+    if container and container_names:
+        container_names = [n for n in container_names if container in n]
+
+    all_logs = []
+    for name in container_names:
+        try:
+            log_proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "logs",
+                "--since",
+                since,
+                "--tail",
+                str(lines),
+                name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            log_stdout, _ = await asyncio.wait_for(log_proc.communicate(), timeout=10)
+            for line in log_stdout.decode(errors="replace").strip().split("\n"):
+                if line:
+                    all_logs.append({"container": name, "line": line})
+        except (asyncio.TimeoutError, OSError):
+            all_logs.append({"container": name, "line": "[error fetching logs]"})
+
+    return {"logs": all_logs, "count": len(all_logs)}
+
+
 # ==============================================================================
 # Admin Authentication and Dashboard
 # ==============================================================================

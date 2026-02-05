@@ -303,6 +303,22 @@
                 <div id="logsViewer" class="log-viewer">
                     Loading logs...
                 </div>
+
+                <div class="section-header" style="margin-top: 20px;">
+                    <h2>Container Logs</h2>
+                    <div>
+                        <select id="containerLogSince" onchange="loadContainerLogs()">
+                            <option value="1m">Last 1 minute</option>
+                            <option value="5m" selected>Last 5 minutes</option>
+                            <option value="15m">Last 15 minutes</option>
+                            <option value="1h">Last 1 hour</option>
+                        </select>
+                        <button class="btn-primary" onclick="loadContainerLogs()">Refresh</button>
+                    </div>
+                </div>
+                <div id="containerLogsViewer" class="log-viewer">
+                    Loading container logs...
+                </div>
             </section>
 
             <!-- System Tab -->
