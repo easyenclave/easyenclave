@@ -171,8 +171,15 @@ def generate_tdx_quote(nonce: str | None = None) -> TdxQuoteResult:
         return TdxQuoteResult(error="TDX not available (control plane not in TEE)")
 
     try:
-        report_id = f"quote_{os.getpid()}_{int(time.time())}"
+        report_id = f"quote_{os.getpid()}_{time.time_ns()}"
         report_dir = TSM_REPORT_PATH / report_id
+
+        # Clean up stale report dir if it exists (from a previous crash)
+        if report_dir.exists():
+            try:
+                report_dir.rmdir()
+            except OSError:
+                pass
 
         report_dir.mkdir()
         try:

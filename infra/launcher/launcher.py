@@ -859,8 +859,15 @@ def generate_tdx_quote(user_data: bytes = None) -> str:
     if not TSM_REPORT_PATH.exists():
         raise RuntimeError(f"TDX not available: {TSM_REPORT_PATH} does not exist")
 
-    report_id = f"quote_{os.getpid()}_{int(time.time())}"
+    report_id = f"quote_{os.getpid()}_{time.time_ns()}"
     report_dir = TSM_REPORT_PATH / report_id
+
+    # Clean up stale report dir if it exists (from a previous crash)
+    if report_dir.exists():
+        try:
+            report_dir.rmdir()
+        except OSError:
+            pass
 
     try:
         report_dir.mkdir()
