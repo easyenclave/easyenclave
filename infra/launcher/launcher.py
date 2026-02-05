@@ -172,6 +172,7 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             "agent_id": _admin_state["agent_id"],
             "vm_name": _admin_state["vm_name"],
             "deployment_id": _admin_state["deployment_id"],
+            "control_plane": CONTROL_PLANE_URL,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
