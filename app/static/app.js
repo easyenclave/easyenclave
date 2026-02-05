@@ -5,6 +5,20 @@ let allApps = [];
 let allAgents = [];
 let allDeployments = [];
 
+async function fetchJSON(url, options) {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text.substring(0, 200)}`);
+    }
+    const ct = response.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+        const body = await response.text();
+        throw new Error(`Expected JSON from ${url} but got ${ct}: ${body.substring(0, 100)}`);
+    }
+    return response.json();
+}
+
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     loadAll();
@@ -20,8 +34,7 @@ async function loadAll() {
 // Load apps from API
 async function loadApps() {
     try {
-        const response = await fetch(`${API_BASE}/apps`);
-        const data = await response.json();
+        const data = await fetchJSON(`${API_BASE}/apps`);
         allApps = data.apps;
         renderApps(allApps);
     } catch (error) {
@@ -34,8 +47,7 @@ async function loadApps() {
 // Load agents from API
 async function loadAgents() {
     try {
-        const response = await fetch(`${API_BASE}/agents`);
-        const data = await response.json();
+        const data = await fetchJSON(`${API_BASE}/agents`);
         allAgents = data.agents;
         renderAgents(allAgents);
     } catch (error) {
@@ -48,8 +60,7 @@ async function loadAgents() {
 // Load deployments from API
 async function loadDeployments() {
     try {
-        const response = await fetch(`${API_BASE}/deployments`);
-        const data = await response.json();
+        const data = await fetchJSON(`${API_BASE}/deployments`);
         allDeployments = data.deployments.slice(0, 20); // Show last 20
         renderDeployments(allDeployments);
     } catch (error) {
@@ -171,13 +182,10 @@ function renderDeployments(deployments) {
 // Show app details modal
 async function showAppDetails(appName) {
     try {
-        const [appResponse, versionsResponse] = await Promise.all([
-            fetch(`${API_BASE}/apps/${encodeURIComponent(appName)}`),
-            fetch(`${API_BASE}/apps/${encodeURIComponent(appName)}/versions`)
+        const [app, versionsData] = await Promise.all([
+            fetchJSON(`${API_BASE}/apps/${encodeURIComponent(appName)}`),
+            fetchJSON(`${API_BASE}/apps/${encodeURIComponent(appName)}/versions`)
         ]);
-
-        const app = await appResponse.json();
-        const versionsData = await versionsResponse.json();
         const versions = versionsData.versions || [];
 
         const details = document.getElementById('appDetails');
@@ -242,13 +250,10 @@ async function showAppDetails(appName) {
 // Show agent details modal
 async function showAgentDetails(agentId) {
     try {
-        const [agentResponse, attestationResponse] = await Promise.all([
-            fetch(`${API_BASE}/agents/${agentId}`),
-            fetch(`${API_BASE}/agents/${agentId}/attestation`)
+        const [agent, attestation] = await Promise.all([
+            fetchJSON(`${API_BASE}/agents/${agentId}`),
+            fetchJSON(`${API_BASE}/agents/${agentId}/attestation`)
         ]);
-
-        const agent = await agentResponse.json();
-        const attestation = await attestationResponse.json();
 
         const details = document.getElementById('agentDetails');
         details.innerHTML = `
@@ -412,8 +417,10 @@ async function registerApp(event) {
         });
 
         if (!response.ok) {
-            const error = await response.json();
-            alert(`Failed to register app: ${error.detail || 'Unknown error'}`);
+            const text = await response.text();
+            let detail = 'Unknown error';
+            try { detail = JSON.parse(text).detail || text; } catch { detail = text; }
+            alert(`Failed to register app: ${detail}`);
             return;
         }
 

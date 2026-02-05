@@ -2,6 +2,20 @@
 
 let adminToken = null;
 
+async function fetchJSON(url, options) {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text.substring(0, 200)}`);
+    }
+    const ct = response.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+        const body = await response.text();
+        throw new Error(`Expected JSON from ${url} but got ${ct}: ${body.substring(0, 100)}`);
+    }
+    return response.json();
+}
+
 // Check if already logged in
 document.addEventListener('DOMContentLoaded', () => {
     adminToken = sessionStorage.getItem('adminToken');
@@ -17,23 +31,16 @@ async function login(event) {
     const errorDiv = document.getElementById('loginError');
 
     try {
-        const response = await fetch('/admin/login', {
+        const data = await fetchJSON('/admin/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ password })
         });
-
-        if (response.ok) {
-            const data = await response.json();
-            adminToken = data.token;
-            sessionStorage.setItem('adminToken', adminToken);
-            showDashboard();
-        } else {
-            errorDiv.textContent = 'Invalid password';
-            errorDiv.style.display = 'block';
-        }
+        adminToken = data.token;
+        sessionStorage.setItem('adminToken', adminToken);
+        showDashboard();
     } catch (error) {
-        errorDiv.textContent = 'Connection error';
+        errorDiv.textContent = error.message.includes('401') ? 'Invalid password' : 'Connection error';
         errorDiv.style.display = 'block';
     }
 }
@@ -84,8 +91,7 @@ async function adminFetch(url, options = {}) {
 async function loadAgents() {
     const container = document.getElementById('agentsAdminList');
     try {
-        const response = await fetch('/api/v1/agents');
-        const data = await response.json();
+        const data = await fetchJSON('/api/v1/agents');
 
         if (data.agents.length === 0) {
             container.innerHTML = '<div class="empty">No agents registered</div>';
@@ -163,8 +169,7 @@ async function resetAgent(agentId) {
 async function loadMrtds() {
     const container = document.getElementById('mrtdsAdminList');
     try {
-        const response = await fetch('/api/v1/trusted-mrtds');
-        const data = await response.json();
+        const data = await fetchJSON('/api/v1/trusted-mrtds');
 
         if (data.trusted_mrtds.length === 0) {
             container.innerHTML = '<div class="empty">No trusted MRTDs configured</div>';
@@ -197,8 +202,7 @@ async function loadMrtds() {
 // Logs viewer
 async function populateAgentFilter() {
     try {
-        const response = await fetch('/api/v1/agents');
-        const data = await response.json();
+        const data = await fetchJSON('/api/v1/agents');
         const select = document.getElementById('logAgentFilter');
         select.innerHTML = '<option value="">All Agents</option>' +
             data.agents.map(a => `<option value="${a.agent_id}">${a.vm_name}</option>`).join('');
@@ -214,13 +218,7 @@ async function loadLogs() {
 
     try {
         let url = `/api/v1/logs/control-plane?lines=200`;
-
-        const response = await fetch(url);
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`${response.status}: ${text}`);
-        }
-        const data = await response.json();
+        const data = await fetchJSON(url);
 
         if (data.logs.length === 0) {
             container.innerHTML = 'No logs found';
@@ -244,8 +242,7 @@ async function loadLogs() {
 async function loadSystem() {
     // Health check
     try {
-        const response = await fetch('/health');
-        const data = await response.json();
+        const data = await fetchJSON('/health');
         document.getElementById('healthStatus').innerHTML = `
             <table class="data-table">
                 <tr><td>Status</td><td><span class="verified-badge">${data.status}</span></td></tr>
@@ -259,9 +256,9 @@ async function loadSystem() {
     // System info
     try {
         const [agents, apps, deployments] = await Promise.all([
-            fetch('/api/v1/agents').then(r => r.json()),
-            fetch('/api/v1/apps').then(r => r.json()),
-            fetch('/api/v1/deployments').then(r => r.json())
+            fetchJSON('/api/v1/agents'),
+            fetchJSON('/api/v1/apps'),
+            fetchJSON('/api/v1/deployments')
         ]);
 
         const healthyAgents = agents.agents.filter(a => a.health_status === 'healthy').length;
@@ -287,8 +284,7 @@ async function deleteAllAgents() {
     if (!confirm('Are you REALLY sure? All tunnels and agent data will be lost.')) return;
 
     try {
-        const response = await fetch('/api/v1/agents');
-        const data = await response.json();
+        const data = await fetchJSON('/api/v1/agents');
 
         for (const agent of data.agents) {
             await adminFetch(`/api/v1/agents/${agent.agent_id}`, { method: 'DELETE' });
@@ -305,8 +301,7 @@ async function resetFailedAgents() {
     if (!confirm('Reset all agents in attestation_failed state?')) return;
 
     try {
-        const response = await fetch('/api/v1/agents');
-        const data = await response.json();
+        const data = await fetchJSON('/api/v1/agents');
 
         let count = 0;
         for (const agent of data.agents) {
@@ -345,12 +340,7 @@ async function loadAgentStats(agentId) {
     container.innerHTML = '<div class="loading">Loading stats...</div>';
 
     try {
-        const response = await fetch(`/api/v1/agents/${agentId}/stats`);
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`${response.status}: ${text.substring(0, 100)}`);
-        }
-        const stats = await response.json();
+        const stats = await fetchJSON(`/api/v1/agents/${agentId}/stats`);
 
         container.innerHTML = `
             <div class="stat-card">
@@ -389,12 +379,7 @@ async function loadAgentLogs(agentId) {
     container.innerHTML = 'Loading logs...';
 
     try {
-        const response = await fetch(`/api/v1/agents/${agentId}/logs?since=${since}`);
-        if (!response.ok) {
-            const text = await response.text();
-            throw new Error(`${response.status}: ${text.substring(0, 100)}`);
-        }
-        const data = await response.json();
+        const data = await fetchJSON(`/api/v1/agents/${agentId}/logs?since=${since}`);
 
         if (!data.logs || data.logs.length === 0) {
             container.innerHTML = 'No logs found';
