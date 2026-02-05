@@ -238,13 +238,14 @@ runcmd:
         serial_log = self.WORKDIR / f"console.{rand_str}.log"
         serial_log.touch(mode=0o644)
 
-        # Generate domain XML
+        # Generate domain XML with unique name (supports concurrent VM creation)
+        temp_domain = f"{self.DOMAIN_PREFIX}-{rand_str}"
         xml_content = template.read_text()
         xml_content = xml_content.replace("BASE_IMG_PATH", str(image_path))
         xml_content = xml_content.replace("OVERLAY_IMG_PATH", str(overlay_path))
         xml_content = xml_content.replace("CLOUD_INIT_ISO", str(cloud_init_iso))
         xml_content = xml_content.replace("SERIAL_LOG_PATH", str(serial_log))
-        xml_content = xml_content.replace("DOMAIN", self.DOMAIN_PREFIX)
+        xml_content = xml_content.replace("DOMAIN", temp_domain)
         xml_content = xml_content.replace("HOSTDEV_DEVICES", "")
 
         xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.{rand_str}.xml"
@@ -253,15 +254,14 @@ runcmd:
         # Define and start VM
         self._virsh("define", str(xml_path), check=True)
 
-        # Get UUID and rename
-        result = self._virsh("domuuid", self.DOMAIN_PREFIX, text=True, check=True)
+        # Get UUID and rename to final name
+        result = self._virsh("domuuid", temp_domain, text=True, check=True)
         vm_uuid = result.stdout.strip()
 
-        # Determine template name for domain prefix
         template_name = template.stem.replace(".xml", "")
         vm_name = f"{self.DOMAIN_PREFIX}-{template_name}-{vm_uuid}"
 
-        self._virsh("domrename", self.DOMAIN_PREFIX, vm_name, check=True)
+        self._virsh("domrename", temp_domain, vm_name, check=True)
         self._virsh("start", vm_name, check=True)
 
         # Get VM info
