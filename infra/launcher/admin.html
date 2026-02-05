@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyEnclave Agent Admin</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f3f4f6; color: #1f2937; }
+        .container { max-width: 1000px; margin: 0 auto; padding: 20px; }
+        header { background: #7c3aed; color: white; padding: 20px 0; margin-bottom: 20px; }
+        header h1 { padding: 0 20px; }
+        .card { background: white; border-radius: 8px; padding: 20px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .card h2 { margin-bottom: 15px; color: #374151; font-size: 1.1rem; }
+        table { width: 100%; border-collapse: collapse; }
+        td { padding: 8px 0; border-bottom: 1px solid #e5e7eb; }
+        td:first-child { color: #6b7280; width: 150px; }
+        code { background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; }
+        .status { padding: 3px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 500; }
+        .status.healthy, .status.deployed { background: #dcfce7; color: #166534; }
+        .status.unhealthy, .status.error { background: #fee2e2; color: #991b1b; }
+        .status.undeployed { background: #e5e7eb; color: #374151; }
+        .log-viewer { background: #1f2937; color: #e5e7eb; padding: 15px; border-radius: 8px; font-family: monospace; font-size: 0.8rem; max-height: 400px; overflow-y: auto; white-space: pre-wrap; }
+        .log-entry { margin-bottom: 2px; }
+        .log-entry.error { color: #f87171; }
+        .log-entry.warning { color: #fbbf24; }
+        .log-entry.info { color: #60a5fa; }
+        .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
+        .btn-primary { background: #7c3aed; color: white; }
+        .btn-primary:hover { background: #6d28d9; }
+        .hidden { display: none; }
+        .login-box { max-width: 350px; margin: 100px auto; }
+        .login-box input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #d1d5db; border-radius: 6px; }
+        .error-msg { background: #fee2e2; color: #991b1b; padding: 10px; border-radius: 6px; margin-bottom: 15px; display: none; }
+        .flex { display: flex; justify-content: space-between; align-items: center; }
+    </style>
+</head>
+<body>
+    <div id="loginPage">
+        <div class="container">
+            <div class="login-box card">
+                <h2>Agent Admin Login</h2>
+                <div id="loginError" class="error-msg"></div>
+                <form onsubmit="login(event)">
+                    <input type="password" id="password" placeholder="Password" required autofocus>
+                    <button type="submit" class="btn btn-primary" style="width:100%">Login</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div id="adminPage" class="hidden">
+        <header><div class="container"><h1>Agent Admin</h1></div></header>
+        <div class="container">
+            <div class="card">
+                <div class="flex">
+                    <h2>Agent Status</h2>
+                    <button class="btn btn-primary" onclick="refresh()">Refresh</button>
+                </div>
+                <table id="statusTable">
+                    <tr><td>Loading...</td><td></td></tr>
+                </table>
+            </div>
+
+            <div class="card">
+                <h2>Containers</h2>
+                <div id="containers">Loading...</div>
+            </div>
+
+            <div class="card">
+                <div class="flex">
+                    <h2>System Metrics</h2>
+                </div>
+                <div id="statsGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">Loading...</div>
+            </div>
+
+            <div class="card">
+                <div class="flex">
+                    <h2>Container Logs</h2>
+                    <div>
+                        <select id="logSince" onchange="loadLogs()">
+                            <option value="1m">Last 1m</option>
+                            <option value="5m" selected>Last 5m</option>
+                            <option value="15m">Last 15m</option>
+                            <option value="1h">Last 1h</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="loadLogs()">Refresh</button>
+                    </div>
+                </div>
+                <div id="logViewer" class="log-viewer">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let token = sessionStorage.getItem("agentToken");
+        if (token) showDashboard();
+
+        async function login(e) {
+            e.preventDefault();
+            const pw = document.getElementById("password").value;
+            const err = document.getElementById("loginError");
+            try {
+                const r = await fetch("/api/login", {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({password: pw})
+                });
+                if (r.ok) {
+                    const d = await r.json();
+                    token = d.token;
+                    sessionStorage.setItem("agentToken", token);
+                    showDashboard();
+                } else {
+                    err.textContent = "Invalid password";
+                    err.style.display = "block";
+                }
+            } catch(e) { err.textContent = "Error"; err.style.display = "block"; }
+        }
+
+        function showDashboard() {
+            document.getElementById("loginPage").classList.add("hidden");
+            document.getElementById("adminPage").classList.remove("hidden");
+            refresh();
+        }
+
+        async function apiFetch(url) {
+            const r = await fetch(url, {headers: {"Authorization": "Bearer " + token}});
+            if (r.status === 401) { sessionStorage.removeItem("agentToken"); location.reload(); }
+            return r.json();
+        }
+
+        function fmtBytes(b) {
+            if (!b) return "0 B";
+            const u = ["B","KB","MB","GB","TB"];
+            const i = Math.floor(Math.log(b)/Math.log(1024));
+            return (b/Math.pow(1024,i)).toFixed(1) + " " + u[i];
+        }
+        function fmtUptime(s) {
+            const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+            return d > 0 ? d+"d "+h+"h" : h > 0 ? h+"h "+m+"m" : m+"m";
+        }
+        function statCard(label, value, detail) {
+            return `<div style="background:#f3f4f6;padding:12px;border-radius:6px;"><div style="font-size:0.8rem;color:#6b7280;">${label}</div><div style="font-size:1.3rem;font-weight:600;">${value}</div>${detail ? '<div style="font-size:0.75rem;color:#9ca3af;">'+detail+'</div>' : ''}</div>`;
+        }
+
+        async function refresh() {
+            try {
+                const s = await apiFetch("/api/status");
+                document.getElementById("statusTable").innerHTML = `
+                    <tr><td>Agent ID</td><td><code>${s.agent_id || "N/A"}</code></td></tr>
+                    <tr><td>VM Name</td><td>${s.vm_name || "N/A"}</td></tr>
+                    <tr><td>Status</td><td><span class="status ${s.status}">${s.status}</span></td></tr>
+                    <tr><td>Deployment</td><td><code>${s.deployment_id || "None"}</code></td></tr>
+                    <tr><td>Control Plane</td><td>${s.control_plane || "N/A"}</td></tr>
+                `;
+
+                const c = await apiFetch("/api/admin/containers");
+                if (c.containers && c.containers.length > 0) {
+                    document.getElementById("containers").innerHTML = "<table>" +
+                        c.containers.map(x => `<tr><td>${x.name}</td><td><span class="status ${x.status}">${x.status}</span></td></tr>`).join("") +
+                        "</table>";
+                } else {
+                    document.getElementById("containers").innerHTML = "<em>No containers running</em>";
+                }
+
+                loadStats();
+                loadLogs();
+            } catch(e) { console.error(e); }
+        }
+
+        async function loadStats() {
+            try {
+                const st = await apiFetch("/api/admin/stats");
+                document.getElementById("statsGrid").innerHTML =
+                    statCard("CPU", (st.cpu_percent||0)+"%", "Load: "+(st.load_avg||[]).map(x=>x.toFixed(2)).join(", ")) +
+                    statCard("Memory", (st.memory_percent||0)+"%", (st.memory_used_gb||0).toFixed(1)+" / "+(st.memory_total_gb||0).toFixed(1)+" GB") +
+                    statCard("Disk", (st.disk_percent||0)+"%", (st.disk_used_gb||0).toFixed(1)+" / "+(st.disk_total_gb||0).toFixed(1)+" GB") +
+                    statCard("Network", "↑ "+fmtBytes(st.net_bytes_sent), "↓ "+fmtBytes(st.net_bytes_recv)) +
+                    statCard("Uptime", fmtUptime(st.uptime_seconds||0), "");
+            } catch(e) {
+                document.getElementById("statsGrid").innerHTML = "<em>Failed to load stats</em>";
+            }
+        }
+
+        async function loadLogs() {
+            const since = document.getElementById("logSince").value;
+            const l = await apiFetch("/api/admin/logs?since=" + since);
+            const viewer = document.getElementById("logViewer");
+            if (l.logs && l.logs.length > 0) {
+                viewer.innerHTML = l.logs.map(x => {
+                    const name = x.container || "unknown";
+                    return `<div class="log-entry">[${name}] ${x.line}</div>`;
+                }).join("");
+                viewer.scrollTop = viewer.scrollHeight;
+            } else {
+                viewer.innerHTML = "No logs";
+            }
+        }
+
+        setInterval(refresh, 30000);
+    </script>
+</body>
+</html>
