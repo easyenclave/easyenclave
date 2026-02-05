@@ -371,8 +371,8 @@ async function showAgentDetails(agentId, vmName) {
     document.getElementById('agentModalTitle').textContent = `Agent: ${vmName}`;
     document.getElementById('agentModal').classList.remove('hidden');
 
-    // Load stats and logs
-    await Promise.all([loadAgentStats(agentId), loadAgentLogs(agentId)]);
+    // Load stats, attestation, and logs
+    await Promise.all([loadAgentStats(agentId), loadAgentAttestation(agentId), loadAgentLogs(agentId)]);
 }
 
 function closeAgentModal() {
@@ -415,6 +415,44 @@ async function loadAgentStats(agentId) {
         `;
     } catch (error) {
         container.innerHTML = `<div class="error">Error loading stats: ${error.message}</div>`;
+    }
+}
+
+async function loadAgentAttestation(agentId) {
+    const container = document.getElementById('agentAttestation');
+    container.innerHTML = '<div class="loading">Loading attestation...</div>';
+
+    try {
+        const data = await fetchJSON(`/api/v1/agents/${agentId}/attestation`);
+
+        const rows = [];
+        rows.push(`<tr><td>Verified</td><td>${data.verified ? '<span class="verified-badge">Yes</span>' : '<span class="unverified-badge">No</span>'}</td></tr>`);
+        rows.push(`<tr><td>MRTD</td><td><code style="font-size: 0.75rem; word-break: break-all;">${data.mrtd || 'N/A'}</code></td></tr>`);
+        if (data.mrtd_type) {
+            rows.push(`<tr><td>MRTD Type</td><td>${data.mrtd_type}</td></tr>`);
+        }
+
+        const itaStatus = data.intel_ta_verified ? '<span class="verified-badge">Valid</span>' : '<span class="unverified-badge">Expired/Invalid</span>';
+        rows.push(`<tr><td>Intel TA Token</td><td>${itaStatus}</td></tr>`);
+
+        if (data.intel_ta_claims) {
+            const claims = data.intel_ta_claims;
+            if (claims.attester_type) rows.push(`<tr><td>Attester Type</td><td>${claims.attester_type}</td></tr>`);
+            if (claims.attester_tcb_status) rows.push(`<tr><td>TCB Status</td><td>${claims.attester_tcb_status}</td></tr>`);
+            if (claims.token_issued) rows.push(`<tr><td>Token Issued</td><td>${new Date(claims.token_issued).toLocaleString()}</td></tr>`);
+            if (claims.token_expiry) rows.push(`<tr><td>Token Expiry</td><td>${new Date(claims.token_expiry).toLocaleString()}</td></tr>`);
+        }
+
+        if (data.verification_error) {
+            rows.push(`<tr><td>Error</td><td style="color: var(--danger);">${data.verification_error}</td></tr>`);
+        }
+
+        rows.push(`<tr><td>Hostname</td><td>${data.hostname ? `<a href="https://${data.hostname}" target="_blank">${data.hostname}</a>` : 'No tunnel'}</td></tr>`);
+        rows.push(`<tr><td>Registered</td><td>${new Date(data.registered_at).toLocaleString()}</td></tr>`);
+
+        container.innerHTML = `<table class="data-table">${rows.join('')}</table>`;
+    } catch (error) {
+        container.innerHTML = `<div class="error">Error loading attestation: ${error.message}</div>`;
     }
 }
 
