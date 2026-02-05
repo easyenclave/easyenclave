@@ -34,10 +34,6 @@ inputs:
     description: EasyEnclave control plane URL
     required: false
     default: 'https://app.easyenclave.com'
-  trusted_mrtd:
-    description: TDX VM image MRTD to trust (optional)
-    required: false
-    default: ''
 
 outputs:
   deployment_id:
@@ -45,13 +41,13 @@ outputs:
     value: ${{ steps.deploy.outputs.deployment_id }}
   agent_id:
     description: The agent ID used for deployment
-    value: ${{ steps.deploy.outputs.agent_id }}
+    value: ${{ steps.find-agent.outputs.agent_id }}
   service_url:
     description: The deployed service URL
-    value: ${{ steps.deploy.outputs.service_url }}
+    value: ${{ steps.health.outputs.service_url }}
   version:
     description: The published app version
-    value: ${{ steps.deploy.outputs.version }}
+    value: ${{ steps.version.outputs.version }}
 
 runs:
   using: composite
@@ -65,93 +61,59 @@ runs:
         fi
         echo "Deploying ${{ inputs.app_name }} from ${{ inputs.compose_file }}"
 
-    - name: Deploy to EasyEnclave
-      id: deploy
+    - name: Verify app is registered
       shell: bash
-      env:
-        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
-        TRUSTED_MRTD: ${{ inputs.trusted_mrtd }}
-        COMPOSE_FILE: ${{ inputs.compose_file }}
-        APP_NAME: ${{ inputs.app_name }}
-        SERVICE_NAME: ${{ inputs.service_name }}
-        HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
       run: |
         set -e
-
-        # Trust MRTD if provided
-        if [ -n "$TRUSTED_MRTD" ]; then
-          echo "Ensuring MRTD is trusted: ${TRUSTED_MRTD:0:32}..."
-          curl -sf -X POST "$CONTROL_PLANE_URL/api/v1/trusted-mrtds" \
-            -H "Content-Type: application/json" \
-            -d "{\"mrtd\": \"$TRUSTED_MRTD\", \"description\": \"TDX runner image\"}" 2>/dev/null || true
-        fi
-
-        # Step 1: Verify app exists
-        echo "Verifying app '$APP_NAME' is registered..."
+        echo "Verifying app '${{ inputs.app_name }}' is registered..."
         HTTP_CODE=$(curl -s -o /tmp/app_response.json -w "%{http_code}" \
-          "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME" 2>/dev/null) || true
+          "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}" 2>/dev/null) || true
 
         if [ "$HTTP_CODE" != "200" ]; then
-          echo "::error::App '$APP_NAME' is not registered (HTTP $HTTP_CODE). Please register the app first using:"
-          echo "::error::  curl -X POST $CONTROL_PLANE_URL/api/v1/apps -H 'Content-Type: application/json' -d '{\"name\": \"$APP_NAME\", \"source_repo\": \"your-org/your-repo\"}'"
+          echo "::error::App '${{ inputs.app_name }}' is not registered (HTTP $HTTP_CODE). Please register the app first using:"
+          echo "::error::  curl -X POST ${{ inputs.control_plane_url }}/api/v1/apps -H 'Content-Type: application/json' -d '{\"name\": \"${{ inputs.app_name }}\", \"source_repo\": \"your-org/your-repo\"}'"
           echo "Response body: $(cat /tmp/app_response.json 2>/dev/null || echo 'empty')"
           exit 1
         fi
-        echo "App '$APP_NAME' found"
+        echo "App '${{ inputs.app_name }}' found"
 
-        # Step 2: Generate version string (YYYYMMDD-HHMMSS-short_sha)
+    - name: Generate version string
+      id: version
+      shell: bash
+      run: |
         TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
         SHORT_SHA="${GITHUB_SHA:0:7}"
         VERSION="${TIMESTAMP}-${SHORT_SHA}"
         echo "Generated version: $VERSION"
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-        # Step 3: Publish version
-        echo "Publishing version $VERSION..."
-        COMPOSE_B64=$(base64 -w0 "$COMPOSE_FILE")
-        HTTP_CODE=$(curl -s -o /tmp/version_response.json -w "%{http_code}" \
-          -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions" \
-          -H "Content-Type: application/json" \
-          -d "{
-            \"version\": \"$VERSION\",
-            \"compose\": \"$COMPOSE_B64\",
-            \"source_commit\": \"$GITHUB_SHA\"
-          }")
+    - name: Publish version
+      id: publish
+      uses: ./.github/actions/publish
+      with:
+        app_name: ${{ inputs.app_name }}
+        version: ${{ steps.version.outputs.version }}
+        compose_file: ${{ inputs.compose_file }}
+        source_commit: ${{ github.sha }}
+        control_plane_url: ${{ inputs.control_plane_url }}
 
-        if [ "$HTTP_CODE" -ge 400 ]; then
-          echo "::error::Failed to publish version: $(cat /tmp/version_response.json)"
+    - name: Verify version is attested
+      shell: bash
+      run: |
+        if [ "${{ steps.publish.outputs.status }}" != "attested" ]; then
+          echo "::error::Version status is '${{ steps.publish.outputs.status }}', expected 'attested'"
           exit 1
         fi
+        echo "Version ${{ steps.version.outputs.version }} is attested"
 
-        # Step 4: Check version status
-        VERSION_STATUS=$(jq -r '.status' /tmp/version_response.json)
-        echo "Version status: $VERSION_STATUS"
+    - name: Find available agent
+      id: find-agent
+      shell: bash
+      env:
+        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
+      run: |
+        set -e
 
-        if [ "$VERSION_STATUS" = "rejected" ]; then
-          REJECTION_REASON=$(jq -r '.rejection_reason // "Unknown reason"' /tmp/version_response.json)
-          echo "::error::Version was rejected by source inspection: $REJECTION_REASON"
-          exit 1
-        fi
-
-        if [ "$VERSION_STATUS" != "attested" ]; then
-          echo "::error::Version status is '$VERSION_STATUS', expected 'attested'"
-          exit 1
-        fi
-        echo "Version $VERSION is attested"
-
-        # Helper: Fetch and display agent logs
-        fetch_agent_logs() {
-          local agent_id="$1"
-          local limit="${2:-50}"
-          echo ""
-          echo "=== Agent Logs (last $limit entries) ==="
-          LOGS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$agent_id/logs?limit=$limit&min_level=INFO" 2>/dev/null || echo '{"logs":[]}')
-          echo "$LOGS" | jq -r '.logs[] | "\(.timestamp) [\(.level)] \(.source): \(.message)"' 2>/dev/null || echo "No logs available"
-          echo "=== End Logs ==="
-          echo ""
-        }
-
-        # Helper: Check if agent exists and is available
         check_agent_available() {
           local agent_id="$1"
           local http_code
@@ -166,7 +128,6 @@ runs:
           return 0
         }
 
-        # Helper: Find an available verified agent
         find_available_agent() {
           local agents_json
           agents_json=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
@@ -188,7 +149,6 @@ runs:
           return 1
         }
 
-        # Step 5: Find available agent (retry for up to 3 minutes)
         echo "Looking for available agent..."
         AGENT_ID=""
         for attempt in {1..6}; do
@@ -211,16 +171,20 @@ runs:
         echo "Using agent: $AGENT_ID"
         echo "agent_id=$AGENT_ID" >> "$GITHUB_OUTPUT"
 
-        # Step 6: Deploy version
-        echo "Deploying version $VERSION to agent $AGENT_ID..."
+    - name: Deploy version to agent
+      id: deploy
+      shell: bash
+      run: |
+        set -e
+        echo "Deploying version ${{ steps.version.outputs.version }} to agent ${{ steps.find-agent.outputs.agent_id }}..."
         HTTP_CODE=$(curl -s -o /tmp/deploy_response.json -w "%{http_code}" \
-          -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions/$VERSION/deploy" \
+          -X POST "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/${{ steps.version.outputs.version }}/deploy" \
           -H "Content-Type: application/json" \
           -d "{
-            \"agent_id\": \"$AGENT_ID\",
+            \"agent_id\": \"${{ steps.find-agent.outputs.agent_id }}\",
             \"config\": {
-              \"service_name\": \"$SERVICE_NAME\",
-              \"health_endpoint\": \"$HEALTH_ENDPOINT\"
+              \"service_name\": \"${{ inputs.service_name }}\",
+              \"health_endpoint\": \"${{ inputs.health_endpoint }}\"
             }
           }")
 
@@ -236,18 +200,36 @@ runs:
         echo "Deployment ID: $DEPLOYMENT_ID"
         echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
 
-        # Step 7: Wait for health (also check for deployment failures)
+    - name: Wait for deployment health
+      id: health
+      shell: bash
+      env:
+        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
+        AGENT_ID: ${{ steps.find-agent.outputs.agent_id }}
+        DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+        HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
+      run: |
+        set -e
+
+        fetch_agent_logs() {
+          local agent_id="$1"
+          local limit="${2:-50}"
+          echo ""
+          echo "=== Agent Logs (last $limit entries) ==="
+          LOGS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$agent_id/logs?limit=$limit&min_level=INFO" 2>/dev/null || echo '{"logs":[]}')
+          echo "$LOGS" | jq -r '.logs[] | "\(.timestamp) [\(.level)] \(.source): \(.message)"' 2>/dev/null || echo "No logs available"
+          echo "=== End Logs ==="
+          echo ""
+        }
+
         echo "Waiting for deployment to become healthy..."
         for i in {1..60}; do
-          # Check agent status
           AGENT_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null || echo '{}')
           AGENT_STATE=$(echo "$AGENT_STATUS" | jq -r '.status // "unknown"')
           HEALTH=$(echo "$AGENT_STATUS" | jq -r '.health_status // "unknown"')
           SERVICE_URL=$(echo "$AGENT_STATUS" | jq -r '.service_url // empty')
 
-          # Check if agent reported an error
           if [ "$AGENT_STATE" = "error" ]; then
-            # Get deployment details for error message
             DEPLOY_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/deployments/$DEPLOYMENT_ID" 2>/dev/null || echo '{}')
             DEPLOY_ERROR=$(echo "$DEPLOY_STATUS" | jq -r '.error // "Unknown error"')
             echo "::error::Deployment failed on agent: $DEPLOY_ERROR"
@@ -261,7 +243,6 @@ runs:
             exit 1
           fi
 
-          # Check deployment status directly
           DEPLOY_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/deployments/$DEPLOYMENT_ID" 2>/dev/null || echo '{}')
           DEPLOY_STATE=$(echo "$DEPLOY_STATUS" | jq -r '.status // "unknown"')
 
@@ -281,7 +262,6 @@ runs:
             echo "Agent reports healthy at $SERVICE_URL"
             echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
 
-            # Now wait for the tunnel to become accessible
             echo "Verifying tunnel connectivity..."
             for j in {1..30}; do
               if curl -sf "${SERVICE_URL}${HEALTH_ENDPOINT}" > /dev/null 2>&1; then
@@ -295,7 +275,6 @@ runs:
               sleep 10
             done
 
-            # Tunnel never became accessible
             echo "::error::Deployment completed but tunnel not accessible after 5 minutes"
             echo "Agent is healthy but ${SERVICE_URL}${HEALTH_ENDPOINT} is not reachable"
             exit 1
@@ -305,7 +284,6 @@ runs:
           sleep 5
         done
 
-        # On timeout, show more diagnostic info
         echo "::error::Deployment timed out waiting for health"
         echo ""
         echo "Final state:"

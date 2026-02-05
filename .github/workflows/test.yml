@@ -22,6 +22,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
         run: |
@@ -123,15 +125,6 @@ jobs:
           subject-name: ghcr.io/${{ github.repository }}/tdx-runner
           subject-digest: sha256:${{ steps.build.outputs.digest }}
 
-      - name: Verify secrets
-        run: |
-          if [ -n "$INTEL_API_KEY" ]; then
-            echo "INTEL_API_KEY is set (length: ${#INTEL_API_KEY})"
-          else
-            echo "::error::INTEL_API_KEY is not set!"
-            exit 1
-          fi
-
       - name: Measure MRTD
         id: measure
         run: |
@@ -156,7 +149,8 @@ jobs:
             curl -sf https://app.easyenclave.com/health && exit 0
             sleep 10
           done
-          echo "::warning::Tunnel not ready"
+          echo "::error::Tunnel not ready after 5 minutes"
+          exit 1
 
       - name: Launch agent
         run: |

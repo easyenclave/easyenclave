@@ -35,7 +35,6 @@ curl -X POST https://app.easyenclave.com/api/v1/apps \
 | `service_name` | Yes | - | Name for your deployment |
 | `health_endpoint` | No | `/health` | Health check endpoint path |
 | `control_plane_url` | No | `https://app.easyenclave.com` | EasyEnclave control plane URL |
-| `trusted_mrtd` | No | - | TDX VM image MRTD to trust |
 
 ## Outputs
 
