@@ -543,7 +543,12 @@ def start_agent_api_server(config: dict) -> http.server.HTTPServer:
     return server
 
 
-ADMIN_HTML = (Path(__file__).parent / "admin.html").read_text()
+_admin_html_path = Path(__file__).parent / "admin.html"
+ADMIN_HTML = (
+    _admin_html_path.read_text()
+    if _admin_html_path.exists()
+    else "<html><body><h1>Admin UI not available</h1></body></html>"
+)
 
 
 def collect_system_stats() -> dict:

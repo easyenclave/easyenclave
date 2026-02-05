@@ -147,6 +147,7 @@ mkdir -p /opt/launcher
 # The files should be at /tmp/launcher/ after --copy-in launcher:/tmp/
 if [ -d /tmp/launcher ]; then
     cp /tmp/launcher/launcher.py /opt/launcher/
+    cp /tmp/launcher/admin.html /opt/launcher/ 2>/dev/null || true
     chmod +x /opt/launcher/launcher.py
     rm -rf /tmp/launcher
 fi
