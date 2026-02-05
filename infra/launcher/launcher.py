@@ -336,13 +336,8 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             if not self._check_admin_auth():
                 self._send_json(401, {"error": "Unauthorized"})
                 return
-            level = query.get("level", ["info"])[0]
-            level_order = ["debug", "info", "warning", "error"]
-            min_idx = level_order.index(level) if level in level_order else 1
-            filtered = [
-                log for log in _admin_state["logs"] if level_order.index(log["level"]) >= min_idx
-            ]
-            self._send_json(200, {"logs": filtered[-200:]})
+            since = query.get("since", ["5m"])[0]
+            self._send_json(200, self._get_logs(since=since))
             return
 
         if path == "/api/admin/containers":
@@ -351,6 +346,13 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                 return
             health = self._get_health()
             self._send_json(200, {"containers": health.get("containers", [])})
+            return
+
+        if path == "/api/admin/stats":
+            if not self._check_admin_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            self._send_json(200, self._get_stats())
             return
 
         # Proxy everything else to workload
@@ -613,13 +615,23 @@ ADMIN_HTML = """<!DOCTYPE html>
 
             <div class="card">
                 <div class="flex">
-                    <h2>Logs</h2>
-                    <select id="logLevel" onchange="loadLogs()">
-                        <option value="debug">Debug+</option>
-                        <option value="info" selected>Info+</option>
-                        <option value="warning">Warning+</option>
-                        <option value="error">Error only</option>
-                    </select>
+                    <h2>System Metrics</h2>
+                </div>
+                <div id="statsGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;">Loading...</div>
+            </div>
+
+            <div class="card">
+                <div class="flex">
+                    <h2>Container Logs</h2>
+                    <div>
+                        <select id="logSince" onchange="loadLogs()">
+                            <option value="1m">Last 1m</option>
+                            <option value="5m" selected>Last 5m</option>
+                            <option value="15m">Last 15m</option>
+                            <option value="1h">Last 1h</option>
+                        </select>
+                        <button class="btn btn-primary" onclick="loadLogs()">Refresh</button>
+                    </div>
                 </div>
                 <div id="logViewer" class="log-viewer">Loading...</div>
             </div>
@@ -664,6 +676,20 @@ ADMIN_HTML = """<!DOCTYPE html>
             return r.json();
         }
 
+        function fmtBytes(b) {
+            if (!b) return "0 B";
+            const u = ["B","KB","MB","GB","TB"];
+            const i = Math.floor(Math.log(b)/Math.log(1024));
+            return (b/Math.pow(1024,i)).toFixed(1) + " " + u[i];
+        }
+        function fmtUptime(s) {
+            const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
+            return d > 0 ? d+"d "+h+"h" : h > 0 ? h+"h "+m+"m" : m+"m";
+        }
+        function statCard(label, value, detail) {
+            return `<div style="background:#f3f4f6;padding:12px;border-radius:6px;"><div style="font-size:0.8rem;color:#6b7280;">${label}</div><div style="font-size:1.3rem;font-weight:600;">${value}</div>${detail ? '<div style="font-size:0.75rem;color:#9ca3af;">'+detail+'</div>' : ''}</div>`;
+        }
+
         async function refresh() {
             try {
                 const s = await apiFetch("/api/status");
@@ -684,18 +710,33 @@ ADMIN_HTML = """<!DOCTYPE html>
                     document.getElementById("containers").innerHTML = "<em>No containers running</em>";
                 }
 
+                loadStats();
                 loadLogs();
             } catch(e) { console.error(e); }
         }
 
+        async function loadStats() {
+            try {
+                const st = await apiFetch("/api/admin/stats");
+                document.getElementById("statsGrid").innerHTML =
+                    statCard("CPU", (st.cpu_percent||0)+"%", "Load: "+(st.load_avg||[]).map(x=>x.toFixed(2)).join(", ")) +
+                    statCard("Memory", (st.memory_percent||0)+"%", (st.memory_used_gb||0).toFixed(1)+" / "+(st.memory_total_gb||0).toFixed(1)+" GB") +
+                    statCard("Disk", (st.disk_percent||0)+"%", (st.disk_used_gb||0).toFixed(1)+" / "+(st.disk_total_gb||0).toFixed(1)+" GB") +
+                    statCard("Network", "↑ "+fmtBytes(st.net_bytes_sent), "↓ "+fmtBytes(st.net_bytes_recv)) +
+                    statCard("Uptime", fmtUptime(st.uptime_seconds||0), "");
+            } catch(e) {
+                document.getElementById("statsGrid").innerHTML = "<em>Failed to load stats</em>";
+            }
+        }
+
         async function loadLogs() {
-            const level = document.getElementById("logLevel").value;
-            const l = await apiFetch("/api/admin/logs?level=" + level);
+            const since = document.getElementById("logSince").value;
+            const l = await apiFetch("/api/admin/logs?since=" + since);
             const viewer = document.getElementById("logViewer");
             if (l.logs && l.logs.length > 0) {
                 viewer.innerHTML = l.logs.map(x => {
-                    const t = new Date(x.timestamp).toLocaleTimeString();
-                    return `<div class="log-entry ${x.level}">${t} [${x.level.toUpperCase()}] ${x.message}</div>`;
+                    const name = x.container || "unknown";
+                    return `<div class="log-entry">[${name}] ${x.line}</div>`;
                 }).join("");
                 viewer.scrollTop = viewer.scrollHeight;
             } else {
