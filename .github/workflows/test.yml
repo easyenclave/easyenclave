@@ -94,6 +94,13 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "Pushed $IMAGE"
 
+          # Ensure the package is publicly pullable (agents have no ghcr.io credentials)
+          PACKAGE_NAME="${{ github.event.repository.name }}%2Fmeasuring-enclave"
+          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
+            -f visibility=public || echo "::warning::Could not set package visibility to public"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   deploy:
     runs-on: [self-hosted, tdx]
     if: github.event_name == 'push'
