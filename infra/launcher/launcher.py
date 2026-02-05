@@ -251,14 +251,15 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         """Get system stats."""
         return collect_system_stats()
 
-    def _proxy_to_workload(self):
+    def _proxy_to_workload(self, body=None):
         """Proxy request to workload on port 8080."""
         import http.client
 
         try:
-            # Read request body if present
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length) if content_length > 0 else None
+            # Read request body if not already provided by caller
+            if body is None:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(content_length) if content_length > 0 else None
 
             # Connect to workload
             conn = http.client.HTTPConnection("127.0.0.1", WORKLOAD_PORT, timeout=30)
@@ -383,12 +384,11 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid request"})
             return
 
-        # API endpoints requiring auth
-        if not self._check_api_auth():
-            self._send_json(401, {"error": "Unauthorized"})
-            return
-
+        # Agent API endpoints requiring auth
         if path == "/api/deploy":
+            if not self._check_api_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
             try:
                 deployment = json.loads(body)
                 # Handle deployment in background thread
@@ -406,6 +406,9 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == "/api/undeploy":
+            if not self._check_api_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
             try:
                 self._handle_undeploy()
                 self._send_json(200, {"status": "undeployed"})
@@ -413,8 +416,8 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(500, {"error": str(e)})
             return
 
-        # Proxy everything else to workload
-        self._proxy_to_workload()
+        # Proxy everything else to workload (pass already-read body)
+        self._proxy_to_workload(body=body)
 
     def do_PUT(self):
         """Proxy PUT to workload."""
