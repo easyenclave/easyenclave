@@ -266,7 +266,8 @@ runs:
             for j in {1..30}; do
               if curl -sf "${SERVICE_URL}${HEALTH_ENDPOINT}" > /dev/null 2>&1; then
                 echo "Tunnel verification passed!"
-                curl -s "${SERVICE_URL}${HEALTH_ENDPOINT}" | head -c 500
+                BODY=$(curl -s "${SERVICE_URL}${HEALTH_ENDPOINT}" 2>/dev/null || true)
+                echo "${BODY:0:500}"
                 echo ""
                 echo "Deployment complete!"
                 exit 0
