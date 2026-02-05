@@ -248,6 +248,18 @@ runs:
           echo ""
         }
 
+        SEEN_LINES=0
+        stream_new_logs() {
+          local logs_json
+          logs_json=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID/logs?since=10m" 2>/dev/null || echo '{"logs":[]}')
+          local total
+          total=$(echo "$logs_json" | jq '.logs | length')
+          if [ "$total" -gt "$SEEN_LINES" ]; then
+            echo "$logs_json" | jq -r ".logs[$SEEN_LINES:][] | \"  [\(.container // \"agent\")] \(.line)\""
+            SEEN_LINES=$total
+          fi
+        }
+
         echo "Waiting for deployment to become healthy..."
         for i in {1..60}; do
           AGENT_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null || echo '{}')
@@ -285,6 +297,8 @@ runs:
           fi
 
           if [ "$HEALTH" = "healthy" ] && [ -n "$SERVICE_URL" ]; then
+            stream_new_logs
+            echo ""
             echo "Agent reports healthy at $SERVICE_URL"
             echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
 
@@ -307,7 +321,8 @@ runs:
             exit 1
           fi
 
-          echo "  Agent: $AGENT_STATE | Health: $HEALTH | Deploy: $DEPLOY_STATE ($i/60)"
+          stream_new_logs
+          echo "--- Agent: $AGENT_STATE | Health: $HEALTH | Deploy: $DEPLOY_STATE ($i/60) ---"
           sleep 5
         done
 
