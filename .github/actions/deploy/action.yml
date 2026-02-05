@@ -150,8 +150,8 @@ runs:
           fi
           local deploy_status
           deploy_status=$(jq -r '.status // "unknown"' /tmp/agent_status.json)
-          [ "$deploy_status" = "deploying" ] && return 2
-          return 0
+          [ "$deploy_status" = "undeployed" ] && return 0
+          return 2  # busy
         }
 
         find_available_agent() {
