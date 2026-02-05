@@ -132,7 +132,7 @@ runs:
           local agents_json
           agents_json=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
           local agent_ids
-          agent_ids=$(echo "$agents_json" | jq -r '[.agents[] | select(.verified == true)] | .[].agent_id')
+          agent_ids=$(echo "$agents_json" | jq -r '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy")] | .[].agent_id')
           for agent_id in $agent_ids; do
             echo "  Checking agent $agent_id..." >&2
             check_agent_available "$agent_id"
