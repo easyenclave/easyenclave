@@ -1,0 +1,25 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:8080
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  model-loader:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["sh", "-c", "curl -sf -X POST http://ollama:8080/api/pull -d '{\"name\":\"qwen2.5:0.5b\"}'"]
+
+volumes:
+  ollama_data:

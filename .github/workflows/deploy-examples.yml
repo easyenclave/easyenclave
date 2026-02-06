@@ -62,3 +62,27 @@ jobs:
           compose_file: examples/hello-tdx/docker-compose.yml
           service_name: hello-tdx
           health_endpoint: /
+
+  deploy-private-llm:
+    name: Deploy Private LLM
+    runs-on: ubuntu-latest
+    needs: deploy-hello-tdx
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Register app
+        uses: ./.github/actions/register-app
+        with:
+          name: private-llm
+          description: "Private LLM - Ollama running in a TDX enclave"
+
+      - name: Deploy to EasyEnclave
+        uses: ./.github/actions/deploy
+        with:
+          app_name: private-llm
+          compose_file: examples/private-llm/docker-compose.yml
+          service_name: private-llm
+          health_endpoint: /
