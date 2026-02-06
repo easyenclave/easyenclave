@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Smoke test for Private LLM — tests both direct tunnel and proxy access.
+"""Smoke test for Private LLM — tests direct, proxy, and OpenAI client access.
 
 Env vars:
     SERVICE_URL     — Direct tunnel URL (e.g. https://agent-xyz.easyenclave.com)
@@ -11,6 +11,7 @@ import sys
 import time
 
 import httpx
+from openai import OpenAI
 
 from easyenclave import EasyEnclaveClient
 
@@ -77,6 +78,33 @@ def test_proxy(easyenclave_url: str) -> bool:
             time.sleep(RETRY_INTERVAL)
 
 
+def test_openai(easyenclave_url: str) -> bool:
+    """Test LLM via the OpenAI Python client through the proxy."""
+    proxy_base = f"{easyenclave_url.rstrip('/')}/proxy/private-llm/v1"
+    print(f"[openai] base_url={proxy_base}")
+
+    client = OpenAI(base_url=proxy_base, api_key="unused")
+    deadline = time.monotonic() + TIMEOUT
+
+    while True:
+        try:
+            completion = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": "Say hello in one sentence."}],
+                timeout=60,
+            )
+            content = completion.choices[0].message.content
+            if content:
+                print(f"[openai] OK: {content}")
+                return True
+        except Exception as e:
+            if time.monotonic() >= deadline:
+                print(f"[openai] FAIL: not ready after {TIMEOUT}s — {e}")
+                return False
+            print(f"[openai] Model not ready, retrying in {RETRY_INTERVAL}s...")
+            time.sleep(RETRY_INTERVAL)
+
+
 def main():
     service_url = os.environ.get("SERVICE_URL", "")
     easyenclave_url = os.environ.get("EASYENCLAVE_URL", "")
@@ -92,6 +120,7 @@ def main():
 
     if easyenclave_url:
         ok = test_proxy(easyenclave_url) and ok
+        ok = test_openai(easyenclave_url) and ok
 
     sys.exit(0 if ok else 1)
 

@@ -63,13 +63,30 @@ resp = llm.post("/v1/chat/completions", json={
 print(resp.json()["choices"][0]["message"]["content"])
 ```
 
+Using the OpenAI Python client (since Ollama is OpenAI-compatible):
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://app.easyenclave.com/proxy/private-llm/v1",
+    api_key="unused",  # Ollama doesn't require an API key
+)
+completion = client.chat.completions.create(
+    model="smollm2:135m",
+    messages=[{"role": "user", "content": "Say hello"}],
+)
+print(completion.choices[0].message.content)
+```
+
 ## How it's tested
 
-The [Deploy Examples](../../.github/workflows/deploy-examples.yml) workflow runs [`test.py`](test.py) after deployment. The script uses the EasyEnclave Python SDK and tests two access paths:
+The [Deploy Examples](../../.github/workflows/deploy-examples.yml) workflow runs [`test.py`](test.py) after deployment. The script tests three access paths:
 
-1. **Direct** — POST to the Cloudflare tunnel URL (`SERVICE_URL`)
+1. **Direct** — POST to the Cloudflare tunnel URL via `httpx`
 2. **Proxy** — POST through the control plane proxy via `EasyEnclaveClient.service("private-llm")`
+3. **OpenAI** — `openai.OpenAI(base_url=".../proxy/private-llm/v1")` — proving standard tools just work
 
-Both paths retry for up to 5 minutes while the model loads, then assert a non-empty response.
+All paths retry for up to 5 minutes while the model loads, then assert a non-empty response.
 
 The test uses `smollm2:135m` (135M params, ~100MB) for fast pull and load times in CI.
