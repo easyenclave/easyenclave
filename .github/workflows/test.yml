@@ -180,7 +180,7 @@ jobs:
         run: |
           # Launch 3 agents in parallel (measuring enclave, example app, private LLM)
           for _i in 1 2 3; do
-            python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --wait &
+            python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --memory 4 --vcpus 4 --wait &
           done
           wait
           echo "All 3 agents launched"

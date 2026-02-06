@@ -176,6 +176,8 @@ runcmd:
         mode: str = AGENT_MODE,
         config: dict | None = None,
         debug: bool = False,
+        memory_gib: int = 16,
+        vcpu_count: int = 32,
     ) -> dict:
         """Create and boot a new TDX VM.
 
@@ -247,6 +249,8 @@ runcmd:
         xml_content = xml_content.replace("SERIAL_LOG_PATH", str(serial_log))
         xml_content = xml_content.replace("DOMAIN", temp_domain)
         xml_content = xml_content.replace("HOSTDEV_DEVICES", "")
+        xml_content = xml_content.replace("MEMORY_GIB", str(memory_gib))
+        xml_content = xml_content.replace("VCPU_COUNT", str(vcpu_count))
 
         xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.{rand_str}.xml"
         xml_path.write_text(xml_content)
@@ -276,7 +280,12 @@ runcmd:
         }
 
     def control_plane_new(
-        self, image: str | None = None, port: int = 8080, debug: bool = False
+        self,
+        image: str | None = None,
+        port: int = 8080,
+        debug: bool = False,
+        memory_gib: int = 16,
+        vcpu_count: int = 32,
     ) -> dict:
         """Launch a control plane in a TDX VM.
 
@@ -315,7 +324,14 @@ runcmd:
             # Admin password for control plane dashboard
             "admin_password": os.environ.get("ADMIN_PASSWORD"),
         }
-        result = self.vm_new(image=image, mode=CONTROL_PLANE_MODE, config=config, debug=debug)
+        result = self.vm_new(
+            image=image,
+            mode=CONTROL_PLANE_MODE,
+            config=config,
+            debug=debug,
+            memory_gib=memory_gib,
+            vcpu_count=vcpu_count,
+        )
         result["control_plane_port"] = port
 
         # Add expected hostname if Cloudflare is configured
@@ -397,6 +413,8 @@ runcmd:
         self,
         image: str | None = None,
         timeout: int = 180,
+        memory_gib: int = 16,
+        vcpu_count: int = 32,
     ) -> dict:
         """Boot a temporary VM to capture MRTD, then destroy it.
 
@@ -423,7 +441,14 @@ runcmd:
         }
 
         print("Booting temporary VM to measure MRTD...", file=sys.stderr)
-        result = self.vm_new(image=image, mode=AGENT_MODE, config=config, debug=True)
+        result = self.vm_new(
+            image=image,
+            mode=AGENT_MODE,
+            config=config,
+            debug=True,
+            memory_gib=memory_gib,
+            vcpu_count=vcpu_count,
+        )
         vm_name = result["name"]
         serial_log = result.get("serial_log")
 
@@ -516,6 +541,10 @@ To start a new EasyEnclave network:
     cp_new_parser.add_argument(
         "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
     )
+    cp_new_parser.add_argument(
+        "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
+    )
+    cp_new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
 
     # VM commands
     vm_parser = subparsers.add_parser("vm", help="VM lifecycle management")
@@ -537,6 +566,8 @@ To start a new EasyEnclave network:
     new_parser.add_argument(
         "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
     )
+    new_parser.add_argument("--memory", type=int, default=16, help="VM memory in GiB (default 16)")
+    new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
 
     vm_sub.add_parser("list", help="List TDX VMs")
 
@@ -551,6 +582,12 @@ To start a new EasyEnclave network:
     measure_parser.add_argument(
         "--timeout", type=int, default=180, help="Timeout in seconds (default 180)"
     )
+    measure_parser.add_argument(
+        "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
+    )
+    measure_parser.add_argument(
+        "--vcpus", type=int, default=32, help="Number of vCPUs (default 32)"
+    )
 
     args = parser.parse_args()
     workspace = Path(os.environ.get("GITHUB_WORKSPACE", "."))
@@ -560,7 +597,13 @@ To start a new EasyEnclave network:
         if args.command == "control-plane":
             if args.cp_command == "new":
                 print("Launching control plane in TDX VM...", file=sys.stderr)
-                result = mgr.control_plane_new(args.image, args.port, debug=args.debug)
+                result = mgr.control_plane_new(
+                    args.image,
+                    args.port,
+                    debug=args.debug,
+                    memory_gib=args.memory,
+                    vcpu_count=args.vcpus,
+                )
 
                 if args.wait:
                     print("\nWaiting for VM to get IP...", file=sys.stderr)
@@ -623,7 +666,13 @@ To start a new EasyEnclave network:
                     "control_plane_url": args.easyenclave_url,
                     "intel_api_key": args.intel_api_key,
                 }
-                result = mgr.vm_new(args.image, config=config, debug=args.debug)
+                result = mgr.vm_new(
+                    args.image,
+                    config=config,
+                    debug=args.debug,
+                    memory_gib=args.memory,
+                    vcpu_count=args.vcpus,
+                )
                 print(json.dumps(result, indent=2))
 
                 if args.wait:
@@ -650,7 +699,9 @@ To start a new EasyEnclave network:
                 else:
                     mgr.vm_delete(args.name)
             elif args.vm_command == "measure":
-                result = mgr.vm_measure(args.image, args.timeout)
+                result = mgr.vm_measure(
+                    args.image, args.timeout, memory_gib=args.memory, vcpu_count=args.vcpus
+                )
                 if result.get("mrtd"):
                     # Print just the MRTD for easy scripting
                     print(result["mrtd"])

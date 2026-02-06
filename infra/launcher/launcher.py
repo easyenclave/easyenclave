@@ -1380,9 +1380,9 @@ def run_control_plane_mode(config: dict):
 
     # Build fresh to pick up code changes (no cache)
     # Output flows to console for visibility during --wait
-    logger.info("Building control plane image (no cache)...")
+    logger.info("Building control plane image...")
     build_result = subprocess.run(
-        ["docker", "compose", "build", "--no-cache"],
+        ["docker", "compose", "build"],
         cwd=CONTROL_PLANE_DIR,
         env=env,
     )

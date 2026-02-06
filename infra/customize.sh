@@ -134,6 +134,38 @@ echo "[customize.sh] Creating config directory for cloud-init..."
 mkdir -p /etc/easyenclave
 
 # =============================================================================
+# Minimize Cloud-init Modules
+# =============================================================================
+echo "[customize.sh] Writing minimal cloud.cfg..."
+
+cat > /etc/cloud/cloud.cfg << 'CLOUDCFG'
+# Minimal cloud-init config - only modules needed for EasyEnclave VMs
+# Disables ~55 default modules to speed up boot
+
+cloud_init_modules:
+  - bootcmd
+  - write_files
+
+cloud_config_modules:
+  - growpart
+  - resizefs
+  - set_passwords
+  - runcmd
+  - ssh
+
+cloud_final_modules: []
+
+system_info:
+  default_user:
+    name: ubuntu
+    lock_passwd: true
+    gecos: Ubuntu
+    groups: [adm, cdrom, dip, lxd, sudo]
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    shell: /bin/bash
+CLOUDCFG
+
+# =============================================================================
 # Install Launcher Service
 # =============================================================================
 echo "[customize.sh] Installing launcher service..."
@@ -156,7 +188,7 @@ fi
 cat > /etc/systemd/system/tdx-launcher.service << 'LAUNCHERSERVICE'
 [Unit]
 Description=TDX VM Launcher Service
-After=cloud-final.service docker.service
+After=cloud-config.service docker.service
 Wants=docker.service
 
 [Service]
