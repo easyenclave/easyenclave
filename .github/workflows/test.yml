@@ -234,39 +234,44 @@ jobs:
             -H "Authorization: Bearer $ADMIN_TOKEN"
           echo "Manually attested measuring-enclave@$VERSION"
 
-          # Find a verified agent with a tunnel
-          AGENT_JSON=$(curl -sf "$CP_URL/api/v1/agents" | \
-            jq -r '[.agents[] | select(.verified == true and .hostname != null)] | .[0]')
-          AGENT_ID=$(echo "$AGENT_JSON" | jq -r '.agent_id')
-          AGENT_HOST=$(echo "$AGENT_JSON" | jq -r '.hostname')
+          # Find an available agent and deploy (retry on busy)
+          DEPLOYED=false
+          for attempt in {1..12}; do
+            AGENT_IDS=$(curl -sf "$CP_URL/api/v1/agents" | \
+              jq -r '[.agents[] | select(.verified == true and .hostname != null and .status == "undeployed")] | .[].agent_id')
 
-          if [ "$AGENT_ID" = "null" ] || [ -z "$AGENT_ID" ]; then
-            echo "::error::No verified agent with tunnel available"
-            exit 1
-          fi
-          echo "Found agent $AGENT_ID at $AGENT_HOST"
+            for AGENT_ID in $AGENT_IDS; do
+              AGENT_HOST=$(curl -sf "$CP_URL/api/v1/agents/$AGENT_ID" | jq -r '.hostname')
+              echo "Trying agent $AGENT_ID ($AGENT_HOST)..."
 
-          # Wait for the agent tunnel to be reachable
-          echo "Waiting for agent tunnel to become reachable..."
-          for i in {1..30}; do
-            if curl -sf "https://$AGENT_HOST/api/health" > /dev/null 2>&1; then
-              echo "Agent tunnel is reachable"
-              break
-            fi
-            echo "  Agent tunnel not ready yet ($i/30)"
-            sleep 10
+              # Check tunnel is reachable
+              if ! curl -sf "https://$AGENT_HOST/api/health" > /dev/null 2>&1; then
+                echo "  Tunnel not reachable, skipping"
+                continue
+              fi
+
+              # Try to deploy
+              HTTP_CODE=$(curl -s -o /tmp/deploy_resp.json -w "%{http_code}" \
+                -X POST "$CP_URL/api/v1/apps/measuring-enclave/versions/$VERSION/deploy" \
+                -H "Content-Type: application/json" \
+                -d "{\"agent_id\": \"$AGENT_ID\", \"config\": {\"service_name\": \"measuring-enclave\"}}")
+
+              if [ "$HTTP_CODE" -lt 400 ]; then
+                echo "Deployed measuring-enclave to agent $AGENT_ID"
+                DEPLOYED=true
+                break 2
+              fi
+              echo "  HTTP $HTTP_CODE: $(jq -r '.detail // empty' /tmp/deploy_resp.json)"
+            done
+
+            echo "No available agents, waiting 30s... ($attempt/12)"
+            sleep 30
           done
 
-          if ! curl -sf "https://$AGENT_HOST/api/health" > /dev/null 2>&1; then
-            echo "::error::Agent tunnel not reachable after 5 minutes"
+          if [ "$DEPLOYED" != "true" ]; then
+            echo "::error::Could not deploy measuring enclave after 12 attempts"
             exit 1
           fi
-
-          # Deploy measuring enclave
-          curl -sf -X POST "$CP_URL/api/v1/apps/measuring-enclave/versions/$VERSION/deploy" \
-            -H "Content-Type: application/json" \
-            -d "{\"agent_id\": \"$AGENT_ID\", \"config\": {\"service_name\": \"measuring-enclave\"}}"
-          echo "Deployed measuring-enclave to agent $AGENT_ID"
 
           # Wait for measuring enclave service to be healthy
           echo "Waiting for measuring enclave to become healthy..."
