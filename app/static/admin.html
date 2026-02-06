@@ -243,6 +243,7 @@
             <!-- Tabs -->
             <div class="tabs">
                 <button class="tab active" onclick="showAdminTab('agents')">Agents</button>
+                <button class="tab" onclick="showAdminTab('accounts')">Accounts</button>
                 <button class="tab" onclick="showAdminTab('mrtds')">Trusted MRTDs</button>
                 <button class="tab" onclick="showAdminTab('logs')">Logs</button>
                 <button class="tab" onclick="showAdminTab('system')">System</button>
@@ -256,6 +257,28 @@
                 </div>
                 <div id="agentsAdminList">
                     <div class="loading">Loading agents...</div>
+                </div>
+            </section>
+
+            <!-- Accounts Tab -->
+            <section id="accounts-admin-tab" class="tab-content hidden">
+                <div class="section-header">
+                    <h2>Billing Accounts</h2>
+                    <button class="btn-primary refresh-btn" onclick="loadAccounts()">Refresh</button>
+                </div>
+                <div class="section-card">
+                    <h3>Create Account</h3>
+                    <div class="add-form">
+                        <input type="text" id="accountName" placeholder="Account name">
+                        <select id="accountType">
+                            <option value="deployer">Deployer</option>
+                            <option value="agent">Agent</option>
+                        </select>
+                        <button class="btn-primary" onclick="createAccount()">Create</button>
+                    </div>
+                </div>
+                <div id="accountsAdminList">
+                    <div class="loading">Loading accounts...</div>
                 </div>
             </section>
 

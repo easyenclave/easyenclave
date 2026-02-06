@@ -26,10 +26,14 @@ from .attestation import (
     refresh_agent_attestation,
     verify_agent_registration,
 )
-from .crud import build_filters, get_or_404
+from .crud import build_filters, create_transaction, get_or_404
 from .database import init_db
 from .ita import verify_attestation_token
 from .models import (
+    Account,
+    AccountCreateRequest,
+    AccountListResponse,
+    AccountResponse,
     Agent,
     AgentDeployedRequest,
     AgentListResponse,
@@ -47,20 +51,26 @@ from .models import (
     Deployment,
     DeploymentCreateResponse,
     DeploymentListResponse,
+    DepositRequest,
     HealthResponse,
     MeasurementCallbackRequest,
+    RateCardResponse,
     Service,
     ServiceListResponse,
     ServiceRegistrationRequest,
+    TransactionListResponse,
+    TransactionResponse,
     VerificationResponse,
 )
 from .storage import (
+    account_store,
     agent_store,
     app_store,
     app_version_store,
     deployment_store,
     list_trusted_mrtds,
     store,
+    transaction_store,
 )
 
 logger = logging.getLogger(__name__)
@@ -864,6 +874,157 @@ async def get_trusted_mrtds():
         "trusted_mrtds": [{"mrtd": k, "type": v} for k, v in mrtds.items()],
         "total": len(mrtds),
     }
+
+
+# ==============================================================================
+# Billing API - Accounts, deposits, transactions, rate card
+# ==============================================================================
+
+RATE_CARD: dict[str, float] = {
+    "cpu_per_vcpu_hr": 0.04,
+    "memory_per_gb_hr": 0.005,
+    "gpu_per_gpu_hr": 0.50,
+    "storage_per_gb_mo": 0.10,
+}
+
+
+@app.post("/api/v1/accounts", response_model=AccountResponse)
+async def create_account(request: AccountCreateRequest):
+    """Create a new billing account."""
+    if request.account_type not in ("deployer", "agent"):
+        raise HTTPException(status_code=400, detail="account_type must be 'deployer' or 'agent'")
+
+    if not request.name:
+        raise HTTPException(status_code=400, detail="Account name is required")
+
+    existing = account_store.get_by_name(request.name)
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Account '{request.name}' already exists")
+
+    account = Account(
+        name=request.name,
+        description=request.description,
+        account_type=request.account_type,
+    )
+    account_store.create(account)
+    logger.info(f"Account created: {account.name} ({account.account_id})")
+
+    return AccountResponse(
+        account_id=account.account_id,
+        name=account.name,
+        description=account.description,
+        account_type=account.account_type,
+        balance=0.0,
+        created_at=account.created_at,
+    )
+
+
+@app.get("/api/v1/accounts", response_model=AccountListResponse)
+async def list_accounts(
+    name: str | None = Query(None, description="Filter by name (partial match)"),
+    account_type: str | None = Query(None, description="Filter by account type"),
+):
+    """List all billing accounts."""
+    accounts = account_store.list(build_filters(name=name, account_type=account_type))
+    responses = [
+        AccountResponse(
+            account_id=a.account_id,
+            name=a.name,
+            description=a.description,
+            account_type=a.account_type,
+            balance=account_store.get_balance(a.account_id),
+            created_at=a.created_at,
+        )
+        for a in accounts
+    ]
+    return AccountListResponse(accounts=responses, total=len(responses))
+
+
+@app.get("/api/v1/accounts/{account_id}", response_model=AccountResponse)
+async def get_account(account_id: str):
+    """Get a billing account with its current balance."""
+    account = get_or_404(account_store, account_id, "Account")
+    return AccountResponse(
+        account_id=account.account_id,
+        name=account.name,
+        description=account.description,
+        account_type=account.account_type,
+        balance=account_store.get_balance(account.account_id),
+        created_at=account.created_at,
+    )
+
+
+@app.delete("/api/v1/accounts/{account_id}")
+async def delete_account(account_id: str):
+    """Delete a billing account (only if balance is zero)."""
+    account = get_or_404(account_store, account_id, "Account")
+    balance = account_store.get_balance(account_id)
+    if balance != 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete account with non-zero balance ({balance:.2f})",
+        )
+    account_store.delete(account_id)
+    logger.info(f"Account deleted: {account.name} ({account_id})")
+    return {"status": "deleted", "account_id": account_id}
+
+
+@app.post("/api/v1/accounts/{account_id}/deposit", response_model=TransactionResponse)
+async def deposit_to_account(account_id: str, request: DepositRequest):
+    """Deposit funds into an account."""
+    txn = create_transaction(
+        account_store,
+        transaction_store,
+        account_id,
+        amount=request.amount,
+        tx_type="deposit",
+        description=request.description or "Deposit",
+    )
+    logger.info(f"Deposit: {request.amount:.2f} to account {account_id}")
+    return TransactionResponse(
+        transaction_id=txn.transaction_id,
+        account_id=txn.account_id,
+        amount=txn.amount,
+        balance_after=txn.balance_after,
+        tx_type=txn.tx_type,
+        description=txn.description,
+        reference_id=txn.reference_id,
+        created_at=txn.created_at,
+    )
+
+
+@app.get("/api/v1/accounts/{account_id}/transactions", response_model=TransactionListResponse)
+async def list_account_transactions(
+    account_id: str,
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List transactions for an account (newest first)."""
+    get_or_404(account_store, account_id, "Account")
+    transactions = transaction_store.list_for_account(account_id, limit=limit, offset=offset)
+    total = transaction_store.count_for_account(account_id)
+    return TransactionListResponse(
+        transactions=[
+            TransactionResponse(
+                transaction_id=t.transaction_id,
+                account_id=t.account_id,
+                amount=t.amount,
+                balance_after=t.balance_after,
+                tx_type=t.tx_type,
+                description=t.description,
+                reference_id=t.reference_id,
+                created_at=t.created_at,
+            )
+            for t in transactions
+        ],
+        total=total,
+    )
+
+
+@app.get("/api/v1/billing/rates", response_model=RateCardResponse)
+async def get_rate_card():
+    """Get the current billing rate card."""
+    return RateCardResponse(rates=RATE_CARD)
 
 
 # ==============================================================================

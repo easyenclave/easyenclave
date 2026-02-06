@@ -11,11 +11,13 @@ from pydantic import BaseModel, Field
 
 # Re-export data models from db_models for backwards compatibility
 from .db_models import (  # noqa: F401
+    Account,
     Agent,
     App,
     AppVersion,
     Deployment,
     Service,
+    Transaction,
 )
 
 # Aliases for backward compatibility
@@ -199,3 +201,68 @@ class MeasurementCallbackRequest(BaseModel):
     status: str  # "success" or "failed"
     error: str | None = None
     measurement: dict | None = None  # {compose_hash, resolved_images}
+
+
+# =============================================================================
+# Billing API
+# =============================================================================
+
+
+class AccountCreateRequest(BaseModel):
+    """Request for creating a billing account."""
+
+    name: str
+    description: str = ""
+    account_type: str  # "deployer" | "agent"
+
+
+class AccountResponse(BaseModel):
+    """Response for a billing account (includes computed balance)."""
+
+    account_id: str
+    name: str
+    description: str
+    account_type: str
+    balance: float
+    created_at: datetime
+
+
+class AccountListResponse(BaseModel):
+    """Response for listing accounts."""
+
+    accounts: list[AccountResponse]
+    total: int
+
+
+class DepositRequest(BaseModel):
+    """Request for depositing funds into an account."""
+
+    amount: float = Field(gt=0)
+    description: str = ""
+
+
+class TransactionResponse(BaseModel):
+    """Response for a single transaction."""
+
+    transaction_id: str
+    account_id: str
+    amount: float
+    balance_after: float
+    tx_type: str
+    description: str
+    reference_id: str | None = None
+    created_at: datetime
+
+
+class TransactionListResponse(BaseModel):
+    """Response for listing transactions."""
+
+    transactions: list[TransactionResponse]
+    total: int
+
+
+class RateCardResponse(BaseModel):
+    """Response for the billing rate card."""
+
+    rates: dict[str, float]
+    currency: str = "USD"

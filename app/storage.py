@@ -10,11 +10,13 @@ from sqlmodel import select
 
 from .database import get_db
 from .db_models import (
+    Account,
     Agent,
     App,
     AppVersion,
     Deployment,
     Service,
+    Transaction,
 )
 
 logger = logging.getLogger(__name__)
@@ -540,12 +542,102 @@ class AppVersionStore:
                 session.delete(v)
 
 
+class AccountStore:
+    """Storage for billing accounts."""
+
+    def create(self, account: Account) -> str:
+        with get_db() as session:
+            session.add(account)
+        return account.account_id
+
+    def get(self, account_id: str) -> Account | None:
+        with get_db() as session:
+            return session.get(Account, account_id)
+
+    def get_by_name(self, name: str) -> Account | None:
+        with get_db() as session:
+            return session.exec(select(Account).where(Account.name == name)).first()
+
+    def list(self, filters: dict | None = None) -> list[Account]:
+        with get_db() as session:
+            accounts = list(session.exec(select(Account)).all())
+        if filters:
+            if filters.get("name"):
+                accounts = [a for a in accounts if filters["name"].lower() in a.name.lower()]
+            if filters.get("account_type"):
+                accounts = [a for a in accounts if a.account_type == filters["account_type"]]
+        return accounts
+
+    def delete(self, account_id: str) -> bool:
+        with get_db() as session:
+            account = session.get(Account, account_id)
+            if account:
+                session.delete(account)
+                return True
+            return False
+
+    def get_balance(self, account_id: str) -> float:
+        """Get current balance from the most recent transaction."""
+        with get_db() as session:
+            latest = session.exec(
+                select(Transaction)
+                .where(Transaction.account_id == account_id)
+                .order_by(Transaction.created_at.desc())
+            ).first()
+            return latest.balance_after if latest else 0.0
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for a in session.exec(select(Account)).all():
+                session.delete(a)
+
+
+class TransactionStore:
+    """Storage for billing transactions (append-only ledger)."""
+
+    def create(self, transaction: Transaction) -> str:
+        with get_db() as session:
+            session.add(transaction)
+        return transaction.transaction_id
+
+    def list_for_account(
+        self, account_id: str, limit: int = 50, offset: int = 0
+    ) -> list[Transaction]:
+        with get_db() as session:
+            return list(
+                session.exec(
+                    select(Transaction)
+                    .where(Transaction.account_id == account_id)
+                    .order_by(Transaction.created_at.desc())
+                    .offset(offset)
+                    .limit(limit)
+                ).all()
+            )
+
+    def count_for_account(self, account_id: str) -> int:
+        with get_db() as session:
+            return len(
+                list(
+                    session.exec(
+                        select(Transaction).where(Transaction.account_id == account_id)
+                    ).all()
+                )
+            )
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for t in session.exec(select(Transaction)).all():
+                session.delete(t)
+
+
 # Global store instances
 store = ServiceStore()
 agent_store = AgentStore()
 deployment_store = DeploymentStore()
 app_store = AppStore()
 app_version_store = AppVersionStore()
+account_store = AccountStore()
+transaction_store = TransactionStore()
 
 # Load trusted MRTDs from env vars at import time
 load_trusted_mrtds()

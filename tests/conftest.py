@@ -36,11 +36,13 @@ def setup_test_database():
 def clear_all_stores():
     """Clear all stores before and after each test for isolation."""
     from app.storage import (
+        account_store,
         agent_store,
         app_store,
         app_version_store,
         deployment_store,
         store,
+        transaction_store,
     )
 
     # Clear before test
@@ -49,6 +51,8 @@ def clear_all_stores():
     deployment_store.clear()
     app_store.clear()
     app_version_store.clear()
+    transaction_store.clear()
+    account_store.clear()
 
     yield
 
@@ -58,3 +62,5 @@ def clear_all_stores():
     deployment_store.clear()
     app_store.clear()
     app_version_store.clear()
+    transaction_store.clear()
+    account_store.clear()

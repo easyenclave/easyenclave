@@ -11,6 +11,7 @@ import sys
 import time
 
 import httpx
+import httpx as _httpx
 from openai import OpenAI
 
 from easyenclave import EasyEnclaveClient
@@ -83,7 +84,11 @@ def test_openai(easyenclave_url: str) -> bool:
     proxy_base = f"{easyenclave_url.rstrip('/')}/proxy/private-llm/v1"
     print(f"[openai] base_url={proxy_base}")
 
-    client = OpenAI(base_url=proxy_base, api_key="unused")
+    client = OpenAI(
+        base_url=proxy_base,
+        api_key="unused",
+        http_client=_httpx.Client(verify=False),
+    )
     deadline = time.monotonic() + TIMEOUT
 
     while True:

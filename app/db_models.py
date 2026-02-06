@@ -124,3 +124,30 @@ class AppVersion(SQLModel, table=True):
     status: str = Field(default="pending", index=True)
     rejection_reason: str | None = None
     published_at: datetime = Field(default_factory=utcnow)
+
+
+class Account(SQLModel, table=True):
+    """Billing account holding a USD credit balance."""
+
+    __tablename__ = "accounts"
+
+    account_id: str = Field(default_factory=generate_uuid, primary_key=True)
+    name: str = Field(unique=True, index=True)
+    description: str = Field(default="")
+    account_type: str = Field(index=True)  # "deployer" | "agent"
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class Transaction(SQLModel, table=True):
+    """Immutable ledger entry for an account."""
+
+    __tablename__ = "transactions"
+
+    transaction_id: str = Field(default_factory=generate_uuid, primary_key=True)
+    account_id: str = Field(index=True)
+    amount: float
+    balance_after: float
+    tx_type: str = Field(index=True)  # "deposit", "withdrawal", "charge", "earning"
+    description: str = Field(default="")
+    reference_id: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)

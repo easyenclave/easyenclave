@@ -73,6 +73,7 @@ function showAdminTab(tabName) {
 
     // Load data for tab
     if (tabName === 'agents') loadAgents();
+    else if (tabName === 'accounts') loadAccounts();
     else if (tabName === 'mrtds') loadMrtds();
     else if (tabName === 'logs') {
         loadLogs();
@@ -502,4 +503,107 @@ function formatUptime(seconds) {
     if (days > 0) return `${days}d ${hours}h`;
     if (hours > 0) return `${hours}h ${mins}m`;
     return `${mins}m`;
+}
+
+// Accounts management
+async function loadAccounts() {
+    const container = document.getElementById('accountsAdminList');
+    try {
+        const data = await fetchJSON('/api/v1/accounts');
+
+        if (data.accounts.length === 0) {
+            container.innerHTML = '<div class="empty">No accounts created</div>';
+            return;
+        }
+
+        container.innerHTML = `
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Balance</th>
+                        <th>Created</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.accounts.map(acct => `
+                        <tr>
+                            <td><strong>${acct.name}</strong><br><code style="font-size: 0.7rem">${acct.account_id.substring(0, 8)}...</code></td>
+                            <td><span class="status-badge">${acct.account_type}</span></td>
+                            <td>$${acct.balance.toFixed(2)}</td>
+                            <td>${new Date(acct.created_at).toLocaleDateString()}</td>
+                            <td class="action-buttons">
+                                <button class="btn-small btn-info" onclick="promptDeposit('${acct.account_id}', '${acct.name}')">Deposit</button>
+                                <button class="btn-small btn-danger" onclick="deleteAccount('${acct.account_id}', '${acct.name}')">Delete</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        container.innerHTML = `<div class="error">Error loading accounts: ${error.message}</div>`;
+    }
+}
+
+async function createAccount() {
+    const name = document.getElementById('accountName').value.trim();
+    const accountType = document.getElementById('accountType').value;
+
+    if (!name) {
+        alert('Please enter an account name');
+        return;
+    }
+
+    try {
+        await fetchJSON('/api/v1/accounts', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, account_type: accountType })
+        });
+        document.getElementById('accountName').value = '';
+        loadAccounts();
+    } catch (error) {
+        alert('Error creating account: ' + error.message);
+    }
+}
+
+async function promptDeposit(accountId, accountName) {
+    const amount = prompt(`Deposit amount (USD) for "${accountName}":`);
+    if (!amount) return;
+
+    const parsed = parseFloat(amount);
+    if (isNaN(parsed) || parsed <= 0) {
+        alert('Please enter a positive number');
+        return;
+    }
+
+    try {
+        await fetchJSON(`/api/v1/accounts/${accountId}/deposit`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amount: parsed, description: 'Manual deposit via admin UI' })
+        });
+        loadAccounts();
+    } catch (error) {
+        alert('Error depositing: ' + error.message);
+    }
+}
+
+async function deleteAccount(accountId, accountName) {
+    if (!confirm(`Delete account "${accountName}"? Account must have zero balance.`)) return;
+
+    try {
+        const response = await adminFetch(`/api/v1/accounts/${accountId}`, { method: 'DELETE' });
+        if (response.ok) {
+            loadAccounts();
+        } else {
+            const text = await response.text();
+            alert('Failed to delete account: ' + text);
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
 }
