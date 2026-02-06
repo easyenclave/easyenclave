@@ -31,6 +31,8 @@ Access the service at:
 
 ### Deploy to TDX
 
+> **GPU passthrough** has only been tested on Ubuntu 25.04+.
+
 Use the GitHub Actions workflows to deploy to TDX VMs:
 
 ```bash
