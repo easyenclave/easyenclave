@@ -1,6 +1,6 @@
 # Private LLM
 
-Run a private LLM (Ollama + Qwen 2.5 0.5B) inside a TDX enclave.
+Run a private LLM (Ollama + SmolLM2 135M) inside a TDX enclave.
 
 ## Deploy
 

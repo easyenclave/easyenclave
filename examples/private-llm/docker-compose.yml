@@ -19,7 +19,7 @@ services:
       ollama:
         condition: service_healthy
     restart: "no"
-    entrypoint: ["sh", "-c", "curl -sf -X POST http://ollama:8080/api/pull -d '{\"name\":\"qwen2.5:0.5b\"}'"]
+    entrypoint: ["sh", "-c", "curl -sf -X POST http://ollama:8080/api/pull -d '{\"name\":\"smollm2:135m\"}'"]
 
 volumes:
   ollama_data:
