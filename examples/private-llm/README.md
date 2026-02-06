@@ -49,13 +49,27 @@ curl https://app.easyenclave.com/proxy/private-llm/v1/chat/completions \
   -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"Say hello"}]}'
 ```
 
+Using the Python SDK:
+
+```python
+from easyenclave import EasyEnclaveClient
+
+client = EasyEnclaveClient("https://app.easyenclave.com")
+llm = client.service("private-llm")
+resp = llm.post("/v1/chat/completions", json={
+    "model": "smollm2:135m",
+    "messages": [{"role": "user", "content": "Say hello"}],
+})
+print(resp.json()["choices"][0]["message"]["content"])
+```
+
 ## How it's tested
 
-The [Deploy Examples](../../.github/workflows/deploy-examples.yml) workflow runs an end-to-end smoke test after deployment:
+The [Deploy Examples](../../.github/workflows/deploy-examples.yml) workflow runs [`test.py`](test.py) after deployment. The script uses the EasyEnclave Python SDK and tests two access paths:
 
-1. Deploys the compose file to a TDX agent
-2. Waits for the Ollama health check to pass
-3. Sends a chat completion request via `curl` through the Cloudflare tunnel
-4. Asserts the response contains a non-empty message
+1. **Direct** — POST to the Cloudflare tunnel URL (`SERVICE_URL`)
+2. **Proxy** — POST through the control plane proxy via `EasyEnclaveClient.service("private-llm")`
+
+Both paths retry for up to 5 minutes while the model loads, then assert a non-empty response.
 
 The test uses `smollm2:135m` (135M params, ~100MB) for fast pull and load times in CI.

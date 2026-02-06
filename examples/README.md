@@ -2,10 +2,12 @@
 
 Example apps that run inside TDX enclaves via EasyEnclave. Each is a standard `docker-compose.yml` — EasyEnclave handles attestation, tunneling, and deployment.
 
-| Example | Description |
-|---------|-------------|
-| [hello-tdx](hello-tdx/) | Minimal HTTP server — the smallest possible EasyEnclave app |
-| [private-llm](private-llm/) | Ollama LLM running privately inside a TDX enclave |
+| Example | Description | Test |
+|---------|-------------|------|
+| [hello-tdx](hello-tdx/) | Minimal HTTP server — the smallest possible EasyEnclave app | health check via deploy action |
+| [private-llm](private-llm/) | Ollama LLM running privately inside a TDX enclave | [`test.py`](private-llm/test.py) — SDK smoke test (direct + proxy) |
+
+The workflow also verifies that deploying an **unregistered** app is rejected — proving the catalog is enforced, not optional.
 
 ## How deployment works
 
@@ -23,5 +25,6 @@ All examples are deployed automatically by the [Deploy Examples](../.github/work
 1. Create a directory under `examples/` with a `docker-compose.yml`
 2. Expose your service on port 8080 (the agent proxies traffic to this port)
 3. Add a deploy job in `deploy-examples.yml`
+4. Add a `test.py` that exercises your app using the [SDK](../sdk/) — it becomes both a smoke test and runnable documentation
 
 See the [deploy action docs](../.github/actions/deploy/README.md) for the full action reference.

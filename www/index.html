@@ -100,7 +100,7 @@
                 </div>
                 <div class="benefit">
                     <h4>No Direct Deploys</h4>
-                    <p>All deployments go through the catalog. No way to deploy untracked code.</p>
+                    <p>All deployments go through the catalog. No way to deploy untracked code — <a href="https://github.com/easyenclave/easyenclave/blob/main/.github/workflows/deploy-examples.yml" target="_blank">tested on every push</a>.</p>
                 </div>
             </div>
         </div>
@@ -341,7 +341,7 @@ curl https://app.easyenclave.com/proxy/my-app/api/data
 
 # Or from a browser - same URL
 fetch("https://app.easyenclave.com/proxy/my-app/api/data")</code></pre>
-                        <p class="level-note"><strong>See it in action:</strong> The <a href="https://github.com/easyenclave/easyenclave/tree/main/examples/private-llm" target="_blank">private-llm example</a> runs Ollama (completely unmodified) inside a TDX enclave. Your existing Docker apps work the same way - just deploy and they're protected.</p>
+                        <p class="level-note"><strong>See it in action:</strong> The <a href="https://github.com/easyenclave/easyenclave/tree/main/examples/private-llm" target="_blank">private-llm example</a> runs Ollama (completely unmodified) inside a TDX enclave. Its <a href="https://github.com/easyenclave/easyenclave/blob/main/examples/private-llm/test.py" target="_blank">test script</a> queries the LLM through the proxy on every push — tested docs, not just words.</p>
                     </div>
                 </div>
 
@@ -443,6 +443,7 @@ response = my_service.post("/api/data", json={"input": "secret"})</code></pre>
 client = EasyEnclaveClient("https://app.easyenclave.com")
 response = client.service("my-app").get("/api/data")
 print(response.json())</code></pre>
+                        <p class="level-note">This pattern is tested end-to-end on every push. See <a href="https://github.com/easyenclave/easyenclave/blob/main/examples/private-llm/test.py" target="_blank">examples/private-llm/test.py</a> for a working example.</p>
                     </div>
                 </div>
             </div>

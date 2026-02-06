@@ -86,23 +86,16 @@ jobs:
           service_name: private-llm
           health_endpoint: /
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SDK
+        run: pip install ./sdk/
+
       - name: Test LLM query
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
-        run: |
-          deadline=$((SECONDS + 300))
-          while true; do
-            RESPONSE=$(curl -sf "$SERVICE_URL/v1/chat/completions" \
-              -H "Content-Type: application/json" \
-              -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"Say hello in one sentence."}]}' \
-              2>/dev/null) && break
-            if [ $SECONDS -ge $deadline ]; then
-              echo "::error::LLM not ready after 5 minutes"
-              exit 1
-            fi
-            echo "Model not ready yet, retrying in 15s..."
-            sleep 15
-          done
-          CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
-          echo "LLM response: $CONTENT"
-          [ -n "$CONTENT" ] && [ "$CONTENT" != "null" ]
+          EASYENCLAVE_URL: https://app.easyenclave.com
+        run: python3 examples/private-llm/test.py

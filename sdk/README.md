@@ -1,6 +1,6 @@
 # EasyEnclave SDK
 
-Python client library for the EasyEnclave discovery service.
+Python client library for the EasyEnclave control plane.
 
 ## Installation
 
@@ -11,79 +11,77 @@ pip install easyenclave
 Or install from source:
 
 ```bash
-cd sdk
-pip install -e .
+pip install ./sdk/
 ```
 
 ## Usage
 
-### Basic Example
+### Query a service through the proxy
+
+The most common pattern — connect to the control plane and call a service:
 
 ```python
 from easyenclave import EasyEnclaveClient
 
-# Connect to the discovery service
-client = EasyEnclaveClient("https://easyenclave.example.com")
+client = EasyEnclaveClient("https://app.easyenclave.com")
+llm = client.service("private-llm")
+resp = llm.post("/v1/chat/completions", json={
+    "model": "smollm2:135m",
+    "messages": [{"role": "user", "content": "Say hello"}],
+})
+print(resp.json()["choices"][0]["message"]["content"])
+```
 
-# Register a service
-service_id = client.register(
-    name="my-service",
-    endpoints={"prod": "https://my-service.example.com"},
-    description="My TDX-attested service",
-    tags=["api", "production"],
-    source_repo="https://github.com/org/my-service",
-)
-print(f"Registered with ID: {service_id}")
+For a complete working example (tested in CI on every push), see [`examples/private-llm/test.py`](../examples/private-llm/test.py).
 
-# Discover services
+### Verify control plane attestation
+
+Pass `verify=True` (the default) to verify the control plane's TDX quote on connect. This confirms you're talking to a genuine TDX enclave before routing any traffic:
+
+```python
+client = EasyEnclaveClient("https://app.easyenclave.com", verify=True)
+
+# At this point, the control plane's TDX attestation has been verified.
+# All requests through client.service() are routed via the attested proxy.
+resp = client.service("my-app").get("/api/data")
+```
+
+Use `verify=False` when running outside TDX (e.g. local dev, CI runners):
+
+```python
+client = EasyEnclaveClient("https://app.easyenclave.com", verify=False)
+```
+
+### Browse the app catalog
+
+```python
+client = EasyEnclaveClient("https://app.easyenclave.com", verify=False)
+
+# List all apps
+apps = client.list_apps()
+
+# Get a specific app and its versions
+app = client.get_app("private-llm")
+version = client.get_app_version("private-llm", "20260205-abc1234")
+```
+
+### Service discovery
+
+```python
+# Find services by name, tags, or MRTD
 services = client.discover(tags=["api"])
 for svc in services:
-    print(f"Found: {svc['name']} at {svc['endpoints']}")
+    print(f"{svc['name']} — {svc['endpoints']}")
 
-# Get specific service details
+# Get details for a specific service
 service = client.get_service(service_id)
-print(f"Service details: {service}")
-
-# Verify a service's attestation
-result = client.verify_service(service_id)
-if result["verified"]:
-    print("Attestation verified!")
-else:
-    print(f"Verification failed: {result['error']}")
-
-# Deregister when done
-client.deregister(service_id)
 ```
 
-### With Attestation
+### Context manager
 
 ```python
-import subprocess
-import json
-
-# Get attestation from measure-tdx
-result = subprocess.run(
-    ["measure-tdx", "--json"],
-    capture_output=True,
-    text=True,
-)
-attestation = json.loads(result.stdout)
-
-# Register with attestation
-service_id = client.register(
-    name="attested-service",
-    endpoints={"prod": "https://secure.example.com"},
-    attestation_json=attestation,
-    mrtd=attestation.get("mrtd"),
-    intel_ta_token=attestation.get("token"),
-)
-```
-
-### Context Manager
-
-```python
-with EasyEnclaveClient("https://easyenclave.example.com") as client:
-    services = client.discover()
+with EasyEnclaveClient("https://app.easyenclave.com", verify=False) as client:
+    resp = client.service("my-app").get("/health")
     # Client is automatically closed when exiting the context
 ```
 
@@ -91,36 +89,49 @@ with EasyEnclaveClient("https://easyenclave.example.com") as client:
 
 ### EasyEnclaveClient
 
-#### `__init__(discovery_url, verify_attestation=True, timeout=30.0)`
+#### `__init__(control_plane_url, verify=True, expected_mrtd=None, timeout=30.0)`
 
-Create a new client connected to the discovery service.
+Connect to the control plane. If `verify=True`, the control plane's TDX attestation is checked immediately.
 
-- `discovery_url`: Base URL of the EasyEnclave service
-- `verify_attestation`: Whether to verify the service's attestation on connect
-- `timeout`: Request timeout in seconds
+#### `service(service_name) -> ServiceClient`
 
-#### `register(...) -> str`
+Get a client for a named service. Requests are routed through the control plane proxy.
 
-Register a service. Returns the service ID.
+#### `list_apps(name=None, tags=None) -> list[dict]`
+
+List apps in the catalog, optionally filtered by name or tags.
+
+#### `get_app(app_name) -> dict`
+
+Get details for an app.
+
+#### `get_app_version(app_name, version) -> dict`
+
+Get details for a specific version of an app.
 
 #### `discover(...) -> list[dict]`
 
-Find services matching the given criteria.
+Find services matching criteria (name, tags, environment, mrtd, health_status, query).
 
 #### `get_service(service_id) -> dict`
 
 Get details for a specific service.
 
-#### `verify_service(service_id) -> dict`
+#### `register(...) -> str`
 
-Verify a service's attestation via Intel Trust Authority.
+Register a service. Returns the service ID.
 
 #### `deregister(service_id) -> bool`
 
 Remove a service from the registry.
 
+### ServiceClient
+
+Returned by `client.service("name")`. Supports `get()`, `post()`, `put()`, `patch()`, `delete()`, and `request()` — all taking a path and optional httpx kwargs.
+
 ## Exceptions
 
-- `EasyEnclaveError`: Base exception for all client errors
-- `ServiceNotFoundError`: Raised when a service is not found
-- `VerificationError`: Raised when attestation verification fails
+- `EasyEnclaveError` — Base exception for all client errors
+- `ServiceNotFoundError` — Service or app not found
+- `ControlPlaneNotVerifiedError` — Control plane attestation failed
+- `VerificationError` — Attestation verification failed

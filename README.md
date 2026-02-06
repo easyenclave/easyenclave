@@ -124,37 +124,24 @@ curl "http://localhost:8080/api/v1/services?q=my-service"
 Install the SDK:
 
 ```bash
-cd sdk
-pip install -e .
+pip install ./sdk/
 ```
 
-Use the SDK:
+Connect to the control plane and query a service through the proxy:
 
 ```python
 from easyenclave import EasyEnclaveClient
 
-# Connect to the discovery service
-client = EasyEnclaveClient("http://localhost:8080")
-
-# Register a service
-service_id = client.register(
-    name="my-service",
-    endpoints={"prod": "https://my-service.example.com"},
-    tags=["api"],
-)
-
-# Discover services
-services = client.discover(tags=["api"])
-
-# Get service details
-service = client.get_service(service_id)
-
-# Verify attestation
-result = client.verify_service(service_id)
-
-# Deregister
-client.deregister(service_id)
+client = EasyEnclaveClient("https://app.easyenclave.com")
+llm = client.service("private-llm")
+resp = llm.post("/v1/chat/completions", json={
+    "model": "smollm2:135m",
+    "messages": [{"role": "user", "content": "Say hello"}],
+})
+print(resp.json()["choices"][0]["message"]["content"])
 ```
+
+For a complete working example (tested in CI on every push), see [`examples/private-llm/test.py`](examples/private-llm/test.py). Full SDK docs in [`sdk/README.md`](sdk/README.md).
 
 ## Configuration
 
@@ -180,12 +167,20 @@ pytest tests/ -v
 easyenclave/
 ├── app/
 │   ├── main.py          # FastAPI application
-│   ├── models.py        # Data models
-│   ├── storage.py       # In-memory storage
-│   ├── ita.py           # ITA integration
+│   ├── attestation.py   # Attestation business logic
+│   ├── models.py        # Request/response DTOs
+│   ├── db_models.py     # SQLModel ORM models
+│   ├── storage.py       # Storage layer (Store classes)
+│   ├── crud.py          # CRUD helpers
+│   ├── ita.py           # Intel Trust Authority integration
 │   └── static/          # Web GUI files
 ├── sdk/
 │   └── easyenclave/     # Python SDK
+├── examples/
+│   ├── hello-tdx/       # Minimal HTTP server example
+│   └── private-llm/     # LLM in TDX (with SDK smoke test)
+├── apps/
+│   └── measuring-enclave/  # Image digest resolution service
 ├── tests/               # Unit tests
 ├── Dockerfile
 ├── docker-compose.yml
@@ -196,5 +191,4 @@ easyenclave/
 
 - [ ] S3 backup/restore for persistence
 - [ ] Accounting (credit for work, debit to deploy)
-- [ ] private llm example using sdk
-- [ ] private evm example
+- [ ] Private EVM example

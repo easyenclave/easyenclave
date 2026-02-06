@@ -20,3 +20,5 @@ services:
 ## Deployment
 
 Deployed automatically by the [Deploy Examples](../../.github/workflows/deploy-examples.yml) workflow. The deploy action registers the app, publishes the compose file, and waits for the health check on `/` to pass.
+
+This compose file is also used by the **unregistered app test** — the workflow attempts to deploy it without registering first and verifies the control plane rejects it. This proves the app catalog is enforced, not optional.
