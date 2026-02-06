@@ -88,41 +88,23 @@ jobs:
           service_name: private-llm
           health_endpoint: /
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install OpenAI SDK
-        run: pip install openai
-
       - name: Test LLM query
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
         run: |
-          python3 << 'EOF'
-          import os
-          import time
-          from openai import OpenAI
-
-          service_url = os.environ["SERVICE_URL"]
-          client = OpenAI(base_url=f"{service_url}/v1", api_key="unused")
-
-          deadline = time.time() + 300  # 5 minutes
-          while True:
-              try:
-                  response = client.chat.completions.create(
-                      model="smollm2:135m",
-                      messages=[{"role": "user", "content": "Say hello in one sentence."}],
-                  )
-                  break
-              except Exception as e:
-                  if time.time() >= deadline:
-                      raise RuntimeError(f"LLM not ready after 5 minutes: {e}") from e
-                  print(f"Model not ready yet ({e}), retrying in 15s...")
-                  time.sleep(15)
-
-          content = response.choices[0].message.content
-          assert content, "Response content is empty"
-          print(f"LLM response: {content}")
-          EOF
+          deadline=$((SECONDS + 300))
+          while true; do
+            RESPONSE=$(curl -sf "$SERVICE_URL/v1/chat/completions" \
+              -H "Content-Type: application/json" \
+              -d '{"model":"smollm2:135m","messages":[{"role":"user","content":"Say hello in one sentence."}]}' \
+              2>/dev/null) && break
+            if [ $SECONDS -ge $deadline ]; then
+              echo "::error::LLM not ready after 5 minutes"
+              exit 1
+            fi
+            echo "Model not ready yet, retrying in 15s..."
+            sleep 15
+          done
+          CONTENT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content')
+          echo "LLM response: $CONTENT"
+          [ -n "$CONTENT" ] && [ "$CONTENT" != "null" ]
