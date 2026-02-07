@@ -53,6 +53,19 @@ def extract_intel_ta_token(attestation: dict) -> str | None:
     return attestation.get("tdx", {}).get("intel_ta_token")
 
 
+def extract_rtmrs(attestation: dict) -> dict[str, str] | None:
+    """Extract RTMR0-3 from attestation dict.
+
+    Returns a dict {"rtmr0": "hex...", ...} with all 4 RTMRs, or None if missing.
+    """
+    measurements = attestation.get("tdx", {}).get("measurements", {})
+    rtmr_keys = ["rtmr0", "rtmr1", "rtmr2", "rtmr3"]
+    rtmrs = {k: measurements[k] for k in rtmr_keys if k in measurements}
+    if len(rtmrs) == 4:
+        return rtmrs
+    return None
+
+
 def extract_mrtd_from_claims(ita_claims: dict) -> str:
     """Extract MRTD from verified Intel TA claims.
 
@@ -138,15 +151,7 @@ async def refresh_agent_attestation(agent_id: str, attestation: dict) -> bool:
 
     try:
         result = await verify_attestation_token(intel_ta_token)
-        if result["verified"]:
-            agent_store.update_attestation(
-                agent_id,
-                intel_ta_token=intel_ta_token,
-                verified=True,
-            )
-            logger.debug(f"Agent {agent_id} attestation refreshed")
-            return True
-        else:
+        if not result["verified"]:
             logger.warning(f"Agent {agent_id} attestation failed: {result.get('error')}")
             agent_store.update_attestation(
                 agent_id,
@@ -155,6 +160,37 @@ async def refresh_agent_attestation(agent_id: str, attestation: dict) -> bool:
                 error=result.get("error"),
             )
             return False
+
+        # Check for RTMR drift
+        current_rtmrs = extract_rtmrs(attestation)
+        agent = agent_store.get(agent_id)
+
+        if agent and current_rtmrs:
+            if agent.rtmrs:
+                # Compare against stored RTMRs
+                changed = [k for k in current_rtmrs if current_rtmrs[k] != agent.rtmrs.get(k)]
+                if changed:
+                    drift_msg = f"RTMR drift detected: {', '.join(changed)} changed"
+                    logger.warning(f"Agent {agent_id}: {drift_msg}")
+                    agent_store.update_attestation(
+                        agent_id,
+                        intel_ta_token=intel_ta_token,
+                        verified=False,
+                        error=drift_msg,
+                    )
+                    return False
+            else:
+                # Backfill RTMRs for legacy/new agent
+                agent_store.update_rtmrs(agent_id, current_rtmrs)
+                logger.info(f"Agent {agent_id} RTMRs backfilled")
+
+        agent_store.update_attestation(
+            agent_id,
+            intel_ta_token=intel_ta_token,
+            verified=True,
+        )
+        logger.debug(f"Agent {agent_id} attestation refreshed")
+        return True
     except Exception as e:
         logger.warning(f"Failed to verify attestation for {agent_id}: {e}")
         return False
@@ -248,6 +284,7 @@ async def build_attestation_chain(agent) -> dict:
         "vm_name": agent.vm_name,
         "mrtd": agent.mrtd,
         "mrtd_type": get_trusted_mrtd(agent.mrtd) if agent.mrtd else None,
+        "rtmrs": agent.rtmrs,
         "verified": agent.verified,
         "verification_error": agent.verification_error,
         "intel_ta_verified": intel_ta_verified,

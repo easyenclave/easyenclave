@@ -22,6 +22,7 @@ from . import cloudflare, proxy
 from .attestation import (
     AttestationError,
     build_attestation_chain,
+    extract_rtmrs,
     generate_tdx_quote,
     refresh_agent_attestation,
     verify_agent_registration,
@@ -618,11 +619,15 @@ async def register_agent(request: AgentRegistrationRequest):
     intel_ta_verified = True
     verified = True
 
+    # Extract RTMRs from attestation (if available)
+    rtmrs = extract_rtmrs(request.attestation)
+
     # Create agent record (reuse existing agent_id if recovering from attestation_failed)
     agent_kwargs = {
         "vm_name": request.vm_name,
         "attestation": request.attestation,
         "mrtd": mrtd,
+        "rtmrs": rtmrs,
         "intel_ta_token": intel_ta_token,
         "version": request.version,
         "status": "undeployed",

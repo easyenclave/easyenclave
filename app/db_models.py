@@ -52,6 +52,7 @@ class Agent(SQLModel, table=True):
     status: str = Field(default="undeployed", index=True)
     attestation: dict[str, Any] = Field(sa_column=Column(JSON))
     mrtd: str = Field(default="")
+    rtmrs: dict[str, str] | None = Field(default=None, sa_column=Column(JSON))
     intel_ta_token: str | None = None
     tunnel_id: str | None = None
     hostname: str | None = None

@@ -287,6 +287,16 @@ class AgentStore:
             session.add(agent)
             return True
 
+    def update_rtmrs(self, agent_id: str, rtmrs: dict[str, str]) -> bool:
+        """Update stored RTMRs for an agent (backfill or refresh)."""
+        with get_db() as session:
+            agent = session.get(Agent, agent_id)
+            if not agent:
+                return False
+            agent.rtmrs = rtmrs
+            session.add(agent)
+            return True
+
     def update_attestation(
         self, agent_id: str, intel_ta_token: str, verified: bool, error: str | None = None
     ) -> bool:

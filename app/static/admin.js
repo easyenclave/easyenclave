@@ -432,6 +432,11 @@ async function loadAgentAttestation(agentId) {
         if (data.mrtd_type) {
             rows.push(`<tr><td>MRTD Type</td><td>${data.mrtd_type}</td></tr>`);
         }
+        if (data.rtmrs) {
+            for (const [key, value] of Object.entries(data.rtmrs)) {
+                rows.push(`<tr><td>${key.toUpperCase()}</td><td><code style="font-size: 0.75rem; word-break: break-all;">${value}</code></td></tr>`);
+            }
+        }
 
         const itaStatus = data.intel_ta_verified ? '<span class="verified-badge">Valid</span>' : '<span class="unverified-badge">Expired/Invalid</span>';
         rows.push(`<tr><td>Intel TA Token</td><td>${itaStatus}</td></tr>`);
