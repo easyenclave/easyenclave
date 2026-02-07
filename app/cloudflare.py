@@ -272,7 +272,10 @@ async def ensure_waf_skip_rule() -> None:
         "Content-Type": "application/json",
     }
 
-    expression = f'(http.host wildcard "agent-*.{EASYENCLAVE_DOMAIN}")'
+    expression = (
+        f'(http.host wildcard "agent-*.{EASYENCLAVE_DOMAIN}")'
+        ' or (starts_with(http.request.uri.path, "/proxy/"))'
+    )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         # List rulesets to find the custom firewall ruleset
