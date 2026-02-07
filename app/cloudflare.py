@@ -45,21 +45,20 @@ def is_configured() -> bool:
 
 async def create_tunnel_for_agent(
     agent_id: str,
-    service_port: int = 8081,
+    ingress_rules: list[dict] | None = None,
 ) -> TunnelInfo:
     """Create a Cloudflare Tunnel for an agent.
 
     This creates:
     1. A new tunnel named "agent-{agent_id}"
-    2. Ingress configuration routing to localhost:{service_port}
+    2. Ingress configuration with path-based routing to multiple ports
     3. A DNS CNAME record for agent-{agent_id}.{domain}
-
-    The tunnel routes to the agent API server (port 8081), which handles
-    /api/* requests itself and proxies other requests to the workload.
 
     Args:
         agent_id: The agent's unique ID
-        service_port: Port the agent API server listens on (default 8081)
+        ingress_rules: Optional list of ingress rules like:
+            [{"path": "/ollama/*", "port": 11434}, {"path": "/*", "port": 8080}]
+            If None, defaults to routing all traffic to port 8081 (agent API)
 
     Returns:
         TunnelInfo with tunnel_id, tunnel_token, and hostname
@@ -101,23 +100,37 @@ async def create_tunnel_for_agent(
 
         # 2. Configure ingress
         logger.info(f"Configuring tunnel ingress for {hostname}")
+
+        # Build ingress rules from provided config or default to agent API port
+        if ingress_rules:
+            ingress = []
+            for rule in ingress_rules:
+                ingress_entry = {
+                    "hostname": hostname,
+                    "service": f"http://localhost:{rule['port']}",
+                }
+                if "path" in rule:
+                    ingress_entry["path"] = rule["path"]
+                ingress.append(ingress_entry)
+            # Add catch-all
+            ingress.append({"service": "http_status:404"})
+        else:
+            # Default: route all traffic to agent API at 8081
+            ingress = [
+                {
+                    "hostname": hostname,
+                    "service": "http://localhost:8081",
+                },
+                {"service": "http_status:404"},
+            ]
+
         config_resp = await client.put(
             f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations",
             headers=headers,
-            json={
-                "config": {
-                    "ingress": [
-                        {
-                            "hostname": hostname,
-                            "service": f"http://localhost:{service_port}",
-                        },
-                        {"service": "http_status:404"},  # catch-all required
-                    ]
-                }
-            },
+            json={"config": {"ingress": ingress}},
         )
         config_resp.raise_for_status()
-        logger.info("Tunnel ingress configured")
+        logger.info(f"Tunnel ingress configured with {len(ingress) - 1} rule(s)")
 
         # 3. Create DNS CNAME record
         logger.info(f"Creating DNS record for {hostname}")
@@ -145,6 +158,65 @@ async def create_tunnel_for_agent(
             tunnel_token=tunnel_token,
             hostname=hostname,
         )
+
+
+async def update_tunnel_ingress(
+    tunnel_id: str,
+    hostname: str,
+    ingress_rules: list[dict] | None = None,
+) -> bool:
+    """Update the ingress configuration for an existing tunnel.
+
+    Args:
+        tunnel_id: The tunnel UUID
+        hostname: The tunnel hostname (e.g., agent-xyz.easyenclave.com)
+        ingress_rules: List of ingress rules like:
+            [{"path": "/ollama/*", "port": 11434}, {"path": "/*", "port": 8080}]
+            If None, defaults to port 8081
+
+    Returns:
+        True if updated successfully, False otherwise
+    """
+    if not is_configured():
+        logger.warning("Cloudflare not configured, cannot update tunnel ingress")
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    # Build ingress rules
+    if ingress_rules:
+        ingress = []
+        for rule in ingress_rules:
+            ingress_entry = {
+                "hostname": hostname,
+                "service": f"http://localhost:{rule['port']}",
+            }
+            if "path" in rule:
+                ingress_entry["path"] = rule["path"]
+            ingress.append(ingress_entry)
+        ingress.append({"service": "http_status:404"})
+    else:
+        ingress = [
+            {"hostname": hostname, "service": "http://localhost:8081"},
+            {"service": "http_status:404"},
+        ]
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.put(
+                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations",
+                headers=headers,
+                json={"config": {"ingress": ingress}},
+            )
+            resp.raise_for_status()
+            logger.info(f"Updated tunnel {tunnel_id} ingress with {len(ingress) - 1} rule(s)")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to update tunnel ingress: {e}")
+            return False
 
 
 async def delete_tunnel(tunnel_id: str) -> bool:

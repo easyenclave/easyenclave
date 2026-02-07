@@ -122,6 +122,7 @@ class AppVersion(SQLModel, table=True):
     source_tag: str | None = None
     mrtd: str | None = None
     attestation: dict | None = Field(default=None, sa_column=Column(JSON))
+    ingress: list[dict] | None = Field(default=None, sa_column=Column(JSON))
     status: str = Field(default="pending", index=True)
     rejection_reason: str | None = None
     published_at: datetime = Field(default_factory=utcnow)

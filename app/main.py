@@ -1131,6 +1131,7 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
         image_digest=request.image_digest,
         source_commit=request.source_commit,
         source_tag=request.source_tag,
+        ingress=request.ingress,
         status="pending",
     )
     app_version_store.create(new_version)
@@ -1143,6 +1144,7 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
         version=new_version.version,
         mrtd=new_version.mrtd,
         attestation=new_version.attestation,
+        ingress=new_version.ingress,
         status=new_version.status,
         rejection_reason=new_version.rejection_reason,
         published_at=new_version.published_at,
@@ -1304,7 +1306,16 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
         f"Deployment created: {deployment_id} ({name}@{version} -> agent {request.agent_id})"
     )
 
-    # 10. Push deployment to agent
+    # 10. Update tunnel ingress if app version has custom ingress rules
+    if found_version.ingress and agent.tunnel_id and cloudflare.is_configured():
+        logger.info(f"Updating tunnel ingress for agent {request.agent_id}")
+        await cloudflare.update_tunnel_ingress(
+            agent.tunnel_id,
+            agent.hostname,
+            found_version.ingress,
+        )
+
+    # 11. Push deployment to agent
     try:
         agent_url = f"https://{agent.hostname}/api/deploy"
         async with httpx.AsyncClient(timeout=30.0) as client:

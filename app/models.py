@@ -165,6 +165,7 @@ class AppVersionCreateRequest(BaseModel):
     image_digest: str | None = None
     source_commit: str | None = None
     source_tag: str | None = None
+    ingress: list[dict] | None = None  # [{"path": "/*", "port": 8080}]
 
 
 class AppVersionResponse(BaseModel):
@@ -173,6 +174,7 @@ class AppVersionResponse(BaseModel):
     version_id: str
     app_name: str
     version: str
+    ingress: list[dict] | None = None
     mrtd: str | None = None
     attestation: dict | None = None
     status: str
