@@ -22,8 +22,8 @@ from .storage import agent_store, store
 
 logger = logging.getLogger(__name__)
 
-# Default timeout for proxied requests
-PROXY_TIMEOUT = 30.0
+# Default timeout for proxied requests (60s for LLM completions)
+PROXY_TIMEOUT = 60.0
 
 
 async def get_service_url(service_name: str) -> str:
@@ -126,19 +126,29 @@ async def proxy_request(
 
     logger.info(f"Proxying {request.method} to {target_url}")
 
-    # Copy headers, excluding hop-by-hop headers
+    # Copy headers, excluding hop-by-hop, auth, and bot-triggering headers.
+    # - Authorization: internal services don't need external auth tokens
+    # - User-Agent: SDK user-agents (e.g. "OpenAI/Python") trigger Cloudflare SBFM
+    # - X-Stainless-*: OpenAI SDK tracking headers flag traffic as automated
     excluded_headers = {
         "host",
         "connection",
         "keep-alive",
         "proxy-authenticate",
         "proxy-authorization",
+        "authorization",
+        "user-agent",
         "te",
         "trailers",
         "transfer-encoding",
         "upgrade",
     }
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_headers}
+    headers = {
+        k: v
+        for k, v in request.headers.items()
+        if k.lower() not in excluded_headers and not k.lower().startswith("x-stainless-")
+    }
+    headers["User-Agent"] = "EasyEnclave-Proxy/1.0"
 
     # Add forwarded headers
     client_host = request.client.host if request.client else "unknown"
