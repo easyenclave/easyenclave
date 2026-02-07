@@ -378,8 +378,12 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized")
 
-    # Ensure WAF skip rule for agent tunnel traffic
+    # Configure Cloudflare to allow automated SDK/agent traffic
     if cloudflare.is_configured():
+        try:
+            await cloudflare.configure_sbfm()
+        except Exception as e:
+            logger.warning(f"Failed to configure SBFM: {e}")
         try:
             await cloudflare.ensure_waf_skip_rule()
         except Exception as e:

@@ -250,6 +250,47 @@ async def delete_dns_record(hostname: str) -> bool:
             return False
 
 
+async def configure_sbfm() -> None:
+    """Configure Super Bot Fight Mode to allow automated traffic.
+
+    SBFM cannot be skipped via WAF custom rules (Cloudflare limitation).
+    Since this platform is API-first (SDKs, agents, CI), we configure
+    SBFM to allow "definitely automated" traffic rather than blocking it.
+
+    Idempotent — checks current config before updating.
+    """
+    if not is_configured():
+        return
+
+    headers = {
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # Get current bot management config
+        resp = await client.get(
+            f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/bot_management",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        config = resp.json().get("result", {})
+
+        if config.get("sbfm_definitely_automated") == "allow":
+            logger.info("SBFM already configured to allow automated traffic")
+            return
+
+        # Update to allow definitely-automated traffic
+        config["sbfm_definitely_automated"] = "allow"
+        put_resp = await client.put(
+            f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/bot_management",
+            headers=headers,
+            json=config,
+        )
+        put_resp.raise_for_status()
+        logger.info("SBFM configured to allow definitely-automated traffic")
+
+
 RULE_DESCRIPTION = "EasyEnclave: skip bot detection for agent tunnel traffic"
 
 
