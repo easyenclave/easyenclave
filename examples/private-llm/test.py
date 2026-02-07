@@ -79,6 +79,13 @@ def test_proxy(easyenclave_url: str) -> bool:
             time.sleep(RETRY_INTERVAL)
 
 
+def _strip_bot_headers(request: _httpx.Request) -> None:
+    """Remove headers that trigger Cloudflare SBFM bot detection."""
+    request.headers["user-agent"] = "EasyEnclave-Test/1.0"
+    for key in [k for k in request.headers if k.lower().startswith("x-stainless-")]:
+        del request.headers[key]
+
+
 def test_openai(easyenclave_url: str) -> bool:
     """Test LLM via the OpenAI Python client through the proxy."""
     proxy_base = f"{easyenclave_url.rstrip('/')}/proxy/private-llm/v1"
@@ -87,7 +94,10 @@ def test_openai(easyenclave_url: str) -> bool:
     client = OpenAI(
         base_url=proxy_base,
         api_key="unused",
-        http_client=_httpx.Client(verify=False),
+        http_client=_httpx.Client(
+            verify=False,
+            event_hooks={"request": [_strip_bot_headers]},
+        ),
     )
     deadline = time.monotonic() + TIMEOUT
 
