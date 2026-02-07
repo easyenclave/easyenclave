@@ -248,3 +248,95 @@ async def delete_dns_record(hostname: str) -> bool:
         except Exception as e:
             logger.error(f"Error deleting DNS record {hostname}: {e}")
             return False
+
+
+RULE_DESCRIPTION = "EasyEnclave: skip bot detection for agent tunnel traffic"
+
+
+async def ensure_waf_skip_rule() -> None:
+    """Ensure a WAF rule exists to skip bot detection for agent tunnel traffic.
+
+    Creates a custom rule in the http_request_firewall_custom phase that
+    skips Super Bot Fight Mode and managed WAF rules for requests to
+    agent-*.{domain} hostnames. This prevents Cloudflare from blocking
+    legitimate proxy traffic (e.g., OpenAI SDK headers).
+
+    Idempotent — checks for existing rule before creating.
+    """
+    if not is_configured():
+        logger.debug("Cloudflare not configured, skipping WAF rule setup")
+        return
+
+    headers = {
+        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    expression = f'(http.host wildcard "agent-*.{EASYENCLAVE_DOMAIN}")'
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        # List rulesets to find the custom firewall ruleset
+        list_resp = await client.get(
+            f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/rulesets",
+            headers=headers,
+        )
+        list_resp.raise_for_status()
+        rulesets = list_resp.json().get("result", [])
+
+        # Find existing custom firewall ruleset
+        custom_ruleset_id = None
+        for rs in rulesets:
+            if rs.get("phase") == "http_request_firewall_custom":
+                custom_ruleset_id = rs["id"]
+                break
+
+        # If ruleset exists, check if our rule is already there
+        if custom_ruleset_id:
+            detail_resp = await client.get(
+                f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/rulesets/{custom_ruleset_id}",
+                headers=headers,
+            )
+            detail_resp.raise_for_status()
+            existing_rules = detail_resp.json().get("result", {}).get("rules", [])
+
+            for rule in existing_rules:
+                if rule.get("description") == RULE_DESCRIPTION:
+                    logger.info("WAF skip rule already exists, skipping creation")
+                    return
+
+            # Add rule to existing ruleset
+            logger.info("Adding WAF skip rule to existing custom firewall ruleset")
+            add_resp = await client.post(
+                f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/rulesets/{custom_ruleset_id}/rules",
+                headers=headers,
+                json={
+                    "description": RULE_DESCRIPTION,
+                    "expression": expression,
+                    "action": "skip",
+                    "action_parameters": {"products": ["bfm", "waf"]},
+                    "enabled": True,
+                },
+            )
+            add_resp.raise_for_status()
+            logger.info("WAF skip rule added successfully")
+        else:
+            # Create new ruleset with our rule
+            logger.info("Creating custom firewall ruleset with WAF skip rule")
+            create_resp = await client.put(
+                f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/rulesets/phases/http_request_firewall_custom/entrypoint",
+                headers=headers,
+                json={
+                    "description": "EasyEnclave custom firewall rules",
+                    "rules": [
+                        {
+                            "description": RULE_DESCRIPTION,
+                            "expression": expression,
+                            "action": "skip",
+                            "action_parameters": {"products": ["bfm", "waf"]},
+                            "enabled": True,
+                        }
+                    ],
+                },
+            )
+            create_resp.raise_for_status()
+            logger.info("Custom firewall ruleset created with WAF skip rule")

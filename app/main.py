@@ -378,6 +378,13 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Database initialized")
 
+    # Ensure WAF skip rule for agent tunnel traffic
+    if cloudflare.is_configured():
+        try:
+            await cloudflare.ensure_waf_skip_rule()
+        except Exception as e:
+            logger.warning(f"Failed to configure WAF skip rule: {e}")
+
     # Generate initial CP attestation
     _refresh_cp_attestation()
 
