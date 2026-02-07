@@ -126,10 +126,7 @@ async def proxy_request(
 
     logger.info(f"Proxying {request.method} to {target_url}")
 
-    # Copy headers, excluding hop-by-hop, auth, and bot-triggering headers.
-    # - Authorization: internal services don't need external auth tokens
-    # - User-Agent: SDK user-agents (e.g. "OpenAI/Python") trigger Cloudflare SBFM
-    # - X-Stainless-*: OpenAI SDK tracking headers flag traffic as automated
+    # Copy headers, excluding hop-by-hop and auth headers.
     excluded_headers = {
         "host",
         "connection",
@@ -137,18 +134,12 @@ async def proxy_request(
         "proxy-authenticate",
         "proxy-authorization",
         "authorization",
-        "user-agent",
         "te",
         "trailers",
         "transfer-encoding",
         "upgrade",
     }
-    headers = {
-        k: v
-        for k, v in request.headers.items()
-        if k.lower() not in excluded_headers and not k.lower().startswith("x-stainless-")
-    }
-    headers["User-Agent"] = "EasyEnclave-Proxy/1.0"
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in excluded_headers}
 
     # Add forwarded headers
     client_host = request.client.host if request.client else "unknown"
