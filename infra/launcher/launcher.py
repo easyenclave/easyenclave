@@ -948,6 +948,18 @@ def setup_workload_from_deployment(deployment: dict):
     write_status("setup")
     logger.info("Setting up workload from deployment...")
 
+    # Stop any running containers before cleanup
+    if WORKLOAD_DIR.exists() and (WORKLOAD_DIR / "docker-compose.yml").exists():
+        try:
+            subprocess.run(
+                ["docker", "compose", "down", "--remove-orphans"],
+                cwd=str(WORKLOAD_DIR),
+                capture_output=True,
+                timeout=60,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to stop existing containers: {e}")
+
     # Clean up any previous workload
     if WORKLOAD_DIR.exists():
         subprocess.run(["rm", "-rf", str(WORKLOAD_DIR)], check=True)
@@ -981,10 +993,19 @@ def run_compose(config: dict):
     write_status("building")
 
     compose_args = config.get("compose_up_args", "--build -d").split()
-    cmd = ["docker", "compose", "-f", "docker-compose.yml", "up"] + compose_args
+    compose_file = str(WORKLOAD_DIR / "docker-compose.yml")
+    cmd = [
+        "docker",
+        "compose",
+        "--project-directory",
+        str(WORKLOAD_DIR),
+        "-f",
+        compose_file,
+        "up",
+    ] + compose_args
     logger.info(f"Running: {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, cwd=WORKLOAD_DIR, capture_output=True, text=True)
+    result = subprocess.run(cmd, cwd=str(WORKLOAD_DIR), capture_output=True, text=True)
 
     if result.returncode != 0:
         raise RuntimeError(f"Docker compose failed: {result.stderr}")
