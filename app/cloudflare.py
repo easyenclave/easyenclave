@@ -148,9 +148,14 @@ async def create_tunnel_for_agent(
         if dns_resp.status_code == 409 or (
             dns_resp.status_code != 200 and "already exists" in dns_resp.text.lower()
         ):
-            logger.info("DNS record already exists")
-        else:
+            logger.info(f"DNS record already exists (status {dns_resp.status_code})")
+        elif dns_resp.status_code != 200:
+            # Log the error response before raising
+            logger.error(
+                f"DNS record creation failed (status {dns_resp.status_code}): {dns_resp.text}"
+            )
             dns_resp.raise_for_status()
+        else:
             logger.info("DNS record created")
 
         return TunnelInfo(
