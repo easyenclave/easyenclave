@@ -204,7 +204,7 @@ jobs:
       - name: Bootstrap measuring enclave
         env:
           CP_URL: https://app.easyenclave.com
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD || 'admin123' }}
+          ADMIN_PASSWORD: ${{ secrets.CONTROL_PLANE_ADMIN_PASSWORD }}
         run: |
           set -e
 

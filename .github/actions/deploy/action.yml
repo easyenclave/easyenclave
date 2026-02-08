@@ -34,6 +34,10 @@ inputs:
     description: EasyEnclave control plane URL
     required: false
     default: 'https://app.easyenclave.com'
+  agent_admin_password:
+    description: Agent admin panel password (will be set during deployment)
+    required: false
+    default: ''
 
 outputs:
   deployment_id:
@@ -141,6 +145,7 @@ runs:
         VERSION: ${{ steps.version.outputs.version }}
         SERVICE_NAME: ${{ inputs.service_name }}
         HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
+        AGENT_ADMIN_PASSWORD: ${{ inputs.agent_admin_password }}
       run: |
         set -e
 
@@ -152,15 +157,21 @@ runs:
         try_deploy() {
           local agent_id="$1"
           local http_code
+          local config_json
+          config_json=$(jq -n \
+            --arg service_name "$SERVICE_NAME" \
+            --arg health_endpoint "$HEALTH_ENDPOINT" \
+            --arg admin_password "$AGENT_ADMIN_PASSWORD" \
+            '{
+              service_name: $service_name,
+              health_endpoint: $health_endpoint
+            } + (if $admin_password != "" then {agent_admin_password: $admin_password} else {} end)')
           http_code=$(curl -s -o /tmp/deploy_response.json -w "%{http_code}" \
             -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions/$VERSION/deploy" \
             -H "Content-Type: application/json" \
             -d "{
               \"agent_id\": \"$agent_id\",
-              \"config\": {
-                \"service_name\": \"$SERVICE_NAME\",
-                \"health_endpoint\": \"$HEALTH_ENDPOINT\"
-              }
+              \"config\": $config_json
             }")
           echo "$http_code"
         }

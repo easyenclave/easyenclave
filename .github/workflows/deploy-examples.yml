@@ -61,6 +61,7 @@ jobs:
           compose_file: examples/hello-tdx/docker-compose.yml
           service_name: hello-tdx
           health_endpoint: /
+          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
 
   deploy-private-llm:
     name: Deploy Private LLM
@@ -85,6 +86,7 @@ jobs:
           compose_file: examples/private-llm/docker-compose.yml
           service_name: private-llm
           health_endpoint: /
+          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
