@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
@@ -54,7 +54,7 @@ async def verify_attestation_token(token: str) -> dict:
     if not token:
         return {
             "verified": False,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": None,
             "error": "No attestation token provided",
         }
@@ -101,7 +101,7 @@ async def verify_attestation_token(token: str) -> dict:
 
         return {
             "verified": True,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": claims,
             "error": None,
         }
@@ -109,35 +109,35 @@ async def verify_attestation_token(token: str) -> dict:
     except jwt.ExpiredSignatureError:
         return {
             "verified": False,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": None,
             "error": "Token has expired",
         }
     except jwt.InvalidIssuedAtError:
         return {
             "verified": False,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": None,
             "error": "Token has invalid issued-at time",
         }
     except jwt.InvalidSignatureError:
         return {
             "verified": False,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": None,
             "error": "Token signature verification failed",
         }
     except PyJWKClientError as e:
         return {
             "verified": False,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": None,
             "error": f"Failed to fetch signing keys from Intel TA: {e}",
         }
     except jwt.PyJWTError as e:
         return {
             "verified": False,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": None,
             "error": f"JWT verification failed: {e}",
         }
@@ -145,7 +145,7 @@ async def verify_attestation_token(token: str) -> dict:
         logger.warning(f"Unexpected error during token verification: {e}")
         return {
             "verified": False,
-            "verification_time": datetime.utcnow(),
+            "verification_time": datetime.now(timezone.utc),
             "details": None,
             "error": f"Token verification error: {e}",
         }

@@ -7,7 +7,7 @@ import collections
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -43,6 +43,7 @@ from .billing import (
 )
 from .crud import build_filters, create_transaction, get_or_404
 from .database import init_db
+from .db_models import AdminSession
 from .ita import verify_attestation_token
 from .models import (
     Account,
@@ -89,6 +90,7 @@ from .storage import (
     app_version_store,
     deployment_store,
     list_trusted_mrtds,
+    load_trusted_mrtds,
     store,
     transaction_store,
 )
@@ -107,7 +109,7 @@ class _MemoryLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         self.records.append(
             {
-                "timestamp": datetime.utcfromtimestamp(record.created).isoformat() + "Z",
+                "timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
                 "level": record.levelname,
                 "logger": record.name,
                 "message": record.getMessage(),
@@ -174,7 +176,7 @@ async def background_health_checker():
                     store.update(
                         service.service_id,
                         health_status=status,
-                        last_health_check=datetime.utcnow(),
+                        last_health_check=datetime.now(timezone.utc),
                     )
                 except Exception as e:
                     logger.warning(f"Health check failed for {service.name}: {e}")
@@ -227,7 +229,7 @@ async def background_agent_health_checker():
     """
     while True:
         try:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
 
             # Check all agents with tunnels (not just deployed ones)
             all_agents = agent_store.list()
@@ -335,7 +337,7 @@ def _refresh_cp_attestation():
         _cached_attestation = {
             "quote_b64": result.quote_b64,
             "mrtd": result.measurements.get("mrtd") if result.measurements else None,
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         logger.info("CP attestation quote generated")
 
@@ -402,9 +404,77 @@ def _get_proxy_url() -> str:
     return f"https://app.{domain}"
 
 
+def validate_environment():
+    """Validate environment configuration on startup."""
+    warnings = []
+    errors = []
+
+    # Admin authentication
+    if not os.environ.get("ADMIN_PASSWORD_HASH"):
+        warnings.append("ADMIN_PASSWORD_HASH not set - password login will be disabled")
+
+    # GitHub OAuth (optional but if one is set, all should be set)
+    github_client_id = os.environ.get("GITHUB_OAUTH_CLIENT_ID")
+    github_client_secret = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET")
+    github_redirect_uri = os.environ.get("GITHUB_OAUTH_REDIRECT_URI")
+
+    github_vars = [github_client_id, github_client_secret, github_redirect_uri]
+    if any(github_vars) and not all(github_vars):
+        warnings.append(
+            "Partial GitHub OAuth configuration detected. "
+            "Set all of: GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, GITHUB_OAUTH_REDIRECT_URI"
+        )
+
+    if not any([os.environ.get("ADMIN_PASSWORD_HASH"), all(github_vars)]):
+        errors.append(
+            "No admin authentication configured! "
+            "Set either ADMIN_PASSWORD_HASH or GitHub OAuth credentials."
+        )
+
+    # Intel Trust Authority (required for attestation)
+    if not os.environ.get("ITA_API_KEY"):
+        warnings.append(
+            "ITA_API_KEY not set - attestation verification will fail. "
+            "Get API key from https://www.intel.com/content/www/us/en/security/trust-authority.html"
+        )
+
+    # Trusted MRTDs (required for agent verification)
+    if not os.environ.get("TRUSTED_AGENT_MRTDS") and not os.environ.get("SYSTEM_AGENT_MRTD"):
+        warnings.append(
+            "No trusted agent MRTDs configured - agent registration will fail. "
+            "Set TRUSTED_AGENT_MRTDS environment variable."
+        )
+
+    if not os.environ.get("TRUSTED_PROXY_MRTDS") and not os.environ.get("SYSTEM_PROXY_MRTD"):
+        warnings.append(
+            "No trusted proxy MRTDs configured - proxy deployments will fail. "
+            "Set TRUSTED_PROXY_MRTDS environment variable."
+        )
+
+    # Log results
+    if errors:
+        logger.error("❌ Environment validation failed:")
+        for err in errors:
+            logger.error(f"  - {err}")
+        raise RuntimeError("Invalid environment configuration")
+
+    if warnings:
+        logger.warning("⚠️  Environment warnings:")
+        for warn in warnings:
+            logger.warning(f"  - {warn}")
+    else:
+        logger.info("✅ Environment validation passed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - start background tasks."""
+    # Validate environment configuration
+    validate_environment()
+
+    # Load trusted MRTDs from environment
+    load_trusted_mrtds()
+
     # Initialize database
     init_db()
     logger.info("Database initialized")
@@ -482,7 +552,7 @@ async def health_check():
     """Health check endpoint with attestation and proxy info."""
     return HealthResponse(
         status="healthy",
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         attestation=_cached_attestation,
         proxy_url=_get_proxy_url(),
     )
@@ -529,7 +599,7 @@ async def register_service(request: ServiceRegistrationRequest):
         intel_ta_token=request.intel_ta_token,
         tags=request.tags,
         health_status="healthy",
-        last_health_check=datetime.utcnow(),
+        last_health_check=datetime.now(timezone.utc),
     )
 
     # Upsert: update existing service with same name, or create new
@@ -596,7 +666,7 @@ async def verify_service(service_id: str):
         return VerificationResponse(
             service_id=service_id,
             verified=False,
-            verification_time=datetime.utcnow(),
+            verification_time=datetime.now(timezone.utc),
             error="Service has no Intel Trust Authority token",
         )
 
@@ -1045,11 +1115,17 @@ async def github_oauth_callback(
 
 
 @app.get("/auth/me")
-async def get_current_user(_admin: bool = Depends(verify_admin_token)):
+async def get_current_user(session: AdminSession = Depends(verify_admin_token)):
     """Get current authenticated admin user info."""
-    # For now, just confirm authentication
-    # TODO: Return actual session info (github_login, avatar, etc.)
-    return {"authenticated": True}
+    return {
+        "authenticated": True,
+        "auth_method": session.auth_method,
+        "github_login": session.github_login,
+        "github_email": session.github_email,
+        "github_avatar_url": session.github_avatar_url,
+        "created_at": session.created_at.isoformat(),
+        "expires_at": session.expires_at.isoformat(),
+    }
 
 
 # ==============================================================================
@@ -1702,7 +1778,7 @@ async def get_control_plane_attestation(
     """
     quote_result = generate_tdx_quote(nonce)
     result = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "nonce": nonce,
     }
     if quote_result.error:

@@ -31,6 +31,32 @@
         .admin-header {
             background: #7c3aed;
         }
+        .user-info {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            margin-right: 24px;
+        }
+        .user-avatar {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+        }
+        .user-details {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+        .user-name {
+            font-weight: 500;
+            color: white;
+            font-size: 14px;
+        }
+        .user-method {
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.8);
+        }
         .data-table {
             width: 100%;
             background: white;
@@ -282,10 +308,19 @@
                         <h1>EasyEnclave Admin</h1>
                         <p class="subtitle">Control Plane Management</p>
                     </div>
-                    <div class="header-links">
-                        <a href="/">Public UI</a>
-                        <a href="/docs">API Docs</a>
-                        <a href="#" onclick="logout()">Logout</a>
+                    <div style="display: flex; align-items: center;">
+                        <div id="userInfo" class="user-info">
+                            <img id="userAvatar" src="" alt="" class="user-avatar" style="display: none;">
+                            <div class="user-details">
+                                <span id="userName" class="user-name"></span>
+                                <span id="userMethod" class="user-method"></span>
+                            </div>
+                        </div>
+                        <div class="header-links">
+                            <a href="/">Public UI</a>
+                            <a href="/docs">API Docs</a>
+                            <a href="#" onclick="logout()">Logout</a>
+                        </div>
                     </div>
                 </div>
             </div>

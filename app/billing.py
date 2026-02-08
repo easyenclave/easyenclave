@@ -10,7 +10,7 @@ Handles:
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -183,7 +183,7 @@ async def charge_all_active_deployments() -> dict[str, int]:
     Returns:
         Dict with counts: {charged, insufficient_funds, errors}
     """
-    charge_time = datetime.utcnow()
+    charge_time = datetime.now(timezone.utc)
     deployments = deployment_store.list({"status": "running"})
 
     charged = 0

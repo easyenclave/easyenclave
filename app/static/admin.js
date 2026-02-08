@@ -71,16 +71,50 @@ async function login(event) {
     }
 }
 
+async function loadUserInfo() {
+    try {
+        const user = await fetchJSON('/auth/me', {
+            headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+
+        // Show user info in header
+        const userInfo = document.getElementById('userInfo');
+        const userName = document.getElementById('userName');
+        const userMethod = document.getElementById('userMethod');
+        const userAvatar = document.getElementById('userAvatar');
+
+        if (user.github_login) {
+            userName.textContent = user.github_login;
+            userMethod.textContent = 'GitHub';
+            if (user.github_avatar_url) {
+                userAvatar.src = user.github_avatar_url;
+                userAvatar.style.display = 'block';
+            }
+        } else {
+            userName.textContent = 'Admin';
+            userMethod.textContent = 'Password';
+            userAvatar.style.display = 'none';
+        }
+
+        userInfo.style.display = 'flex';
+    } catch (err) {
+        console.error('Failed to load user info:', err);
+    }
+}
+
 function logout() {
     sessionStorage.removeItem('adminToken');
     adminToken = null;
     document.getElementById('loginPage').classList.remove('hidden');
     document.getElementById('adminPage').classList.add('hidden');
+    // Hide user info
+    document.getElementById('userInfo').style.display = 'none';
 }
 
 function showDashboard() {
     document.getElementById('loginPage').classList.add('hidden');
     document.getElementById('adminPage').classList.remove('hidden');
+    loadUserInfo();
     loadAgents();
 }
 

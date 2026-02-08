@@ -8,10 +8,14 @@ Implements Signal-inspired privacy model:
 
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import bcrypt
 from fastapi import Header, HTTPException
+
+if TYPE_CHECKING:
+    from app.db_models import AdminSession
 
 
 def generate_api_key(key_type: str = "live") -> str:
@@ -162,14 +166,14 @@ async def verify_account_api_key(authorization: str = Header(None)) -> str:
     return account.account_id
 
 
-async def verify_admin_token(authorization: str = Header(None)) -> bool:
+async def verify_admin_token(authorization: str = Header(None)) -> "AdminSession":
     """FastAPI dependency to verify admin session token.
 
     Args:
         authorization: Authorization header value
 
     Returns:
-        True if authenticated
+        AdminSession object if authenticated
 
     Raises:
         HTTPException: If authentication fails
@@ -195,8 +199,13 @@ async def verify_admin_token(authorization: str = Header(None)) -> bool:
     if not session:
         raise HTTPException(status_code=401, detail="Invalid session token")
 
-    # Check expiration
-    if datetime.utcnow() > session.expires_at:
+    # Check expiration (handle both timezone-aware and naive datetimes)
+    expires_at = session.expires_at
+    if expires_at.tzinfo is None:
+        # Make timezone-naive datetime timezone-aware (assume UTC)
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+    if datetime.now(timezone.utc) > expires_at:
         admin_session_store.delete(session.session_id)
         raise HTTPException(status_code=401, detail="Session expired")
 
@@ -207,7 +216,7 @@ async def verify_admin_token(authorization: str = Header(None)) -> bool:
     # Update last_used timestamp
     admin_session_store.touch(session.session_id)
 
-    return True
+    return session
 
 
 def get_admin_password_hash() -> str | None:
@@ -228,4 +237,4 @@ def create_session_expiry(hours: int = 24) -> datetime:
     Returns:
         Expiry datetime
     """
-    return datetime.utcnow() + timedelta(hours=hours)
+    return datetime.now(timezone.utc) + timedelta(hours=hours)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
 
@@ -64,7 +64,7 @@ class ServiceStore:
     def _is_timed_out(self, service: Service) -> bool:
         if service.health_status == "healthy" or service.last_health_check is None:
             return False
-        return datetime.utcnow() - service.last_health_check > UNHEALTHY_TIMEOUT
+        return datetime.now(timezone.utc) - service.last_health_check > UNHEALTHY_TIMEOUT
 
     def list(self, filters: dict | None = None, include_down: bool = False) -> list[Service]:
         with get_db() as session:
@@ -158,7 +158,7 @@ class AgentStore:
             agent = session.get(Agent, agent_id)
             if not agent:
                 return False
-            agent.last_heartbeat = datetime.utcnow()
+            agent.last_heartbeat = datetime.now(timezone.utc)
             session.add(agent)
             return True
 
@@ -172,7 +172,7 @@ class AgentStore:
             agent.status = status
             if deployment_id is not None:
                 agent.current_deployment_id = deployment_id
-            agent.last_heartbeat = datetime.utcnow()
+            agent.last_heartbeat = datetime.now(timezone.utc)
             session.add(agent)
             return True
 
@@ -196,7 +196,7 @@ class AgentStore:
 
     def get_available(self, require_verified: bool = True) -> Agent | None:
         agents = self.list({"status": "undeployed"})
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         for agent in agents:
             if now - agent.last_heartbeat < AGENT_OFFLINE_TIMEOUT:
                 if require_verified and not agent.verified:
@@ -216,11 +216,11 @@ class AgentStore:
             if not agent:
                 return False
             if health_status == "unhealthy" and agent.health_status != "unhealthy":
-                agent.unhealthy_since = datetime.utcnow()
+                agent.unhealthy_since = datetime.now(timezone.utc)
             elif health_status != "unhealthy":
                 agent.unhealthy_since = None
             agent.health_status = health_status
-            agent.last_health_check = datetime.utcnow()
+            agent.last_health_check = datetime.now(timezone.utc)
             if service_url is not None:
                 agent.service_url = service_url
             if health_endpoint is not None:
@@ -248,7 +248,7 @@ class AgentStore:
             agents = session.exec(
                 select(Agent).where(Agent.status == "deployed", Agent.unhealthy_since.isnot(None))
             ).all()
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             return [
                 a
                 for a in agents
@@ -280,7 +280,7 @@ class AgentStore:
             agent = session.get(Agent, agent_id)
             if not agent:
                 return False
-            agent.last_attestation_check = datetime.utcnow()
+            agent.last_attestation_check = datetime.now(timezone.utc)
             agent.attestation_valid = attestation_valid
             agent.attestation_error = error
             if intel_ta_token is not None:
@@ -307,7 +307,7 @@ class AgentStore:
                 return False
             agent.intel_ta_token = intel_ta_token
             agent.verified = verified
-            agent.last_attestation_check = datetime.utcnow()
+            agent.last_attestation_check = datetime.now(timezone.utc)
             agent.attestation_valid = verified
             agent.attestation_error = error
             session.add(agent)
@@ -367,7 +367,7 @@ class DeploymentStore:
             if not d:
                 return False
             d.status = status
-            d.completed_at = datetime.utcnow()
+            d.completed_at = datetime.now(timezone.utc)
             if service_id:
                 d.service_id = service_id
             if attestation:
@@ -688,7 +688,7 @@ class AdminSessionStore:
     def delete_expired(self) -> int:
         """Delete all expired sessions. Returns count of deleted sessions."""
         with get_db() as session:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             expired = session.exec(select(AdminSession).where(AdminSession.expires_at < now)).all()
             count = 0
             for s in expired:
@@ -701,7 +701,7 @@ class AdminSessionStore:
         with get_db() as session:
             session_obj = session.get(AdminSession, session_id)
             if session_obj:
-                session_obj.last_used = datetime.utcnow()
+                session_obj.last_used = datetime.now(timezone.utc)
                 session.add(session_obj)
 
     def clear(self) -> None:

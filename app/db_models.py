@@ -7,7 +7,7 @@ eliminating the need for separate data classes.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlmodel import JSON, Column, Field, SQLModel
@@ -18,7 +18,8 @@ def generate_uuid() -> str:
 
 
 def utcnow() -> datetime:
-    return datetime.utcnow()
+    """Return current UTC time (timezone-aware)."""
+    return datetime.now(timezone.utc)
 
 
 class Service(SQLModel, table=True):
