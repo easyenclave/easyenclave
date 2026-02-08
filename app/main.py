@@ -1403,18 +1403,15 @@ async def get_app_version(name: str, version: str):
 
 
 @app.post("/api/v1/apps/{name}/versions/{version}/attest")
-async def manual_attest_version(name: str, version: str, authorization: str | None = Header(None)):
+async def manual_attest_version(
+    name: str,
+    version: str,
+    _admin: bool = Depends(verify_admin_token),
+):
     """Manually attest an app version (admin only).
 
     Used to bootstrap the measuring enclave itself (chicken-and-egg problem).
     """
-    # Require admin auth
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Admin authentication required")
-    token = authorization[7:]
-    if token not in _admin_tokens:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
-
     found_version = app_version_store.get_by_version(name, version)
     if found_version is None:
         raise HTTPException(status_code=404, detail="Version not found")

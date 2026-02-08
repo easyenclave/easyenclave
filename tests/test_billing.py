@@ -2,9 +2,33 @@
 
 from fastapi.testclient import TestClient
 
+from app.auth import verify_admin_token
 from app.main import app
 
 client = TestClient(app)
+
+
+# Mock admin token verification
+async def mock_verify_admin_token():
+    return True
+
+
+# Helper to create account and return (account_id, api_key)
+def create_test_account(name: str, account_type: str = "deployer") -> tuple[str, str]:
+    """Create a test account and return (account_id, api_key)."""
+    resp = client.post(
+        "/api/v1/accounts",
+        json={"name": name, "account_type": account_type},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    return data["account_id"], data["api_key"]
+
+
+# Helper to get auth headers
+def auth_headers(api_key: str) -> dict:
+    """Return Authorization headers with API key."""
+    return {"Authorization": f"Bearer {api_key}"}
 
 
 # =============================================================================
@@ -23,6 +47,8 @@ def test_create_account():
     assert data["account_type"] == "deployer"
     assert data["balance"] == 0.0
     assert "account_id" in data
+    assert "api_key" in data
+    assert data["api_key"].startswith("ee_live_")
 
 
 def test_create_account_agent_type():
@@ -50,76 +76,89 @@ def test_create_account_duplicate():
 
 
 def test_list_accounts_empty():
-    resp = client.get("/api/v1/accounts")
-    assert resp.status_code == 200
-    assert resp.json()["total"] == 0
+    # Override admin authentication dependency
+    app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+    try:
+        resp = client.get("/api/v1/accounts", headers={"Authorization": "Bearer admin_token"})
+        assert resp.status_code == 200
+        assert resp.json()["total"] == 0
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_list_accounts():
     client.post("/api/v1/accounts", json={"name": "a1", "account_type": "deployer"})
     client.post("/api/v1/accounts", json={"name": "a2", "account_type": "agent"})
-    resp = client.get("/api/v1/accounts")
-    assert resp.json()["total"] == 2
+
+    # Override admin authentication dependency
+    app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+    try:
+        resp = client.get("/api/v1/accounts", headers={"Authorization": "Bearer admin_token"})
+        assert resp.json()["total"] == 2
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_list_accounts_filter_type():
     client.post("/api/v1/accounts", json={"name": "d1", "account_type": "deployer"})
     client.post("/api/v1/accounts", json={"name": "a1", "account_type": "agent"})
-    resp = client.get("/api/v1/accounts?account_type=agent")
-    data = resp.json()
-    assert data["total"] == 1
-    assert data["accounts"][0]["account_type"] == "agent"
+
+    # Override admin authentication dependency
+    app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+    try:
+        resp = client.get(
+            "/api/v1/accounts?account_type=agent", headers={"Authorization": "Bearer admin_token"}
+        )
+        data = resp.json()
+        assert data["total"] == 1
+        assert data["accounts"][0]["account_type"] == "agent"
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_get_account():
-    create_resp = client.post(
-        "/api/v1/accounts", json={"name": "getter", "account_type": "deployer"}
-    )
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("getter", "deployer")
 
-    resp = client.get(f"/api/v1/accounts/{account_id}")
+    resp = client.get(f"/api/v1/accounts/{account_id}", headers=auth_headers(api_key))
     assert resp.status_code == 200
     assert resp.json()["name"] == "getter"
     assert resp.json()["balance"] == 0.0
 
 
 def test_get_account_not_found():
-    resp = client.get("/api/v1/accounts/nonexistent-id")
-    assert resp.status_code == 404
+    account_id, api_key = create_test_account("test", "deployer")
+    resp = client.get("/api/v1/accounts/nonexistent-id", headers=auth_headers(api_key))
+    assert resp.status_code == 403  # Forbidden - cannot access other accounts
 
 
 def test_delete_account():
-    create_resp = client.post(
-        "/api/v1/accounts", json={"name": "delme", "account_type": "deployer"}
-    )
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("delme", "deployer")
 
-    resp = client.delete(f"/api/v1/accounts/{account_id}")
+    resp = client.delete(f"/api/v1/accounts/{account_id}", headers=auth_headers(api_key))
     assert resp.status_code == 200
 
-    # Verify gone
-    resp = client.get(f"/api/v1/accounts/{account_id}")
-    assert resp.status_code == 404
+    # Verify gone - should still return 403 because account is deleted
+    resp = client.get(f"/api/v1/accounts/{account_id}", headers=auth_headers(api_key))
+    assert resp.status_code == 401  # API key no longer valid
 
 
 def test_delete_account_nonzero_balance():
-    create_resp = client.post(
-        "/api/v1/accounts", json={"name": "funded", "account_type": "deployer"}
-    )
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("funded", "deployer")
     client.post(
         f"/api/v1/accounts/{account_id}/deposit",
         json={"amount": 10.0},
+        headers=auth_headers(api_key),
     )
 
-    resp = client.delete(f"/api/v1/accounts/{account_id}")
+    resp = client.delete(f"/api/v1/accounts/{account_id}", headers=auth_headers(api_key))
     assert resp.status_code == 400
     assert "non-zero balance" in resp.json()["detail"]
 
 
 def test_delete_account_not_found():
-    resp = client.delete("/api/v1/accounts/nonexistent-id")
-    assert resp.status_code == 404
+    account_id, api_key = create_test_account("test", "deployer")
+    resp = client.delete("/api/v1/accounts/nonexistent-id", headers=auth_headers(api_key))
+    assert resp.status_code == 403  # Cannot delete other accounts
 
 
 # =============================================================================
@@ -128,12 +167,12 @@ def test_delete_account_not_found():
 
 
 def test_deposit():
-    create_resp = client.post("/api/v1/accounts", json={"name": "depo", "account_type": "deployer"})
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("depo", "deployer")
 
     resp = client.post(
         f"/api/v1/accounts/{account_id}/deposit",
         json={"amount": 50.0, "description": "Initial funding"},
+        headers=auth_headers(api_key),
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -143,48 +182,55 @@ def test_deposit():
 
 
 def test_deposit_accumulates():
-    create_resp = client.post(
-        "/api/v1/accounts", json={"name": "accum", "account_type": "deployer"}
-    )
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("accum", "deployer")
 
-    client.post(f"/api/v1/accounts/{account_id}/deposit", json={"amount": 25.0})
-    resp = client.post(f"/api/v1/accounts/{account_id}/deposit", json={"amount": 75.0})
+    client.post(
+        f"/api/v1/accounts/{account_id}/deposit",
+        json={"amount": 25.0},
+        headers=auth_headers(api_key),
+    )
+    resp = client.post(
+        f"/api/v1/accounts/{account_id}/deposit",
+        json={"amount": 75.0},
+        headers=auth_headers(api_key),
+    )
     assert resp.json()["balance_after"] == 100.0
 
     # Verify account balance
-    acct = client.get(f"/api/v1/accounts/{account_id}").json()
+    acct = client.get(f"/api/v1/accounts/{account_id}", headers=auth_headers(api_key)).json()
     assert acct["balance"] == 100.0
 
 
 def test_deposit_zero_rejected():
-    create_resp = client.post("/api/v1/accounts", json={"name": "zero", "account_type": "deployer"})
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("zero", "deployer")
 
     resp = client.post(
         f"/api/v1/accounts/{account_id}/deposit",
         json={"amount": 0.0},
+        headers=auth_headers(api_key),
     )
     assert resp.status_code == 422  # Pydantic validation (gt=0)
 
 
 def test_deposit_negative_rejected():
-    create_resp = client.post("/api/v1/accounts", json={"name": "neg", "account_type": "deployer"})
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("neg", "deployer")
 
     resp = client.post(
         f"/api/v1/accounts/{account_id}/deposit",
         json={"amount": -10.0},
+        headers=auth_headers(api_key),
     )
     assert resp.status_code == 422
 
 
 def test_deposit_nonexistent_account():
+    account_id, api_key = create_test_account("test", "deployer")
     resp = client.post(
         "/api/v1/accounts/nonexistent-id/deposit",
         json={"amount": 10.0},
+        headers=auth_headers(api_key),
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 403  # Cannot deposit to other accounts
 
 
 # =============================================================================
@@ -193,15 +239,23 @@ def test_deposit_nonexistent_account():
 
 
 def test_list_transactions():
-    create_resp = client.post(
-        "/api/v1/accounts", json={"name": "txlist", "account_type": "deployer"}
+    account_id, api_key = create_test_account("txlist", "deployer")
+
+    client.post(
+        f"/api/v1/accounts/{account_id}/deposit",
+        json={"amount": 10.0},
+        headers=auth_headers(api_key),
     )
-    account_id = create_resp.json()["account_id"]
+    client.post(
+        f"/api/v1/accounts/{account_id}/deposit",
+        json={"amount": 20.0},
+        headers=auth_headers(api_key),
+    )
 
-    client.post(f"/api/v1/accounts/{account_id}/deposit", json={"amount": 10.0})
-    client.post(f"/api/v1/accounts/{account_id}/deposit", json={"amount": 20.0})
-
-    resp = client.get(f"/api/v1/accounts/{account_id}/transactions")
+    resp = client.get(
+        f"/api/v1/accounts/{account_id}/transactions",
+        headers=auth_headers(api_key),
+    )
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 2
@@ -211,36 +265,41 @@ def test_list_transactions():
 
 
 def test_list_transactions_pagination():
-    create_resp = client.post(
-        "/api/v1/accounts", json={"name": "paged", "account_type": "deployer"}
-    )
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("paged", "deployer")
 
     for i in range(5):
         client.post(
             f"/api/v1/accounts/{account_id}/deposit",
             json={"amount": float(i + 1)},
+            headers=auth_headers(api_key),
         )
 
-    resp = client.get(f"/api/v1/accounts/{account_id}/transactions?limit=2&offset=0")
+    resp = client.get(
+        f"/api/v1/accounts/{account_id}/transactions?limit=2&offset=0",
+        headers=auth_headers(api_key),
+    )
     data = resp.json()
     assert len(data["transactions"]) == 2
     assert data["total"] == 5
 
 
 def test_list_transactions_empty():
-    create_resp = client.post(
-        "/api/v1/accounts", json={"name": "empty", "account_type": "deployer"}
-    )
-    account_id = create_resp.json()["account_id"]
+    account_id, api_key = create_test_account("empty", "deployer")
 
-    resp = client.get(f"/api/v1/accounts/{account_id}/transactions")
+    resp = client.get(
+        f"/api/v1/accounts/{account_id}/transactions",
+        headers=auth_headers(api_key),
+    )
     assert resp.json()["total"] == 0
 
 
 def test_list_transactions_account_not_found():
-    resp = client.get("/api/v1/accounts/nonexistent-id/transactions")
-    assert resp.status_code == 404
+    account_id, api_key = create_test_account("test", "deployer")
+    resp = client.get(
+        "/api/v1/accounts/nonexistent-id/transactions",
+        headers=auth_headers(api_key),
+    )
+    assert resp.status_code == 403  # Cannot access other accounts' transactions
 
 
 # =============================================================================

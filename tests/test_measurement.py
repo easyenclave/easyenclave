@@ -5,8 +5,14 @@ import base64
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import ADMIN_PASSWORD, app
+from app.auth import verify_admin_token
+from app.main import app
 from app.storage import app_version_store
+
+
+# Mock admin token verification
+async def mock_verify_admin_token():
+    return True
 
 
 @pytest.fixture
@@ -16,9 +22,9 @@ def client():
 
 @pytest.fixture
 def admin_token(client):
-    """Get an admin auth token."""
-    resp = client.post("/admin/login", json={"password": ADMIN_PASSWORD})
-    return resp.json()["token"]
+    """Get a mock admin auth token."""
+    # Mock admin authentication since ADMIN_PASSWORD_HASH may not be set in tests
+    return "mock_admin_token"
 
 
 @pytest.fixture
@@ -131,12 +137,17 @@ class TestManualAttest:
             json={"version": "1.0.0", "compose": sample_compose},
         )
 
-        resp = client.post(
-            f"/api/v1/apps/{sample_app}/versions/1.0.0/attest",
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "attested"
+        # Override admin authentication dependency
+        app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+        try:
+            resp = client.post(
+                f"/api/v1/apps/{sample_app}/versions/1.0.0/attest",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "attested"
+        finally:
+            app.dependency_overrides.clear()
 
         # Verify version is now attested
         ver = client.get(f"/api/v1/apps/{sample_app}/versions/1.0.0")
@@ -167,11 +178,16 @@ class TestManualAttest:
 
     def test_manual_attest_not_found(self, client, admin_token, sample_app):
         """Manual attest of nonexistent version should 404."""
-        resp = client.post(
-            f"/api/v1/apps/{sample_app}/versions/nonexistent/attest",
-            headers={"Authorization": f"Bearer {admin_token}"},
-        )
-        assert resp.status_code == 404
+        # Override admin authentication dependency
+        app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+        try:
+            resp = client.post(
+                f"/api/v1/apps/{sample_app}/versions/nonexistent/attest",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert resp.status_code == 404
+        finally:
+            app.dependency_overrides.clear()
 
 
 class TestListByStatus:
