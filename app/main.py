@@ -120,7 +120,6 @@ class _MemoryLogHandler(logging.Handler):
 _log_handler = _MemoryLogHandler()
 _log_handler.setLevel(logging.DEBUG)
 logging.getLogger().addHandler(_log_handler)
-logging.getLogger().setLevel(logging.INFO)  # Enable INFO logs from app.main
 
 
 # Admin authentication
@@ -475,6 +474,10 @@ async def lifespan(app: FastAPI):
 
     # Load trusted MRTDs from environment
     load_trusted_mrtds()
+
+    # Configure logging level after uvicorn initialization
+    logging.getLogger().setLevel(logging.INFO)
+    logger.info("Logging configured - INFO level enabled")
 
     # Initialize database
     init_db()
