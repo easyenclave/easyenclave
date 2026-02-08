@@ -73,6 +73,14 @@ class Agent(SQLModel, table=True):
     last_attestation_check: datetime | None = None
     attestation_valid: bool = Field(default=True)
     attestation_error: str | None = None
+    # Billing fields
+    account_id: str | None = Field(default=None, index=True)  # For earnings
+    sla_tiers: list[str] = Field(
+        default_factory=list, sa_column=Column(JSON)
+    )  # Which tiers they support
+    machine_sizes: list[str] = Field(
+        default_factory=list, sa_column=Column(JSON)
+    )  # Which sizes they support
 
 
 class Deployment(SQLModel, table=True):
@@ -92,6 +100,15 @@ class Deployment(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
     started_at: datetime | None = None
     completed_at: datetime | None = None
+    # Billing fields
+    account_id: str | None = Field(default=None, index=True)
+    sla_class: str = Field(default="adhoc")  # adhoc|three_nines|four_nines|five_nines
+    machine_size: str = Field(default="default")  # default|h100
+    cpu_vcpus: float = Field(default=2.0)
+    memory_gb: float = Field(default=4.0)
+    gpu_count: int = Field(default=0)
+    last_charge_time: datetime | None = None
+    total_charged: float = Field(default=0.0)
 
 
 class App(SQLModel, table=True):
@@ -138,6 +155,9 @@ class Account(SQLModel, table=True):
     description: str = Field(default="")
     account_type: str = Field(index=True)  # "deployer" | "agent"
     created_at: datetime = Field(default_factory=utcnow)
+    # API key authentication fields
+    api_key_hash: str | None = None  # bcrypt hash
+    api_key_prefix: str | None = Field(default=None, index=True)  # "ee_live_xxxx" for fast lookup
 
 
 class Transaction(SQLModel, table=True):
@@ -153,3 +173,17 @@ class Transaction(SQLModel, table=True):
     description: str = Field(default="")
     reference_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class AdminSession(SQLModel, table=True):
+    """Admin authentication session."""
+
+    __tablename__ = "admin_sessions"
+
+    session_id: str = Field(default_factory=generate_uuid, primary_key=True)
+    token_hash: str  # bcrypt hash
+    token_prefix: str = Field(index=True)  # First 12 chars for fast lookup
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime
+    last_used: datetime = Field(default_factory=utcnow)
+    ip_address: str | None = None

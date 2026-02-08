@@ -6,17 +6,15 @@ import asyncio
 import collections
 import logging
 import os
-import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from . import cloudflare, proxy
 from .attestation import (
@@ -27,6 +25,22 @@ from .attestation import (
     refresh_agent_attestation,
     verify_agent_registration,
 )
+from .auth import (
+    create_session_expiry,
+    generate_api_key,
+    generate_session_token,
+    get_admin_password_hash,
+    get_key_prefix,
+    get_token_prefix,
+    hash_api_key,
+    verify_account_api_key,
+    verify_admin_token,
+    verify_password,
+)
+from .billing import (
+    background_hourly_charging,
+    background_insufficient_funds_terminator,
+)
 from .crud import build_filters, create_transaction, get_or_404
 from .database import init_db
 from .ita import verify_attestation_token
@@ -35,6 +49,8 @@ from .models import (
     AccountCreateRequest,
     AccountListResponse,
     AccountResponse,
+    AdminLoginRequest,
+    AdminLoginResponse,
     Agent,
     AgentDeployedRequest,
     AgentListResponse,
@@ -48,6 +64,7 @@ from .models import (
     AppVersionCreateRequest,
     AppVersionListResponse,
     AppVersionResponse,
+    CreatePaymentIntentRequest,
     DeployFromVersionRequest,
     Deployment,
     DeploymentCreateResponse,
@@ -63,8 +80,10 @@ from .models import (
     TransactionResponse,
     VerificationResponse,
 )
+from .pricing import calculate_deployment_cost_per_hour
 from .storage import (
     account_store,
+    admin_session_store,
     agent_store,
     app_store,
     app_version_store,
@@ -130,6 +149,18 @@ async def check_service_health(service: Service) -> str:
         except Exception:
             continue
     return "unhealthy"
+
+
+async def background_session_cleanup():
+    """Background task to delete expired admin sessions."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Check every hour
+            count = admin_session_store.delete_expired()
+            if count > 0:
+                logger.info(f"Cleaned up {count} expired admin sessions")
+        except Exception as e:
+            logger.error(f"Session cleanup error: {e}")
 
 
 async def background_health_checker():
@@ -386,14 +417,33 @@ async def lifespan(app: FastAPI):
     agent_health_task = asyncio.create_task(background_agent_health_checker())
     attestation_task = asyncio.create_task(background_cp_attestation_refresher())
     measurement_task = asyncio.create_task(background_measurement_processor())
-    logger.info("Started background tasks (health checkers, measurement processor)")
+
+    # Start billing background tasks
+    charging_task = asyncio.create_task(background_hourly_charging())
+    terminator_task = asyncio.create_task(background_insufficient_funds_terminator())
+    session_cleanup_task = asyncio.create_task(background_session_cleanup())
+
+    logger.info(
+        "Started background tasks (health checkers, measurement processor, billing, session cleanup)"
+    )
     yield
     # Shutdown
     service_health_task.cancel()
     agent_health_task.cancel()
     attestation_task.cancel()
     measurement_task.cancel()
-    for task in [service_health_task, agent_health_task, attestation_task, measurement_task]:
+    charging_task.cancel()
+    terminator_task.cancel()
+    session_cleanup_task.cancel()
+    for task in [
+        service_health_task,
+        agent_health_task,
+        attestation_task,
+        measurement_task,
+        charging_task,
+        terminator_task,
+        session_cleanup_task,
+    ]:
         try:
             await task
         except asyncio.CancelledError:
@@ -882,6 +932,52 @@ async def get_trusted_mrtds():
 
 
 # ==============================================================================
+# Admin Authentication
+# ==============================================================================
+
+
+@app.post("/admin/login", response_model=AdminLoginResponse)
+async def admin_login(request: AdminLoginRequest, req: Request):
+    """Admin login endpoint - creates a session token."""
+    password_hash = get_admin_password_hash()
+    if not password_hash:
+        raise HTTPException(
+            status_code=500,
+            detail="Admin password not configured. Set ADMIN_PASSWORD_HASH environment variable.",
+        )
+
+    # Verify password
+    if not verify_password(request.password, password_hash):
+        logger.warning(
+            f"Failed admin login attempt from {req.client.host if req.client else 'unknown'}"
+        )
+        raise HTTPException(status_code=401, detail="Invalid password")
+
+    # Create session
+    from app.db_models import AdminSession
+
+    token = generate_session_token()
+    token_hash_val = hash_api_key(token)  # Reuse API key hashing
+    token_prefix = get_token_prefix(token)
+    expires_at = create_session_expiry(hours=24)
+
+    session = AdminSession(
+        token_hash=token_hash_val,
+        token_prefix=token_prefix,
+        expires_at=expires_at,
+        ip_address=req.client.host if req.client else None,
+    )
+
+    admin_session_store.create(session)
+    logger.info(f"Admin logged in from {req.client.host if req.client else 'unknown'}")
+
+    return AdminLoginResponse(
+        token=token,
+        expires_at=expires_at,
+    )
+
+
+# ==============================================================================
 # Billing API - Accounts, deposits, transactions, rate card
 # ==============================================================================
 
@@ -893,9 +989,9 @@ RATE_CARD: dict[str, float] = {
 }
 
 
-@app.post("/api/v1/accounts", response_model=AccountResponse)
+@app.post("/api/v1/accounts")
 async def create_account(request: AccountCreateRequest):
-    """Create a new billing account."""
+    """Create a new billing account and return API key (only shown once)."""
     if request.account_type not in ("deployer", "agent"):
         raise HTTPException(status_code=400, detail="account_type must be 'deployer' or 'agent'")
 
@@ -906,30 +1002,40 @@ async def create_account(request: AccountCreateRequest):
     if existing:
         raise HTTPException(status_code=409, detail=f"Account '{request.name}' already exists")
 
+    # Generate API key
+    api_key = generate_api_key("live")
+    api_key_hash_val = hash_api_key(api_key)
+    api_key_prefix = get_key_prefix(api_key)
+
     account = Account(
         name=request.name,
         description=request.description,
         account_type=request.account_type,
+        api_key_hash=api_key_hash_val,
+        api_key_prefix=api_key_prefix,
     )
     account_store.create(account)
     logger.info(f"Account created: {account.name} ({account.account_id})")
 
-    return AccountResponse(
-        account_id=account.account_id,
-        name=account.name,
-        description=account.description,
-        account_type=account.account_type,
-        balance=0.0,
-        created_at=account.created_at,
-    )
+    return {
+        "account_id": account.account_id,
+        "name": account.name,
+        "description": account.description,
+        "account_type": account.account_type,
+        "balance": 0.0,
+        "created_at": account.created_at,
+        "api_key": api_key,  # ONLY returned once!
+        "warning": "Save this API key now. It will never be shown again.",
+    }
 
 
 @app.get("/api/v1/accounts", response_model=AccountListResponse)
 async def list_accounts(
     name: str | None = Query(None, description="Filter by name (partial match)"),
     account_type: str | None = Query(None, description="Filter by account type"),
+    _admin: bool = Depends(verify_admin_token),
 ):
-    """List all billing accounts."""
+    """List all billing accounts (admin only)."""
     accounts = account_store.list(build_filters(name=name, account_type=account_type))
     responses = [
         AccountResponse(
@@ -946,8 +1052,14 @@ async def list_accounts(
 
 
 @app.get("/api/v1/accounts/{account_id}", response_model=AccountResponse)
-async def get_account(account_id: str):
-    """Get a billing account with its current balance."""
+async def get_account(
+    account_id: str,
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """Get a billing account with its current balance (account owner only)."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot access other accounts")
+
     account = get_or_404(account_store, account_id, "Account")
     return AccountResponse(
         account_id=account.account_id,
@@ -960,8 +1072,14 @@ async def get_account(account_id: str):
 
 
 @app.delete("/api/v1/accounts/{account_id}")
-async def delete_account(account_id: str):
-    """Delete a billing account (only if balance is zero)."""
+async def delete_account(
+    account_id: str,
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """Delete a billing account (only if balance is zero, account owner only)."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot delete other accounts")
+
     account = get_or_404(account_store, account_id, "Account")
     balance = account_store.get_balance(account_id)
     if balance != 0.0:
@@ -975,8 +1093,15 @@ async def delete_account(account_id: str):
 
 
 @app.post("/api/v1/accounts/{account_id}/deposit", response_model=TransactionResponse)
-async def deposit_to_account(account_id: str, request: DepositRequest):
-    """Deposit funds into an account."""
+async def deposit_to_account(
+    account_id: str,
+    request: DepositRequest,
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """Deposit funds into an account (account owner only)."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot deposit to other accounts")
+
     txn = create_transaction(
         account_store,
         transaction_store,
@@ -1003,8 +1128,12 @@ async def list_account_transactions(
     account_id: str,
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
+    authenticated_account_id: str = Depends(verify_account_api_key),
 ):
-    """List transactions for an account (newest first)."""
+    """List transactions for an account (newest first, account owner only)."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot access other account transactions")
+
     get_or_404(account_store, account_id, "Account")
     transactions = transaction_store.list_for_account(account_id, limit=limit, offset=offset)
     total = transaction_store.count_for_account(account_id)
@@ -1030,6 +1159,103 @@ async def list_account_transactions(
 async def get_rate_card():
     """Get the current billing rate card."""
     return RateCardResponse(rates=RATE_CARD)
+
+
+@app.post("/api/v1/accounts/{account_id}/payment-intent")
+async def create_payment_intent(
+    account_id: str,
+    request: CreatePaymentIntentRequest,
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """Create a Stripe payment intent for depositing funds (account owner only)."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(
+            status_code=403, detail="Cannot create payment intent for other accounts"
+        )
+
+    # Import stripe from billing module
+    from .billing import STRIPE_ENABLED, stripe
+
+    if not STRIPE_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Stripe integration not configured. Set STRIPE_SECRET_KEY environment variable.",
+        )
+
+    get_or_404(account_store, account_id, "Account")
+
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=int(request.amount * 100),  # Convert to cents
+            currency="usd",
+            metadata={"account_id": account_id},
+        )
+
+        logger.info(f"Created payment intent for account {account_id}: ${request.amount:.2f}")
+
+        return {
+            "client_secret": intent.client_secret,
+            "amount": request.amount,
+            "payment_intent_id": intent.id,
+        }
+    except Exception as e:
+        logger.error(f"Error creating Stripe payment intent: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create payment intent: {str(e)}"
+        ) from e
+
+
+@app.post("/api/v1/webhooks/stripe")
+async def stripe_webhook(request: Request):
+    """Stripe webhook endpoint for payment confirmations."""
+    from .billing import STRIPE_ENABLED, STRIPE_WEBHOOK_SECRET, stripe
+
+    if not STRIPE_ENABLED:
+        raise HTTPException(status_code=503, detail="Stripe integration not configured")
+
+    payload = await request.body()
+    sig_header = request.headers.get("stripe-signature")
+
+    if not sig_header:
+        raise HTTPException(status_code=400, detail="Missing stripe-signature header")
+
+    try:
+        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+    except ValueError as e:
+        logger.error("Invalid Stripe webhook payload")
+        raise HTTPException(status_code=400, detail="Invalid payload") from e
+    except stripe.error.SignatureVerificationError as e:
+        logger.error("Invalid Stripe webhook signature")
+        raise HTTPException(status_code=400, detail="Invalid signature") from e
+
+    # Handle payment_intent.succeeded
+    if event["type"] == "payment_intent.succeeded":
+        payment_intent = event["data"]["object"]
+        account_id = payment_intent["metadata"].get("account_id")
+        amount = payment_intent["amount"] / 100.0  # Convert from cents
+
+        if account_id:
+            try:
+                create_transaction(
+                    account_store,
+                    transaction_store,
+                    account_id,
+                    amount=amount,
+                    tx_type="deposit",
+                    description="Stripe payment",
+                    reference_id=payment_intent["id"],
+                )
+                logger.info(
+                    f"Processed Stripe payment: ${amount:.2f} deposited to account {account_id}"
+                )
+            except Exception as e:
+                logger.error(f"Error processing Stripe payment: {e}")
+        else:
+            logger.warning(
+                f"Stripe payment intent {payment_intent['id']} has no account_id metadata"
+            )
+
+    return {"status": "ok"}
 
 
 # ==============================================================================
@@ -1288,18 +1514,41 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
             status_code=400, detail=f"Agent is not available (status: {agent.status})"
         )
 
-    # 8. Build deployment config
+    # 8. Check prepaid balance (if account_id provided)
+    if request.account_id:
+        balance = account_store.get_balance(request.account_id)
+        hourly_cost = calculate_deployment_cost_per_hour(
+            request.cpu_vcpus,
+            request.memory_gb,
+            request.gpu_count,
+            request.sla_class,
+            request.machine_size,
+        )
+        if balance < hourly_cost:
+            raise HTTPException(
+                status_code=402,
+                detail=f"Insufficient funds: balance ${balance:.2f} < hourly cost ${hourly_cost:.2f}",
+            )
+        logger.info(f"Prepaid check passed: balance=${balance:.2f}, hourly_cost=${hourly_cost:.2f}")
+
+    # 9. Build deployment config
     config = request.config or {}
     # Default service_name to app name if not provided
     if "service_name" not in config:
         config["service_name"] = name
 
-    # 9. Create deployment record
+    # 10. Create deployment record with billing fields
     deployment = Deployment(
         compose=found_version.compose,
         config=config,
         agent_id=request.agent_id,
         status="pushing",
+        account_id=request.account_id,
+        sla_class=request.sla_class,
+        machine_size=request.machine_size,
+        cpu_vcpus=request.cpu_vcpus,
+        memory_gb=request.memory_gb,
+        gpu_count=request.gpu_count,
     )
     deployment_id = deployment_store.create(deployment)
     logger.info(
@@ -1630,33 +1879,6 @@ async def get_container_logs(
 # ==============================================================================
 # Admin Authentication and Dashboard
 # ==============================================================================
-
-
-class AdminLoginRequest(BaseModel):
-    """Request model for admin login."""
-
-    password: str
-
-
-@app.post("/admin/login")
-async def admin_login(request: AdminLoginRequest):
-    """Authenticate admin user and return session token."""
-    if request.password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="Invalid password")
-
-    # Generate secure token
-    token = secrets.token_urlsafe(32)
-    _admin_tokens.add(token)
-
-    # Limit stored tokens to prevent memory issues (keep last 100)
-    if len(_admin_tokens) > 100:
-        # Remove oldest tokens (convert to list, remove first items)
-        tokens_list = list(_admin_tokens)
-        for old_token in tokens_list[:-100]:
-            _admin_tokens.discard(old_token)
-
-    logger.info("Admin login successful")
-    return {"token": token, "message": "Login successful"}
 
 
 @app.post("/admin/logout")

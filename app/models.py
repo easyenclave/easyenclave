@@ -194,6 +194,13 @@ class DeployFromVersionRequest(BaseModel):
 
     agent_id: str
     config: dict | None = None
+    # Billing fields
+    account_id: str | None = None  # Optional for backward compatibility
+    sla_class: str = "adhoc"  # adhoc|three_nines|four_nines|five_nines
+    machine_size: str = "default"  # default|h100
+    cpu_vcpus: float = 2.0  # For cost calculation
+    memory_gb: float = 4.0
+    gpu_count: int = 0
 
 
 class MeasurementCallbackRequest(BaseModel):
@@ -241,6 +248,25 @@ class DepositRequest(BaseModel):
 
     amount: float = Field(gt=0)
     description: str = ""
+
+
+class CreatePaymentIntentRequest(BaseModel):
+    """Request for creating a Stripe payment intent."""
+
+    amount: float = Field(gt=0)
+
+
+class AdminLoginRequest(BaseModel):
+    """Request for admin login."""
+
+    password: str
+
+
+class AdminLoginResponse(BaseModel):
+    """Response for admin login."""
+
+    token: str
+    expires_at: datetime
 
 
 class TransactionResponse(BaseModel):

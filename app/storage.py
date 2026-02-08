@@ -11,6 +11,7 @@ from sqlmodel import select
 from .database import get_db
 from .db_models import (
     Account,
+    AdminSession,
     Agent,
     App,
     AppVersion,
@@ -341,6 +342,18 @@ class DeploymentStore:
             session.add(d)
             return True
 
+    def update(self, deployment_id: str, updates: dict) -> bool:
+        """Update arbitrary fields on a deployment."""
+        with get_db() as session:
+            d = session.get(Deployment, deployment_id)
+            if not d:
+                return False
+            for key, value in updates.items():
+                if hasattr(d, key):
+                    setattr(d, key, value)
+            session.add(d)
+            return True
+
     def complete(
         self,
         deployment_id: str,
@@ -596,6 +609,11 @@ class AccountStore:
             ).first()
             return latest.balance_after if latest else 0.0
 
+    def get_by_api_key_prefix(self, prefix: str) -> Account | None:
+        """Fast lookup of account by API key prefix."""
+        with get_db() as session:
+            return session.exec(select(Account).where(Account.api_key_prefix == prefix)).first()
+
     def clear(self) -> None:
         with get_db() as session:
             for a in session.exec(select(Account)).all():
@@ -640,6 +658,58 @@ class TransactionStore:
                 session.delete(t)
 
 
+class AdminSessionStore:
+    """Storage for admin authentication sessions."""
+
+    def create(self, session_obj: AdminSession) -> str:
+        with get_db() as session:
+            session.add(session_obj)
+        return session_obj.session_id
+
+    def get(self, session_id: str) -> AdminSession | None:
+        with get_db() as session:
+            return session.get(AdminSession, session_id)
+
+    def get_by_prefix(self, prefix: str) -> AdminSession | None:
+        """Fast lookup of session by token prefix."""
+        with get_db() as session:
+            return session.exec(
+                select(AdminSession).where(AdminSession.token_prefix == prefix)
+            ).first()
+
+    def delete(self, session_id: str) -> bool:
+        with get_db() as session:
+            session_obj = session.get(AdminSession, session_id)
+            if session_obj:
+                session.delete(session_obj)
+                return True
+            return False
+
+    def delete_expired(self) -> int:
+        """Delete all expired sessions. Returns count of deleted sessions."""
+        with get_db() as session:
+            now = datetime.utcnow()
+            expired = session.exec(select(AdminSession).where(AdminSession.expires_at < now)).all()
+            count = 0
+            for s in expired:
+                session.delete(s)
+                count += 1
+            return count
+
+    def touch(self, session_id: str) -> None:
+        """Update last_used timestamp."""
+        with get_db() as session:
+            session_obj = session.get(AdminSession, session_id)
+            if session_obj:
+                session_obj.last_used = datetime.utcnow()
+                session.add(session_obj)
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for s in session.exec(select(AdminSession)).all():
+                session.delete(s)
+
+
 # Global store instances
 store = ServiceStore()
 agent_store = AgentStore()
@@ -648,6 +718,7 @@ app_store = AppStore()
 app_version_store = AppVersionStore()
 account_store = AccountStore()
 transaction_store = TransactionStore()
+admin_session_store = AdminSessionStore()
 
 # Load trusted MRTDs from env vars at import time
 load_trusted_mrtds()
