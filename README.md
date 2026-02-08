@@ -73,6 +73,8 @@ gh workflow run bootstrap.yml -f action=cleanup-vms
 
 ## API Endpoints
 
+### Public Endpoints
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/v1/register` | Register a new service |
@@ -82,6 +84,16 @@ gh workflow run bootstrap.yml -f action=cleanup-vms
 | `GET` | `/api/v1/services/{id}/verify` | Verify attestation |
 | `GET` | `/health` | Health check |
 | `GET` | `/` | Web GUI |
+| `GET` | `/admin` | Admin panel |
+
+### Admin Authentication
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/admin/login` | Login with password |
+| `GET` | `/auth/github` | Start GitHub OAuth flow |
+| `GET` | `/auth/github/callback` | GitHub OAuth callback |
+| `GET` | `/auth/me` | Get current user info |
 
 ### Register a Service
 
@@ -151,6 +163,61 @@ Environment variables:
 |----------|-------------|---------|
 | `ITA_API_URL` | Intel Trust Authority API URL | `https://api.trustauthority.intel.com/appraisal/v2` |
 | `ITA_API_KEY` | Intel Trust Authority API key | (none) |
+| `ADMIN_PASSWORD_HASH` | Bcrypt hash for admin password authentication | (none) |
+| `GITHUB_OAUTH_CLIENT_ID` | GitHub OAuth app client ID (optional) | (none) |
+| `GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth app client secret (optional) | (none) |
+| `GITHUB_OAUTH_REDIRECT_URI` | OAuth callback URL | `https://app.easyenclave.com/auth/github/callback` |
+
+## Admin Authentication
+
+The admin panel at `/admin` supports two authentication methods:
+
+### Password Authentication
+
+Generate a bcrypt hash for your password:
+
+```bash
+python3 -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt()).decode())"
+```
+
+Set the hash as an environment variable or GitHub secret:
+
+```bash
+export ADMIN_PASSWORD_HASH='$2b$12$...'
+```
+
+For GitHub Actions deployments, add the secret:
+```bash
+echo '$2b$12$...' | gh secret set ADMIN_PASSWORD_HASH
+```
+
+### GitHub OAuth (Recommended)
+
+GitHub OAuth provides better security with per-user accounts, audit trails, and built-in MFA.
+
+**Setup:**
+
+1. Create a GitHub OAuth App at https://github.com/settings/developers
+   - **Application name**: EasyEnclave Control Plane
+   - **Homepage URL**: https://easyenclave.com
+   - **Callback URL**: https://app.easyenclave.com/auth/github/callback
+
+2. Set the OAuth credentials:
+   ```bash
+   echo 'your_client_id' | gh secret set GITHUB_OAUTH_CLIENT_ID
+   echo 'your_client_secret' | gh secret set GITHUB_OAUTH_CLIENT_SECRET
+   ```
+
+3. Admins can now sign in with their GitHub accounts at `/admin`
+
+**Benefits:**
+- ✅ Per-user GitHub identity (no shared passwords)
+- ✅ Leverage GitHub 2FA/SSO
+- ✅ Complete audit trail of admin access
+- ✅ Auto-rotating OAuth tokens
+- ✅ Ready for org-based auto-provisioning
+
+See [docs/GITHUB_OAUTH.md](docs/GITHUB_OAUTH.md) for detailed setup instructions and architecture.
 
 ## Development
 
@@ -168,6 +235,8 @@ easyenclave/
 ├── app/
 │   ├── main.py          # FastAPI application
 │   ├── attestation.py   # Attestation business logic
+│   ├── oauth.py         # GitHub OAuth integration
+│   ├── auth.py          # Authentication helpers
 │   ├── models.py        # Request/response DTOs
 │   ├── db_models.py     # SQLModel ORM models
 │   ├── storage.py       # Storage layer (Store classes)
@@ -181,6 +250,9 @@ easyenclave/
 │   └── private-llm/     # LLM in TDX (with SDK smoke test)
 ├── apps/
 │   └── measuring-enclave/  # Image digest resolution service
+├── docs/
+│   └── GITHUB_OAUTH.md  # OAuth setup documentation
+├── alembic/             # Database migrations
 ├── tests/               # Unit tests
 ├── Dockerfile
 ├── docker-compose.yml
