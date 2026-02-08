@@ -120,6 +120,7 @@ class _MemoryLogHandler(logging.Handler):
 _log_handler = _MemoryLogHandler()
 _log_handler.setLevel(logging.DEBUG)
 logging.getLogger().addHandler(_log_handler)
+logging.getLogger().setLevel(logging.INFO)  # Enable INFO logs from app.main
 
 
 # Admin authentication
