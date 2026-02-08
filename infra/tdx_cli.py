@@ -321,8 +321,8 @@ runcmd:
             # Trusted MRTDs (comma-separated)
             "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS"),
             "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS"),
-            # Admin password for control plane dashboard
-            "admin_password": os.environ.get("ADMIN_PASSWORD"),
+            # Admin password hash for control plane dashboard
+            "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH"),
         }
         result = self.vm_new(
             image=image,

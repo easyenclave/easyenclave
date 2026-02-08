@@ -1389,8 +1389,8 @@ def run_control_plane_mode(config: dict):
         env["TRUSTED_AGENT_MRTDS"] = config["trusted_agent_mrtds"]
     if config.get("trusted_proxy_mrtds"):
         env["TRUSTED_PROXY_MRTDS"] = config["trusted_proxy_mrtds"]
-    if config.get("admin_password"):
-        env["ADMIN_PASSWORD"] = config["admin_password"]
+    if config.get("admin_password_hash"):
+        env["ADMIN_PASSWORD_HASH"] = config["admin_password_hash"]
 
     # Stop any existing containers
     subprocess.run(
