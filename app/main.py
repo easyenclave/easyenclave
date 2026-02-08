@@ -426,7 +426,7 @@ def validate_environment():
         )
 
     if not any([os.environ.get("ADMIN_PASSWORD_HASH"), all(github_vars)]):
-        errors.append(
+        warnings.append(
             "No admin authentication configured! "
             "Set either ADMIN_PASSWORD_HASH or GitHub OAuth credentials."
         )
