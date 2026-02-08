@@ -99,6 +99,149 @@ async function adminFetch(url, options = {}) {
     return response;
 }
 
+// Apps management
+async function loadApps() {
+    const container = document.getElementById('appsAdminList');
+    try {
+        const data = await fetchJSON('/api/v1/apps');
+
+        if (data.apps.length === 0) {
+            container.innerHTML = '<div class="empty">No apps published</div>';
+            return;
+        }
+
+        container.innerHTML = `
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Description</th>
+                        <th>Tags</th>
+                        <th>Versions</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.apps.map(app => `
+                        <tr>
+                            <td><strong>${app.name}</strong></td>
+                            <td>${app.description || 'N/A'}</td>
+                            <td>${app.tags?.join(', ') || 'N/A'}</td>
+                            <td><button class="btn-small btn-info" onclick="loadAppVersions('${app.name}')">View Versions</button></td>
+                            <td class="action-buttons">
+                                <button class="btn-small btn-secondary" onclick="loadAppVersions('${app.name}')">Details</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        container.innerHTML = `<div class="error">Error loading apps: ${error.message}</div>`;
+    }
+}
+
+async function loadAppVersions(appName) {
+    const container = document.getElementById('appsAdminList');
+    try {
+        const data = await fetchJSON(`/api/v1/apps/${appName}/versions`);
+
+        container.innerHTML = `
+            <div style="margin-bottom: 15px;">
+                <button class="btn-secondary" onclick="loadApps()">← Back to Apps</button>
+                <h3 style="display: inline; margin-left: 15px;">Versions for ${appName}</h3>
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Version</th>
+                        <th>Status</th>
+                        <th>MRTD</th>
+                        <th>Ingress</th>
+                        <th>Published</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${data.versions.map(version => `
+                        <tr>
+                            <td><strong>${version.version}</strong></td>
+                            <td><span class="status-badge ${version.status}">${version.status}</span></td>
+                            <td><code>${version.mrtd ? version.mrtd.substring(0, 16) + '...' : 'N/A'}</code></td>
+                            <td>${version.ingress ? `${version.ingress.length} rule(s)` : 'Default'}</td>
+                            <td>${new Date(version.published_at).toLocaleString()}</td>
+                            <td class="action-buttons">
+                                <button class="btn-small btn-info" onclick="showAppVersionDetails('${appName}', '${version.version}')">Details</button>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (error) {
+        container.innerHTML = `<div class="error">Error loading versions: ${error.message}</div>`;
+    }
+}
+
+async function showAppVersionDetails(appName, version) {
+    document.getElementById('appVersionModal').classList.remove('hidden');
+    document.getElementById('appVersionModalTitle').textContent = `${appName}@${version}`;
+    const detailsDiv = document.getElementById('appVersionDetails');
+    detailsDiv.innerHTML = '<div class="loading">Loading version details...</div>';
+
+    try {
+        const data = await fetchJSON(`/api/v1/apps/${appName}/versions/${version}`);
+
+        let ingressHtml = '<p>Default (all traffic to port 8081)</p>';
+        if (data.ingress && data.ingress.length > 0) {
+            ingressHtml = `
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Path</th>
+                            <th>Port</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${data.ingress.map(rule => `
+                            <tr>
+                                <td><code>${rule.path || '/*'}</code></td>
+                                <td><code>${rule.port}</code></td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        detailsDiv.innerHTML = `
+            <div class="section-card">
+                <h3>Version Info</h3>
+                <p><strong>Status:</strong> <span class="status-badge ${data.status}">${data.status}</span></p>
+                <p><strong>Version ID:</strong> <code>${data.version_id}</code></p>
+                <p><strong>Published:</strong> ${new Date(data.published_at).toLocaleString()}</p>
+                ${data.source_commit ? `<p><strong>Source Commit:</strong> <code>${data.source_commit}</code></p>` : ''}
+                ${data.source_tag ? `<p><strong>Source Tag:</strong> <code>${data.source_tag}</code></p>` : ''}
+                ${data.rejection_reason ? `<p><strong>Rejection Reason:</strong> ${data.rejection_reason}</p>` : ''}
+            </div>
+            <div class="section-card">
+                <h3>Ingress Configuration</h3>
+                ${ingressHtml}
+            </div>
+            <div class="section-card">
+                <h3>Measurement (MRTD)</h3>
+                ${data.mrtd ? `<p><code>${data.mrtd}</code></p>` : '<p>Not yet measured</p>'}
+            </div>
+        `;
+    } catch (error) {
+        detailsDiv.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+    }
+}
+
+function closeAppVersionModal() {
+    document.getElementById('appVersionModal').classList.add('hidden');
+}
+
 // Agents management
 async function loadAgents() {
     const container = document.getElementById('agentsAdminList');

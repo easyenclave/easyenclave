@@ -243,6 +243,7 @@
             <!-- Tabs -->
             <div class="tabs">
                 <button class="tab active" onclick="showAdminTab('agents')">Agents</button>
+                <button class="tab" onclick="showAdminTab('apps')">Apps</button>
                 <button class="tab" onclick="showAdminTab('accounts')">Accounts</button>
                 <button class="tab" onclick="showAdminTab('mrtds')">Trusted MRTDs</button>
                 <button class="tab" onclick="showAdminTab('logs')">Logs</button>
@@ -257,6 +258,17 @@
                 </div>
                 <div id="agentsAdminList">
                     <div class="loading">Loading agents...</div>
+                </div>
+            </section>
+
+            <!-- Apps Tab -->
+            <section id="apps-admin-tab" class="tab-content hidden">
+                <div class="section-header">
+                    <h2>App Catalog</h2>
+                    <button class="btn-primary refresh-btn" onclick="loadApps()">Refresh</button>
+                </div>
+                <div id="appsAdminList">
+                    <div class="loading">Loading apps...</div>
                 </div>
             </section>
 
@@ -400,6 +412,19 @@
         </div>
     </div>
 
-    <script src="/static/admin.js?v=4"></script>
+    <!-- App Version Details Modal -->
+    <div id="appVersionModal" class="modal-overlay hidden" onclick="if(event.target===this)closeAppVersionModal()">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="appVersionModalTitle">Version Details</h2>
+                <button class="modal-close" onclick="closeAppVersionModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="appVersionDetails"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/admin.js?v=5"></script>
 </body>
 </html>
