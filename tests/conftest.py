@@ -32,11 +32,22 @@ def setup_test_database():
             pass
 
 
+@pytest.fixture
+def client():
+    """FastAPI test client."""
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    return TestClient(app)
+
+
 @pytest.fixture(autouse=True)
 def clear_all_stores():
     """Clear all stores before and after each test for isolation."""
     from app.storage import (
         account_store,
+        admin_session_store,
         agent_store,
         app_store,
         app_version_store,
@@ -53,6 +64,7 @@ def clear_all_stores():
     app_version_store.clear()
     transaction_store.clear()
     account_store.clear()
+    admin_session_store.clear()
 
     yield
 
@@ -64,3 +76,4 @@ def clear_all_stores():
     app_version_store.clear()
     transaction_store.clear()
     account_store.clear()
+    admin_session_store.clear()

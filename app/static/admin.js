@@ -16,15 +16,41 @@ async function fetchJSON(url, options) {
     return response.json();
 }
 
-// Check if already logged in
+// Check if already logged in or OAuth callback
 document.addEventListener('DOMContentLoaded', () => {
+    // Check for OAuth callback token in URL
+    const urlParams = new URLSearchParams(window.location.search);
+    const token = urlParams.get('token');
+    if (token) {
+        adminToken = token;
+        sessionStorage.setItem('adminToken', adminToken);
+        // Clean URL
+        window.history.replaceState({}, document.title, '/admin');
+        showDashboard();
+        return;
+    }
+
+    // Check session storage
     adminToken = sessionStorage.getItem('adminToken');
     if (adminToken) {
         showDashboard();
     }
 });
 
-// Login
+// GitHub OAuth login
+document.getElementById('githubLoginBtn')?.addEventListener('click', async () => {
+    const errorDiv = document.getElementById('loginError');
+    try {
+        const data = await fetchJSON('/auth/github');
+        // Redirect to GitHub OAuth
+        window.location.href = data.auth_url;
+    } catch (error) {
+        errorDiv.textContent = 'GitHub OAuth not configured';
+        errorDiv.style.display = 'block';
+    }
+});
+
+// Password login
 async function login(event) {
     event.preventDefault();
     const password = document.getElementById('password').value;

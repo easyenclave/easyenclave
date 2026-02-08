@@ -977,6 +977,81 @@ async def admin_login(request: AdminLoginRequest, req: Request):
     )
 
 
+@app.get("/auth/github")
+async def github_oauth_start():
+    """Initiate GitHub OAuth flow for admin login."""
+    from .oauth import GITHUB_CLIENT_ID, create_oauth_state, get_github_authorize_url
+
+    if not GITHUB_CLIENT_ID:
+        raise HTTPException(
+            status_code=503, detail="GitHub OAuth not configured. Set GITHUB_OAUTH_CLIENT_ID."
+        )
+
+    # Generate CSRF state token
+    state = create_oauth_state()
+    auth_url = get_github_authorize_url(state)
+
+    return {"auth_url": auth_url, "state": state}
+
+
+@app.get("/auth/github/callback")
+async def github_oauth_callback(
+    code: str,
+    state: str,
+    req: Request,
+):
+    """Handle GitHub OAuth callback and create admin session."""
+    from fastapi.responses import RedirectResponse
+
+    from app.db_models import AdminSession
+
+    from .oauth import exchange_code_for_token, get_github_user, verify_oauth_state
+
+    # Verify state (CSRF protection)
+    if not verify_oauth_state(state):
+        raise HTTPException(status_code=400, detail="Invalid or expired state token")
+
+    # Exchange code for access token
+    try:
+        access_token = await exchange_code_for_token(code)
+        user_info = await get_github_user(access_token)
+    except Exception as e:
+        logger.error(f"GitHub OAuth error: {e}")
+        raise HTTPException(status_code=400, detail="GitHub authentication failed") from e
+
+    # Create admin session
+    token = generate_session_token()
+    expires_at = create_session_expiry(hours=24)
+
+    session = AdminSession(
+        token_hash=hash_api_key(token),
+        token_prefix=get_token_prefix(token),
+        expires_at=expires_at,
+        ip_address=req.client.host if req.client else None,
+        github_id=user_info["github_id"],
+        github_login=user_info["github_login"],
+        github_email=user_info["github_email"],
+        github_avatar_url=user_info.get("github_avatar_url"),
+        auth_method="github_oauth",
+    )
+
+    admin_session_store.create(session)
+    logger.info(
+        f"Admin logged in via GitHub: {user_info['github_login']} from {req.client.host if req.client else 'unknown'}"
+    )
+
+    # Redirect to admin UI with token in query param
+    return RedirectResponse(url=f"/admin?token={token}", status_code=302)
+
+
+@app.get("/auth/me")
+async def get_current_user(_admin: bool = Depends(verify_admin_token)):
+    """Get current authenticated admin user info."""
+    # For now, just confirm authentication
+    # TODO: Return actual session info (github_login, avatar, etc.)
+    return {"authenticated": True}
+
+
 # ==============================================================================
 # Billing API - Accounts, deposits, transactions, rate card
 # ==============================================================================

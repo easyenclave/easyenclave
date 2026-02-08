@@ -158,6 +158,11 @@ class Account(SQLModel, table=True):
     # API key authentication fields
     api_key_hash: str | None = None  # bcrypt hash
     api_key_prefix: str | None = Field(default=None, index=True)  # "ee_live_xxxx" for fast lookup
+    # GitHub OAuth linking (for future auto-provisioning)
+    github_id: int | None = Field(default=None, index=True)
+    github_login: str | None = None
+    github_org: str | None = None
+    linked_at: datetime | None = None
 
 
 class Transaction(SQLModel, table=True):
@@ -187,3 +192,9 @@ class AdminSession(SQLModel, table=True):
     expires_at: datetime
     last_used: datetime = Field(default_factory=utcnow)
     ip_address: str | None = None
+    # GitHub OAuth fields
+    github_id: int | None = None
+    github_login: str | None = None
+    github_email: str | None = None
+    github_avatar_url: str | None = None
+    auth_method: str = Field(default="password")  # "password" | "github_oauth"
