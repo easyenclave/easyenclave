@@ -314,6 +314,144 @@
         }
         .divider::before { left: 0; }
         .divider::after { right: 0; }
+
+        /* Setup Wizard */
+        .wizard-container {
+            max-width: 600px;
+            margin: 60px auto;
+            padding: 0 20px;
+        }
+        .wizard-steps {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 32px;
+        }
+        .wizard-step-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--gray-300);
+            transition: background 0.2s;
+        }
+        .wizard-step-indicator.active {
+            background: #7c3aed;
+        }
+        .wizard-step-indicator.completed {
+            background: #22c55e;
+        }
+        .wizard-panel {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+            padding: 32px;
+        }
+        .wizard-panel h2 {
+            margin-bottom: 12px;
+            color: var(--gray-900);
+        }
+        .wizard-panel p {
+            color: var(--gray-600);
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+        .wizard-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 24px;
+        }
+        .wizard-actions .btn-primary,
+        .wizard-actions .btn-secondary {
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            border: none;
+            font-size: 0.95rem;
+        }
+        .wizard-instructions {
+            background: var(--gray-50);
+            border-radius: 8px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+        }
+        .wizard-instructions ol {
+            margin: 0;
+            padding-left: 20px;
+            color: var(--gray-700);
+            line-height: 1.8;
+        }
+        .wizard-instructions code {
+            background: var(--gray-200);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.85rem;
+        }
+        .wizard-form .form-group {
+            margin-bottom: 16px;
+        }
+        .wizard-form label {
+            display: block;
+            font-weight: 600;
+            color: var(--gray-700);
+            margin-bottom: 4px;
+            font-size: 0.9rem;
+        }
+        .wizard-form input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--gray-300);
+            border-radius: 6px;
+            font-size: 0.95rem;
+            box-sizing: border-box;
+        }
+        .wizard-form input:focus {
+            outline: none;
+            border-color: #7c3aed;
+            box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1);
+        }
+        .wizard-callback-url {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+        .wizard-callback-url input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 1px solid var(--gray-300);
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            background: var(--gray-50);
+            color: var(--gray-700);
+        }
+        .wizard-callback-url button {
+            padding: 8px 14px;
+            border: 1px solid var(--gray-300);
+            border-radius: 6px;
+            background: white;
+            cursor: pointer;
+            font-size: 0.85rem;
+            white-space: nowrap;
+        }
+        .wizard-callback-url button:hover {
+            background: var(--gray-50);
+        }
+        .wizard-error {
+            background: #fee2e2;
+            color: #991b1b;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 16px;
+            display: none;
+            font-size: 0.9rem;
+        }
+        .wizard-success-icon {
+            text-align: center;
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
     </style>
 </head>
 <body>
@@ -341,6 +479,92 @@
                 </div>
                 <button type="submit" class="btn-primary" style="width: 100%">Login with Password</button>
             </form>
+        </div>
+    </div>
+
+    <!-- Setup Wizard -->
+    <div id="setupWizard" class="hidden">
+        <div class="wizard-container">
+            <div class="wizard-steps">
+                <div class="wizard-step-indicator active" data-step="1"></div>
+                <div class="wizard-step-indicator" data-step="2"></div>
+                <div class="wizard-step-indicator" data-step="3"></div>
+                <div class="wizard-step-indicator" data-step="4"></div>
+            </div>
+
+            <!-- Step 1: Welcome -->
+            <div id="wizardStep1" class="wizard-panel">
+                <h2>Set up GitHub Authentication?</h2>
+                <p>GitHub OAuth lets admins sign in with their GitHub account instead of a shared password. This is more secure and provides individual audit trails.</p>
+                <p>This wizard will guide you through creating a GitHub OAuth App and connecting it to EasyEnclave. It only takes a couple of minutes.</p>
+                <div class="wizard-actions">
+                    <button class="btn-secondary" onclick="skipWizard()">Skip Setup</button>
+                    <button class="btn-primary" onclick="wizardNext(2)">Set Up GitHub OAuth</button>
+                </div>
+            </div>
+
+            <!-- Step 2: Create OAuth App + Enter Credentials -->
+            <div id="wizardStep2" class="wizard-panel hidden">
+                <h2>Create a GitHub OAuth App</h2>
+                <div class="wizard-instructions">
+                    <ol>
+                        <li>Go to <a href="https://github.com/settings/developers" target="_blank">github.com/settings/developers</a></li>
+                        <li>Click <strong>New OAuth App</strong></li>
+                        <li>Set <strong>Application name</strong> to <code>EasyEnclave Admin</code></li>
+                        <li>Set <strong>Homepage URL</strong> to your control plane URL</li>
+                        <li>Set <strong>Authorization callback URL</strong> to the value below</li>
+                        <li>Click <strong>Register application</strong>, then generate a client secret</li>
+                    </ol>
+                </div>
+
+                <div style="margin-bottom: 20px;">
+                    <label style="font-weight: 600; color: var(--gray-700); font-size: 0.9rem; display: block; margin-bottom: 4px;">Callback URL</label>
+                    <div class="wizard-callback-url">
+                        <input type="text" id="wizardCallbackUrl" readonly>
+                        <button onclick="copyCallbackUrl()">Copy</button>
+                    </div>
+                </div>
+
+                <div id="wizardOAuthError" class="wizard-error"></div>
+
+                <div class="wizard-form">
+                    <div class="form-group">
+                        <label for="wizardClientId">Client ID</label>
+                        <input type="text" id="wizardClientId" placeholder="Ov23li..." autocomplete="off">
+                    </div>
+                    <div class="form-group">
+                        <label for="wizardClientSecret">Client Secret</label>
+                        <input type="password" id="wizardClientSecret" placeholder="Paste your client secret" autocomplete="off">
+                    </div>
+                </div>
+
+                <div class="wizard-actions">
+                    <button class="btn-secondary" onclick="wizardNext(1)">Back</button>
+                    <button class="btn-secondary" onclick="skipWizard()">Skip</button>
+                    <button class="btn-primary" onclick="wizardSaveOAuth()">Save &amp; Continue</button>
+                </div>
+            </div>
+
+            <!-- Step 3: Link GitHub Account -->
+            <div id="wizardStep3" class="wizard-panel hidden">
+                <h2>Link Your GitHub Account</h2>
+                <p>Test the configuration by linking your GitHub account to this admin session. This starts the OAuth flow you just configured.</p>
+                <p>If the redirect works and you authorize the app, your admin session will be linked to your GitHub identity.</p>
+                <div class="wizard-actions">
+                    <button class="btn-secondary" onclick="wizardNext(4)">Skip This Step</button>
+                    <button class="btn-primary" onclick="wizardLinkGitHub()">Link GitHub Account</button>
+                </div>
+            </div>
+
+            <!-- Step 4: Done -->
+            <div id="wizardStep4" class="wizard-panel hidden">
+                <div class="wizard-success-icon">&#10003;</div>
+                <h2 style="text-align: center;">Setup Complete</h2>
+                <p id="wizardDoneMsg" style="text-align: center;">GitHub OAuth is configured. Admins can now sign in using their GitHub accounts.</p>
+                <div class="wizard-actions" style="justify-content: center;">
+                    <button class="btn-primary" onclick="finishWizard()">Go to Dashboard</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -603,6 +827,6 @@
         </div>
     </div>
 
-    <script src="/static/admin.js?v=7"></script>
+    <script src="/static/admin.js?v=8"></script>
 </body>
 </html>

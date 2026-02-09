@@ -26,7 +26,14 @@ document.addEventListener('DOMContentLoaded', () => {
         sessionStorage.setItem('adminToken', adminToken);
         // Clean URL
         window.history.replaceState({}, document.title, '/admin');
-        showDashboard();
+
+        // If returning from wizard OAuth link step, resume wizard at step 4
+        if (sessionStorage.getItem('wizardResumeAfterOAuth')) {
+            sessionStorage.removeItem('wizardResumeAfterOAuth');
+            showDashboard({ resumeWizardStep4: true });
+        } else {
+            showDashboard();
+        }
         return;
     }
 
@@ -64,7 +71,9 @@ async function login(event) {
         });
         adminToken = data.token;
         sessionStorage.setItem('adminToken', adminToken);
-        showDashboard();
+        // Clear stale wizard flag from previous sessions
+        sessionStorage.removeItem('wizardResumeAfterOAuth');
+        showDashboard({ freshPasswordLogin: true });
     } catch (error) {
         errorDiv.textContent = error.message.includes('401') ? 'Invalid password' : 'Connection error';
         errorDiv.style.display = 'block';
@@ -104,18 +113,31 @@ async function loadUserInfo() {
 
 function logout() {
     sessionStorage.removeItem('adminToken');
+    sessionStorage.removeItem('wizardResumeAfterOAuth');
     adminToken = null;
     document.getElementById('loginPage').classList.remove('hidden');
     document.getElementById('adminPage').classList.add('hidden');
+    document.getElementById('setupWizard').classList.add('hidden');
     // Hide user info
     document.getElementById('userInfo').style.display = 'none';
 }
 
-function showDashboard() {
+async function showDashboard(options = {}) {
     document.getElementById('loginPage').classList.add('hidden');
+    document.getElementById('setupWizard').classList.add('hidden');
     document.getElementById('adminPage').classList.remove('hidden');
     loadUserInfo();
     loadAgents();
+
+    if (options.resumeWizardStep4) {
+        // Returning from OAuth link — show wizard completion step
+        document.getElementById('adminPage').classList.add('hidden');
+        document.getElementById('wizardDoneMsg').textContent =
+            'GitHub account linked successfully! OAuth is configured and ready to use.';
+        showWizard(4);
+    } else if (options.freshPasswordLogin) {
+        await checkAndShowWizard();
+    }
 }
 
 // Tab navigation
@@ -1131,4 +1153,123 @@ async function resetSetting(key) {
     } catch (error) {
         alert('Error resetting setting: ' + error.message);
     }
+}
+
+// ── Setup Wizard ─────────────────────────────────────────────────────────────
+
+async function checkAndShowWizard() {
+    try {
+        const data = await fetchJSON('/api/v1/admin/settings?group=github_oauth', {
+            headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        const clientId = data.settings.find(s => s.key === 'github_oauth.client_id');
+        // Show wizard only if client_id is not configured (source is "default" with empty value)
+        if (clientId && clientId.source === 'default' && !clientId.value) {
+            showWizard(1);
+        }
+    } catch (err) {
+        // Settings fetch failed — skip wizard silently
+        console.error('Wizard check failed:', err);
+    }
+}
+
+function showWizard(step) {
+    document.getElementById('adminPage').classList.add('hidden');
+    document.getElementById('setupWizard').classList.remove('hidden');
+
+    // Compute callback URL for step 2
+    const callbackInput = document.getElementById('wizardCallbackUrl');
+    if (callbackInput) {
+        callbackInput.value = window.location.origin + '/auth/github/callback';
+    }
+
+    wizardNext(step);
+}
+
+function wizardNext(step) {
+    // Hide all panels
+    for (let i = 1; i <= 4; i++) {
+        document.getElementById(`wizardStep${i}`).classList.add('hidden');
+    }
+    // Show target panel
+    document.getElementById(`wizardStep${step}`).classList.remove('hidden');
+
+    // Update step indicators
+    document.querySelectorAll('.wizard-step-indicator').forEach(dot => {
+        const dotStep = parseInt(dot.dataset.step);
+        dot.classList.remove('active', 'completed');
+        if (dotStep < step) {
+            dot.classList.add('completed');
+        } else if (dotStep === step) {
+            dot.classList.add('active');
+        }
+    });
+}
+
+async function wizardSaveOAuth() {
+    const clientId = document.getElementById('wizardClientId').value.trim();
+    const clientSecret = document.getElementById('wizardClientSecret').value.trim();
+    const errorDiv = document.getElementById('wizardOAuthError');
+    errorDiv.style.display = 'none';
+
+    if (!clientId || !clientSecret) {
+        errorDiv.textContent = 'Both Client ID and Client Secret are required.';
+        errorDiv.style.display = 'block';
+        return;
+    }
+
+    const redirectUri = window.location.origin + '/auth/github/callback';
+    const headers = {
+        'Authorization': `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+    };
+
+    try {
+        await Promise.all([
+            fetchJSON('/api/v1/admin/settings/github_oauth.client_id', {
+                method: 'PUT', headers,
+                body: JSON.stringify({ value: clientId }),
+            }),
+            fetchJSON('/api/v1/admin/settings/github_oauth.client_secret', {
+                method: 'PUT', headers,
+                body: JSON.stringify({ value: clientSecret }),
+            }),
+            fetchJSON('/api/v1/admin/settings/github_oauth.redirect_uri', {
+                method: 'PUT', headers,
+                body: JSON.stringify({ value: redirectUri }),
+            }),
+        ]);
+        wizardNext(3);
+    } catch (err) {
+        errorDiv.textContent = 'Failed to save settings: ' + err.message;
+        errorDiv.style.display = 'block';
+    }
+}
+
+function wizardLinkGitHub() {
+    sessionStorage.setItem('wizardResumeAfterOAuth', 'true');
+    // Start the OAuth flow — this will redirect away
+    window.location.href = '/auth/github';
+}
+
+function skipWizard() {
+    document.getElementById('setupWizard').classList.add('hidden');
+    document.getElementById('adminPage').classList.remove('hidden');
+}
+
+function finishWizard() {
+    document.getElementById('setupWizard').classList.add('hidden');
+    document.getElementById('adminPage').classList.remove('hidden');
+}
+
+function copyCallbackUrl() {
+    const input = document.getElementById('wizardCallbackUrl');
+    navigator.clipboard.writeText(input.value).then(() => {
+        const btn = input.nextElementSibling;
+        const orig = btn.textContent;
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+    }).catch(() => {
+        input.select();
+    });
 }
