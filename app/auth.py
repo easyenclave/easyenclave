@@ -16,7 +16,7 @@ import bcrypt
 from fastapi import Header, HTTPException
 
 if TYPE_CHECKING:
-    from app.db_models import AdminSession
+    from app.db_models import AdminSession, Agent
 
 logger = logging.getLogger(__name__)
 
@@ -242,3 +242,52 @@ def create_session_expiry(hours: int = 24) -> datetime:
         Expiry datetime
     """
     return datetime.now(timezone.utc) + timedelta(hours=hours)
+
+
+def _get_admin_github_logins() -> list[str]:
+    """Get list of GitHub logins with admin access from env var."""
+    raw = os.environ.get("ADMIN_GITHUB_LOGINS", "")
+    return [login.strip() for login in raw.split(",") if login.strip()]
+
+
+def is_admin_session(session: "AdminSession") -> bool:
+    """Check if a session has admin privileges.
+
+    Password auth always grants admin. GitHub OAuth grants admin only if
+    the github_login is in ADMIN_GITHUB_LOGINS env var.
+    """
+    if session.auth_method == "password":
+        return True
+    if session.auth_method == "github_oauth" and session.github_login:
+        return session.github_login in _get_admin_github_logins()
+    return False
+
+
+def get_owner_identities(session: "AdminSession") -> list[str]:
+    """Get list of identities for ownership matching.
+
+    Returns [github_login] + github_orgs for the session.
+    """
+    identities: list[str] = []
+    if session.github_login:
+        identities.append(session.github_login)
+    if session.github_orgs:
+        identities.extend(session.github_orgs)
+    return identities
+
+
+def require_owner_or_admin(session: "AdminSession", agent: "Agent") -> None:
+    """Raise 403 if session is not admin AND not an owner of the agent.
+
+    Args:
+        session: The authenticated admin session
+        agent: The agent to check ownership of
+
+    Raises:
+        HTTPException: 403 if not authorized
+    """
+    if is_admin_session(session):
+        return
+    if agent.github_owner and agent.github_owner in get_owner_identities(session):
+        return
+    raise HTTPException(status_code=403, detail="Not authorized for this agent")

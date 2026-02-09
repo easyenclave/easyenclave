@@ -85,6 +85,8 @@ class Agent(SQLModel, table=True):
     # TCB (Trusted Computing Base) status
     tcb_status: str | None = Field(default=None, index=True)
     tcb_verified_at: datetime | None = None
+    # GitHub ownership
+    github_owner: str | None = Field(default=None, index=True)
 
 
 class Deployment(SQLModel, table=True):
@@ -213,3 +215,4 @@ class AdminSession(SQLModel, table=True):
     github_email: str | None = None
     github_avatar_url: str | None = None
     auth_method: str = Field(default="password")  # "password" | "github_oauth"
+    github_orgs: list[str] | None = Field(default=None, sa_column=Column(JSON))

@@ -338,6 +338,23 @@ class AgentStore:
             session.add(agent)
             return True
 
+    def list_by_owners(self, owners: list[str]) -> list[Agent]:
+        """List agents whose github_owner is in the given list."""
+        if not owners:
+            return []
+        with get_db() as session:
+            return list(session.exec(select(Agent).where(Agent.github_owner.in_(owners))).all())
+
+    def set_github_owner(self, agent_id: str, github_owner: str | None) -> bool:
+        """Set or clear the github_owner field on an agent."""
+        with get_db() as session:
+            agent = session.get(Agent, agent_id)
+            if not agent:
+                return False
+            agent.github_owner = github_owner
+            session.add(agent)
+            return True
+
     def update_tcb_status(self, agent_id: str, tcb_status: str) -> bool:
         """Update TCB status during attestation refresh."""
         with get_db() as session:

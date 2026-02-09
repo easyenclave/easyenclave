@@ -1,6 +1,9 @@
 // EasyEnclave Admin Dashboard JavaScript
 
 let adminToken = null;
+let isAdmin = true;
+let currentUserLogin = null;
+let currentUserOrgs = [];
 
 async function fetchJSON(url, options) {
     const response = await fetch(url, options);
@@ -110,6 +113,11 @@ async function loadUserInfo() {
             headers: { 'Authorization': `Bearer ${adminToken}` }
         });
 
+        // Store role info
+        isAdmin = user.is_admin !== undefined ? user.is_admin : true;
+        currentUserLogin = user.github_login || null;
+        currentUserOrgs = user.github_orgs || [];
+
         // Show user info in header
         const userInfo = document.getElementById('userInfo');
         const userName = document.getElementById('userName');
@@ -118,7 +126,7 @@ async function loadUserInfo() {
 
         if (user.github_login) {
             userName.textContent = user.github_login;
-            userMethod.textContent = 'GitHub';
+            userMethod.textContent = isAdmin ? 'GitHub (Admin)' : 'GitHub (Owner)';
             if (user.github_avatar_url) {
                 userAvatar.src = user.github_avatar_url;
                 userAvatar.style.display = 'block';
@@ -130,8 +138,29 @@ async function loadUserInfo() {
         }
 
         userInfo.style.display = 'flex';
+        configureUIForRole();
     } catch (err) {
         console.error('Failed to load user info:', err);
+    }
+}
+
+function configureUIForRole() {
+    // Admin-only tabs: settings, mrtds, cloudflare, system, accounts
+    const adminOnlyTabs = ['settings', 'mrtds', 'cloudflare', 'system', 'accounts'];
+
+    if (!isAdmin) {
+        // Hide admin-only tab buttons
+        document.querySelectorAll('.tab').forEach(tab => {
+            const tabName = tab.getAttribute('onclick')?.match(/showAdminTab\('(\w+)'\)/)?.[1];
+            if (tabName && adminOnlyTabs.includes(tabName)) {
+                tab.style.display = 'none';
+            }
+        });
+    } else {
+        // Ensure all tabs are visible for admin
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.style.display = '';
+        });
     }
 }
 
@@ -366,12 +395,16 @@ function closeAppVersionModal() {
 async function loadAgents() {
     const container = document.getElementById('agentsAdminList');
     try {
-        const data = await fetchJSON('/api/v1/agents');
+        const url = isAdmin ? '/api/v1/agents' : '/api/v1/me/agents';
+        const data = await fetchJSON(url);
 
         if (data.agents.length === 0) {
             container.innerHTML = '<div class="empty">No agents registered</div>';
             return;
         }
+
+        // For non-admin, use owner-scoped endpoint
+        const agentList = isAdmin ? data.agents : data.agents;
 
         container.innerHTML = `
             <table class="data-table">
@@ -382,23 +415,25 @@ async function loadAgents() {
                         <th>Health</th>
                         <th>Verified</th>
                         <th>MRTD</th>
+                        ${isAdmin ? '<th>Owner</th>' : ''}
                         <th>Hostname</th>
                         <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${data.agents.map(agent => `
+                    ${agentList.map(agent => `
                         <tr>
                             <td><strong>${agent.vm_name}</strong><br><code style="font-size: 0.7rem">${agent.agent_id.substring(0, 8)}...</code></td>
                             <td><span class="status-badge ${agent.status}">${agent.status}</span></td>
                             <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>
                             <td>${agent.verified ? '<span class="verified-badge">Verified</span>' : '<span class="unverified-badge">Unverified</span>'}</td>
                             <td><code>${agent.mrtd ? agent.mrtd.substring(0, 16) + '...' : 'N/A'}</code></td>
+                            ${isAdmin ? `<td>${agent.github_owner ? `<code>${agent.github_owner}</code>` : '<span style="color:#666">none</span>'} <button class="btn-small btn-secondary" onclick="setAgentOwner('${agent.agent_id}', '${agent.github_owner || ''}')">Set</button></td>` : ''}
                             <td>${agent.hostname ? `<a href="https://${agent.hostname}" target="_blank">${agent.hostname}</a>` : 'No tunnel'}</td>
                             <td class="action-buttons">
                                 ${agent.hostname ? `<button class="btn-small btn-info" onclick="showAgentDetails('${agent.agent_id}', '${agent.vm_name}')">Details</button>` : ''}
                                 <button class="btn-small btn-secondary" onclick="resetAgent('${agent.agent_id}')">Reset</button>
-                                <button class="btn-small btn-danger" onclick="deleteAgent('${agent.agent_id}')">Delete</button>
+                                ${isAdmin ? `<button class="btn-small btn-danger" onclick="deleteAgent('${agent.agent_id}')">Delete</button>` : ''}
                             </td>
                         </tr>
                     `).join('')}
@@ -429,11 +464,33 @@ async function resetAgent(agentId) {
     if (!confirm('Reset this agent to undeployed state?')) return;
 
     try {
-        const response = await adminFetch(`/api/v1/agents/${agentId}/reset`, { method: 'POST' });
+        const url = isAdmin ? `/api/v1/agents/${agentId}/reset` : `/api/v1/me/agents/${agentId}/reset`;
+        const response = await adminFetch(url, { method: 'POST' });
         if (response.ok) {
             loadAgents();
         } else {
             alert('Failed to reset agent');
+        }
+    } catch (error) {
+        alert('Error: ' + error.message);
+    }
+}
+
+async function setAgentOwner(agentId, currentOwner) {
+    const owner = prompt('Set GitHub owner (login or org). Leave empty to clear:', currentOwner);
+    if (owner === null) return; // Cancelled
+
+    try {
+        const response = await adminFetch(`/api/v1/agents/${agentId}/owner`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ github_owner: owner || null })
+        });
+        if (response.ok) {
+            loadAgents();
+        } else {
+            const text = await response.text();
+            alert('Failed to set owner: ' + text);
         }
     } catch (error) {
         alert('Error: ' + error.message);

@@ -26,6 +26,7 @@ GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 GITHUB_USER_API = "https://api.github.com/user"
 GITHUB_USER_EMAILS_API = "https://api.github.com/user/emails"
+GITHUB_USER_ORGS_API = "https://api.github.com/user/orgs"
 
 
 def get_github_authorize_url(state: str) -> str:
@@ -38,7 +39,7 @@ def get_github_authorize_url(state: str) -> str:
     params = {
         "client_id": _client_id(),
         "redirect_uri": _redirect_uri(),
-        "scope": "read:user user:email",  # Minimal scope
+        "scope": "read:user user:email read:org",
         "state": state,  # CSRF protection
     }
     query = "&".join(f"{k}={v}" for k, v in params.items())
@@ -107,6 +108,20 @@ async def get_github_user(access_token: str) -> dict[str, Any]:
             "github_email": primary_email or user.get("email"),
             "github_avatar_url": user.get("avatar_url"),
         }
+
+
+async def get_github_user_orgs(access_token: str) -> list[str]:
+    """Fetch org logins the authenticated user belongs to."""
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            GITHUB_USER_ORGS_API,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/vnd.github.v3+json",
+            },
+        )
+        resp.raise_for_status()
+        return [org["login"] for org in resp.json()]
 
 
 # Simple in-memory CSRF state storage (expires after 10 minutes)

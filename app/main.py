@@ -31,8 +31,11 @@ from .auth import (
     generate_session_token,
     get_admin_password_hash,
     get_key_prefix,
+    get_owner_identities,
     get_token_prefix,
     hash_api_key,
+    is_admin_session,
+    require_owner_or_admin,
     verify_account_api_key,
     verify_admin_token,
     verify_password,
@@ -78,6 +81,7 @@ from .models import (
     Service,
     ServiceListResponse,
     ServiceRegistrationRequest,
+    SetAgentOwnerRequest,
     TransactionListResponse,
     TransactionResponse,
     VerificationResponse,
@@ -1105,6 +1109,87 @@ async def reset_agent(agent_id: str):
     return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
 
 
+@app.patch("/api/v1/agents/{agent_id}/owner")
+async def set_agent_owner(
+    agent_id: str,
+    request: SetAgentOwnerRequest,
+    session: AdminSession = Depends(verify_admin_token),
+):
+    """Set or clear the GitHub owner for an agent (admin-only)."""
+    if not is_admin_session(session):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    get_or_404(agent_store, agent_id, "Agent")
+    agent_store.set_github_owner(agent_id, request.github_owner)
+    logger.info(
+        f"Agent {agent_id} owner set to {request.github_owner!r} by {session.github_login or 'admin'}"
+    )
+    return {"agent_id": agent_id, "github_owner": request.github_owner}
+
+
+# ==============================================================================
+# Owner-scoped API - GitHub owners can manage their agents
+# ==============================================================================
+
+
+@app.get("/api/v1/me/agents")
+async def list_my_agents(session: AdminSession = Depends(verify_admin_token)):
+    """List agents owned by the current GitHub user (matches login + orgs)."""
+    identities = get_owner_identities(session)
+    if not identities:
+        return {"agents": [], "total": 0}
+    agents = agent_store.list_by_owners(identities)
+    return {"agents": agents, "total": len(agents)}
+
+
+@app.get("/api/v1/me/agents/{agent_id}")
+async def get_my_agent(agent_id: str, session: AdminSession = Depends(verify_admin_token)):
+    """Get a single agent (ownership check)."""
+    agent = get_or_404(agent_store, agent_id, "Agent")
+    require_owner_or_admin(session, agent)
+    return agent
+
+
+@app.post("/api/v1/me/agents/{agent_id}/reset")
+async def reset_my_agent(agent_id: str, session: AdminSession = Depends(verify_admin_token)):
+    """Reset an owned agent to undeployed status."""
+    agent = get_or_404(agent_store, agent_id, "Agent")
+    require_owner_or_admin(session, agent)
+
+    agent_store.update_status(agent_id, "undeployed", None)
+    agent_store.update_attestation_status(agent_id, attestation_valid=True)
+    logger.info(f"Owner {session.github_login} reset agent {agent_id}")
+
+    # Create tunnel if needed
+    tunnel_created = False
+    if agent.verified and not agent.hostname and cloudflare.is_configured():
+        try:
+            tunnel_info = await cloudflare.create_tunnel_for_agent(agent_id)
+            agent_store.update_tunnel_info(
+                agent_id,
+                tunnel_id=tunnel_info["tunnel_id"],
+                hostname=tunnel_info["hostname"],
+                tunnel_token=tunnel_info["tunnel_token"],
+            )
+            tunnel_created = True
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to create tunnel: {e}") from e
+
+    return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
+
+
+@app.get("/api/v1/me/deployments")
+async def list_my_deployments(session: AdminSession = Depends(verify_admin_token)):
+    """List deployments for agents owned by the current GitHub user."""
+    identities = get_owner_identities(session)
+    if not identities:
+        return {"deployments": [], "total": 0}
+    owned_agents = agent_store.list_by_owners(identities)
+    owned_agent_ids = {a.agent_id for a in owned_agents}
+    all_deployments = deployment_store.list()
+    deployments = [d for d in all_deployments if d.agent_id in owned_agent_ids]
+    return {"deployments": deployments, "total": len(deployments)}
+
+
 # ==============================================================================
 # Deployment API - List and track deployments
 # ==============================================================================
@@ -1458,7 +1543,12 @@ async def github_oauth_callback(
 
     from app.db_models import AdminSession
 
-    from .oauth import exchange_code_for_token, get_github_user, verify_oauth_state
+    from .oauth import (
+        exchange_code_for_token,
+        get_github_user,
+        get_github_user_orgs,
+        verify_oauth_state,
+    )
 
     # Verify state (CSRF protection)
     if not verify_oauth_state(state):
@@ -1471,6 +1561,13 @@ async def github_oauth_callback(
     except Exception as e:
         logger.error(f"GitHub OAuth error: {e}")
         raise HTTPException(status_code=400, detail="GitHub authentication failed") from e
+
+    # Fetch org memberships
+    try:
+        github_orgs = await get_github_user_orgs(access_token)
+    except Exception as e:
+        logger.warning(f"Failed to fetch GitHub orgs: {e}")
+        github_orgs = []
 
     # Create admin session
     token = generate_session_token()
@@ -1486,6 +1583,7 @@ async def github_oauth_callback(
         github_email=user_info["github_email"],
         github_avatar_url=user_info.get("github_avatar_url"),
         auth_method="github_oauth",
+        github_orgs=github_orgs or None,
     )
 
     admin_session_store.create(session)
@@ -1503,9 +1601,11 @@ async def get_current_user(session: AdminSession = Depends(verify_admin_token)):
     return {
         "authenticated": True,
         "auth_method": session.auth_method,
+        "is_admin": is_admin_session(session),
         "github_login": session.github_login,
         "github_email": session.github_email,
         "github_avatar_url": session.github_avatar_url,
+        "github_orgs": session.github_orgs or [],
         "created_at": session.created_at.isoformat(),
         "expires_at": session.expires_at.isoformat(),
     }
@@ -2085,6 +2185,10 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
     logger.info(
         f"Deployment created: {deployment_id} ({name}@{version} -> agent {request.agent_id})"
     )
+
+    # Set GitHub owner on agent if provided
+    if request.github_owner:
+        agent_store.set_github_owner(request.agent_id, request.github_owner)
 
     # 10. Update tunnel ingress if app version has custom ingress rules
     if found_version.ingress and agent.tunnel_id and cloudflare.is_configured():

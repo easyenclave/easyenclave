@@ -209,6 +209,14 @@ class DeployFromVersionRequest(BaseModel):
     cpu_vcpus: float = 2.0  # For cost calculation
     memory_gb: float = 4.0
     gpu_count: int = 0
+    # GitHub ownership
+    github_owner: str | None = None
+
+
+class SetAgentOwnerRequest(BaseModel):
+    """Request for setting or clearing GitHub owner on an agent."""
+
+    github_owner: str | None = None
 
 
 class MeasurementCallbackRequest(BaseModel):
