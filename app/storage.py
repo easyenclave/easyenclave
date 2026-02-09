@@ -26,6 +26,13 @@ UNHEALTHY_TIMEOUT = timedelta(hours=1)
 AGENT_OFFLINE_TIMEOUT = timedelta(minutes=5)
 
 
+def _aware(dt: datetime) -> datetime:
+    """Ensure a datetime is timezone-aware (assume UTC if naive)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 class ServiceStore:
     """Storage for service registrations."""
 
@@ -64,7 +71,7 @@ class ServiceStore:
     def _is_timed_out(self, service: Service) -> bool:
         if service.health_status == "healthy" or service.last_health_check is None:
             return False
-        return datetime.now(timezone.utc) - service.last_health_check > UNHEALTHY_TIMEOUT
+        return datetime.now(timezone.utc) - _aware(service.last_health_check) > UNHEALTHY_TIMEOUT
 
     def list(self, filters: dict | None = None, include_down: bool = False) -> list[Service]:
         with get_db() as session:
@@ -198,7 +205,7 @@ class AgentStore:
         agents = self.list({"status": "undeployed"})
         now = datetime.now(timezone.utc)
         for agent in agents:
-            if now - agent.last_heartbeat < AGENT_OFFLINE_TIMEOUT:
+            if now - _aware(agent.last_heartbeat) < AGENT_OFFLINE_TIMEOUT:
                 if require_verified and not agent.verified:
                     continue
                 return agent
@@ -252,7 +259,7 @@ class AgentStore:
             return [
                 a
                 for a in agents
-                if a.unhealthy_since and now - a.unhealthy_since > unhealthy_timeout
+                if a.unhealthy_since and now - _aware(a.unhealthy_since) > unhealthy_timeout
             ]
 
     def get_stale_agents(self, stale_timeout: timedelta) -> list[Agent]:

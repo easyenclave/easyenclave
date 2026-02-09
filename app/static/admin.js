@@ -147,6 +147,18 @@ function logout() {
 }
 
 async function showDashboard(options = {}) {
+    // Validate session is still valid (catches stale tokens after server restart)
+    if (!options.freshPasswordLogin && !options.resumeWizardStep4) {
+        try {
+            await fetchJSON('/auth/me', {
+                headers: { 'Authorization': `Bearer ${adminToken}` }
+            });
+        } catch (err) {
+            logout();
+            return;
+        }
+    }
+
     document.getElementById('loginPage').classList.add('hidden');
     document.getElementById('setupWizard').classList.add('hidden');
     document.getElementById('adminPage').classList.remove('hidden');
