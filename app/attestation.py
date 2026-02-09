@@ -16,15 +16,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ita import extract_intel_ta_claims, verify_attestation_token
+from .settings import get_setting, get_setting_set
 from .storage import agent_store, get_trusted_mrtd
 
 logger = logging.getLogger(__name__)
 
-# TCB enforcement configuration
-TCB_ENFORCEMENT_MODE = os.environ.get("TCB_ENFORCEMENT_MODE", "warn").lower()
-ALLOWED_TCB_STATUSES = {
-    s.strip() for s in os.environ.get("ALLOWED_TCB_STATUSES", "UpToDate").split(",")
-}
+
+def _tcb_enforcement_mode() -> str:
+    return get_setting("operational.tcb_enforcement_mode").lower()
+
+
+def _allowed_tcb_statuses() -> set[str]:
+    return get_setting_set("operational.allowed_tcb_statuses")
 
 
 class AttestationError(Exception):
@@ -130,13 +133,14 @@ async def verify_agent_registration(attestation: dict) -> AgentVerificationResul
     # Step 2.5: Check TCB status
     tcb_status = ita_claims.get("attester_tcb_status", "Unknown")
 
-    if TCB_ENFORCEMENT_MODE != "disabled":
-        if tcb_status not in ALLOWED_TCB_STATUSES:
-            error_msg = (
-                f"TCB status '{tcb_status}' not in allowed list: {', '.join(ALLOWED_TCB_STATUSES)}"
-            )
+    mode = _tcb_enforcement_mode()
+    allowed = _allowed_tcb_statuses()
 
-            if TCB_ENFORCEMENT_MODE == "strict":
+    if mode != "disabled":
+        if tcb_status not in allowed:
+            error_msg = f"TCB status '{tcb_status}' not in allowed list: {', '.join(allowed)}"
+
+            if mode == "strict":
                 raise AttestationError(detail=error_msg, status_code=403)
             else:  # warn mode
                 logger.warning(

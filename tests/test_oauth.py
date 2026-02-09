@@ -3,7 +3,7 @@
 import pytest
 
 from app.oauth import (
-    GITHUB_CLIENT_ID,
+    _client_id,
     create_oauth_state,
     get_github_authorize_url,
     verify_oauth_state,
@@ -29,7 +29,7 @@ def test_verify_oauth_state_one_time_use():
     assert not verify_oauth_state(state)  # Should fail on second use
 
 
-@pytest.mark.skipif(not GITHUB_CLIENT_ID, reason="GitHub OAuth not configured")
+@pytest.mark.skipif(not _client_id(), reason="GitHub OAuth not configured")
 def test_github_authorize_url():
     """Test GitHub OAuth authorization URL generation."""
     url = get_github_authorize_url("test-state")
@@ -39,20 +39,27 @@ def test_github_authorize_url():
     assert "scope=read:user" in url
 
 
-def test_github_authorize_url_requires_config(monkeypatch):
+def test_github_authorize_url_requires_config():
     """Test that authorize URL requires GitHub OAuth configuration."""
     from fastapi import HTTPException
 
-    monkeypatch.setattr("app.oauth.GITHUB_CLIENT_ID", None)
+    from app.settings import delete_setting, invalidate_cache
+
+    # Ensure no DB or env value
+    delete_setting("github_oauth.client_id")
+    invalidate_cache()
 
     with pytest.raises(HTTPException) as exc_info:
         get_github_authorize_url("test-state")
     assert exc_info.value.status_code == 503
 
 
-def test_oauth_start_endpoint(client, monkeypatch):
+def test_oauth_start_endpoint(client):
     """Test GitHub OAuth start endpoint."""
-    monkeypatch.setattr("app.oauth.GITHUB_CLIENT_ID", "test-client-id")
+    from app.settings import invalidate_cache, set_setting
+
+    set_setting("github_oauth.client_id", "test-client-id")
+    invalidate_cache()
 
     resp = client.get("/auth/github")
     assert resp.status_code == 200
@@ -62,9 +69,12 @@ def test_oauth_start_endpoint(client, monkeypatch):
     assert "github.com/login/oauth/authorize" in data["auth_url"]
 
 
-def test_oauth_start_endpoint_not_configured(client, monkeypatch):
+def test_oauth_start_endpoint_not_configured(client):
     """Test OAuth start endpoint when not configured."""
-    monkeypatch.setattr("app.oauth.GITHUB_CLIENT_ID", None)
+    from app.settings import delete_setting, invalidate_cache
+
+    delete_setting("github_oauth.client_id")
+    invalidate_cache()
 
     resp = client.get("/auth/github")
     assert resp.status_code == 503
@@ -80,6 +90,7 @@ def test_oauth_callback_invalid_state(client):
 
 def test_oauth_integration_flow(client, monkeypatch):
     """Test complete OAuth flow integration."""
+    from app.settings import invalidate_cache, set_setting
 
     async def mock_exchange(code: str):
         return "gho_test_token_from_github"
@@ -92,11 +103,14 @@ def test_oauth_integration_flow(client, monkeypatch):
             "github_avatar_url": "https://avatars.githubusercontent.com/u/99999",
         }
 
+    # Set OAuth config via settings
+    set_setting("github_oauth.client_id", "test-client-id")
+    set_setting("github_oauth.client_secret", "test-client-secret")
+    invalidate_cache()
+
     # Mock the OAuth functions imported in main.py
     import app.oauth as oauth_module
 
-    monkeypatch.setattr(oauth_module, "GITHUB_CLIENT_ID", "test-client-id")
-    monkeypatch.setattr(oauth_module, "GITHUB_CLIENT_SECRET", "test-client-secret")
     monkeypatch.setattr(oauth_module, "exchange_code_for_token", mock_exchange)
     monkeypatch.setattr(oauth_module, "get_github_user", mock_get_user)
 

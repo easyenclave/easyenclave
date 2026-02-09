@@ -319,6 +319,18 @@ class AgentStore:
             session.add(agent)
             return True
 
+    def clear_tunnel_info(self, agent_id: str) -> bool:
+        """Clear tunnel fields after external tunnel deletion."""
+        with get_db() as session:
+            agent = session.get(Agent, agent_id)
+            if not agent:
+                return False
+            agent.tunnel_id = None
+            agent.hostname = None
+            agent.tunnel_token = None
+            session.add(agent)
+            return True
+
     def update_tcb_status(self, agent_id: str, tcb_status: str) -> bool:
         """Update TCB status during attestation refresh."""
         with get_db() as session:

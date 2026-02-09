@@ -15,19 +15,32 @@ from __future__ import annotations
 
 import base64
 import logging
-import os
 import secrets
 from typing import TypedDict
 
 import httpx
 
+from .settings import get_setting
+
 logger = logging.getLogger(__name__)
 
 CLOUDFLARE_API_URL = "https://api.cloudflare.com/client/v4"
-CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
-CLOUDFLARE_ZONE_ID = os.environ.get("CLOUDFLARE_ZONE_ID")
-CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
-EASYENCLAVE_DOMAIN = os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com")
+
+
+def _account_id() -> str:
+    return get_setting("cloudflare.account_id")
+
+
+def _zone_id() -> str:
+    return get_setting("cloudflare.zone_id")
+
+
+def _api_token() -> str:
+    return get_setting("cloudflare.api_token")
+
+
+def get_domain() -> str:
+    return get_setting("cloudflare.domain")
 
 
 class TunnelInfo(TypedDict):
@@ -40,7 +53,7 @@ class TunnelInfo(TypedDict):
 
 def is_configured() -> bool:
     """Check if Cloudflare credentials are configured."""
-    return all([CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_ZONE_ID, CLOUDFLARE_API_TOKEN])
+    return all([_account_id(), _zone_id(), _api_token()])
 
 
 async def create_tunnel_for_agent(
@@ -71,12 +84,12 @@ async def create_tunnel_for_agent(
         raise RuntimeError("Cloudflare credentials not configured")
 
     headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Authorization": f"Bearer {_api_token()}",
         "Content-Type": "application/json",
     }
 
     tunnel_name = f"agent-{agent_id}"
-    hostname = f"{tunnel_name}.{EASYENCLAVE_DOMAIN}"
+    hostname = f"{tunnel_name}.{get_domain()}"
 
     # Generate tunnel secret (32 random bytes, base64 encoded)
     tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode()
@@ -85,7 +98,7 @@ async def create_tunnel_for_agent(
         # 1. Check if tunnel already exists (avoid duplicate creation)
         logger.info(f"Checking for existing Cloudflare tunnel: {tunnel_name}")
         list_resp = await client.get(
-            f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel",
+            f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel",
             headers=headers,
             params={"name": tunnel_name, "is_deleted": "false"},
         )
@@ -99,7 +112,7 @@ async def create_tunnel_for_agent(
 
             # Get token for existing tunnel
             token_resp = await client.get(
-                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/token",
+                f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel/{tunnel_id}/token",
                 headers=headers,
             )
             token_resp.raise_for_status()
@@ -108,7 +121,7 @@ async def create_tunnel_for_agent(
             # Create new tunnel
             logger.info(f"Creating Cloudflare tunnel: {tunnel_name}")
             create_resp = await client.post(
-                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel",
+                f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel",
                 headers=headers,
                 json={
                     "name": tunnel_name,
@@ -148,7 +161,7 @@ async def create_tunnel_for_agent(
             ]
 
         config_resp = await client.put(
-            f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations",
+            f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel/{tunnel_id}/configurations",
             headers=headers,
             json={"config": {"ingress": ingress}},
         )
@@ -158,7 +171,7 @@ async def create_tunnel_for_agent(
         # 3. Create DNS CNAME record
         logger.info(f"Creating DNS record for {hostname}")
         dns_resp = await client.post(
-            f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/dns_records",
+            f"{CLOUDFLARE_API_URL}/zones/{_zone_id()}/dns_records",
             headers=headers,
             json={
                 "type": "CNAME",
@@ -210,7 +223,7 @@ async def update_tunnel_ingress(
         return False
 
     headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Authorization": f"Bearer {_api_token()}",
         "Content-Type": "application/json",
     }
 
@@ -235,7 +248,7 @@ async def update_tunnel_ingress(
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.put(
-                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/configurations",
+                f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel/{tunnel_id}/configurations",
                 headers=headers,
                 json={"config": {"ingress": ingress}},
             )
@@ -264,7 +277,7 @@ async def delete_tunnel(tunnel_id: str) -> bool:
         return False
 
     headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Authorization": f"Bearer {_api_token()}",
         "Content-Type": "application/json",
     }
 
@@ -272,7 +285,7 @@ async def delete_tunnel(tunnel_id: str) -> bool:
         try:
             # First, clean up any connections
             cleanup_resp = await client.delete(
-                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/connections",
+                f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel/{tunnel_id}/connections",
                 headers=headers,
             )
             if cleanup_resp.status_code == 200:
@@ -280,7 +293,7 @@ async def delete_tunnel(tunnel_id: str) -> bool:
 
             # Delete the tunnel
             delete_resp = await client.delete(
-                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}",
+                f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel/{tunnel_id}",
                 headers=headers,
             )
 
@@ -312,7 +325,7 @@ async def delete_dns_record(hostname: str) -> bool:
         return False
 
     headers = {
-        "Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}",
+        "Authorization": f"Bearer {_api_token()}",
         "Content-Type": "application/json",
     }
 
@@ -320,7 +333,7 @@ async def delete_dns_record(hostname: str) -> bool:
         try:
             # Find the DNS record
             list_resp = await client.get(
-                f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/dns_records",
+                f"{CLOUDFLARE_API_URL}/zones/{_zone_id()}/dns_records",
                 headers=headers,
                 params={"name": hostname, "type": "CNAME"},
             )
@@ -334,7 +347,7 @@ async def delete_dns_record(hostname: str) -> bool:
             # Delete the record
             record_id = records[0]["id"]
             delete_resp = await client.delete(
-                f"{CLOUDFLARE_API_URL}/zones/{CLOUDFLARE_ZONE_ID}/dns_records/{record_id}",
+                f"{CLOUDFLARE_API_URL}/zones/{_zone_id()}/dns_records/{record_id}",
                 headers=headers,
             )
 
@@ -347,4 +360,136 @@ async def delete_dns_record(hostname: str) -> bool:
 
         except Exception as e:
             logger.error(f"Error deleting DNS record {hostname}: {e}")
+            return False
+
+
+async def list_tunnels() -> list[dict]:
+    """Fetch all non-deleted tunnels from Cloudflare (paginated).
+
+    Returns:
+        List of tunnel dicts with id, name, status, connections, created_at.
+    """
+    if not is_configured():
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {_api_token()}",
+        "Content-Type": "application/json",
+    }
+
+    tunnels = []
+    page = 1
+    per_page = 100
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            resp = await client.get(
+                f"{CLOUDFLARE_API_URL}/accounts/{_account_id()}/cfd_tunnel",
+                headers=headers,
+                params={"is_deleted": "false", "per_page": per_page, "page": page},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = data.get("result") or []
+            for t in result:
+                connections = t.get("connections") or []
+                tunnels.append(
+                    {
+                        "tunnel_id": t["id"],
+                        "name": t.get("name", ""),
+                        "status": t.get("status", "unknown"),
+                        "has_connections": len(connections) > 0,
+                        "connection_count": len(connections),
+                        "created_at": t.get("created_at"),
+                    }
+                )
+            if len(result) < per_page:
+                break
+            page += 1
+
+    return tunnels
+
+
+async def list_dns_records(record_type: str = "CNAME") -> list[dict]:
+    """Fetch DNS records from Cloudflare (paginated).
+
+    Args:
+        record_type: DNS record type to filter (default: CNAME).
+
+    Returns:
+        List of DNS record dicts.
+    """
+    if not is_configured():
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {_api_token()}",
+        "Content-Type": "application/json",
+    }
+
+    records = []
+    page = 1
+    per_page = 100
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        while True:
+            resp = await client.get(
+                f"{CLOUDFLARE_API_URL}/zones/{_zone_id()}/dns_records",
+                headers=headers,
+                params={"type": record_type, "per_page": per_page, "page": page},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            result = data.get("result") or []
+            for r in result:
+                records.append(
+                    {
+                        "record_id": r["id"],
+                        "name": r.get("name", ""),
+                        "content": r.get("content", ""),
+                        "proxied": r.get("proxied", False),
+                        "created_on": r.get("created_on"),
+                    }
+                )
+            if len(result) < per_page:
+                break
+            page += 1
+
+    return records
+
+
+async def delete_dns_record_by_id(record_id: str) -> bool:
+    """Delete a DNS record by its Cloudflare record ID.
+
+    Args:
+        record_id: The Cloudflare DNS record ID.
+
+    Returns:
+        True if deleted, False if not found or error.
+    """
+    if not is_configured():
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {_api_token()}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.delete(
+                f"{CLOUDFLARE_API_URL}/zones/{_zone_id()}/dns_records/{record_id}",
+                headers=headers,
+            )
+            if resp.status_code == 200:
+                logger.info(f"Deleted DNS record: {record_id}")
+                return True
+            elif resp.status_code == 404:
+                logger.warning(f"DNS record not found: {record_id}")
+                return False
+            else:
+                logger.error(f"Failed to delete DNS record {record_id}: {resp.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Error deleting DNS record {record_id}: {e}")
             return False

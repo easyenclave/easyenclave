@@ -83,6 +83,15 @@ from .models import (
     VerificationResponse,
 )
 from .pricing import calculate_deployment_cost_per_hour
+from .settings import (
+    SETTING_DEFS,
+    delete_setting,
+    get_setting,
+    get_setting_int,
+    list_settings,
+    log_settings_sources,
+    set_setting,
+)
 from .storage import (
     account_store,
     admin_session_store,
@@ -133,13 +142,7 @@ HEALTH_CHECK_INTERVAL = 60
 
 # Agent health check settings
 AGENT_HEALTH_CHECK_INTERVAL = 30  # Check agents every 30 seconds
-AGENT_ATTESTATION_INTERVAL = int(
-    os.environ.get("AGENT_ATTESTATION_INTERVAL", "3600")
-)  # Request fresh attestation (default: 1 hour, set to 0 to disable)
 AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhealthy
-AGENT_STALE_TIMEOUT = timedelta(
-    hours=int(os.environ.get("AGENT_STALE_HOURS", "24"))
-)  # Delete agents with no heartbeat for this long
 AGENT_STALE_CLEANUP_INTERVAL = 3600  # Run cleanup every hour
 
 # Track when agents were last attested (for periodic re-attestation)
@@ -259,11 +262,14 @@ async def background_agent_health_checker():
                 try:
                     # Determine if we need fresh attestation (skip if interval is 0)
                     need_attestation = False
-                    if AGENT_ATTESTATION_INTERVAL > 0:
+                    attest_interval = get_setting_int(
+                        "operational.agent_attestation_interval", fallback=3600
+                    )
+                    if attest_interval > 0:
                         last_attest = _agent_last_attestation.get(agent.agent_id)
                         need_attestation = (
                             last_attest is None
-                            or (now - last_attest).total_seconds() > AGENT_ATTESTATION_INTERVAL
+                            or (now - last_attest).total_seconds() > attest_interval
                         )
 
                     # Check health (with attestation if needed)
@@ -421,29 +427,28 @@ async def background_measurement_processor():
 
 def _get_proxy_url() -> str:
     """Get the proxy URL for service routing."""
-    domain = os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com")
+    domain = get_setting("cloudflare.domain")
     return f"https://app.{domain}"
 
 
 def validate_environment():
     """Validate environment configuration on startup."""
     warnings = []
-    errors = []
 
     # Admin authentication
     if not os.environ.get("ADMIN_PASSWORD_HASH"):
         warnings.append("ADMIN_PASSWORD_HASH not set - password login will be disabled")
 
     # GitHub OAuth (optional but if one is set, all should be set)
-    github_client_id = os.environ.get("GITHUB_OAUTH_CLIENT_ID")
-    github_client_secret = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET")
-    github_redirect_uri = os.environ.get("GITHUB_OAUTH_REDIRECT_URI")
+    gh_id = get_setting("github_oauth.client_id")
+    gh_secret = get_setting("github_oauth.client_secret")
+    gh_redirect = get_setting("github_oauth.redirect_uri")
 
-    github_vars = [github_client_id, github_client_secret, github_redirect_uri]
+    github_vars = [gh_id, gh_secret, gh_redirect]
     if any(github_vars) and not all(github_vars):
         warnings.append(
             "Partial GitHub OAuth configuration detected. "
-            "Set all of: GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, GITHUB_OAUTH_REDIRECT_URI"
+            "Set all of: client_id, client_secret, redirect_uri (via Settings or env vars)"
         )
 
     if not any([os.environ.get("ADMIN_PASSWORD_HASH"), all(github_vars)]):
@@ -473,18 +478,12 @@ def validate_environment():
         )
 
     # Log results
-    if errors:
-        logger.error("❌ Environment validation failed:")
-        for err in errors:
-            logger.error(f"  - {err}")
-        raise RuntimeError("Invalid environment configuration")
-
     if warnings:
-        logger.warning("⚠️  Environment warnings:")
+        logger.warning("Environment warnings:")
         for warn in warnings:
             logger.warning(f"  - {warn}")
     else:
-        logger.info("✅ Environment validation passed")
+        logger.info("Environment validation passed")
 
 
 async def background_stale_agent_cleanup():
@@ -495,7 +494,8 @@ async def background_stale_agent_cleanup():
     while True:
         await asyncio.sleep(AGENT_STALE_CLEANUP_INTERVAL)
         try:
-            stale_agents = agent_store.get_stale_agents(AGENT_STALE_TIMEOUT)
+            stale_hours = get_setting_int("operational.agent_stale_hours", fallback=24)
+            stale_agents = agent_store.get_stale_agents(timedelta(hours=stale_hours))
             if not stale_agents:
                 continue
 
@@ -548,6 +548,9 @@ async def lifespan(app: FastAPI):
     # Initialize database
     init_db()
     logger.info("Database initialized")
+
+    # Log effective settings sources
+    log_settings_sources()
 
     # Generate initial CP attestation
     _refresh_cp_attestation()
@@ -1143,6 +1146,217 @@ async def get_trusted_mrtds():
 
 
 # ==============================================================================
+# Admin: Settings
+# ==============================================================================
+
+
+@app.get("/api/v1/admin/settings")
+async def admin_list_settings(
+    group: str | None = Query(None),
+    _admin: bool = Depends(verify_admin_token),
+):
+    """List all settings with values, sources, and metadata."""
+    return {"settings": list_settings(group=group)}
+
+
+@app.put("/api/v1/admin/settings/{key:path}")
+async def admin_update_setting(
+    key: str,
+    body: dict,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Save a setting value to the database."""
+    if key not in SETTING_DEFS:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    value = body.get("value")
+    if value is None:
+        raise HTTPException(status_code=422, detail="Missing 'value' field")
+    set_setting(key, str(value))
+    logger.info(f"Setting updated: {key}")
+    return {"key": key, "status": "saved"}
+
+
+@app.delete("/api/v1/admin/settings/{key:path}")
+async def admin_reset_setting(
+    key: str,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Remove a setting from DB (reverts to env var or default)."""
+    if key not in SETTING_DEFS:
+        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
+    deleted = delete_setting(key)
+    logger.info(f"Setting reset: {key} (was_in_db={deleted})")
+    return {"key": key, "status": "reset"}
+
+
+# ==============================================================================
+# Admin: Cloudflare Management
+# ==============================================================================
+
+
+@app.get("/api/v1/admin/cloudflare/status")
+async def cloudflare_status(_admin: bool = Depends(verify_admin_token)):
+    """Check if Cloudflare is configured and return domain info."""
+    return {
+        "configured": cloudflare.is_configured(),
+        "domain": cloudflare.get_domain(),
+    }
+
+
+@app.get("/api/v1/admin/cloudflare/tunnels")
+async def cloudflare_tunnels(_admin: bool = Depends(verify_admin_token)):
+    """List Cloudflare tunnels cross-referenced with agents."""
+    if not cloudflare.is_configured():
+        raise HTTPException(status_code=400, detail="Cloudflare not configured")
+
+    tunnels = await cloudflare.list_tunnels()
+    agents = agent_store.list()
+
+    # Build lookup: tunnel_id -> agent
+    tunnel_to_agent = {}
+    for agent in agents:
+        if agent.tunnel_id:
+            tunnel_to_agent[agent.tunnel_id] = agent
+
+    enriched = []
+    orphaned_count = 0
+    for t in tunnels:
+        agent = tunnel_to_agent.get(t["tunnel_id"])
+        is_orphaned = agent is None
+        if is_orphaned:
+            orphaned_count += 1
+        enriched.append(
+            {
+                **t,
+                "agent_id": agent.agent_id if agent else None,
+                "agent_vm_name": agent.vm_name if agent else None,
+                "agent_status": agent.status if agent else None,
+                "orphaned": is_orphaned,
+            }
+        )
+
+    return {
+        "tunnels": enriched,
+        "total": len(enriched),
+        "orphaned_count": orphaned_count,
+        "connected_count": sum(1 for t in enriched if t["has_connections"]),
+    }
+
+
+@app.get("/api/v1/admin/cloudflare/dns")
+async def cloudflare_dns(_admin: bool = Depends(verify_admin_token)):
+    """List Cloudflare DNS CNAME records cross-referenced with tunnels."""
+    if not cloudflare.is_configured():
+        raise HTTPException(status_code=400, detail="Cloudflare not configured")
+
+    records = await cloudflare.list_dns_records()
+    tunnels = await cloudflare.list_tunnels()
+
+    # Build lookup: tunnel_id -> tunnel
+    tunnel_ids = {t["tunnel_id"] for t in tunnels}
+
+    enriched = []
+    orphaned_count = 0
+    for r in records:
+        content = r.get("content", "")
+        # CNAME records for tunnels point to <tunnel_id>.cfargotunnel.com
+        is_tunnel_record = content.endswith(".cfargotunnel.com")
+        linked_tunnel_id = None
+        if is_tunnel_record:
+            linked_tunnel_id = content.replace(".cfargotunnel.com", "")
+
+        is_orphaned = is_tunnel_record and linked_tunnel_id not in tunnel_ids
+        if is_orphaned:
+            orphaned_count += 1
+
+        enriched.append(
+            {
+                **r,
+                "is_tunnel_record": is_tunnel_record,
+                "linked_tunnel_id": linked_tunnel_id,
+                "orphaned": is_orphaned,
+            }
+        )
+
+    return {
+        "records": enriched,
+        "total": len(enriched),
+        "orphaned_count": orphaned_count,
+        "tunnel_record_count": sum(1 for r in enriched if r["is_tunnel_record"]),
+    }
+
+
+@app.delete("/api/v1/admin/cloudflare/tunnels/{tunnel_id}")
+async def cloudflare_delete_tunnel(tunnel_id: str, _admin: bool = Depends(verify_admin_token)):
+    """Delete a Cloudflare tunnel and clear the agent's tunnel fields."""
+    if not cloudflare.is_configured():
+        raise HTTPException(status_code=400, detail="Cloudflare not configured")
+
+    deleted = await cloudflare.delete_tunnel(tunnel_id)
+
+    # Clear tunnel info from any agent that references this tunnel
+    for agent in agent_store.list():
+        if agent.tunnel_id == tunnel_id:
+            agent_store.clear_tunnel_info(agent.agent_id)
+            logger.info(f"Cleared tunnel info for agent {agent.agent_id}")
+
+    return {"deleted": deleted, "tunnel_id": tunnel_id}
+
+
+@app.delete("/api/v1/admin/cloudflare/dns/{record_id}")
+async def cloudflare_delete_dns(record_id: str, _admin: bool = Depends(verify_admin_token)):
+    """Delete a Cloudflare DNS record by ID."""
+    if not cloudflare.is_configured():
+        raise HTTPException(status_code=400, detail="Cloudflare not configured")
+
+    deleted = await cloudflare.delete_dns_record_by_id(record_id)
+    return {"deleted": deleted, "record_id": record_id}
+
+
+@app.post("/api/v1/admin/cloudflare/cleanup")
+async def cloudflare_cleanup(_admin: bool = Depends(verify_admin_token)):
+    """Bulk delete all orphaned tunnels and DNS records."""
+    if not cloudflare.is_configured():
+        raise HTTPException(status_code=400, detail="Cloudflare not configured")
+
+    # Get current tunnels and agents
+    tunnels = await cloudflare.list_tunnels()
+    agents = agent_store.list()
+    tunnel_to_agent = {}
+    for agent in agents:
+        if agent.tunnel_id:
+            tunnel_to_agent[agent.tunnel_id] = agent
+
+    # Delete orphaned tunnels
+    tunnels_deleted = 0
+    for t in tunnels:
+        if t["tunnel_id"] not in tunnel_to_agent:
+            if await cloudflare.delete_tunnel(t["tunnel_id"]):
+                tunnels_deleted += 1
+
+    # Get DNS records and remaining tunnels
+    records = await cloudflare.list_dns_records()
+    remaining_tunnels = await cloudflare.list_tunnels()
+    remaining_ids = {t["tunnel_id"] for t in remaining_tunnels}
+
+    # Delete orphaned DNS records
+    dns_deleted = 0
+    for r in records:
+        content = r.get("content", "")
+        if content.endswith(".cfargotunnel.com"):
+            linked_id = content.replace(".cfargotunnel.com", "")
+            if linked_id not in remaining_ids:
+                if await cloudflare.delete_dns_record_by_id(r["record_id"]):
+                    dns_deleted += 1
+
+    logger.info(f"Cloudflare cleanup: {tunnels_deleted} tunnels, {dns_deleted} DNS records deleted")
+    return {
+        "tunnels_deleted": tunnels_deleted,
+        "dns_deleted": dns_deleted,
+    }
+
+
+# ==============================================================================
 # Admin Authentication
 # ==============================================================================
 
@@ -1191,9 +1405,9 @@ async def admin_login(request: AdminLoginRequest, req: Request):
 @app.get("/auth/github")
 async def github_oauth_start():
     """Initiate GitHub OAuth flow for admin login."""
-    from .oauth import GITHUB_CLIENT_ID, create_oauth_state, get_github_authorize_url
+    from .oauth import _client_id, create_oauth_state, get_github_authorize_url
 
-    if not GITHUB_CLIENT_ID:
+    if not _client_id():
         raise HTTPException(
             status_code=503, detail="GitHub OAuth not configured. Set GITHUB_OAUTH_CLIENT_ID."
         )
@@ -1466,9 +1680,9 @@ async def create_payment_intent(
         )
 
     # Import stripe from billing module
-    from .billing import STRIPE_ENABLED, stripe
+    from .billing import _ensure_stripe, _stripe_mod
 
-    if not STRIPE_ENABLED:
+    if not _ensure_stripe():
         raise HTTPException(
             status_code=503,
             detail="Stripe integration not configured. Set STRIPE_SECRET_KEY environment variable.",
@@ -1477,7 +1691,7 @@ async def create_payment_intent(
     get_or_404(account_store, account_id, "Account")
 
     try:
-        intent = stripe.PaymentIntent.create(
+        intent = _stripe_mod.PaymentIntent.create(
             amount=int(request.amount * 100),  # Convert to cents
             currency="usd",
             metadata={"account_id": account_id},
@@ -1500,9 +1714,9 @@ async def create_payment_intent(
 @app.post("/api/v1/webhooks/stripe")
 async def stripe_webhook(request: Request):
     """Stripe webhook endpoint for payment confirmations."""
-    from .billing import STRIPE_ENABLED, STRIPE_WEBHOOK_SECRET, stripe
+    from .billing import _ensure_stripe, _stripe_mod, _webhook_secret
 
-    if not STRIPE_ENABLED:
+    if not _ensure_stripe():
         raise HTTPException(status_code=503, detail="Stripe integration not configured")
 
     payload = await request.body()
@@ -1512,11 +1726,11 @@ async def stripe_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Missing stripe-signature header")
 
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        event = _stripe_mod.Webhook.construct_event(payload, sig_header, _webhook_secret())
     except ValueError as e:
         logger.error("Invalid Stripe webhook payload")
         raise HTTPException(status_code=400, detail="Invalid payload") from e
-    except stripe.error.SignatureVerificationError as e:
+    except _stripe_mod.error.SignatureVerificationError as e:
         logger.error("Invalid Stripe webhook signature")
         raise HTTPException(status_code=400, detail="Invalid signature") from e
 

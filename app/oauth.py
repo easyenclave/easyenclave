@@ -1,18 +1,25 @@
 """GitHub OAuth integration for admin authentication."""
 
-import os
 import secrets
 from typing import Any
 
 import httpx
 from fastapi import HTTPException
 
-# Environment configuration
-GITHUB_CLIENT_ID = os.environ.get("GITHUB_OAUTH_CLIENT_ID")
-GITHUB_CLIENT_SECRET = os.environ.get("GITHUB_OAUTH_CLIENT_SECRET")
-GITHUB_REDIRECT_URI = os.environ.get(
-    "GITHUB_OAUTH_REDIRECT_URI", "https://app.easyenclave.com/auth/github/callback"
-)
+from .settings import get_setting
+
+
+def _client_id() -> str:
+    return get_setting("github_oauth.client_id")
+
+
+def _client_secret() -> str:
+    return get_setting("github_oauth.client_secret")
+
+
+def _redirect_uri() -> str:
+    return get_setting("github_oauth.redirect_uri")
+
 
 # GitHub OAuth URLs
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
@@ -23,14 +30,14 @@ GITHUB_USER_EMAILS_API = "https://api.github.com/user/emails"
 
 def get_github_authorize_url(state: str) -> str:
     """Generate GitHub OAuth authorization URL."""
-    if not GITHUB_CLIENT_ID:
+    if not _client_id():
         raise HTTPException(
             status_code=503, detail="GitHub OAuth not configured. Set GITHUB_OAUTH_CLIENT_ID."
         )
 
     params = {
-        "client_id": GITHUB_CLIENT_ID,
-        "redirect_uri": GITHUB_REDIRECT_URI,
+        "client_id": _client_id(),
+        "redirect_uri": _redirect_uri(),
         "scope": "read:user user:email",  # Minimal scope
         "state": state,  # CSRF protection
     }
@@ -40,17 +47,17 @@ def get_github_authorize_url(state: str) -> str:
 
 async def exchange_code_for_token(code: str) -> str:
     """Exchange authorization code for access token."""
-    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
+    if not _client_id() or not _client_secret():
         raise HTTPException(status_code=503, detail="GitHub OAuth not configured.")
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             GITHUB_TOKEN_URL,
             data={
-                "client_id": GITHUB_CLIENT_ID,
-                "client_secret": GITHUB_CLIENT_SECRET,
+                "client_id": _client_id(),
+                "client_secret": _client_secret(),
                 "code": code,
-                "redirect_uri": GITHUB_REDIRECT_URI,
+                "redirect_uri": _redirect_uri(),
             },
             headers={"Accept": "application/json"},
         )

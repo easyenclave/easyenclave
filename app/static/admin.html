@@ -154,6 +154,12 @@
             border-radius: 6px;
         }
         .hidden { display: none !important; }
+        .row-orphaned { background: #fef2f2; }
+        .orphan-badge { background: #ef4444; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+        .linked-badge { background: #22c55e; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+        .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+        .status-dot.active { background: #22c55e; }
+        .status-dot.inactive { background: #9ca3af; }
         /* Modal styles */
         .modal-overlay {
             position: fixed;
@@ -228,6 +234,45 @@
         }
         .btn-info:hover {
             background: #2563eb;
+        }
+        .source-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .source-badge.db { background: #3b82f6; color: white; }
+        .source-badge.env { background: #f59e0b; color: white; }
+        .source-badge.default { background: #9ca3af; color: white; }
+        .settings-group-btn {
+            background: var(--gray-200);
+            color: var(--gray-700);
+            border: 1px solid var(--gray-300);
+            transition: all 0.15s;
+        }
+        .settings-group-btn.active {
+            background: #7c3aed;
+            color: white;
+            border-color: #7c3aed;
+        }
+        .setting-input {
+            width: 100%;
+            max-width: 350px;
+            padding: 6px 10px;
+            border: 1px solid var(--gray-300);
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.85rem;
+        }
+        .setting-desc {
+            font-size: 0.8rem;
+            color: var(--gray-500);
+            margin-top: 2px;
+        }
+        .setting-env {
+            font-size: 0.75rem;
+            color: var(--gray-400);
         }
         .github-btn {
             width: 100%;
@@ -333,6 +378,8 @@
                 <button class="tab" onclick="showAdminTab('apps')">Apps</button>
                 <button class="tab" onclick="showAdminTab('accounts')">Accounts</button>
                 <button class="tab" onclick="showAdminTab('mrtds')">Trusted MRTDs</button>
+                <button class="tab" onclick="showAdminTab('settings')">Settings</button>
+                <button class="tab" onclick="showAdminTab('cloudflare')">Cloudflare</button>
                 <button class="tab" onclick="showAdminTab('logs')">Logs</button>
                 <button class="tab" onclick="showAdminTab('system')">System</button>
             </div>
@@ -396,6 +443,50 @@
                 </div>
                 <div id="mrtdsAdminList">
                     <div class="loading">Loading MRTDs...</div>
+                </div>
+            </section>
+
+            <!-- Settings Tab -->
+            <section id="settings-admin-tab" class="tab-content hidden">
+                <div class="section-header">
+                    <h2>Settings</h2>
+                    <button class="btn-primary refresh-btn" onclick="loadSettings()">Refresh</button>
+                </div>
+                <div style="margin-bottom: 15px;">
+                    <button class="btn-small settings-group-btn active" data-group="" onclick="filterSettingsGroup('')">All</button>
+                    <button class="btn-small settings-group-btn" data-group="cloudflare" onclick="filterSettingsGroup('cloudflare')">Cloudflare</button>
+                    <button class="btn-small settings-group-btn" data-group="github_oauth" onclick="filterSettingsGroup('github_oauth')">GitHub OAuth</button>
+                    <button class="btn-small settings-group-btn" data-group="stripe" onclick="filterSettingsGroup('stripe')">Stripe</button>
+                    <button class="btn-small settings-group-btn" data-group="intel_ta" onclick="filterSettingsGroup('intel_ta')">Intel TA</button>
+                    <button class="btn-small settings-group-btn" data-group="operational" onclick="filterSettingsGroup('operational')">Operational</button>
+                </div>
+                <div id="settingsAdminList">
+                    <div class="loading">Loading settings...</div>
+                </div>
+            </section>
+
+            <!-- Cloudflare Tab -->
+            <section id="cloudflare-admin-tab" class="tab-content hidden">
+                <div class="section-header">
+                    <h2>Cloudflare Resources</h2>
+                    <button class="btn-primary refresh-btn" onclick="loadCloudflare()">Refresh</button>
+                </div>
+                <div id="cfNotConfigured" class="section-card hidden">
+                    <p style="color: var(--gray-600);">Cloudflare is not configured. Set <code>CLOUDFLARE_ACCOUNT_ID</code>, <code>CLOUDFLARE_ZONE_ID</code>, and <code>CLOUDFLARE_API_TOKEN</code> environment variables.</p>
+                </div>
+                <div id="cfContent" class="hidden">
+                    <div id="cfSummary" class="stats-grid"></div>
+                    <div id="cfCleanupBar" class="hidden" style="margin-bottom: 15px;">
+                        <button class="btn-small btn-danger" onclick="cloudflareCleanup()">Cleanup All Orphaned Resources</button>
+                    </div>
+                    <div class="section-card">
+                        <h3>Tunnels</h3>
+                        <div id="cfTunnelsTable"><div class="loading">Loading tunnels...</div></div>
+                    </div>
+                    <div class="section-card">
+                        <h3>DNS CNAME Records</h3>
+                        <div id="cfDnsTable"><div class="loading">Loading DNS records...</div></div>
+                    </div>
                 </div>
             </section>
 
@@ -512,6 +603,6 @@
         </div>
     </div>
 
-    <script src="/static/admin.js?v=5"></script>
+    <script src="/static/admin.js?v=7"></script>
 </body>
 </html>

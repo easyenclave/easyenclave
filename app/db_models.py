@@ -184,6 +184,17 @@ class Transaction(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+class Setting(SQLModel, table=True):
+    """Key-value settings stored in DB, overriding env vars."""
+
+    __tablename__ = "settings"
+
+    key: str = Field(primary_key=True)
+    value: str = Field(default="")
+    is_secret: bool = Field(default=False)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class AdminSession(SQLModel, table=True):
     """Admin authentication session."""
 

@@ -9,12 +9,12 @@ Handles:
 
 import asyncio
 import logging
-import os
 from datetime import datetime, timezone
 
 import httpx
 
 from app.pricing import calculate_deployment_cost_per_hour, split_revenue
+from app.settings import get_setting
 from app.storage import (
     account_store,
     agent_store,
@@ -24,17 +24,27 @@ from app.storage import (
 
 logger = logging.getLogger(__name__)
 
-# Stripe configuration
+# Stripe configuration (lazy init)
 try:
-    import stripe
-
-    stripe.api_key = os.environ.get("STRIPE_SECRET_KEY")
-    STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET")
-    STRIPE_ENABLED = bool(stripe.api_key)
+    import stripe as _stripe_mod
 except ImportError:
     logger.warning("Stripe SDK not installed. Payment processing disabled.")
-    stripe = None
-    STRIPE_ENABLED = False
+    _stripe_mod = None
+
+
+def _ensure_stripe() -> bool:
+    """Configure Stripe SDK lazily and return True if enabled."""
+    if _stripe_mod is None:
+        return False
+    key = get_setting("stripe.secret_key")
+    if not key:
+        return False
+    _stripe_mod.api_key = key
+    return True
+
+
+def _webhook_secret() -> str:
+    return get_setting("stripe.webhook_secret")
 
 
 def create_transaction(

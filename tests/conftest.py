@@ -45,6 +45,7 @@ def client():
 @pytest.fixture(autouse=True)
 def clear_all_stores():
     """Clear all stores before and after each test for isolation."""
+    from app.settings import clear_settings, invalidate_cache
     from app.storage import (
         account_store,
         admin_session_store,
@@ -56,24 +57,22 @@ def clear_all_stores():
         transaction_store,
     )
 
+    def _clear():
+        store.clear()
+        agent_store.clear()
+        deployment_store.clear()
+        app_store.clear()
+        app_version_store.clear()
+        transaction_store.clear()
+        account_store.clear()
+        admin_session_store.clear()
+        clear_settings()
+        invalidate_cache()
+
     # Clear before test
-    store.clear()
-    agent_store.clear()
-    deployment_store.clear()
-    app_store.clear()
-    app_version_store.clear()
-    transaction_store.clear()
-    account_store.clear()
-    admin_session_store.clear()
+    _clear()
 
     yield
 
     # Clear after test
-    store.clear()
-    agent_store.clear()
-    deployment_store.clear()
-    app_store.clear()
-    app_version_store.clear()
-    transaction_store.clear()
-    account_store.clear()
-    admin_session_store.clear()
+    _clear()

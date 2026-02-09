@@ -1,17 +1,23 @@
 """Nonce management for replay attack prevention."""
 
 import logging
-import os
 import secrets
 import time
 from dataclasses import dataclass
 
+from .settings import get_setting, get_setting_int
+
 logger = logging.getLogger(__name__)
 
-# Configuration
-NONCE_ENFORCEMENT_MODE = os.environ.get("NONCE_ENFORCEMENT_MODE", "optional").lower()
-NONCE_TTL_SECONDS = int(os.environ.get("NONCE_TTL_SECONDS", "300"))
-NONCE_LENGTH = int(os.environ.get("NONCE_LENGTH", "32"))
+NONCE_LENGTH = 32  # hex chars (16 bytes = 128 bits)
+
+
+def _enforcement_mode() -> str:
+    return get_setting("operational.nonce_enforcement_mode").lower()
+
+
+def _ttl_seconds() -> int:
+    return get_setting_int("operational.nonce_ttl_seconds", fallback=300)
 
 
 @dataclass
@@ -24,7 +30,7 @@ class NonceChallenge:
 
     def is_expired(self) -> bool:
         """Check if nonce has expired based on TTL."""
-        return time.time() - self.issued_at > NONCE_TTL_SECONDS
+        return time.time() - self.issued_at > _ttl_seconds()
 
 
 # In-memory storage for nonces (keyed by vm_name)
@@ -82,7 +88,9 @@ def verify_nonce(vm_name: str, nonce_from_quote: str) -> tuple[bool, str | None]
         - On successful verification, nonce is consumed (removed from store)
         - Each nonce can only be used once
     """
-    if NONCE_ENFORCEMENT_MODE == "disabled":
+    mode = _enforcement_mode()
+
+    if mode == "disabled":
         return True, None
 
     challenge = _nonce_store.get(vm_name)
@@ -90,7 +98,7 @@ def verify_nonce(vm_name: str, nonce_from_quote: str) -> tuple[bool, str | None]
     # Check if challenge exists
     if not challenge:
         error = f"No nonce challenge found for {vm_name}"
-        if NONCE_ENFORCEMENT_MODE == "required":
+        if mode == "required":
             return False, error
         logger.warning(f"{error} (optional mode, allowing)")
         return True, None
@@ -99,7 +107,7 @@ def verify_nonce(vm_name: str, nonce_from_quote: str) -> tuple[bool, str | None]
     if challenge.is_expired():
         error = f"Nonce expired for {vm_name}"
         _nonce_store.pop(vm_name, None)
-        if NONCE_ENFORCEMENT_MODE == "required":
+        if mode == "required":
             return False, error
         logger.warning(f"{error} (optional mode, allowing)")
         return True, None
@@ -107,7 +115,7 @@ def verify_nonce(vm_name: str, nonce_from_quote: str) -> tuple[bool, str | None]
     # Verify match (case-insensitive comparison)
     if nonce_from_quote.strip().lower() != challenge.nonce.strip().lower():
         error = f"Nonce mismatch for {vm_name}"
-        if NONCE_ENFORCEMENT_MODE == "required":
+        if mode == "required":
             return False, error
         logger.warning(f"{error} (optional mode, allowing)")
         return True, None

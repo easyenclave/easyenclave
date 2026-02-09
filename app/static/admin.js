@@ -135,6 +135,7 @@ function showAdminTab(tabName) {
     if (tabName === 'agents') loadAgents();
     else if (tabName === 'accounts') loadAccounts();
     else if (tabName === 'mrtds') loadMrtds();
+    else if (tabName === 'settings') loadSettings();
     else if (tabName === 'logs') {
         loadLogs();
         loadContainerLogs();
@@ -142,6 +143,7 @@ function showAdminTab(tabName) {
             logAutoRefreshTimer = setInterval(() => { loadLogs(); loadContainerLogs(); }, 5000);
         }
     }
+    else if (tabName === 'cloudflare') loadCloudflare();
     else if (tabName === 'system') loadSystem();
 }
 
@@ -813,5 +815,320 @@ async function deleteAccount(accountId, accountName) {
         }
     } catch (error) {
         alert('Error: ' + error.message);
+    }
+}
+
+// Cloudflare management
+async function loadCloudflare() {
+    const notConfigured = document.getElementById('cfNotConfigured');
+    const content = document.getElementById('cfContent');
+
+    try {
+        const status = await fetchJSON('/api/v1/admin/cloudflare/status', {
+            headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+
+        if (!status.configured) {
+            notConfigured.classList.remove('hidden');
+            content.classList.add('hidden');
+            return;
+        }
+
+        notConfigured.classList.add('hidden');
+        content.classList.remove('hidden');
+
+        const [tunnelsData, dnsData] = await Promise.all([
+            fetchJSON('/api/v1/admin/cloudflare/tunnels', {
+                headers: { 'Authorization': `Bearer ${adminToken}` }
+            }),
+            fetchJSON('/api/v1/admin/cloudflare/dns', {
+                headers: { 'Authorization': `Bearer ${adminToken}` }
+            })
+        ]);
+
+        // Summary stats
+        document.getElementById('cfSummary').innerHTML = `
+            <div class="stat-card">
+                <div class="stat-label">Total Tunnels</div>
+                <div class="stat-value">${tunnelsData.total}</div>
+                <div class="stat-detail">${tunnelsData.connected_count} connected</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Orphaned Tunnels</div>
+                <div class="stat-value" style="color: ${tunnelsData.orphaned_count > 0 ? '#ef4444' : 'inherit'}">${tunnelsData.orphaned_count}</div>
+                <div class="stat-detail">No matching agent</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">DNS Records</div>
+                <div class="stat-value">${dnsData.total}</div>
+                <div class="stat-detail">${dnsData.tunnel_record_count} tunnel CNAMEs</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Orphaned DNS</div>
+                <div class="stat-value" style="color: ${dnsData.orphaned_count > 0 ? '#ef4444' : 'inherit'}">${dnsData.orphaned_count}</div>
+                <div class="stat-detail">Tunnel deleted</div>
+            </div>
+        `;
+
+        // Show cleanup button if orphans exist
+        const cleanupBar = document.getElementById('cfCleanupBar');
+        if (tunnelsData.orphaned_count > 0 || dnsData.orphaned_count > 0) {
+            cleanupBar.classList.remove('hidden');
+        } else {
+            cleanupBar.classList.add('hidden');
+        }
+
+        renderTunnelsTable(tunnelsData.tunnels);
+        renderDnsTable(dnsData.records);
+    } catch (error) {
+        document.getElementById('cfTunnelsTable').innerHTML = `<div class="error">Error: ${error.message}</div>`;
+    }
+}
+
+function renderTunnelsTable(tunnels) {
+    const container = document.getElementById('cfTunnelsTable');
+    if (tunnels.length === 0) {
+        container.innerHTML = '<div class="empty">No tunnels found</div>';
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Connections</th>
+                    <th>Agent</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${tunnels.map(t => `
+                    <tr class="${t.orphaned ? 'row-orphaned' : ''}">
+                        <td><strong>${t.name}</strong><br><code style="font-size: 0.7rem">${t.tunnel_id.substring(0, 8)}...</code></td>
+                        <td><span class="status-dot ${t.has_connections ? 'active' : 'inactive'}"></span>${t.has_connections ? 'Active' : 'Inactive'}</td>
+                        <td>${t.connection_count}</td>
+                        <td>${t.agent_vm_name
+                            ? `<strong>${t.agent_vm_name}</strong><br><span class="status-badge ${t.agent_status}">${t.agent_status}</span>`
+                            : '<span class="orphan-badge">Orphaned</span>'
+                        }</td>
+                        <td>${t.created_at ? new Date(t.created_at).toLocaleDateString() : 'N/A'}</td>
+                        <td><button class="btn-small btn-danger" onclick="deleteTunnel('${t.tunnel_id}', '${t.name}')">Delete</button></td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
+function renderDnsTable(records) {
+    const container = document.getElementById('cfDnsTable');
+    if (records.length === 0) {
+        container.innerHTML = '<div class="empty">No DNS records found</div>';
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Content</th>
+                    <th>Proxied</th>
+                    <th>Tunnel Link</th>
+                    <th>Created</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${records.map(r => `
+                    <tr class="${r.orphaned ? 'row-orphaned' : ''}">
+                        <td><strong>${r.name}</strong></td>
+                        <td><code style="font-size: 0.75rem">${r.content}</code></td>
+                        <td>${r.proxied ? 'Yes' : 'No'}</td>
+                        <td>${r.orphaned
+                            ? '<span class="orphan-badge">Orphaned</span>'
+                            : r.is_tunnel_record
+                                ? `<span class="linked-badge">Linked</span><br><code style="font-size: 0.7rem">${r.linked_tunnel_id.substring(0, 8)}...</code>`
+                                : 'N/A'
+                        }</td>
+                        <td>${r.created_on ? new Date(r.created_on).toLocaleDateString() : 'N/A'}</td>
+                        <td><button class="btn-small btn-danger" onclick="deleteDnsRecord('${r.record_id}', '${r.name}')">Delete</button></td>
+                    </tr>
+                `).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
+async function deleteTunnel(tunnelId, name) {
+    if (!confirm(`Delete tunnel "${name}"? This will also clear the agent's tunnel info.`)) return;
+
+    try {
+        await fetchJSON(`/api/v1/admin/cloudflare/tunnels/${tunnelId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        loadCloudflare();
+    } catch (error) {
+        alert('Error deleting tunnel: ' + error.message);
+    }
+}
+
+async function deleteDnsRecord(recordId, name) {
+    if (!confirm(`Delete DNS record "${name}"?`)) return;
+
+    try {
+        await fetchJSON(`/api/v1/admin/cloudflare/dns/${recordId}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        loadCloudflare();
+    } catch (error) {
+        alert('Error deleting DNS record: ' + error.message);
+    }
+}
+
+async function cloudflareCleanup() {
+    if (!confirm('Delete ALL orphaned tunnels and DNS records?')) return;
+    if (!confirm('Are you REALLY sure? This will permanently delete all orphaned Cloudflare resources.')) return;
+
+    try {
+        const result = await fetchJSON('/api/v1/admin/cloudflare/cleanup', {
+            method: 'POST',
+            headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        alert(`Cleanup complete: ${result.tunnels_deleted} tunnels and ${result.dns_deleted} DNS records deleted.`);
+        loadCloudflare();
+    } catch (error) {
+        alert('Error during cleanup: ' + error.message);
+    }
+}
+
+// ── Settings management ─────────────────────────────────────────────────────
+
+let _settingsData = [];
+let _settingsGroup = '';
+
+function filterSettingsGroup(group) {
+    _settingsGroup = group;
+    document.querySelectorAll('.settings-group-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.group === group);
+    });
+    renderSettingsTable();
+}
+
+async function loadSettings() {
+    const container = document.getElementById('settingsAdminList');
+    try {
+        const data = await fetchJSON('/api/v1/admin/settings', {
+            headers: { 'Authorization': `Bearer ${adminToken}` }
+        });
+        _settingsData = data.settings;
+        renderSettingsTable();
+    } catch (error) {
+        container.innerHTML = `<div class="error">Error loading settings: ${error.message}</div>`;
+    }
+}
+
+function renderSettingsTable() {
+    const container = document.getElementById('settingsAdminList');
+    const settings = _settingsGroup
+        ? _settingsData.filter(s => s.group === _settingsGroup)
+        : _settingsData;
+
+    if (settings.length === 0) {
+        container.innerHTML = '<div class="empty">No settings in this group</div>';
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Setting</th>
+                    <th>Value</th>
+                    <th>Source</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${settings.map(s => {
+                    const inputType = s.is_secret ? 'password' : 'text';
+                    // For secret fields that have a db value, show placeholder
+                    const placeholder = s.is_secret && s.source === 'db' ? '(saved in DB)' : s.default || '';
+                    // Don't pre-fill secret fields; for non-secret, show current value
+                    const inputValue = s.is_secret ? '' : (s.source !== 'default' ? s.value : '');
+                    return `
+                        <tr>
+                            <td>
+                                <strong>${s.key}</strong>
+                                <div class="setting-desc">${s.description}</div>
+                                <div class="setting-env">Env: <code>${s.env_var}</code></div>
+                            </td>
+                            <td>
+                                <input
+                                    class="setting-input"
+                                    type="${inputType}"
+                                    id="setting-${s.key}"
+                                    value="${escapeHtml(inputValue)}"
+                                    placeholder="${escapeHtml(placeholder)}"
+                                    autocomplete="off"
+                                >
+                            </td>
+                            <td><span class="source-badge ${s.source}">${s.source}</span></td>
+                            <td class="action-buttons">
+                                <button class="btn-small btn-primary" onclick="saveSetting('${s.key}')">Save</button>
+                                ${s.source === 'db' ? `<button class="btn-small btn-secondary" onclick="resetSetting('${s.key}')">Reset</button>` : ''}
+                            </td>
+                        </tr>
+                    `;
+                }).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+async function saveSetting(key) {
+    const input = document.getElementById(`setting-${key}`);
+    const value = input.value;
+    if (!value) {
+        alert('Please enter a value');
+        return;
+    }
+
+    try {
+        await fetchJSON(`/api/v1/admin/settings/${key}`, {
+            method: 'PUT',
+            headers: {
+                'Authorization': `Bearer ${adminToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ value }),
+        });
+        loadSettings();
+    } catch (error) {
+        alert('Error saving setting: ' + error.message);
+    }
+}
+
+async function resetSetting(key) {
+    if (!confirm(`Reset "${key}" to its env var or default value?`)) return;
+
+    try {
+        await fetchJSON(`/api/v1/admin/settings/${key}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${adminToken}` },
+        });
+        loadSettings();
+    } catch (error) {
+        alert('Error resetting setting: ' + error.message);
     }
 }

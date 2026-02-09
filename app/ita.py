@@ -3,26 +3,27 @@
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 
 import jwt
 from jwt import PyJWKClient, PyJWKClientError
 
-logger = logging.getLogger(__name__)
+from .settings import get_setting
 
-# Intel Trust Authority JWKS endpoint for token verification
-ITA_JWKS_URL = os.environ.get("ITA_JWKS_URL", "https://portal.trustauthority.intel.com/certs")
+logger = logging.getLogger(__name__)
 
 # Cache the JWKS client to avoid fetching keys on every verification
 _jwks_client: PyJWKClient | None = None
+_jwks_url_cached: str = ""
 
 
 def _get_jwks_client() -> PyJWKClient:
-    """Get or create a cached JWKS client."""
-    global _jwks_client
-    if _jwks_client is None:
-        _jwks_client = PyJWKClient(ITA_JWKS_URL, cache_keys=True, lifespan=3600)
+    """Get or create a cached JWKS client. Invalidates if URL changes."""
+    global _jwks_client, _jwks_url_cached
+    url = get_setting("intel_ta.jwks_url")
+    if _jwks_client is None or url != _jwks_url_cached:
+        _jwks_client = PyJWKClient(url, cache_keys=True, lifespan=3600)
+        _jwks_url_cached = url
     return _jwks_client
 
 
