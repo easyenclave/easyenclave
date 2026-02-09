@@ -82,21 +82,44 @@ async def create_tunnel_for_agent(
     tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode()
 
     async with httpx.AsyncClient(timeout=30.0) as client:
-        # 1. Create tunnel
-        logger.info(f"Creating Cloudflare tunnel: {tunnel_name}")
-        create_resp = await client.post(
+        # 1. Check if tunnel already exists (avoid duplicate creation)
+        logger.info(f"Checking for existing Cloudflare tunnel: {tunnel_name}")
+        list_resp = await client.get(
             f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel",
             headers=headers,
-            json={
-                "name": tunnel_name,
-                "tunnel_secret": tunnel_secret,
-            },
+            params={"name": tunnel_name, "is_deleted": "false"},
         )
-        create_resp.raise_for_status()
-        tunnel_data = create_resp.json()["result"]
-        tunnel_id = tunnel_data["id"]
-        tunnel_token = tunnel_data["token"]
-        logger.info(f"Created tunnel: {tunnel_id}")
+        list_resp.raise_for_status()
+        existing_tunnels = list_resp.json().get("result") or []
+
+        if existing_tunnels:
+            # Reuse existing tunnel
+            tunnel_id = existing_tunnels[0]["id"]
+            logger.info(f"Found existing tunnel: {tunnel_id}")
+
+            # Get token for existing tunnel
+            token_resp = await client.get(
+                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/token",
+                headers=headers,
+            )
+            token_resp.raise_for_status()
+            tunnel_token = token_resp.json()["result"]
+        else:
+            # Create new tunnel
+            logger.info(f"Creating Cloudflare tunnel: {tunnel_name}")
+            create_resp = await client.post(
+                f"{CLOUDFLARE_API_URL}/accounts/{CLOUDFLARE_ACCOUNT_ID}/cfd_tunnel",
+                headers=headers,
+                json={
+                    "name": tunnel_name,
+                    "tunnel_secret": tunnel_secret,
+                },
+            )
+            create_resp.raise_for_status()
+            tunnel_data = create_resp.json()["result"]
+            tunnel_id = tunnel_data["id"]
+            tunnel_token = tunnel_data["token"]
+            logger.info(f"Created tunnel: {tunnel_id}")
 
         # 2. Configure ingress
         logger.info(f"Configuring tunnel ingress for {hostname}")
