@@ -16,14 +16,13 @@
 
 LAUNCHER_DIR := ../launcher
 EXTRA_DIR := mkosi.extra/opt/launcher
-PKG_MGR_DIR := mkosi.pkg-manager/etc/apt
 OUTPUT_DIR := output
 
 LAUNCHER_FILES := $(LAUNCHER_DIR)/launcher.py $(wildcard $(LAUNCHER_DIR)/admin.html)
 
-.PHONY: build clean setup-repos
+.PHONY: build clean
 
-build: $(EXTRA_DIR)/launcher.py setup-repos
+build: $(EXTRA_DIR)/launcher.py
 	mkosi build --sandbox=no
 	@# Copy split artifacts to output/ for easy consumption by tdx_cli.py
 	mkdir -p $(OUTPUT_DIR)
@@ -55,23 +54,6 @@ build: $(EXTRA_DIR)/launcher.py setup-repos
 	@echo "Build complete. Artifacts in $(OUTPUT_DIR)/:"
 	@ls -lh $(OUTPUT_DIR)/ 2>/dev/null || true
 
-# Download third-party GPG keys and create apt source lists.
-# PackageManagerTrees= injects these into the image before Packages= runs.
-setup-repos:
-	@echo "Setting up third-party apt repos..."
-	@mkdir -p $(PKG_MGR_DIR)/keyrings $(PKG_MGR_DIR)/sources.list.d
-	@curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-		| gpg --batch --yes --dearmor -o $(PKG_MGR_DIR)/keyrings/docker.gpg
-	@chmod a+r $(PKG_MGR_DIR)/keyrings/docker.gpg
-	@echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
-		> $(PKG_MGR_DIR)/sources.list.d/docker.list
-	@curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-		| gpg --batch --yes --dearmor -o $(PKG_MGR_DIR)/keyrings/cloudflare.gpg
-	@chmod a+r $(PKG_MGR_DIR)/keyrings/cloudflare.gpg
-	@echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/cloudflare.gpg] https://pkg.cloudflare.com/cloudflared noble main" \
-		> $(PKG_MGR_DIR)/sources.list.d/cloudflared.list
-	@echo "Apt repos ready."
-
 # Copy launcher files into mkosi.extra tree before build
 $(EXTRA_DIR)/launcher.py: $(LAUNCHER_FILES)
 	mkdir -p $(EXTRA_DIR)
@@ -79,5 +61,5 @@ $(EXTRA_DIR)/launcher.py: $(LAUNCHER_FILES)
 	cp $(LAUNCHER_DIR)/admin.html $(EXTRA_DIR)/ 2>/dev/null || true
 
 clean:
-	rm -rf mkosi.output mkosi.extra mkosi.pkg-manager $(OUTPUT_DIR)
+	rm -rf mkosi.output mkosi.extra $(OUTPUT_DIR)
 	mkosi clean 2>/dev/null || true

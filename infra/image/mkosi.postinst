@@ -1,12 +1,52 @@
 #!/bin/bash
 # Post-installation script for EasyEnclave TDX VM image.
-# Runs WITHOUT network access — config and service enablement only.
-# All package installation happens via PrepareScripts + Packages= in mkosi.conf.
+# Runs with network access (WithNetwork=true in mkosi.conf).
+# Installs third-party packages and configures services.
 set -euo pipefail
 
-echo "[mkosi.postinst] Configuring services..."
+echo "[mkosi.postinst] Starting post-installation..."
 
-# Enable Docker
+# =============================================================================
+# Docker CE
+# =============================================================================
+echo "[mkosi.postinst] Installing Docker CE..."
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu noble stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+# =============================================================================
+# Cloudflared
+# =============================================================================
+echo "[mkosi.postinst] Adding cloudflared repo..."
+
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/cloudflare.gpg
+chmod a+r /etc/apt/keyrings/cloudflare.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/cloudflare.gpg] \
+https://pkg.cloudflare.com/cloudflared noble main" \
+    > /etc/apt/sources.list.d/cloudflared.list
+
+# =============================================================================
+# Install third-party packages
+# =============================================================================
+apt-get update
+apt-get install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin \
+    cloudflared
+
+echo "[mkosi.postinst] Third-party packages installed."
+
+# =============================================================================
+# Enable services
+# =============================================================================
 systemctl enable docker.service
 systemctl enable containerd.service
 

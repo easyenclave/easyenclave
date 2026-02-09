@@ -1,6 +1,0 @@
-#!/bin/bash
-# Prepare script — runs with network access AFTER Packages= are installed.
-# Currently a no-op; kept as a hook for future non-apt binary downloads.
-# Apt repos and packages are handled via PackageManagerTrees + Packages= in mkosi.conf.
-
-exit 0
