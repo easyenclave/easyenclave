@@ -2,9 +2,17 @@
 # Prepare script — runs with network access AFTER base Packages= are installed.
 # Adds third-party apt repos, installs their packages, and downloads non-apt binaries.
 #
+# mkosi calls this once per image stage (e.g. "build", "final").
+# We only need to run for the final image.
+#
 # mkosi lifecycle:
 #   Packages= (apt install) → PrepareScripts (network) → PostInstallationScripts (no network)
 set -euo pipefail
+
+if [ "${1:-}" != "final" ]; then
+    echo "[mkosi.prepare] Skipping for stage '${1:-unknown}' (only runs for 'final')."
+    exit 0
+fi
 
 echo "[mkosi.prepare] Installing third-party packages..."
 
@@ -13,7 +21,7 @@ echo "[mkosi.prepare] Installing third-party packages..."
 # =============================================================================
 install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
 chmod a+r /etc/apt/keyrings/docker.gpg
 
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
@@ -24,7 +32,7 @@ https://download.docker.com/linux/ubuntu noble stable" \
 # Cloudflared apt repo
 # =============================================================================
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/cloudflare.gpg
+    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/cloudflare.gpg
 chmod a+r /etc/apt/keyrings/cloudflare.gpg
 
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/cloudflare.gpg] \
