@@ -6,6 +6,7 @@ Implements Signal-inspired privacy model:
 - bcrypt hashing for all credentials
 """
 
+import logging
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,8 @@ from fastapi import Header, HTTPException
 
 if TYPE_CHECKING:
     from app.db_models import AdminSession
+
+logger = logging.getLogger(__name__)
 
 
 def generate_api_key(key_type: str = "live") -> str:
@@ -197,6 +200,7 @@ async def verify_admin_token(authorization: str = Header(None)) -> "AdminSession
     session = admin_session_store.get_by_prefix(prefix)
 
     if not session:
+        logger.warning(f"Session not found: prefix={prefix!r}, token_len={len(token)}")
         raise HTTPException(status_code=401, detail="Invalid session token")
 
     # Check expiration (handle both timezone-aware and naive datetimes)

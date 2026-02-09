@@ -1395,6 +1395,20 @@ async def admin_login(request: AdminLoginRequest, req: Request):
     )
 
     admin_session_store.create(session)
+
+    # Debug: verify session was persisted (investigating token-immediately-invalid bug)
+    readback = admin_session_store.get_by_prefix(token_prefix)
+    if readback:
+        logger.info(
+            f"Admin login: session persisted OK, prefix={token_prefix!r}, "
+            f"session_id={session.session_id}"
+        )
+    else:
+        logger.error(
+            f"Admin login: session NOT found after create! prefix={token_prefix!r}, "
+            f"session_id={session.session_id}"
+        )
+
     logger.info(f"Admin logged in from {req.client.host if req.client else 'unknown'}")
 
     return AdminLoginResponse(
