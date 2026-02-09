@@ -199,26 +199,26 @@ jobs:
 
       - name: Launch agents
         run: |
-          # Launch 4 agents in parallel (measuring enclave, oram-contacts, other examples, plus 1 spare)
-          for _i in 1 2 3 4; do
+          # Launch 5 agents in parallel (measuring enclave, oram-contacts, private-llm, hello-tdx, plus 1 spare)
+          for _i in 1 2 3 4 5; do
             python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --memory 4 --vcpus 4 --wait &
           done
           wait
-          echo "All 4 agents launched"
+          echo "All 5 agents launched"
 
       - name: Wait for agents to register and be verified
         run: |
-          echo "Waiting for 4 agents to register and be verified..."
+          echo "Waiting for 5 agents to register and be verified..."
           for i in {1..30}; do
             AGENTS=$(curl -sf https://app.easyenclave.com/api/v1/agents 2>/dev/null || echo '{"agents":[]}')
             VERIFIED=$(echo "$AGENTS" | jq '[.agents[] | select(.verified == true)] | length')
-            if [ "$VERIFIED" -ge 4 ]; then
-              echo "All 4 agents verified"
+            if [ "$VERIFIED" -ge 5 ]; then
+              echo "All 5 agents verified"
               exit 0
-            elif [ "$VERIFIED" -ge 3 ]; then
-              echo "Warning: only $VERIFIED/4 agents verified"
+            elif [ "$VERIFIED" -ge 4 ]; then
+              echo "Warning: only $VERIFIED/5 agents verified"
             fi
-            echo "$VERIFIED/4 agents verified, waiting... ($i/30)"
+            echo "$VERIFIED/5 agents verified, waiting... ($i/30)"
             sleep 10
           done
           echo "::error::Not all agents verified after 5 minutes"
