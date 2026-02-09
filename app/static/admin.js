@@ -777,7 +777,8 @@ function formatUptime(seconds) {
 async function loadAccounts() {
     const container = document.getElementById('accountsAdminList');
     try {
-        const data = await fetchJSON('/api/v1/accounts');
+        const resp = await adminFetch('/api/v1/accounts');
+        const data = await resp.json();
 
         if (data.accounts.length === 0) {
             container.innerHTML = '<div class="empty">No accounts created</div>';
@@ -826,11 +827,12 @@ async function createAccount() {
     }
 
     try {
-        await fetchJSON('/api/v1/accounts', {
+        const resp = await adminFetch('/api/v1/accounts', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, account_type: accountType })
         });
+        if (!resp.ok) throw new Error(await resp.text());
         document.getElementById('accountName').value = '';
         loadAccounts();
     } catch (error) {
@@ -849,11 +851,12 @@ async function promptDeposit(accountId, accountName) {
     }
 
     try {
-        await fetchJSON(`/api/v1/accounts/${accountId}/deposit`, {
+        const resp = await adminFetch(`/api/v1/accounts/${accountId}/deposit`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ amount: parsed, description: 'Manual deposit via admin UI' })
         });
+        if (!resp.ok) throw new Error(await resp.text());
         loadAccounts();
     } catch (error) {
         alert('Error depositing: ' + error.message);
