@@ -58,7 +58,7 @@ echo "[mkosi.prepare] Docker and cloudflared installed."
         "https://github.com/intel/trustauthority-client-for-go/releases/latest/download/trustauthority-cli_Linux_x86_64.tar.gz"
     do
         if curl -fsSL -L -o ta.tar.gz "$url" 2>/dev/null; then
-            if tar -xzf ta.tar.gz 2>/dev/null || tar -xf ta.tar.gz 2>/dev/null; then
+            if tar --no-selinux -xzf ta.tar.gz 2>/dev/null || tar --no-selinux -xf ta.tar.gz 2>/dev/null; then
                 CLI_BIN=$(find . -name "trustauthority-cli" -type f 2>/dev/null | head -1)
                 if [ -n "$CLI_BIN" ] && [ -f "$CLI_BIN" ]; then
                     cp "$CLI_BIN" /usr/bin/trustauthority-cli && chmod 755 /usr/bin/trustauthority-cli
