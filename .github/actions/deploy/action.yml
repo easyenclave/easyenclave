@@ -38,6 +38,10 @@ inputs:
     description: Agent admin panel password (will be set during deployment)
     required: false
     default: ''
+  github_owner:
+    description: GitHub user or org to set as the agent owner (for owner-scoped access)
+    required: false
+    default: ''
 
 outputs:
   deployment_id:
@@ -146,6 +150,7 @@ runs:
         SERVICE_NAME: ${{ inputs.service_name }}
         HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
         AGENT_ADMIN_PASSWORD: ${{ inputs.agent_admin_password }}
+        GITHUB_OWNER: ${{ inputs.github_owner }}
       run: |
         set -e
 
@@ -166,13 +171,19 @@ runs:
               service_name: $service_name,
               health_endpoint: $health_endpoint
             } + (if $admin_password != "" then {agent_admin_password: $admin_password} else {} end)')
+          local body
+          body=$(jq -n \
+            --arg agent_id "$agent_id" \
+            --arg github_owner "$GITHUB_OWNER" \
+            --argjson config "$config_json" \
+            '{
+              agent_id: $agent_id,
+              config: $config
+            } + (if $github_owner != "" then {github_owner: $github_owner} else {} end)')
           http_code=$(curl -s -o /tmp/deploy_response.json -w "%{http_code}" \
             -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions/$VERSION/deploy" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"agent_id\": \"$agent_id\",
-              \"config\": $config_json
-            }")
+            -d "$body")
           echo "$http_code"
         }
 

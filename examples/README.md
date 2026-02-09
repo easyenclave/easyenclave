@@ -20,11 +20,13 @@ All examples are deployed automatically by the [Deploy Examples](../.github/work
 5. The agent pulls images, runs `docker compose up`, and reports health
 6. The service becomes reachable through a Cloudflare tunnel at `https://agent-{id}.easyenclave.com`
 
+Each deploy sets `github_owner: ${{ github.repository_owner }}` so the deploying GitHub org owns the agents. Org members can log in via GitHub OAuth and manage their agents at `/api/v1/me/agents` without needing full admin access.
+
 ## Adding a new example
 
 1. Create a directory under `examples/` with a `docker-compose.yml`
 2. Expose your service on port 8080 (the agent proxies traffic to this port)
-3. Add a deploy job in `deploy-examples.yml`
+3. Add a deploy job in `deploy-examples.yml` (include `github_owner: ${{ github.repository_owner }}`)
 4. Add a `test.py` that exercises your app using the [SDK](../sdk/) — it becomes both a smoke test and runnable documentation
 
 See the [deploy action docs](../.github/actions/deploy/README.md) for the full action reference.

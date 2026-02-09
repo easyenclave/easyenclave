@@ -35,6 +35,7 @@ curl -X POST https://app.easyenclave.com/api/v1/apps \
 | `service_name` | Yes | - | Name for your deployment |
 | `health_endpoint` | No | `/health` | Health check endpoint path |
 | `control_plane_url` | No | `https://app.easyenclave.com` | EasyEnclave control plane URL |
+| `github_owner` | No | - | GitHub user or org to set as agent owner |
 
 ## Outputs
 
@@ -81,6 +82,21 @@ jobs:
     echo "Deployed version ${{ steps.deploy.outputs.version }}"
     echo "Service URL: ${{ steps.deploy.outputs.service_url }}"
 ```
+
+### With org ownership
+
+Set `github_owner` so that GitHub org members can manage agents via the owner-scoped API (`/api/v1/me/agents`) without needing full admin access:
+
+```yaml
+- uses: easyenclave/easyenclave/.github/actions/deploy@main
+  with:
+    app_name: my-app
+    compose_file: docker-compose.yml
+    service_name: my-app
+    github_owner: ${{ github.repository_owner }}
+```
+
+Any member of the `github.repository_owner` org who logs in via GitHub OAuth will see the deployed agent under "My Agents" and can reset or redeploy it. Admins (listed in `ADMIN_GITHUB_LOGINS`) retain full access to all agents.
 
 ## How it works
 
