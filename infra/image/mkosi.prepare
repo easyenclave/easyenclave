@@ -60,7 +60,7 @@ do
         if tar -xzf ta.tar.gz 2>/dev/null || tar -xf ta.tar.gz 2>/dev/null; then
             CLI_BIN=$(find . -name "trustauthority-cli" -type f 2>/dev/null | head -1)
             if [ -n "$CLI_BIN" ] && [ -f "$CLI_BIN" ]; then
-                install -m 755 "$CLI_BIN" /usr/local/bin/trustauthority-cli
+                install -m 755 "$CLI_BIN" /usr/bin/trustauthority-cli
                 echo "[mkosi.prepare] trustauthority-cli installed."
                 INSTALLED=true
                 break
