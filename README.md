@@ -11,6 +11,29 @@ A confidential discovery service for TDX-attested applications. EasyEnclave enab
 - **Python SDK**: Client library for programmatic access
 - **TDX Deployment**: Deploy as an attested TDX application
 
+## What is Remote Attestation?
+
+**Remote attestation** provides cryptographic proof that your code is running in a genuine Trusted Execution Environment (TEE) with the exact code you expect.
+
+**How it works:**
+1. **TEE measures your application** - Hardware computes MRTD (hash of VM image)
+2. **TEE signs the measurement** - CPU creates a cryptographic quote
+3. **Client verifies the quote** - Intel Trust Authority validates the signature
+4. **Client checks MRTD** - Ensures running code matches expected version
+
+**Benefits:**
+- ✅ Verify code before sending sensitive data
+- ✅ Protection from cloud provider access
+- ✅ Defense against OS/hypervisor attacks
+- ✅ Build zero-trust applications
+
+**Supported TEE vendors:**
+- Intel TDX (Trust Domain Extensions) - ✅ Production
+- AMD SEV-SNP - 🔜 Coming soon
+- ARM CCA - 🔜 Planned
+
+**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for detailed explanations of remote attestation, TEE technologies, and security considerations.
+
 ## Quick Start
 
 ### Run Locally
@@ -259,8 +282,84 @@ easyenclave/
 └── requirements.txt
 ```
 
+## Security Considerations
+
+### TEE Protection Boundaries
+
+EasyEnclave uses Intel TDX, which provides hardware-based protection:
+
+| Threat | Protection | Notes |
+|--------|------------|-------|
+| Remote attackers | ✅ Full | Memory encryption + isolation |
+| Malicious cloud provider | ✅ Full | Cannot read TEE memory |
+| Malicious OS/hypervisor | ✅ Full | Hardware-enforced isolation |
+| Physical attacks | ⚠️ Limited | See defense-in-depth below |
+| Side channels (cache) | ⚠️ Partial | Some mitigations available |
+
+### Defense-in-Depth: Beyond TEEs
+
+For maximum security, combine TDX with additional techniques:
+
+**1. ORAM (Oblivious RAM)** - Hides access patterns
+- See `apps/oram-contacts/` for working example
+- Protects which data was accessed even if TEE is compromised
+- Essential for privacy-critical applications (contact discovery, medical records)
+
+**2. Encrypted storage** - Data at rest protection
+- Encrypt data with separate keys
+- Keys never leave TEE
+- Protects against physical storage attacks
+
+**3. MPC (Multi-Party Computation)** - Distribute trust
+- No single party has complete data
+- Protects against insider threats
+- Useful for collaborative analytics
+
+### About tee.fail
+
+[tee.fail](https://tee.fail) documents physical attacks on TEEs (voltage glitching, laser fault injection). While these attacks are real, they require:
+- Physical access to server
+- Expensive lab equipment
+- Nation-state resources
+
+**For most applications:** TDX provides excellent protection.
+
+**For high-security applications:** Add ORAM or MPC for defense-in-depth.
+
+**See [docs/FAQ.md](docs/FAQ.md)** for detailed threat analysis and when to use different protection levels.
+
+## Examples
+
+### Hello TDX
+Minimal HTTP server demonstrating TDX deployment and attestation.
+- **Path:** `examples/hello-tdx/`
+- **Features:** Basic FastAPI service, TDX attestation, Docker deployment
+
+### Private LLM
+Run language models with privacy protection in TDX.
+- **Path:** `examples/private-llm/`
+- **Features:** Ollama in TDX, end-to-end encryption, SDK integration
+- **Live demo:** Runs in CI on every push
+
+### ORAM Contact Discovery
+Privacy-preserving contact discovery with Oblivious RAM.
+- **Path:** `apps/oram-contacts/` and `examples/oram-contacts/`
+- **Features:** ORAM + TDX, access pattern hiding, defense against physical attacks
+- **Use case:** Shows how to protect privacy even if TEE is compromised
+- **Docs:** Comprehensive README with security analysis and deployment guide
+
+## Documentation
+
+- **[FAQ](docs/FAQ.md)** - Remote attestation, TEE technologies, ORAM, security
+- **[GitHub OAuth Setup](docs/GITHUB_OAUTH.md)** - Admin authentication configuration
+- **[SDK Documentation](sdk/README.md)** - Python client library
+- **[ORAM Example](apps/oram-contacts/README.md)** - Privacy-preserving contact discovery
+
 ## Future Enhancements
 
+- [ ] AMD SEV-SNP support
+- [ ] ARM CCA support
 - [ ] S3 backup/restore for persistence
 - [ ] Accounting (credit for work, debit to deploy)
 - [ ] Private EVM example
+- [ ] MPC framework integration
