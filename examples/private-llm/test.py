@@ -47,7 +47,7 @@ def test_direct(service_url: str) -> bool:
                 if content and content != "null":
                     print(f"[direct] OK: {content}")
                     return True
-            except (httpx.HTTPError, KeyError, IndexError) as e:
+            except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:
                 if time.monotonic() >= deadline:
                     print(f"[direct] FAIL: not ready after {TIMEOUT}s — {e}")
                     return False
@@ -71,7 +71,7 @@ def test_proxy(easyenclave_url: str) -> bool:
             if content and content != "null":
                 print(f"[proxy] OK: {content}")
                 return True
-        except (httpx.HTTPError, KeyError, IndexError) as e:
+        except (httpx.HTTPError, KeyError, IndexError, ValueError) as e:
             if time.monotonic() >= deadline:
                 print(f"[proxy] FAIL: not ready after {TIMEOUT}s — {e}")
                 return False
