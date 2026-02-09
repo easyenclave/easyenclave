@@ -133,7 +133,9 @@ HEALTH_CHECK_INTERVAL = 60
 
 # Agent health check settings
 AGENT_HEALTH_CHECK_INTERVAL = 30  # Check agents every 30 seconds
-AGENT_ATTESTATION_INTERVAL = 300  # Request fresh attestation every 5 minutes
+AGENT_ATTESTATION_INTERVAL = int(
+    os.environ.get("AGENT_ATTESTATION_INTERVAL", "3600")
+)  # Request fresh attestation (default: 1 hour, set to 0 to disable)
 AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhealthy
 
 # Track when agents were last attested (for periodic re-attestation)
@@ -251,12 +253,14 @@ async def background_agent_health_checker():
                     continue  # Skip agents without tunnels
 
                 try:
-                    # Determine if we need fresh attestation
-                    last_attest = _agent_last_attestation.get(agent.agent_id)
-                    need_attestation = (
-                        last_attest is None
-                        or (now - last_attest).total_seconds() > AGENT_ATTESTATION_INTERVAL
-                    )
+                    # Determine if we need fresh attestation (skip if interval is 0)
+                    need_attestation = False
+                    if AGENT_ATTESTATION_INTERVAL > 0:
+                        last_attest = _agent_last_attestation.get(agent.agent_id)
+                        need_attestation = (
+                            last_attest is None
+                            or (now - last_attest).total_seconds() > AGENT_ATTESTATION_INTERVAL
+                        )
 
                     # Check health (with attestation if needed)
                     status, attestation = await check_agent_health(
@@ -835,30 +839,37 @@ async def register_agent(request: AgentRegistrationRequest):
     agent = Agent(**agent_kwargs)
     agent_id = agent_store.register(agent)
 
-    # Create Cloudflare tunnel for verified agents
+    # Create Cloudflare tunnel for verified agents (only if they don't have one)
     tunnel_token = None
     hostname = None
     if verified and cloudflare.is_configured():
-        try:
-            tunnel_info = await cloudflare.create_tunnel_for_agent(agent_id)
-            tunnel_token = tunnel_info["tunnel_token"]
-            hostname = tunnel_info["hostname"]
+        # Reuse existing tunnel if agent already has one
+        if existing and existing.hostname:
+            tunnel_token = existing.tunnel_token
+            hostname = existing.hostname
+            logger.info(f"Reusing existing tunnel for agent {agent_id}: {hostname}")
+        else:
+            # Create new tunnel only if agent doesn't have one
+            try:
+                tunnel_info = await cloudflare.create_tunnel_for_agent(agent_id)
+                tunnel_token = tunnel_info["tunnel_token"]
+                hostname = tunnel_info["hostname"]
 
-            # Update agent with tunnel info (including token for poll response)
-            agent_store.update_tunnel_info(
-                agent_id,
-                tunnel_id=tunnel_info["tunnel_id"],
-                hostname=hostname,
-                tunnel_token=tunnel_token,
-            )
-            logger.info(f"Created tunnel for agent {agent_id}: {hostname}")
-        except Exception as e:
-            # A tunnelless agent is useless — clean up and fail
-            agent_store.delete(agent_id)
-            raise HTTPException(
-                status_code=502,
-                detail=f"Failed to create tunnel: {e}",
-            ) from e
+                # Update agent with tunnel info (including token for poll response)
+                agent_store.update_tunnel_info(
+                    agent_id,
+                    tunnel_id=tunnel_info["tunnel_id"],
+                    hostname=hostname,
+                    tunnel_token=tunnel_token,
+                )
+                logger.info(f"Created tunnel for agent {agent_id}: {hostname}")
+            except Exception as e:
+                # A tunnelless agent is useless — clean up and fail
+                agent_store.delete(agent_id)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to create tunnel: {e}",
+                ) from e
 
     logger.info(
         f"Agent registered: {agent_id} ({request.vm_name}) "
