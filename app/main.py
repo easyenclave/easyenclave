@@ -784,7 +784,7 @@ async def request_challenge(vm_name: str):
     Returns:
         Nonce challenge with expiration time (default 5 minutes)
     """
-    from app.nonce import NONCE_TTL_SECONDS, issue_challenge
+    from app.nonce import _ttl_seconds, issue_challenge
 
     if not vm_name:
         raise HTTPException(status_code=400, detail="vm_name required")
@@ -793,7 +793,7 @@ async def request_challenge(vm_name: str):
 
     return AgentChallengeResponse(
         nonce=nonce,
-        ttl_seconds=NONCE_TTL_SECONDS,
+        ttl_seconds=_ttl_seconds(),
         issued_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -852,22 +852,23 @@ async def register_agent(request: AgentRegistrationRequest):
 
     # Verify nonce if present (replay attack protection)
     from app.ita import extract_intel_ta_claims
-    from app.nonce import NONCE_ENFORCEMENT_MODE, verify_nonce
+    from app.nonce import _enforcement_mode, verify_nonce
 
     ita_claims = extract_intel_ta_claims(intel_ta_token)
     nonce_from_quote = ita_claims.get("attester_held_data", "").strip() if ita_claims else ""
 
+    nonce_mode = _enforcement_mode()
     if nonce_from_quote:
         nonce_verified, nonce_error = verify_nonce(request.vm_name, nonce_from_quote)
         if not nonce_verified:
             raise HTTPException(status_code=403, detail=f"Nonce verification failed: {nonce_error}")
         logger.info(f"Nonce verified for {request.vm_name}")
-    elif NONCE_ENFORCEMENT_MODE == "required":
+    elif nonce_mode == "required":
         raise HTTPException(
             status_code=400,
             detail="Nonce required. Call GET /api/v1/agents/challenge first",
         )
-    elif NONCE_ENFORCEMENT_MODE == "optional":
+    elif nonce_mode == "optional":
         logger.warning(f"Agent {request.vm_name} registered without nonce (optional mode)")
 
     # Both Intel TA and MRTD verified - agent is trusted
