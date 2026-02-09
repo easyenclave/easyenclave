@@ -56,6 +56,7 @@ jobs:
 
     outputs:
       measurer_image: ${{ steps.measurer.outputs.image }}
+      oram_contacts_image: ${{ steps.oram_contacts.outputs.image }}
 
     steps:
       - name: Checkout repository
@@ -96,6 +97,23 @@ jobs:
 
           # Ensure the package is publicly pullable (agents have no ghcr.io credentials)
           PACKAGE_NAME="${{ github.event.repository.name }}%2Fmeasuring-enclave"
+          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
+            -f visibility=public || echo "::warning::Could not set package visibility to public"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Build and push oram-contacts image
+        id: oram_contacts
+        if: github.event_name == 'push'
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE="ghcr.io/${{ github.repository }}/oram-contacts:${{ github.sha }}"
+          docker build -t "$IMAGE" apps/oram-contacts/
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+          # Make package public (agents need access without GHCR credentials)
+          PACKAGE_NAME="${{ github.event.repository.name }}%2Foram-contacts"
           gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
             -f visibility=public || echo "::warning::Could not set package visibility to public"
         env:
@@ -179,24 +197,26 @@ jobs:
 
       - name: Launch agents
         run: |
-          # Launch 3 agents in parallel (measuring enclave, example app, private LLM)
-          for _i in 1 2 3; do
+          # Launch 4 agents in parallel (measuring enclave, oram-contacts, other examples, plus 1 spare)
+          for _i in 1 2 3 4; do
             python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --memory 4 --vcpus 4 --wait &
           done
           wait
-          echo "All 3 agents launched"
+          echo "All 4 agents launched"
 
       - name: Wait for agents to register and be verified
         run: |
-          echo "Waiting for 3 agents to register and be verified..."
+          echo "Waiting for 4 agents to register and be verified..."
           for i in {1..30}; do
             AGENTS=$(curl -sf https://app.easyenclave.com/api/v1/agents 2>/dev/null || echo '{"agents":[]}')
             VERIFIED=$(echo "$AGENTS" | jq '[.agents[] | select(.verified == true)] | length')
-            if [ "$VERIFIED" -ge 3 ]; then
-              echo "All $VERIFIED agent(s) verified"
+            if [ "$VERIFIED" -ge 4 ]; then
+              echo "All 4 agents verified"
               exit 0
+            elif [ "$VERIFIED" -ge 3 ]; then
+              echo "Warning: only $VERIFIED/4 agents verified"
             fi
-            echo "$VERIFIED/3 agents verified, waiting... ($i/30)"
+            echo "$VERIFIED/4 agents verified, waiting... ($i/30)"
             sleep 10
           done
           echo "::error::Not all agents verified after 5 minutes"
@@ -303,10 +323,131 @@ jobs:
             HEALTHY=$(echo "$SVC" | jq '[.services[] | select(.health_status == "healthy")] | length')
             if [ "$HEALTHY" -gt 0 ]; then
               echo "Measuring enclave is healthy!"
-              exit 0
+              break
             fi
             echo "  Waiting... ($i/60)"
             sleep 5
           done
-          echo "::error::Measuring enclave not healthy after 5 minutes"
-          exit 1
+          if [ "$HEALTHY" -eq 0 ]; then
+            echo "::error::Measuring enclave not healthy after 5 minutes"
+            exit 1
+          fi
+
+      - name: Bootstrap ORAM Contacts
+        env:
+          CP_URL: https://app.easyenclave.com
+          ADMIN_PASSWORD: ${{ secrets.CONTROL_PLANE_ADMIN_PASSWORD }}
+        run: |
+          set -e
+
+          # Login to get admin token
+          echo "Logging in to admin panel..."
+          if ! LOGIN_RESPONSE=$(curl -sf -w "\nHTTP_CODE:%{http_code}" "$CP_URL/admin/login" \
+            -H "Content-Type: application/json" \
+            -d "{\"password\": \"$ADMIN_PASSWORD\"}" 2>&1); then
+            echo "❌ Admin login failed (exit code $?)"
+            echo "$LOGIN_RESPONSE"
+            exit 1
+          fi
+
+          ADMIN_TOKEN=$(echo "$LOGIN_RESPONSE" | grep -v "HTTP_CODE:" | jq -r '.token')
+          echo "✅ Admin login successful"
+
+          # ===================================================================
+          # Deploy ORAM Contacts
+          # ===================================================================
+          echo ""
+          echo "Deploying ORAM Contacts..."
+          ORAM_IMAGE="${{ needs.docker.outputs.oram_contacts_image }}"
+
+          # Build docker-compose file with the CI-built image
+          COMPOSE_B64=$(printf 'services:\n  oram-contacts:\n    image: %s\n    ports:\n      - "8080:8080"\n    volumes:\n      - oram-data:/data\n    environment:\n      - ORAM_DB_PATH=/data/contacts.db\n      - ORAM_BUCKETS=1024\n      - ORAM_STASH_SIZE=100\nvolumes:\n  oram-data:\n' "$ORAM_IMAGE" | base64 -w 0)
+
+          VERSION="bootstrap-$(date -u +%Y%m%d-%H%M%S)"
+
+          # Register app (idempotent - may already exist)
+          curl -f -X POST "$CP_URL/api/v1/apps" \
+            -H "Content-Type: application/json" \
+            -d '{"name": "oram-contacts", "description": "Privacy-preserving contact discovery with ORAM", "tags": ["privacy", "oram", "contacts", "example"]}' \
+            2>&1 || echo "App may already exist (ok)"
+
+          # Publish version
+          echo "Publishing ORAM Contacts version $VERSION..."
+          if ! PUBLISH_RESP=$(curl -sf -X POST "$CP_URL/api/v1/apps/oram-contacts/versions" \
+            -H "Content-Type: application/json" \
+            -d "{\"version\": \"$VERSION\", \"compose\": \"$COMPOSE_B64\"}"); then
+            echo "Failed to publish ORAM Contacts version"
+            exit 1
+          fi
+
+          VERSION_ID=$(echo "$PUBLISH_RESP" | jq -r '.version_id')
+          echo "Published version_id: $VERSION_ID"
+
+          # Manual attest (bootstrap chicken-and-egg: measurer can't attest itself initially)
+          echo "Manually attesting ORAM Contacts version..."
+          if ! curl -sf -X POST "$CP_URL/api/v1/apps/oram-contacts/versions/$VERSION/attest" \
+            -H "Authorization: Bearer $ADMIN_TOKEN"; then
+            echo "Failed to attest ORAM Contacts version"
+            exit 1
+          fi
+
+          # Find undeployed agent and deploy (retry with backoff)
+          DEPLOYED=false
+          for attempt in {1..12}; do
+            echo "  Attempt $attempt/12: Finding undeployed agent..."
+
+            AGENT_IDS=$(curl -f "$CP_URL/api/v1/agents" 2>/dev/null | \
+              jq -r '[.agents[] | select(.verified == true and .hostname != null and .status == "undeployed")] | .[].agent_id')
+
+            if [ -z "$AGENT_IDS" ]; then
+              echo "  No undeployed agents available yet, waiting 30s..."
+              sleep 30
+              continue
+            fi
+
+            for AGENT_ID in $AGENT_IDS; do
+              echo "  Trying to deploy to agent $AGENT_ID..."
+              HTTP_CODE=$(curl -s -o /tmp/oram_deploy_resp.json -w "%{http_code}" \
+                -X POST "$CP_URL/api/v1/apps/oram-contacts/versions/$VERSION/deploy" \
+                -H "Content-Type: application/json" \
+                -d "{\"agent_id\": \"$AGENT_ID\", \"config\": {\"service_name\": \"oram-contacts\", \"health_endpoint\": \"/health\"}}")
+
+              if [ "$HTTP_CODE" -lt 400 ]; then
+                echo "Successfully deployed ORAM Contacts to agent $AGENT_ID"
+                DEPLOYED=true
+                break 2
+              else
+                echo "  Deploy failed (HTTP $HTTP_CODE), trying next agent..."
+              fi
+            done
+
+            echo "  No agents accepted deployment, waiting 30s... ($attempt/12)"
+            sleep 30
+          done
+
+          if [ "$DEPLOYED" != "true" ]; then
+            echo "Failed to deploy ORAM Contacts after 12 attempts"
+            exit 1
+          fi
+
+          # Wait for service to become healthy
+          echo "Waiting for ORAM Contacts service to become healthy..."
+          for i in {1..60}; do
+            SVC=$(curl -sf "$CP_URL/api/v1/services?name=oram-contacts" 2>/dev/null || echo '{"services":[]}')
+            HEALTHY=$(echo "$SVC" | jq '[.services[] | select(.health_status == "healthy")] | length')
+
+            if [ "$HEALTHY" -gt 0 ]; then
+              echo "ORAM Contacts service is healthy!"
+              SERVICE_URL=$(echo "$SVC" | jq -r '.services[0].service_url')
+              echo "Service URL: $SERVICE_URL"
+              break
+            fi
+
+            if [ "$i" -eq 60 ]; then
+              echo "Timeout waiting for ORAM Contacts to become healthy"
+              exit 1
+            fi
+
+            echo "  Waiting for health... ($i/60)"
+            sleep 5
+          done

@@ -101,3 +101,44 @@ jobs:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: https://app.easyenclave.com
         run: python3 examples/private-llm/test.py
+
+  deploy-oram-contacts:
+    name: Deploy ORAM Contacts
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Register app
+        uses: ./.github/actions/register-app
+        with:
+          name: oram-contacts
+          description: "Privacy-preserving contact discovery with ORAM"
+          tags: "privacy,oram,contacts,example"
+
+      - name: Deploy to EasyEnclave
+        id: deploy
+        uses: ./.github/actions/deploy
+        with:
+          app_name: oram-contacts
+          compose_file: apps/oram-contacts/docker-compose.yml
+          service_name: oram-contacts
+          health_endpoint: /health
+          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install ./sdk/ httpx
+
+      - name: Run integration tests
+        run: python3 examples/oram-contacts/test.py
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
+          EASYENCLAVE_URL: https://app.easyenclave.com

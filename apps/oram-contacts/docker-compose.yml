@@ -1,0 +1,15 @@
+services:
+  oram-contacts:
+    build: .
+    image: ghcr.io/easyenclave/oram-contacts:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - oram-data:/data
+    environment:
+      - ORAM_DB_PATH=/data/contacts.db
+      - ORAM_BUCKETS=1024
+      - ORAM_STASH_SIZE=100
+
+volumes:
+  oram-data:
