@@ -137,6 +137,10 @@ AGENT_ATTESTATION_INTERVAL = int(
     os.environ.get("AGENT_ATTESTATION_INTERVAL", "3600")
 )  # Request fresh attestation (default: 1 hour, set to 0 to disable)
 AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhealthy
+AGENT_STALE_TIMEOUT = timedelta(
+    hours=int(os.environ.get("AGENT_STALE_HOURS", "24"))
+)  # Delete agents with no heartbeat for this long
+AGENT_STALE_CLEANUP_INTERVAL = 3600  # Run cleanup every hour
 
 # Track when agents were last attested (for periodic re-attestation)
 _agent_last_attestation: dict[str, datetime] = {}
@@ -483,6 +487,51 @@ def validate_environment():
         logger.info("✅ Environment validation passed")
 
 
+async def background_stale_agent_cleanup():
+    """Background task to delete agents that haven't sent a heartbeat in AGENT_STALE_HOURS.
+
+    Cleans up the agent record, Cloudflare tunnel, and DNS record.
+    """
+    while True:
+        await asyncio.sleep(AGENT_STALE_CLEANUP_INTERVAL)
+        try:
+            stale_agents = agent_store.get_stale_agents(AGENT_STALE_TIMEOUT)
+            if not stale_agents:
+                continue
+
+            logger.info(f"Found {len(stale_agents)} stale agent(s) to clean up")
+            for agent in stale_agents:
+                try:
+                    # Skip agents with active deployments (let reassignment handle those)
+                    if agent.current_deployment_id and agent.status == "deployed":
+                        logger.info(
+                            f"Skipping stale agent {agent.agent_id} - has active deployment"
+                        )
+                        continue
+
+                    # Clean up Cloudflare tunnel
+                    if agent.tunnel_id and cloudflare.is_configured():
+                        try:
+                            await cloudflare.delete_tunnel(agent.tunnel_id)
+                            if agent.hostname:
+                                await cloudflare.delete_dns_record(agent.hostname)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to clean up tunnel for stale agent {agent.agent_id}: {e}"
+                            )
+
+                    # Delete agent record
+                    agent_store.delete(agent.agent_id)
+                    logger.info(
+                        f"Deleted stale agent {agent.agent_id} "
+                        f"(vm={agent.vm_name}, last_heartbeat={agent.last_heartbeat})"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to clean up stale agent {agent.agent_id}: {e}")
+        except Exception as e:
+            logger.error(f"Stale agent cleanup error: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan - start background tasks."""
@@ -517,8 +566,11 @@ async def lifespan(app: FastAPI):
     # Start nonce cleanup task
     nonce_cleanup_task = asyncio.create_task(background_nonce_cleanup())
 
+    # Start stale agent cleanup task
+    stale_agent_task = asyncio.create_task(background_stale_agent_cleanup())
+
     logger.info(
-        "Started background tasks (health checkers, measurement processor, billing, session cleanup, nonce cleanup)"
+        "Started background tasks (health checkers, measurement processor, billing, session cleanup, nonce cleanup, stale agent cleanup)"
     )
     yield
     # Shutdown
@@ -530,6 +582,7 @@ async def lifespan(app: FastAPI):
     terminator_task.cancel()
     session_cleanup_task.cancel()
     nonce_cleanup_task.cancel()
+    stale_agent_task.cancel()
     for task in [
         service_health_task,
         agent_health_task,
@@ -539,6 +592,7 @@ async def lifespan(app: FastAPI):
         terminator_task,
         session_cleanup_task,
         nonce_cleanup_task,
+        stale_agent_task,
     ]:
         try:
             await task

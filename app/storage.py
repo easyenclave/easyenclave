@@ -255,6 +255,12 @@ class AgentStore:
                 if a.unhealthy_since and now - a.unhealthy_since > unhealthy_timeout
             ]
 
+    def get_stale_agents(self, stale_timeout: timedelta) -> list[Agent]:
+        """Get agents whose last heartbeat is older than stale_timeout."""
+        with get_db() as session:
+            cutoff = datetime.now(timezone.utc) - stale_timeout
+            return list(session.exec(select(Agent).where(Agent.last_heartbeat < cutoff)).all())
+
     def reset_for_reassignment(self, agent_id: str) -> bool:
         with get_db() as session:
             agent = session.get(Agent, agent_id)

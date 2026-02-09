@@ -23,6 +23,8 @@ services:
       - NONCE_LENGTH=${NONCE_LENGTH:-32}
       # Attestation refresh interval (seconds, 0 to disable)
       - AGENT_ATTESTATION_INTERVAL=${AGENT_ATTESTATION_INTERVAL:-3600}
+      # Stale agent cleanup (hours without heartbeat before deletion)
+      - AGENT_STALE_HOURS=${AGENT_STALE_HOURS:-24}
       # Admin authentication (bcrypt hash)
       - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH:-}
     volumes:
