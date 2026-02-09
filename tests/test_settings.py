@@ -172,7 +172,7 @@ def test_api_list_settings(client):
     assert resp.status_code == 200
     data = resp.json()
     assert "settings" in data
-    assert len(data["settings"]) == 16  # total settings defined
+    assert len(data["settings"]) == 17  # total settings defined
     app.dependency_overrides.clear()
 
 

@@ -1365,6 +1365,9 @@ async def cloudflare_cleanup(_admin: bool = Depends(verify_admin_token)):
 @app.post("/admin/login", response_model=AdminLoginResponse)
 async def admin_login(request: AdminLoginRequest, req: Request):
     """Admin login endpoint - creates a session token."""
+    if get_setting("auth.password_login_enabled").lower() != "true":
+        raise HTTPException(status_code=403, detail="Password login is disabled. Use GitHub OAuth.")
+
     password_hash = get_admin_password_hash()
     if not password_hash:
         raise HTTPException(
@@ -1415,6 +1418,16 @@ async def admin_login(request: AdminLoginRequest, req: Request):
         token=token,
         expires_at=expires_at,
     )
+
+
+@app.get("/auth/methods")
+async def auth_methods():
+    """Return which login methods are available (public, no auth required)."""
+    from .oauth import _client_id
+
+    password_enabled = get_setting("auth.password_login_enabled").lower() == "true"
+    github_enabled = bool(_client_id())
+    return {"password": password_enabled, "github": github_enabled}
 
 
 @app.get("/auth/github")

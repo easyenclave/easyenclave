@@ -173,6 +173,16 @@ _reg(
     "operational",
 )
 
+# Auth
+_reg(
+    "auth.password_login_enabled",
+    "PASSWORD_LOGIN_ENABLED",
+    "true",
+    False,
+    "Enable password-based admin login (set to 'false' to require GitHub OAuth)",
+    "auth",
+)
+
 
 # ── TTL cache ────────────────────────────────────────────────────────────────
 

@@ -41,8 +41,32 @@ document.addEventListener('DOMContentLoaded', () => {
     adminToken = sessionStorage.getItem('adminToken');
     if (adminToken) {
         showDashboard();
+    } else {
+        // Configure login page: show/hide methods based on server config
+        configureLoginMethods();
     }
 });
+
+async function configureLoginMethods() {
+    try {
+        const methods = await fetchJSON('/auth/methods');
+        if (!methods.password) {
+            const pwSection = document.getElementById('passwordLoginSection');
+            if (pwSection) pwSection.classList.add('hidden');
+        }
+        if (!methods.github) {
+            const ghSection = document.getElementById('githubLoginSection');
+            if (ghSection) ghSection.classList.add('hidden');
+        }
+        if (!methods.password && !methods.github) {
+            const noMethods = document.getElementById('noLoginMethods');
+            if (noMethods) noMethods.classList.remove('hidden');
+        }
+    } catch (err) {
+        // If endpoint fails, show both methods as fallback
+        console.error('Failed to check auth methods:', err);
+    }
+}
 
 // GitHub OAuth login
 document.getElementById('githubLoginBtn')?.addEventListener('click', async () => {
@@ -1204,6 +1228,12 @@ function wizardNext(step) {
             dot.classList.add('active');
         }
     });
+
+    // Show disable-password option on step 4 (OAuth was just configured)
+    if (step === 4) {
+        const option = document.getElementById('wizardDisablePasswordOption');
+        if (option) option.classList.remove('hidden');
+    }
 }
 
 async function wizardSaveOAuth() {
@@ -1257,7 +1287,22 @@ function skipWizard() {
     document.getElementById('adminPage').classList.remove('hidden');
 }
 
-function finishWizard() {
+async function finishWizard() {
+    const checkbox = document.getElementById('wizardDisablePassword');
+    if (checkbox && checkbox.checked) {
+        try {
+            await fetchJSON('/api/v1/admin/settings/auth.password_login_enabled', {
+                method: 'PUT',
+                headers: {
+                    'Authorization': `Bearer ${adminToken}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ value: 'false' }),
+            });
+        } catch (err) {
+            console.error('Failed to disable password login:', err);
+        }
+    }
     document.getElementById('setupWizard').classList.add('hidden');
     document.getElementById('adminPage').classList.remove('hidden');
 }
