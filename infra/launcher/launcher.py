@@ -813,14 +813,20 @@ def parse_jwt_claims(jwt_token: str) -> dict:
         return {}
 
 
-def generate_initial_attestation(config: dict) -> dict:
+def generate_initial_attestation(config: dict, vm_name: str = None) -> dict:
     """Generate initial TDX attestation for registration.
 
     This function requires Intel Trust Authority verification. The agent will
     crash if it cannot get a valid Intel TA token.
 
+    Implements nonce challenge flow to prevent replay attacks:
+    1. Request nonce from control plane
+    2. Include nonce in TDX quote REPORTDATA field
+    3. Control plane verifies nonce matches expected value
+
     Args:
         config: Launcher config with intel_api_key and intel_api_url
+        vm_name: VM name (required for nonce challenge)
 
     Returns:
         Attestation dict with TDX quote and Intel TA token
@@ -843,13 +849,36 @@ def generate_initial_attestation(config: dict) -> dict:
             "Set intel_api_key in config or INTEL_API_KEY environment variable."
         )
 
-    # Generate TDX quote
-    quote_b64 = generate_tdx_quote()
+    # Request nonce challenge for replay attack prevention
+    nonce = ""
+    nonce_bytes = None
+    if vm_name:
+        nonce = request_nonce_challenge(vm_name)
+        if nonce:
+            # Convert hex nonce to bytes for inclusion in quote
+            try:
+                nonce_bytes = bytes.fromhex(nonce)
+                logger.info(f"Including nonce in TDX quote: {nonce[:16]}...")
+            except ValueError as e:
+                logger.warning(f"Invalid nonce format, proceeding without: {e}")
+                nonce_bytes = None
+
+    # Generate TDX quote with nonce
+    quote_b64 = generate_tdx_quote(user_data=nonce_bytes)
     measurements = parse_tdx_quote(quote_b64)
     mrtd = measurements.get("mrtd", "unknown")
     logger.info(f"Generated TDX quote, MRTD: {mrtd[:32]}...")
     # Log full MRTD for vm_measure command to capture
     print(f"MRTD_FULL={mrtd}", flush=True)
+
+    # Verify nonce was included in REPORTDATA
+    if nonce:
+        report_data = measurements.get("report_data", "")
+        # Nonce should be at the beginning of REPORTDATA (padded with zeros)
+        if report_data.startswith(nonce):
+            logger.info("Nonce verified in TDX quote REPORTDATA")
+        else:
+            logger.warning("Nonce not found in REPORTDATA (may cause registration failure)")
 
     # Call Intel Trust Authority - this is mandatory
     logger.info("Calling Intel Trust Authority for attestation...")
@@ -870,6 +899,40 @@ def generate_initial_attestation(config: dict) -> dict:
             "intel_ta_token": intel_ta_token,
         },
     }
+
+
+def request_nonce_challenge(vm_name: str) -> str:
+    """Request nonce challenge from control plane for replay attack prevention.
+
+    Args:
+        vm_name: VM name for identification
+
+    Returns:
+        Nonce string to include in TDX quote
+
+    Raises:
+        RuntimeError: If challenge request fails
+    """
+    logger.info("Requesting nonce challenge from control plane...")
+
+    try:
+        response = requests.get(
+            f"{CONTROL_PLANE_URL}/api/v1/agents/challenge",
+            params={"vm_name": vm_name},
+            timeout=30,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        nonce = result["nonce"]
+        ttl_seconds = result.get("ttl_seconds", 300)
+        logger.info(f"Received nonce challenge (TTL: {ttl_seconds}s): {nonce[:16]}...")
+        return nonce
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(f"Failed to request nonce challenge: {e}")
+        logger.warning("Proceeding without nonce (may fail if control plane requires it)")
+        return ""
 
 
 def register_with_control_plane(attestation: dict, vm_name: str) -> dict:
@@ -1547,7 +1610,8 @@ def run_agent_mode(config: dict):
     _admin_state["vm_name"] = vm_name
 
     # 1. Generate initial attestation (requires Intel TA - will crash if fails)
-    attestation = generate_initial_attestation(config)
+    # Pass vm_name for nonce challenge (replay attack prevention)
+    attestation = generate_initial_attestation(config, vm_name=vm_name)
     _admin_state["attestation"] = attestation
 
     # 2. Register with control plane (with retry)

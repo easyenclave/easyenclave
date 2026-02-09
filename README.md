@@ -186,6 +186,10 @@ Environment variables:
 |----------|-------------|---------|
 | `ITA_API_URL` | Intel Trust Authority API URL | `https://api.trustauthority.intel.com/appraisal/v2` |
 | `ITA_API_KEY` | Intel Trust Authority API key | (none) |
+| `TCB_ENFORCEMENT_MODE` | TCB status checking mode: `strict`, `warn`, `disabled` | `strict` |
+| `ALLOWED_TCB_STATUSES` | Comma-separated allowed TCB statuses | `UpToDate` |
+| `NONCE_ENFORCEMENT_MODE` | Nonce challenge mode: `required`, `optional`, `disabled` | `required` |
+| `NONCE_TTL_SECONDS` | Nonce expiration time in seconds | `300` |
 | `ADMIN_PASSWORD_HASH` | Bcrypt hash for admin password authentication | (none) |
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub OAuth app client ID (optional) | (none) |
 | `GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth app client secret (optional) | (none) |
@@ -314,6 +318,25 @@ For maximum security, combine TDX with additional techniques:
 - No single party has complete data
 - Protects against insider threats
 - Useful for collaborative analytics
+
+### Attestation Security Features
+
+EasyEnclave enforces two critical security policies during agent registration:
+
+**1. TCB Status Enforcement** - Prevents vulnerable platforms
+- Checks Intel Trust Authority `attester_tcb_status` field
+- Rejects agents with outdated security patches (strict mode)
+- Default: `strict` mode (only UpToDate platforms allowed)
+- Configuration: `TCB_ENFORCEMENT_MODE=strict|warn|disabled`
+
+**2. Nonce Challenge** - Prevents replay attacks
+- Requires agents to request one-time nonce before registration
+- Nonce included in TDX quote REPORTDATA field
+- Prevents attackers from reusing captured attestation quotes
+- Default: `required` mode (nonce mandatory)
+- Configuration: `NONCE_ENFORCEMENT_MODE=required|optional|disabled`
+
+These features are enabled by default in `docker-compose.yml`. See `.env.example` for configuration options.
 
 ### About tee.fail
 

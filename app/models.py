@@ -93,6 +93,14 @@ class AgentRegistrationResponse(BaseModel):
     hostname: str | None = None
 
 
+class AgentChallengeResponse(BaseModel):
+    """Response for nonce challenge request."""
+
+    nonce: str
+    ttl_seconds: int
+    issued_at: str
+
+
 class AgentStatusRequest(BaseModel):
     """Request for agent status update."""
 

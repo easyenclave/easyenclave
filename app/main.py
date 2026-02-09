@@ -53,6 +53,7 @@ from .models import (
     AdminLoginRequest,
     AdminLoginResponse,
     Agent,
+    AgentChallengeResponse,
     AgentDeployedRequest,
     AgentListResponse,
     AgentRegistrationRequest,
@@ -163,6 +164,18 @@ async def background_session_cleanup():
                 logger.info(f"Cleaned up {count} expired admin sessions")
         except Exception as e:
             logger.error(f"Session cleanup error: {e}")
+
+
+async def background_nonce_cleanup():
+    """Background task to clean up expired nonces."""
+    from app.nonce import cleanup_expired_nonces
+
+    while True:
+        try:
+            await asyncio.sleep(60)  # Check every minute
+            cleanup_expired_nonces()
+        except Exception as e:
+            logger.warning(f"Nonce cleanup error: {e}")
 
 
 async def background_health_checker():
@@ -497,8 +510,11 @@ async def lifespan(app: FastAPI):
     terminator_task = asyncio.create_task(background_insufficient_funds_terminator())
     session_cleanup_task = asyncio.create_task(background_session_cleanup())
 
+    # Start nonce cleanup task
+    nonce_cleanup_task = asyncio.create_task(background_nonce_cleanup())
+
     logger.info(
-        "Started background tasks (health checkers, measurement processor, billing, session cleanup)"
+        "Started background tasks (health checkers, measurement processor, billing, session cleanup, nonce cleanup)"
     )
     yield
     # Shutdown
@@ -509,6 +525,7 @@ async def lifespan(app: FastAPI):
     charging_task.cancel()
     terminator_task.cancel()
     session_cleanup_task.cancel()
+    nonce_cleanup_task.cancel()
     for task in [
         service_health_task,
         agent_health_task,
@@ -517,6 +534,7 @@ async def lifespan(app: FastAPI):
         charging_task,
         terminator_task,
         session_cleanup_task,
+        nonce_cleanup_task,
     ]:
         try:
             await task
@@ -689,6 +707,36 @@ async def verify_service(service_id: str):
 # ==============================================================================
 
 
+@app.get("/api/v1/agents/challenge", response_model=AgentChallengeResponse)
+async def request_challenge(vm_name: str):
+    """Request nonce challenge for agent registration.
+
+    Agents should call this endpoint before registration to get a one-time-use
+    nonce that must be included in their TDX quote REPORTDATA field.
+
+    This prevents replay attacks where an attacker captures an old attestation
+    quote and reuses it to register a malicious agent.
+
+    Args:
+        vm_name: Unique identifier for the VM requesting challenge
+
+    Returns:
+        Nonce challenge with expiration time (default 5 minutes)
+    """
+    from app.nonce import NONCE_TTL_SECONDS, issue_challenge
+
+    if not vm_name:
+        raise HTTPException(status_code=400, detail="vm_name required")
+
+    nonce = issue_challenge(vm_name)
+
+    return AgentChallengeResponse(
+        nonce=nonce,
+        ttl_seconds=NONCE_TTL_SECONDS,
+        issued_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
 @app.post("/api/v1/agents/register", response_model=AgentRegistrationResponse)
 async def register_agent(request: AgentRegistrationRequest):
     """Register a launcher agent with the control plane.
@@ -733,11 +781,33 @@ async def register_agent(request: AgentRegistrationRequest):
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     mrtd = verification.mrtd
     intel_ta_token = verification.intel_ta_token
+    tcb_status = verification.tcb_status
 
     logger.info(f"Agent Intel TA token verified ({request.vm_name})")
     logger.info(
         f"Agent MRTD verified from Intel TA: {mrtd[:16]}... (type: {verification.mrtd_type})"
     )
+    logger.info(f"Agent TCB status: {tcb_status} ({request.vm_name})")
+
+    # Verify nonce if present (replay attack protection)
+    from app.ita import extract_intel_ta_claims
+    from app.nonce import NONCE_ENFORCEMENT_MODE, verify_nonce
+
+    ita_claims = extract_intel_ta_claims(intel_ta_token)
+    nonce_from_quote = ita_claims.get("attester_held_data", "").strip() if ita_claims else ""
+
+    if nonce_from_quote:
+        nonce_verified, nonce_error = verify_nonce(request.vm_name, nonce_from_quote)
+        if not nonce_verified:
+            raise HTTPException(status_code=403, detail=f"Nonce verification failed: {nonce_error}")
+        logger.info(f"Nonce verified for {request.vm_name}")
+    elif NONCE_ENFORCEMENT_MODE == "required":
+        raise HTTPException(
+            status_code=400,
+            detail="Nonce required. Call GET /api/v1/agents/challenge first",
+        )
+    elif NONCE_ENFORCEMENT_MODE == "optional":
+        logger.warning(f"Agent {request.vm_name} registered without nonce (optional mode)")
 
     # Both Intel TA and MRTD verified - agent is trusted
     intel_ta_verified = True
@@ -757,6 +827,8 @@ async def register_agent(request: AgentRegistrationRequest):
         "status": "undeployed",
         "verified": verified,
         "verification_error": None,
+        "tcb_status": tcb_status,
+        "tcb_verified_at": datetime.now(timezone.utc),
     }
     if existing:
         agent_kwargs["agent_id"] = existing.agent_id

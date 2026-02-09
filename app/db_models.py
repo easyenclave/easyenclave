@@ -82,6 +82,9 @@ class Agent(SQLModel, table=True):
     machine_sizes: list[str] = Field(
         default_factory=list, sa_column=Column(JSON)
     )  # Which sizes they support
+    # TCB (Trusted Computing Base) status
+    tcb_status: str | None = Field(default=None, index=True)
+    tcb_verified_at: datetime | None = None
 
 
 class Deployment(SQLModel, table=True):

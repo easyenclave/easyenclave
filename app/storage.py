@@ -313,6 +313,17 @@ class AgentStore:
             session.add(agent)
             return True
 
+    def update_tcb_status(self, agent_id: str, tcb_status: str) -> bool:
+        """Update TCB status during attestation refresh."""
+        with get_db() as session:
+            agent = session.get(Agent, agent_id)
+            if not agent:
+                return False
+            agent.tcb_status = tcb_status
+            agent.tcb_verified_at = datetime.now(timezone.utc)
+            session.add(agent)
+            return True
+
     def clear(self) -> None:
         with get_db() as session:
             for a in session.exec(select(Agent)).all():

@@ -20,6 +20,12 @@ from .storage import agent_store, get_trusted_mrtd
 
 logger = logging.getLogger(__name__)
 
+# TCB enforcement configuration
+TCB_ENFORCEMENT_MODE = os.environ.get("TCB_ENFORCEMENT_MODE", "warn").lower()
+ALLOWED_TCB_STATUSES = {
+    s.strip() for s in os.environ.get("ALLOWED_TCB_STATUSES", "UpToDate").split(",")
+}
+
 
 class AttestationError(Exception):
     """Raised when attestation verification fails."""
@@ -37,6 +43,7 @@ class AgentVerificationResult:
     mrtd: str
     intel_ta_token: str
     mrtd_type: str  # "agent" or "proxy"
+    tcb_status: str
 
 
 @dataclass
@@ -120,6 +127,23 @@ async def verify_agent_registration(attestation: dict) -> AgentVerificationResul
             detail="Intel TA token does not contain MRTD claim",
         )
 
+    # Step 2.5: Check TCB status
+    tcb_status = ita_claims.get("attester_tcb_status", "Unknown")
+
+    if TCB_ENFORCEMENT_MODE != "disabled":
+        if tcb_status not in ALLOWED_TCB_STATUSES:
+            error_msg = (
+                f"TCB status '{tcb_status}' not in allowed list: {', '.join(ALLOWED_TCB_STATUSES)}"
+            )
+
+            if TCB_ENFORCEMENT_MODE == "strict":
+                raise AttestationError(detail=error_msg, status_code=403)
+            else:  # warn mode
+                logger.warning(
+                    f"Agent registration proceeding with TCB warning: {error_msg} "
+                    f"(MRTD: {mrtd[:16]}...)"
+                )
+
     # Step 3: Check MRTD against trusted list
     mrtd_type = get_trusted_mrtd(mrtd)
     if not mrtd_type:
@@ -136,6 +160,7 @@ async def verify_agent_registration(attestation: dict) -> AgentVerificationResul
         mrtd=mrtd,
         intel_ta_token=intel_ta_token,
         mrtd_type=mrtd_type,
+        tcb_status=tcb_status,
     )
 
 
@@ -189,7 +214,13 @@ async def refresh_agent_attestation(agent_id: str, attestation: dict) -> bool:
             intel_ta_token=intel_ta_token,
             verified=True,
         )
-        logger.debug(f"Agent {agent_id} attestation refreshed")
+
+        # Update TCB status during refresh
+        ita_claims = result.get("details", {})
+        tcb_status = ita_claims.get("attester_tcb_status", "Unknown")
+        agent_store.update_tcb_status(agent_id, tcb_status)
+
+        logger.debug(f"Agent {agent_id} attestation refreshed (TCB: {tcb_status})")
         return True
     except Exception as e:
         logger.warning(f"Failed to verify attestation for {agent_id}: {e}")
