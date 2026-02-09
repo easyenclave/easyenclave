@@ -43,38 +43,36 @@ apt-get install -y --no-install-recommends \
 echo "[mkosi.prepare] Docker and cloudflared installed."
 
 # =============================================================================
-# Intel Trust Authority CLI (binary download, no apt repo available)
+# Intel Trust Authority CLI (optional — binary download, no apt repo available)
+# Failure here must not abort the build; ConfigFS-TSM is the primary path.
 # =============================================================================
-echo "[mkosi.prepare] Downloading Intel Trust Authority CLI..."
+(
+    echo "[mkosi.prepare] Downloading Intel Trust Authority CLI..."
 
-mkdir -p /tmp/trustauthority
-cd /tmp/trustauthority
+    mkdir -p /tmp/trustauthority
+    cd /tmp/trustauthority
 
-INSTALLED=false
-for url in \
-    "https://github.com/intel/trustauthority-client-for-go/releases/latest/download/trustauthority-cli-v1.10.1.tar.gz" \
-    "https://github.com/intel/trustauthority-client-for-go/releases/download/v1.10.1/trustauthority-cli-v1.10.1.tar.gz" \
-    "https://github.com/intel/trustauthority-client-for-go/releases/latest/download/trustauthority-cli_Linux_x86_64.tar.gz"
-do
-    if curl -fsSL -L -o ta.tar.gz "$url" 2>/dev/null; then
-        if tar -xzf ta.tar.gz 2>/dev/null || tar -xf ta.tar.gz 2>/dev/null; then
-            CLI_BIN=$(find . -name "trustauthority-cli" -type f 2>/dev/null | head -1)
-            if [ -n "$CLI_BIN" ] && [ -f "$CLI_BIN" ]; then
-                install -m 755 "$CLI_BIN" /usr/bin/trustauthority-cli
-                echo "[mkosi.prepare] trustauthority-cli installed."
-                INSTALLED=true
-                break
+    for url in \
+        "https://github.com/intel/trustauthority-client-for-go/releases/latest/download/trustauthority-cli-v1.10.1.tar.gz" \
+        "https://github.com/intel/trustauthority-client-for-go/releases/download/v1.10.1/trustauthority-cli-v1.10.1.tar.gz" \
+        "https://github.com/intel/trustauthority-client-for-go/releases/latest/download/trustauthority-cli_Linux_x86_64.tar.gz"
+    do
+        if curl -fsSL -L -o ta.tar.gz "$url" 2>/dev/null; then
+            if tar -xzf ta.tar.gz 2>/dev/null || tar -xf ta.tar.gz 2>/dev/null; then
+                CLI_BIN=$(find . -name "trustauthority-cli" -type f 2>/dev/null | head -1)
+                if [ -n "$CLI_BIN" ] && [ -f "$CLI_BIN" ]; then
+                    cp "$CLI_BIN" /usr/bin/trustauthority-cli && chmod 755 /usr/bin/trustauthority-cli
+                    echo "[mkosi.prepare] trustauthority-cli installed."
+                    cd / && rm -rf /tmp/trustauthority
+                    exit 0
+                fi
             fi
         fi
-    fi
-    rm -f ta.tar.gz 2>/dev/null || true
-done
+        rm -f ta.tar.gz 2>/dev/null || true
+    done
 
-if [ "$INSTALLED" = false ]; then
     echo "[mkosi.prepare] trustauthority-cli not available (OK — using ConfigFS-TSM)"
-fi
-
-cd /
-rm -rf /tmp/trustauthority
+    cd / && rm -rf /tmp/trustauthority
+) || true
 
 echo "[mkosi.prepare] Done."
