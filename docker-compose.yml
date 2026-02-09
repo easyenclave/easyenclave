@@ -15,10 +15,10 @@ services:
       - TRUSTED_AGENT_MRTDS=${TRUSTED_AGENT_MRTDS:-${SYSTEM_AGENT_MRTD:-}}
       - TRUSTED_PROXY_MRTDS=${TRUSTED_PROXY_MRTDS:-${SYSTEM_PROXY_MRTD:-}}
       # TCB Status Enforcement (strict mode rejects vulnerable platforms)
-      - TCB_ENFORCEMENT_MODE=${TCB_ENFORCEMENT_MODE:-strict}
+      - TCB_ENFORCEMENT_MODE=${TCB_ENFORCEMENT_MODE:-warn}
       - ALLOWED_TCB_STATUSES=${ALLOWED_TCB_STATUSES:-UpToDate}
       # Nonce Challenge (replay attack prevention)
-      - NONCE_ENFORCEMENT_MODE=${NONCE_ENFORCEMENT_MODE:-required}
+      - NONCE_ENFORCEMENT_MODE=${NONCE_ENFORCEMENT_MODE:-optional}
       - NONCE_TTL_SECONDS=${NONCE_TTL_SECONDS:-300}
       - NONCE_LENGTH=${NONCE_LENGTH:-32}
       # Admin authentication (bcrypt hash)
