@@ -1,0 +1,18 @@
+# Mount the config disk at /mnt/config (read-only)
+# This is a small ext4 image containing config.json, created by tdx_cli.py.
+# Replaces cloud-init for the verity image.
+
+[Unit]
+Description=Config disk (/mnt/config)
+DefaultDependencies=no
+After=local-fs-pre.target
+Before=local-fs.target
+
+[Mount]
+What=/dev/vdc
+Where=/mnt/config
+Type=ext4
+Options=ro,noatime
+
+[Install]
+WantedBy=local-fs.target

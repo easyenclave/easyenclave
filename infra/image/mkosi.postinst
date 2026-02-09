@@ -1,0 +1,107 @@
+#!/bin/bash
+# Post-installation script for EasyEnclave TDX VM image
+# Runs inside the image during mkosi build to install Docker, cloudflared,
+# Intel Trust Authority CLI, and configure services.
+set -euo pipefail
+
+echo "[mkosi.postinst] Starting post-installation..."
+
+# =============================================================================
+# Docker CE
+# =============================================================================
+echo "[mkosi.postinst] Installing Docker CE..."
+
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu noble stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+apt-get update
+apt-get install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin
+
+systemctl enable docker.service
+systemctl enable containerd.service
+
+# =============================================================================
+# Cloudflared
+# =============================================================================
+echo "[mkosi.postinst] Installing cloudflared..."
+
+curl -fsSL -o /tmp/cloudflared.deb \
+    https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+dpkg -i /tmp/cloudflared.deb || apt-get install -f -y
+rm -f /tmp/cloudflared.deb
+
+# =============================================================================
+# Intel Trust Authority CLI (optional)
+# =============================================================================
+echo "[mkosi.postinst] Installing Intel Trust Authority CLI..."
+
+mkdir -p /tmp/trustauthority
+cd /tmp/trustauthority
+
+INSTALLED=false
+for url in \
+    "https://github.com/intel/trustauthority-client-for-go/releases/latest/download/trustauthority-cli-v1.10.1.tar.gz" \
+    "https://github.com/intel/trustauthority-client-for-go/releases/download/v1.10.1/trustauthority-cli-v1.10.1.tar.gz" \
+    "https://github.com/intel/trustauthority-client-for-go/releases/latest/download/trustauthority-cli_Linux_x86_64.tar.gz"
+do
+    if curl -fsSL -L -o ta.tar.gz "$url" 2>/dev/null; then
+        if tar -xzf ta.tar.gz 2>/dev/null || tar -xf ta.tar.gz 2>/dev/null; then
+            CLI_BIN=$(find . -name "trustauthority-cli" -type f 2>/dev/null | head -1)
+            if [ -n "$CLI_BIN" ] && [ -f "$CLI_BIN" ]; then
+                install -m 755 "$CLI_BIN" /usr/local/bin/trustauthority-cli
+                echo "[mkosi.postinst] trustauthority-cli installed"
+                INSTALLED=true
+                break
+            fi
+        fi
+    fi
+    rm -f ta.tar.gz 2>/dev/null || true
+done
+
+if [ "$INSTALLED" = false ]; then
+    echo "[mkosi.postinst] trustauthority-cli not available (OK - using ConfigFS-TSM)"
+fi
+
+cd /
+rm -rf /tmp/trustauthority
+
+# =============================================================================
+# Launcher
+# =============================================================================
+echo "[mkosi.postinst] Installing launcher..."
+
+mkdir -p /opt/launcher
+# Launcher files are placed in mkosi.extra/opt/launcher/ by the Makefile
+# They'll already be in the image at this point via ExtraTrees
+
+chmod +x /opt/launcher/launcher.py 2>/dev/null || true
+
+# Enable services installed via skeleton
+systemctl enable tdx-launcher.service
+systemctl enable tdx-tsm-setup.service
+
+# Disable SSH by default (read-only rootfs, no password access)
+systemctl disable ssh.service 2>/dev/null || true
+
+# =============================================================================
+# Create required directories
+# =============================================================================
+mkdir -p /etc/easyenclave
+mkdir -p /data
+mkdir -p /mnt/config
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+apt-get clean
+rm -rf /var/lib/apt/lists/* /tmp/*
+
+echo "[mkosi.postinst] Post-installation complete!"

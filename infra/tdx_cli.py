@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -94,9 +95,100 @@ class TDXManager:
                 return Path(p).resolve()
         raise FileNotFoundError("TDX image not found. Set TDX_IMAGE_PATH or provide --image path.")
 
-    def _get_template(self) -> Path:
+    def _get_template(self, verity: bool = False) -> Path:
         """Get XML template path."""
-        return self.infra_dir / "vm_templates" / "trust_domain.xml.template"
+        name = "trust_domain_verity" if verity else "trust_domain"
+        return self.infra_dir / "vm_templates" / f"{name}.xml.template"
+
+    def _find_verity_image(self, image_path: str | None = None) -> dict:
+        """Find verity image artifacts (kernel, initrd, rootfs, cmdline).
+
+        Returns dict with paths to kernel, initrd, root, and cmdline content.
+        """
+        search_dirs = [
+            image_path,
+            os.environ.get("TDX_VERITY_IMAGE_DIR"),
+            str(self.infra_dir / "image/output"),
+            str(self.workspace / "infra/image/output"),
+        ]
+        for d in search_dirs:
+            if not d or not Path(d).is_dir():
+                continue
+            p = Path(d)
+            kernel = p / "easyenclave.vmlinuz"
+            initrd = p / "easyenclave.initrd"
+            root = p / "easyenclave.root.raw"
+            cmdline_file = p / "easyenclave.cmdline"
+            if kernel.exists() and initrd.exists() and root.exists() and cmdline_file.exists():
+                return {
+                    "kernel": kernel.resolve(),
+                    "initrd": initrd.resolve(),
+                    "root": root.resolve(),
+                    "cmdline": cmdline_file.read_text().strip(),
+                }
+        raise FileNotFoundError(
+            "Verity image artifacts not found. Build with: cd infra/image && make build\n"
+            "Or set TDX_VERITY_IMAGE_DIR to the directory containing the artifacts."
+        )
+
+    def _create_config_disk(self, vm_id: str, config: dict) -> Path:
+        """Create a small ext4 image containing config.json.
+
+        Replaces cloud-init for verity images. The image is mounted
+        read-only at /mnt/config inside the VM.
+
+        Args:
+            vm_id: Unique VM identifier
+            config: Configuration dict to write as config.json
+
+        Returns:
+            Path to the config disk image
+        """
+        img_path = self.WORKDIR / f"config.{vm_id}.img"
+        config_json = json.dumps(config)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Write config.json to a temp directory
+            config_file = Path(tmpdir) / "config.json"
+            config_file.write_text(config_json)
+
+            # Create a small ext4 image (8MB is plenty for config)
+            subprocess.run(
+                ["dd", "if=/dev/zero", f"of={img_path}", "bs=1M", "count=8"],
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["mkfs.ext4", "-q", "-d", tmpdir, str(img_path)],
+                check=True,
+                capture_output=True,
+            )
+
+        img_path.chmod(0o644)
+        return img_path
+
+    def _create_data_disk(self, vm_id: str, size_gb: int = 20) -> Path:
+        """Create an empty qcow2 disk for Docker storage and workloads.
+
+        This disk is mounted at /data inside the VM and provides writable
+        storage on the otherwise read-only verity rootfs.
+
+        Args:
+            vm_id: Unique VM identifier
+            size_gb: Disk size in GiB (default 20)
+
+        Returns:
+            Path to the data disk image
+        """
+        img_path = self.WORKDIR / f"data.{vm_id}.qcow2"
+        subprocess.run(
+            ["qemu-img", "create", "-f", "qcow2", str(img_path), f"{size_gb}G"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        img_path.chmod(0o666)
+        return img_path
 
     def _create_cloud_init_iso(self, vm_id: str, config: dict, debug: bool = False) -> Path:
         """Create NoCloud ISO with VM configuration.
@@ -178,6 +270,8 @@ runcmd:
         debug: bool = False,
         memory_gib: int = 16,
         vcpu_count: int = 32,
+        verity: bool = False,
+        data_disk_gb: int = 20,
     ) -> dict:
         """Create and boot a new TDX VM.
 
@@ -189,12 +283,16 @@ runcmd:
             image: Path to TDX VM image (auto-detected if not provided)
             mode: Launcher mode (control-plane or agent)
             config: Additional config to pass to launcher
+            debug: If True, enable SSH and set password for debugging
+            memory_gib: VM memory in GiB
+            vcpu_count: Number of vCPUs
+            verity: If True, use dm-verity image with direct kernel boot
+            data_disk_gb: Size of data disk in GiB (verity mode only, default 20)
 
         Returns:
             Dict with vm_name, uuid, and info
         """
-        image_path = self._find_image(image)
-        template = self._get_template()
+        template = self._get_template(verity=verity)
 
         if not template.exists():
             raise FileNotFoundError(f"XML template not found: {template}")
@@ -206,34 +304,13 @@ runcmd:
         except PermissionError:
             pass  # Directory owned by another user, proceed anyway
         rand_str = uuid.uuid4().hex[:15]
-        overlay_path = self.WORKDIR / f"overlay.{rand_str}.qcow2"
 
-        subprocess.run(
-            [
-                "qemu-img",
-                "create",
-                "-f",
-                "qcow2",
-                "-F",
-                "qcow2",
-                "-b",
-                str(image_path),
-                str(overlay_path),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        # Make overlay writable by QEMU (runs as ubuntu per qemu.conf)
-        overlay_path.chmod(0o666)
-
-        # Create cloud-init ISO with config
+        # Build launcher config
         launcher_config = {
             "mode": mode,
             "vm_id": rand_str,
             **(config or {}),
         }
-        cloud_init_iso = self._create_cloud_init_iso(rand_str, launcher_config, debug=debug)
 
         # Create serial console log file with world-readable permissions
         # (libvirt will append to it, preserving permissions)
@@ -243,14 +320,56 @@ runcmd:
         # Generate domain XML with unique name (supports concurrent VM creation)
         temp_domain = f"{self.DOMAIN_PREFIX}-{rand_str}"
         xml_content = template.read_text()
-        xml_content = xml_content.replace("BASE_IMG_PATH", str(image_path))
-        xml_content = xml_content.replace("OVERLAY_IMG_PATH", str(overlay_path))
-        xml_content = xml_content.replace("CLOUD_INIT_ISO", str(cloud_init_iso))
         xml_content = xml_content.replace("SERIAL_LOG_PATH", str(serial_log))
         xml_content = xml_content.replace("DOMAIN", temp_domain)
         xml_content = xml_content.replace("HOSTDEV_DEVICES", "")
         xml_content = xml_content.replace("MEMORY_GIB", str(memory_gib))
         xml_content = xml_content.replace("VCPU_COUNT", str(vcpu_count))
+
+        if verity:
+            # dm-verity boot: direct kernel boot with 3 separate disks
+            artifacts = self._find_verity_image(image)
+            config_img = self._create_config_disk(rand_str, launcher_config)
+            data_img = self._create_data_disk(rand_str, size_gb=data_disk_gb)
+
+            xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
+            xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
+            xml_content = xml_content.replace("KERNEL_CMDLINE", artifacts["cmdline"])
+            xml_content = xml_content.replace("ROOT_IMG_PATH", str(artifacts["root"]))
+            xml_content = xml_content.replace("DATA_IMG_PATH", str(data_img))
+            xml_content = xml_content.replace("CONFIG_IMG_PATH", str(config_img))
+        else:
+            # Legacy boot: overlay qcow2 + cloud-init ISO
+            image_path = self._find_image(image)
+            overlay_path = self.WORKDIR / f"overlay.{rand_str}.qcow2"
+
+            subprocess.run(
+                [
+                    "qemu-img",
+                    "create",
+                    "-f",
+                    "qcow2",
+                    "-F",
+                    "qcow2",
+                    "-b",
+                    str(image_path),
+                    str(overlay_path),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            overlay_path.chmod(0o666)
+
+            cloud_init_iso = self._create_cloud_init_iso(
+                rand_str,
+                launcher_config,
+                debug=debug,
+            )
+
+            xml_content = xml_content.replace("BASE_IMG_PATH", str(image_path))
+            xml_content = xml_content.replace("OVERLAY_IMG_PATH", str(overlay_path))
+            xml_content = xml_content.replace("CLOUD_INIT_ISO", str(cloud_init_iso))
 
         xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.{rand_str}.xml"
         xml_path.write_text(xml_content)
@@ -275,6 +394,7 @@ runcmd:
             "name": vm_name,
             "uuid": vm_uuid,
             "mode": mode,
+            "verity": verity,
             "serial_log": str(serial_log),
             "info": result.stdout,
         }
@@ -286,6 +406,8 @@ runcmd:
         debug: bool = False,
         memory_gib: int = 16,
         vcpu_count: int = 32,
+        verity: bool = False,
+        data_disk_gb: int = 20,
     ) -> dict:
         """Launch a control plane in a TDX VM.
 
@@ -331,6 +453,8 @@ runcmd:
             debug=debug,
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
+            verity=verity,
+            data_disk_gb=data_disk_gb,
         )
         result["control_plane_port"] = port
 
@@ -415,6 +539,7 @@ runcmd:
         timeout: int = 180,
         memory_gib: int = 16,
         vcpu_count: int = 32,
+        verity: bool = False,
     ) -> dict:
         """Boot a temporary VM to capture MRTD, then destroy it.
 
@@ -448,6 +573,7 @@ runcmd:
             debug=True,
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
+            verity=verity,
         )
         vm_name = result["name"]
         serial_log = result.get("serial_log")
@@ -542,6 +668,15 @@ To start a new EasyEnclave network:
         "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
     )
     cp_new_parser.add_argument(
+        "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
+    )
+    cp_new_parser.add_argument(
+        "--data-disk-gb",
+        type=int,
+        default=20,
+        help="Data disk size in GiB (verity mode, default 20)",
+    )
+    cp_new_parser.add_argument(
         "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
     )
     cp_new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
@@ -566,6 +701,15 @@ To start a new EasyEnclave network:
     new_parser.add_argument(
         "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
     )
+    new_parser.add_argument(
+        "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
+    )
+    new_parser.add_argument(
+        "--data-disk-gb",
+        type=int,
+        default=20,
+        help="Data disk size in GiB (verity mode, default 20)",
+    )
     new_parser.add_argument("--memory", type=int, default=16, help="VM memory in GiB (default 16)")
     new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
 
@@ -581,6 +725,9 @@ To start a new EasyEnclave network:
     measure_parser.add_argument("-i", "--image", help="Path to TDX image")
     measure_parser.add_argument(
         "--timeout", type=int, default=180, help="Timeout in seconds (default 180)"
+    )
+    measure_parser.add_argument(
+        "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
     measure_parser.add_argument(
         "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
@@ -603,6 +750,8 @@ To start a new EasyEnclave network:
                     debug=args.debug,
                     memory_gib=args.memory,
                     vcpu_count=args.vcpus,
+                    verity=args.verity,
+                    data_disk_gb=args.data_disk_gb,
                 )
 
                 if args.wait:
@@ -672,6 +821,8 @@ To start a new EasyEnclave network:
                     debug=args.debug,
                     memory_gib=args.memory,
                     vcpu_count=args.vcpus,
+                    verity=args.verity,
+                    data_disk_gb=args.data_disk_gb,
                 )
                 print(json.dumps(result, indent=2))
 
@@ -700,7 +851,11 @@ To start a new EasyEnclave network:
                     mgr.vm_delete(args.name)
             elif args.vm_command == "measure":
                 result = mgr.vm_measure(
-                    args.image, args.timeout, memory_gib=args.memory, vcpu_count=args.vcpus
+                    args.image,
+                    args.timeout,
+                    memory_gib=args.memory,
+                    vcpu_count=args.vcpus,
+                    verity=args.verity,
                 )
                 if result.get("mrtd"):
                     # Print just the MRTD for easy scripting

@@ -61,13 +61,23 @@ MODE_AGENT = "agent"
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8081"))
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 
-# Paths
-WORKLOAD_DIR = Path("/home/tdx/workload")
-TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
-CONTROL_PLANE_DIR = Path("/home/tdx/easyenclave")
+# Paths — detect verity image (data disk at /data) vs legacy image
+_DATA_MOUNT = Path("/data")
+if _DATA_MOUNT.is_mount() or _DATA_MOUNT.exists() and (_DATA_MOUNT / "docker").exists():
+    WORKLOAD_DIR = _DATA_MOUNT / "workload"
+    CONTROL_PLANE_DIR = _DATA_MOUNT / "easyenclave"
+else:
+    WORKLOAD_DIR = Path("/home/tdx/workload")
+    CONTROL_PLANE_DIR = Path("/home/tdx/easyenclave")
 
-# Config file provisioned by cloud-init
-CONFIG_FILE = Path("/etc/easyenclave/config.json")
+TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
+
+# Config file search chain: env override → verity config disk → legacy cloud-init
+CONFIG_PATHS = [
+    Path(os.environ.get("EASYENCLAVE_CONFIG", "/dev/null")),
+    Path("/mnt/config/config.json"),  # verity image (config disk)
+    Path("/etc/easyenclave/config.json"),  # legacy image (cloud-init)
+]
 
 # Log level mapping
 LOG_LEVEL_MAP = {
@@ -599,20 +609,29 @@ def collect_system_stats() -> dict:
 
 
 def get_launcher_config() -> dict:
-    """Read config from cloud-init provisioned file.
+    """Read config from the first available config path.
+
+    Search order:
+      1. EASYENCLAVE_CONFIG env var
+      2. /mnt/config/config.json (verity image — config disk)
+      3. /etc/easyenclave/config.json (legacy image — cloud-init)
 
     Returns:
         Config dict with mode and other settings
     """
-    if CONFIG_FILE.exists():
-        try:
-            config = json.loads(CONFIG_FILE.read_text())
-            logger.info(f"Loaded config: mode={config.get('mode', MODE_AGENT)}")
-            return config
-        except Exception as e:
-            logger.warning(f"Could not read config: {e}")
+    for config_path in CONFIG_PATHS:
+        if config_path.exists() and config_path.is_file():
+            try:
+                config = json.loads(config_path.read_text())
+                logger.info(
+                    f"Loaded config from {config_path}: mode={config.get('mode', MODE_AGENT)}"
+                )
+                return config
+            except Exception as e:
+                logger.warning(f"Could not read config from {config_path}: {e}")
 
     # Default to agent mode
+    logger.warning("No config file found, defaulting to agent mode")
     return {"mode": MODE_AGENT}
 
 
@@ -1686,6 +1705,10 @@ def main():
     """Main entry point - determines mode and runs accordingly."""
     logger.info("TDX Launcher starting...")
     logger.info(f"Version: {VERSION}")
+
+    # Ensure writable directories exist (data disk starts empty in verity mode)
+    WORKLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    CONTROL_PLANE_DIR.mkdir(parents=True, exist_ok=True)
 
     # Read config to determine mode
     config = get_launcher_config()

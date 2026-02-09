@@ -144,21 +144,25 @@ jobs:
           if [ -d "infra/output" ]; then
             sudo chown -R "$(id -u):$(id -g)" infra/output/ || true
           fi
+          if [ -d "infra/image/output" ]; then
+            sudo chown -R "$(id -u):$(id -g)" infra/image/output/ || true
+          fi
 
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build VM image
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build verity VM image (mkosi)
         id: build
         run: |
-          if [ -f "infra/output/tdx-runner-base.qcow2" ]; then
-            sudo bash infra/build_image.sh --customize-only
-          else
-            sudo bash infra/build_image.sh
-          fi
-          sudo chown -R "$(id -u):$(id -g)" infra/output/
-          # Output image digest for attestation
-          echo "digest=$(sha256sum infra/output/tdx-runner-base.qcow2 | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          cd infra/image && nix develop --command make build
+          # Output rootfs digest for attestation
+          echo "digest=$(sha256sum output/easyenclave.root.raw | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          # Verify roothash is present in cmdline
+          cat output/easyenclave.cmdline
+          grep -q "roothash=" output/easyenclave.cmdline || { echo "::error::No roothash in cmdline"; exit 1; }
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
@@ -170,7 +174,7 @@ jobs:
         id: measure
         run: |
           echo "Measuring MRTD from temp VM..."
-          MRTD=$(python3 infra/tdx_cli.py vm measure --timeout 180)
+          MRTD=$(python3 infra/tdx_cli.py vm measure --verity --timeout 180)
           if [ -z "$MRTD" ]; then
             echo "::error::Failed to measure MRTD"
             exit 1
@@ -186,7 +190,7 @@ jobs:
           TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtd }}
           ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
         run: |
-          python3 infra/tdx_cli.py control-plane new --wait --port 8080
+          python3 infra/tdx_cli.py control-plane new --verity --wait --port 8080
 
       - name: Wait for tunnel
         run: |
@@ -201,7 +205,7 @@ jobs:
         run: |
           # Launch 5 agents in parallel (measuring enclave, oram-contacts, private-llm, hello-tdx, plus 1 spare)
           for _i in 1 2 3 4 5; do
-            python3 infra/tdx_cli.py vm new --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --memory 4 --vcpus 4 --wait &
+            python3 infra/tdx_cli.py vm new --verity --easyenclave-url https://app.easyenclave.com --intel-api-key "$INTEL_API_KEY" --memory 4 --vcpus 4 --wait &
           done
           wait
           echo "All 5 agents launched"

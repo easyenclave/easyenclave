@@ -1,0 +1,18 @@
+# Mount the data disk at /data
+# This is a separate writable qcow2 for Docker storage and workload files.
+# Created by tdx_cli.py and attached as /dev/vdb.
+
+[Unit]
+Description=Data disk (/data)
+DefaultDependencies=no
+After=local-fs-pre.target
+Before=local-fs.target
+
+[Mount]
+What=/dev/vdb
+Where=/data
+Type=ext4
+Options=defaults,noatime
+
+[Install]
+WantedBy=local-fs.target

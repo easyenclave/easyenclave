@@ -1,4 +1,13 @@
 #!/bin/bash
+# DEPRECATED: Use infra/image/ (mkosi + dm-verity) instead.
+# This script builds a mutable qcow2 image without rootfs integrity.
+# The new mkosi-based build produces a dm-verity protected image where
+# the rootfs is cryptographically bound to the attestation chain.
+#
+# New build: cd infra/image && nix develop --command make build
+#
+# This script is kept for backward compatibility but will be removed.
+#
 # Build custom TDX VM image with Docker and attestation tools
 # Wraps Canonical's create-td-image.sh with customizations
 
