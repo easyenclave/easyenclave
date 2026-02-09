@@ -32,7 +32,85 @@ A confidential discovery service for TDX-attested applications. EasyEnclave enab
 - AMD SEV-SNP - 🔜 Coming soon
 - ARM CCA - 🔜 Planned
 
-**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for detailed explanations of remote attestation, TEE technologies, and security considerations.
+**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for ORAM details, deployment guides, and additional Q&A.
+
+### What is Intel TDX?
+
+**Intel Trust Domain Extensions (TDX)** is a hardware-based TEE technology.
+
+**How it works:**
+- **Hardware isolation** - CPU enforces memory encryption
+- **Encrypted memory** - All RAM encrypted with per-VM keys
+- **Integrity protection** - Detects memory tampering
+- **Attestation** - Cryptographic proof of running code
+
+**Protection boundaries:**
+```
+┌─────────────────────────────────────────┐
+│  Untrusted: Cloud Provider              │
+│  ┌───────────────────────────────────┐  │
+│  │ Hypervisor (VMware, KVM, Hyper-V) │  │
+│  │ ❌ Cannot read TDX memory          │  │
+│  └───────────────────────────────────┘  │
+│  ┌───────────────────────────────────┐  │
+│  │ Operating System (Linux, etc.)    │  │
+│  │ ❌ Cannot read TDX memory          │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+           ↓ Encrypted boundary
+┌─────────────────────────────────────────┐
+│  Trusted: TDX Virtual Machine           │
+│  ┌───────────────────────────────────┐  │
+│  │ Your Application + Data           │  │
+│  │ ✅ Protected by hardware          │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+```
+
+**Requirements:**
+- 4th Gen Intel Xeon Scalable or newer (Sapphire Rapids+)
+- TDX-enabled BIOS
+- TDX-aware hypervisor (KVM, VMware ESXi)
+
+### TDX vs SGX
+
+| Feature | Intel TDX | Intel SGX |
+|---------|-----------|-----------|
+| **Isolation** | Full VM | Enclave (process) |
+| **Memory** | Gigabytes | Megabytes |
+| **Performance** | Near-native | 10-50% overhead |
+| **OS Support** | Any OS | Modified app |
+| **Use Case** | Large apps | Small modules |
+| **Status** | ✅ Production | ⚠️ Deprecated on client CPUs |
+
+**TDX advantages:**
+- Run entire VMs (no app changes)
+- More memory (scale to hundreds of GBs)
+- Better performance
+- Easier to use
+
+**SGX advantages:**
+- Smaller TCB (fewer trusted components)
+- Works on older hardware
+- More mature ecosystem
+
+**EasyEnclave focuses on TDX** because it's easier for developers and supports larger applications (like LLMs).
+
+### TDX vs AMD SEV-SNP
+
+| Feature | Intel TDX | AMD SEV-SNP |
+|---------|-----------|-------------|
+| **Encryption** | AES-GCM per-VM | AES per-VM |
+| **Integrity** | Hardware checks | Hardware checks |
+| **Attestation** | Intel Trust Authority | AMD ASP |
+| **Availability** | 4th Gen Xeon+ | EPYC Milan+ |
+| **Maturity** | Production (2023+) | Production (2021+) |
+
+**Both provide:**
+- ✅ Memory encryption
+- ✅ Remote attestation
+- ✅ VM-level isolation
+- ✅ Protection from cloud provider
 
 ## Quick Start
 
@@ -292,13 +370,14 @@ easyenclave/
 
 EasyEnclave uses Intel TDX, which provides hardware-based protection:
 
-| Threat | Protection | Notes |
-|--------|------------|-------|
-| Remote attackers | ✅ Full | Memory encryption + isolation |
-| Malicious cloud provider | ✅ Full | Cannot read TEE memory |
-| Malicious OS/hypervisor | ✅ Full | Hardware-enforced isolation |
-| Physical attacks | ⚠️ Limited | See defense-in-depth below |
-| Side channels (cache) | ⚠️ Partial | Some mitigations available |
+| Attack Type | TDX Protection | Notes |
+|-------------|----------------|-------|
+| **Remote attacker** | ✅ Full | Encrypted memory, network isolation |
+| **Malicious hypervisor** | ✅ Full | Hardware-enforced memory encryption |
+| **Malicious OS** | ✅ Full | TEE isolated from OS |
+| **Physical memory dump** | ✅ Partial | Memory encrypted, but keys could be extracted |
+| **Side channels (cache)** | ⚠️ Partial | Some mitigations, not perfect |
+| **Voltage glitching** | ⚠️ Limited | Hardware defenses, but attackable |
 
 ### Defense-in-Depth: Beyond TEEs
 
@@ -340,16 +419,63 @@ These features are enabled by default in `docker-compose.yml`. See `.env.example
 
 ### About tee.fail
 
-[tee.fail](https://tee.fail) documents physical attacks on TEEs (voltage glitching, laser fault injection). While these attacks are real, they require:
-- Physical access to server
-- Expensive lab equipment
-- Nation-state resources
+**[tee.fail](https://tee.fail)** documents physical attacks on TEEs, showing that:
 
-**For most applications:** TDX provides excellent protection.
+1. **TEE encryption can be broken** with physical access
+   - Voltage glitching
+   - Laser fault injection
+   - Memory bus sniffing
 
-**For high-security applications:** Add ORAM or MPC for defense-in-depth.
+2. **Side channels leak information**
+   - Cache timing attacks
+   - Page fault patterns
+   - Memory access patterns
 
-**See [docs/FAQ.md](docs/FAQ.md)** for detailed threat analysis and when to use different protection levels.
+3. **Supply chain attacks** possible
+   - Compromised firmware
+   - Modified hardware
+
+**Does this mean TEEs are useless?**
+
+**No!** TEEs still provide strong protection:
+
+✅ **Against remote attackers** - TDX is excellent
+✅ **Against cloud providers** - Strong protection
+✅ **Against malicious OS** - Full protection
+⚠️ **Against nation-states with physical access** - Limited
+
+**Defense-in-depth approach:**
+- **Use TEEs** for cloud/OS protection
+- **Add ORAM** for access pattern protection
+- **Use MPC** for multi-party scenarios
+- **Use encryption** for data at rest
+
+### When Should I Worry About Physical Attacks?
+
+**It depends on your threat model:**
+
+**Low risk scenarios:**
+- Running on your own hardware
+- Trusted cloud provider
+- Non-critical data
+
+**High risk scenarios:**
+- Nation-state adversaries
+- High-value data (medical, financial)
+- Regulated industries (HIPAA, GDPR)
+
+**Recommendations:**
+
+| Threat Level | Protection Strategy |
+|--------------|---------------------|
+| **Basic** | TDX + attestation |
+| **Moderate** | TDX + attestation + encrypted storage |
+| **High** | TDX + ORAM + MPC + defense-in-depth |
+| **Maximum** | Air-gapped + HSMs + formal verification |
+
+**For most use cases:** TDX attestation is sufficient.
+
+**For privacy-critical apps:** Add ORAM (see `apps/oram-contacts/`).
 
 ## Examples
 
@@ -373,7 +499,7 @@ Privacy-preserving contact discovery with Oblivious RAM.
 
 ## Documentation
 
-- **[FAQ](docs/FAQ.md)** - Remote attestation, TEE technologies, ORAM, security
+- **[FAQ](docs/FAQ.md)** - ORAM details, deployment guides, and additional Q&A
 - **[GitHub OAuth Setup](docs/GITHUB_OAUTH.md)** - Admin authentication configuration
 - **[SDK Documentation](sdk/README.md)** - Python client library
 - **[ORAM Example](apps/oram-contacts/README.md)** - Privacy-preserving contact discovery

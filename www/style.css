@@ -401,9 +401,223 @@ section h2 {
     font-size: 0.9rem;
 }
 
+/* TEE Section */
+.tee-section {
+    background: var(--gray-50);
+}
+
+.tee-features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 30px;
+    max-width: 900px;
+    margin: 0 auto 60px;
+}
+
+.tee-feature {
+    background: white;
+    padding: 25px;
+    border-radius: 12px;
+    text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.tee-feature h3 {
+    font-size: 1rem;
+    margin-bottom: 10px;
+    color: var(--gray-900);
+}
+
+.tee-feature p {
+    font-size: 0.85rem;
+    color: var(--gray-600);
+}
+
+.tee-boundary {
+    max-width: 700px;
+    margin: 0 auto 60px;
+}
+
+.tee-boundary h3 {
+    text-align: center;
+    font-size: 1.3rem;
+    margin-bottom: 25px;
+    color: var(--gray-900);
+}
+
+.boundary-diagram {
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.boundary-items {
+    display: flex;
+    flex-direction: column;
+}
+
+.boundary-layer {
+    padding: 20px 25px;
+}
+
+.boundary-layer.untrusted {
+    background: #fef2f2;
+    border: 2px solid #fecaca;
+}
+
+.boundary-layer.trusted {
+    background: #f0fdf4;
+    border: 2px solid #bbf7d0;
+}
+
+.boundary-label {
+    display: inline-block;
+    font-size: 0.75rem;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
+    border-radius: 3px;
+    margin-bottom: 12px;
+}
+
+.boundary-layer.untrusted .boundary-label {
+    background: var(--danger);
+    color: white;
+}
+
+.boundary-layer.trusted .boundary-label {
+    background: var(--success);
+    color: white;
+}
+
+.boundary-entry {
+    font-size: 0.9rem;
+    color: var(--gray-700);
+    padding: 6px 0;
+}
+
+.boundary-divider {
+    background: var(--gray-800);
+    color: white;
+    text-align: center;
+    padding: 8px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+}
+
+.tee-threats {
+    max-width: 700px;
+    margin: 0 auto 60px;
+}
+
+.tee-threats h3 {
+    text-align: center;
+    font-size: 1.3rem;
+    margin-bottom: 25px;
+    color: var(--gray-900);
+}
+
+.protection-full {
+    display: inline-block;
+    background: #dcfce7;
+    color: #166534;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.protection-partial {
+    display: inline-block;
+    background: #fef3c7;
+    color: #92400e;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.tee-vendors {
+    max-width: 900px;
+    margin: 0 auto 40px;
+}
+
+.tee-vendors h3 {
+    text-align: center;
+    font-size: 1.3rem;
+    margin-bottom: 25px;
+    color: var(--gray-900);
+}
+
+.vendor-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 25px;
+}
+
+.vendor-card {
+    background: white;
+    padding: 25px;
+    border-radius: 12px;
+    border: 2px solid var(--gray-200);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+
+.vendor-card.vendor-active {
+    border-color: var(--primary);
+}
+
+.vendor-card h4 {
+    font-size: 1.1rem;
+    color: var(--gray-900);
+    margin-bottom: 10px;
+}
+
+.vendor-card p {
+    font-size: 0.85rem;
+    color: var(--gray-600);
+    margin-bottom: 15px;
+}
+
+.vendor-status {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.status-production {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.status-planned {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.tee-learn-more {
+    text-align: center;
+    color: var(--gray-600);
+    font-size: 0.95rem;
+}
+
+.tee-learn-more a {
+    color: var(--primary);
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.tee-learn-more a:hover {
+    text-decoration: underline;
+}
+
 /* Run an Agent Section */
 .run-agent {
-    background: var(--gray-50);
+    background: white;
 }
 
 .agent-options {
@@ -792,6 +1006,10 @@ section h2 {
 
     .arch-arrow.vertical .arrow-line {
         display: block;
+    }
+
+    .boundary-items {
+        flex-direction: column;
     }
 
     .footer-content {
