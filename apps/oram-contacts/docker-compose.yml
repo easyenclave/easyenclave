@@ -1,6 +1,5 @@
 services:
   oram-contacts:
-    build: .
     image: ghcr.io/easyenclave/easyenclave/oram-contacts:latest
     ports:
       - "8080:8080"
