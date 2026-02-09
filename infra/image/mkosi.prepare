@@ -1,54 +1,12 @@
 #!/bin/bash
-# Prepare script — runs with network access AFTER base Packages= are installed.
-# Adds third-party apt repos, installs their packages, and downloads non-apt binaries.
-#
-# mkosi calls this once per image stage (e.g. "build", "final").
-# We only need to run for the final image.
-#
-# mkosi lifecycle:
-#   Packages= (apt install) → PrepareScripts (network) → PostInstallationScripts (no network)
+# Prepare script — runs with network access AFTER Packages= are installed.
+# Downloads optional non-apt binaries only.
+# Apt repos and packages are handled via PackageManagerTrees + Packages= in mkosi.conf.
 set -euo pipefail
 
 if [ "${1:-}" != "final" ]; then
-    echo "[mkosi.prepare] Skipping for stage '${1:-unknown}' (only runs for 'final')."
     exit 0
 fi
-
-echo "[mkosi.prepare] Installing third-party packages..."
-
-# =============================================================================
-# Docker CE
-# =============================================================================
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
-
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-https://download.docker.com/linux/ubuntu noble stable" \
-    > /etc/apt/sources.list.d/docker.list
-
-# =============================================================================
-# Cloudflared apt repo
-# =============================================================================
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/cloudflare.gpg
-chmod a+r /etc/apt/keyrings/cloudflare.gpg
-
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/cloudflare.gpg] \
-https://pkg.cloudflare.com/cloudflared noble main" \
-    > /etc/apt/sources.list.d/cloudflared.list
-
-# =============================================================================
-# Install packages from the repos we just added
-# =============================================================================
-apt-get update
-apt-get install -y --no-install-recommends \
-    docker-ce docker-ce-cli containerd.io \
-    docker-buildx-plugin docker-compose-plugin \
-    cloudflared
-
-echo "[mkosi.prepare] Docker and cloudflared installed."
 
 # =============================================================================
 # Intel Trust Authority CLI (optional — binary download, no apt repo available)
