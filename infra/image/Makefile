@@ -23,7 +23,7 @@ LAUNCHER_FILES := $(LAUNCHER_DIR)/launcher.py $(wildcard $(LAUNCHER_DIR)/admin.h
 .PHONY: build clean
 
 build: $(EXTRA_DIR)/launcher.py
-	mkosi build
+	mkosi build --sandbox=no
 	@# Copy split artifacts to output/ for easy consumption by tdx_cli.py
 	mkdir -p $(OUTPUT_DIR)
 	@# mkosi puts split artifacts in the build directory
