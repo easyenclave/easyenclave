@@ -592,6 +592,57 @@ runcmd:
                 print(f"Measurement error (from serial): {err}", file=sys.stderr)
         return None
 
+    def _tail_for_measurements(self, serial_log: str, timeout: int) -> dict | None:
+        """Tail serial log in real-time, streaming output and scanning for measurements.
+
+        Every line is printed to stderr so it appears in CI logs (GitHub Actions).
+        Returns as soon as EASYENCLAVE_MEASUREMENTS=<json> is found, or None on
+        timeout/error.
+
+        Args:
+            serial_log: Path to the serial log file
+            timeout: Max seconds to wait
+
+        Returns:
+            Parsed measurements dict, or None
+        """
+        deadline = time.time() + timeout
+        path = Path(serial_log)
+
+        # Wait for file to exist
+        while not path.exists():
+            if time.time() > deadline:
+                print("Timeout waiting for serial log file", file=sys.stderr)
+                return None
+            time.sleep(0.1)
+
+        with open(path) as f:
+            while time.time() < deadline:
+                line = f.readline()
+                if not line:
+                    time.sleep(0.1)
+                    continue
+
+                # Stream to stderr (visible in GitHub Actions logs)
+                print(line, end="", file=sys.stderr)
+
+                if "EASYENCLAVE_MEASUREMENTS=" in line:
+                    try:
+                        raw = line.split("EASYENCLAVE_MEASUREMENTS=", 1)[1].strip()
+                        data = json.loads(raw)
+                        if data.get("mrtd"):
+                            return data
+                    except (json.JSONDecodeError, IndexError):
+                        pass
+
+                if "EASYENCLAVE_MEASURE_ERROR=" in line:
+                    err = line.split("EASYENCLAVE_MEASURE_ERROR=", 1)[1].strip()
+                    print(f"Measurement error: {err}", file=sys.stderr)
+                    return None
+
+        print(f"Timeout: no measurements within {timeout}s", file=sys.stderr)
+        return None
+
     def vm_measure(
         self,
         image: str | None = None,
@@ -602,20 +653,16 @@ runcmd:
     ) -> dict:
         """Boot a temporary VM to capture MRTD and RTMRs, then destroy it.
 
-        Uses measure mode: the launcher generates a TDX quote, writes
-        measurements to the config disk, and powers off the VM. The host
-        then reads the config disk with debugfs. No Docker, network,
-        Intel TA, or control plane needed.
+        Streams the serial console to stderr in real-time (visible in CI logs)
+        and returns as soon as measurements are printed. No shutdown wait needed.
 
         Args:
             image: Path to TDX VM image (auto-detected if not provided)
-            timeout: Max seconds to wait for VM to shut off (default 180)
+            timeout: Max seconds to wait for measurements (default 180)
 
         Returns:
             Dict with mrtd, rtmr0-3, and vm_name
         """
-        # Boot a temporary VM in measure mode — only generates TDX quote,
-        # writes measurements to config disk, and powers off.
         config = {
             "control_plane_url": "",  # Not needed for measure mode
             "intel_api_key": "",  # Not needed for measure mode
@@ -633,56 +680,33 @@ runcmd:
         )
         vm_name = result["name"]
         serial_log = result.get("serial_log")
-        config_disk = result.get("config_disk")
 
         print(f"VM started: {vm_name}", file=sys.stderr)
+        print(f"=== Streaming VM console ({serial_log}) ===", file=sys.stderr)
 
         measurements = None
         try:
-            # Wait for VM to shut off (measure mode calls systemctl poweroff)
-            start = time.time()
-            while time.time() - start < timeout:
-                state = self._virsh("domstate", vm_name, text=True)
-                if state.returncode == 0 and "shut off" in state.stdout:
-                    print("VM has shut off.", file=sys.stderr)
-                    break
-                time.sleep(2)
-            else:
-                print(f"Timeout: VM did not shut off within {timeout}s", file=sys.stderr)
-                self._dump_serial_log(serial_log)
+            # Stream serial log and scan for measurements in real-time
+            if serial_log:
+                measurements = self._tail_for_measurements(serial_log, timeout)
 
-            # Read measurements from config disk
-            if config_disk:
-                raw = self._read_config_disk(config_disk, "measurements.json")
-                if raw:
-                    try:
-                        measurements = json.loads(raw)
-                        if "error" in measurements:
-                            print(f"Measurement error: {measurements['error']}", file=sys.stderr)
-                            measurements = None
-                        else:
-                            mrtd = measurements.get("mrtd", "")
-                            print(f"MRTD: {mrtd[:32]}...", file=sys.stderr)
-                    except json.JSONDecodeError as e:
-                        print(f"Failed to parse measurements: {e}", file=sys.stderr)
-
+            # Last-resort fallback: re-scan the full serial log file
             if not measurements and serial_log:
-                # Fallback: parse measurements from serial console output
                 measurements = self._parse_measurements_from_serial(serial_log)
                 if measurements:
                     print("Recovered measurements from serial log", file=sys.stderr)
 
             if not measurements:
-                self._dump_serial_log(serial_log)
                 print(
-                    "Warning: Could not read measurements from config disk or serial log",
+                    "Error: Could not capture measurements from serial log",
                     file=sys.stderr,
                 )
 
         finally:
-            # Always clean up the VM
+            # Force-destroy immediately — no need to wait for graceful shutdown
             print(f"Destroying temporary VM: {vm_name}", file=sys.stderr)
-            self.vm_delete(vm_name)
+            self._virsh("destroy", vm_name)
+            self._virsh("undefine", vm_name)
 
         if measurements:
             return {
