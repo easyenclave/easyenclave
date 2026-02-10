@@ -11,7 +11,7 @@ echo "==> Running ruff format check..."
 ruff format --check app/ sdk/ tests/ infra/
 
 echo "==> Running shellcheck..."
-find infra/ -name "*.sh" -print0 | xargs -0 shellcheck --severity=warning
+find infra/ scripts/ -name "*.sh" -print0 | xargs -0 shellcheck --severity=warning
 
 echo "==> Running actionlint..."
 actionlint -config-file .github/actionlint.yaml
