@@ -63,11 +63,17 @@ build: $(EXTRA_DIR)/launcher.py
 	if [ -n "$$LOOP" ]; then \
 		sudo mkdir -p /tmp/rootfs-verify && \
 		sudo mount -o ro "$${LOOP}p1" /tmp/rootfs-verify 2>/dev/null && \
-		echo "Root partition contents:" && \
-		ls /tmp/rootfs-verify/ && \
-		echo "Init check:" && \
-		ls -la /tmp/rootfs-verify/usr/lib/systemd/systemd 2>/dev/null || echo "  /usr/lib/systemd/systemd NOT FOUND" && \
-		ls -la /tmp/rootfs-verify/sbin/init 2>/dev/null || echo "  /sbin/init NOT FOUND" && \
+		echo "Root partition top-level (ls -la):" && \
+		ls -la /tmp/rootfs-verify/ | head -20 && \
+		echo "Init binary:" && \
+		ls -la /tmp/rootfs-verify/usr/lib/systemd/systemd 2>/dev/null || echo "  NOT FOUND" && \
+		echo "/sbin/init:" && \
+		ls -la /tmp/rootfs-verify/sbin/init 2>/dev/null || echo "  NOT FOUND" && \
+		echo "Dynamic linker:" && \
+		ls -la /tmp/rootfs-verify/lib64/ld-linux-x86-64.so.2 2>/dev/null || echo "  NOT FOUND" && \
+		ls -la /tmp/rootfs-verify/usr/lib64/ld-linux-x86-64.so.2 2>/dev/null || echo "  NOT FOUND in /usr/lib64 either" && \
+		echo "USR merge symlinks:" && \
+		ls -ld /tmp/rootfs-verify/bin /tmp/rootfs-verify/sbin /tmp/rootfs-verify/lib /tmp/rootfs-verify/lib64 2>/dev/null && \
 		echo "Disk usage:" && \
 		du -sh /tmp/rootfs-verify/ 2>/dev/null || true && \
 		sudo umount /tmp/rootfs-verify 2>/dev/null; \
