@@ -10,9 +10,8 @@
 # Outputs (in output/):
 #   easyenclave.vmlinuz     - Kernel
 #   easyenclave.initrd      - Initrd with dm-verity support
-#   easyenclave.root.raw    - Root filesystem (read-only, ext4 partition)
-#   easyenclave.root.verity - Verity hash tree (presented as separate disk)
-#   easyenclave.cmdline     - Kernel cmdline with roothash= and verity device hints
+#   easyenclave.root.raw    - Full GPT disk (root + verity hash partitions, non-sparse)
+#   easyenclave.cmdline     - Kernel cmdline with roothash=
 
 LAUNCHER_DIR := ../launcher
 EXTRA_DIR := mkosi.extra/opt/launcher
@@ -32,15 +31,11 @@ build: $(EXTRA_DIR)/launcher.py
 	@for f in easyenclave*.initrd; do \
 		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.initrd && break; \
 	done 2>/dev/null || true
-	@# Copy split root data partition (NOT the full GPT image, which is sparse)
-	@for f in easyenclave*.root*.raw; do \
-		case "$$f" in *verity*) continue;; esac; \
-		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.root.raw && break; \
-	done 2>/dev/null || true
-	@# Copy verity hash partition (presented as separate disk to the VM)
-	@for f in easyenclave*.root*verity*.raw; do \
-		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.root.verity && break; \
-	done 2>/dev/null || true
+	@# Copy the full GPT disk image (contains root + verity hash partitions).
+	@# Use --sparse=never to materialize sparse holes — QEMU needs real data.
+	@if [ -f "easyenclave.raw" ]; then \
+		cp --sparse=never easyenclave.raw $(OUTPUT_DIR)/easyenclave.root.raw; \
+	fi
 	@# Compute roothash from verity data+hash partitions
 	@VERITY_HASH=""; \
 	for f in easyenclave*verity*.raw; do \
@@ -56,7 +51,7 @@ build: $(EXTRA_DIR)/launcher.py
 		ROOTHASH=$$(veritysetup format "$$ROOT_DATA" /tmp/verity-recompute.raw \
 			--salt="$$SALT" 2>&1 | grep "Root hash:" | awk '{print $$NF}'); \
 		rm -f /tmp/verity-recompute.raw; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH systemd.verity_root_data=/dev/vda systemd.verity_root_hash=/dev/vdd rd.systemd.log_level=debug console=tty0 console=ttyS0,115200" \
+		echo "root=/dev/dm-0 roothash=$$ROOTHASH console=tty0 console=ttyS0,115200" \
 			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 		echo "Roothash: $$ROOTHASH"; \
 	else \
