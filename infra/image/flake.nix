@@ -20,6 +20,7 @@
             pkgs.bubblewrap
             pkgs.coreutils
             pkgs.util-linux
+            pkgs.binutils-unwrapped  # objcopy for UKI extraction
           ];
 
           shellHook = ''

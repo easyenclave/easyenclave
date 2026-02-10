@@ -1,8 +1,11 @@
 # EasyEnclave VM Image Build
 #
 # Builds a dm-verity protected TDX VM image using mkosi.
+# mkosi produces a UKI (Unified Kernel Image) that embeds kernel + initrd +
+# cmdline (with roothash derived from the verity partitions automatically).
+# We extract the boot artifacts from the UKI using objcopy.
 #
-# Prerequisites: nix develop (provides mkosi, systemd, qemu-utils)
+# Prerequisites: nix develop (provides mkosi, systemd, qemu-utils, binutils)
 # Usage:
 #   make build    - Build the image
 #   make clean    - Remove build artifacts
@@ -10,7 +13,7 @@
 # Outputs (in output/):
 #   easyenclave.vmlinuz     - Kernel
 #   easyenclave.initrd      - Initrd with dm-verity support
-#   easyenclave.root.raw    - Full GPT disk (root + verity hash partitions, non-sparse)
+#   easyenclave.root.raw    - Full GPT disk (ESP + root + verity hash partitions)
 #   easyenclave.cmdline     - Kernel cmdline with roothash=
 
 LAUNCHER_DIR := ../launcher
@@ -25,42 +28,33 @@ build: $(EXTRA_DIR)/launcher.py
 	mkosi build --sandbox=no
 	mkdir -p $(OUTPUT_DIR)
 	@# mkosi v25 places split artifacts in CWD (not mkosi.output/)
-	@for f in easyenclave*.vmlinuz; do \
-		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.vmlinuz && break; \
-	done 2>/dev/null || true
-	@for f in easyenclave*.initrd; do \
-		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.initrd && break; \
-	done 2>/dev/null || true
-	@# Copy the full GPT disk image (contains root + verity hash partitions).
+	@# Find the UKI (.efi) and extract kernel, initrd, cmdline using objcopy.
+	@# The UKI's cmdline already contains the roothash derived by mkosi from
+	@# the verity partition configuration — no manual extraction needed.
+	@UKI=""; \
+	for f in easyenclave*.efi; do \
+		[ -f "$$f" ] && UKI="$$f" && break; \
+	done 2>/dev/null; \
+	if [ -n "$$UKI" ]; then \
+		echo "Extracting boot artifacts from UKI: $$UKI"; \
+		objcopy --dump-section .linux=$(OUTPUT_DIR)/easyenclave.vmlinuz \
+		        --dump-section .initrd=$(OUTPUT_DIR)/easyenclave.initrd \
+		        --dump-section .cmdline=$(OUTPUT_DIR)/easyenclave.cmdline.raw \
+		        "$$UKI"; \
+		tr -d '\000' < $(OUTPUT_DIR)/easyenclave.cmdline.raw \
+			> $(OUTPUT_DIR)/easyenclave.cmdline; \
+		rm -f $(OUTPUT_DIR)/easyenclave.cmdline.raw; \
+		echo "Kernel cmdline: $$(cat $(OUTPUT_DIR)/easyenclave.cmdline)"; \
+	else \
+		echo "Error: no UKI (.efi) found after build"; \
+		echo "Available artifacts:"; \
+		ls -la easyenclave* 2>/dev/null || echo "  (none)"; \
+		exit 1; \
+	fi
+	@# Copy the full GPT disk image (ESP + root + verity hash partitions).
 	@# Use --sparse=never to materialize sparse holes — QEMU needs real data.
 	@if [ -f "easyenclave.raw" ]; then \
 		cp --sparse=never easyenclave.raw $(OUTPUT_DIR)/easyenclave.root.raw; \
-	fi
-	@# Extract roothash from GPT partition UUIDs.
-	@# systemd-repart derives partition UUIDs from the roothash per the
-	@# Discoverable Partitions Specification: data UUID = first 128 bits,
-	@# verity hash UUID = last 128 bits.  We reconstruct the full 256-bit
-	@# roothash by concatenating them.
-	@# (We cannot use veritysetup dump because mkosi's systemd-repart
-	@#  creates verity without a superblock that older veritysetup can read.)
-	@if [ -f "easyenclave.raw" ]; then \
-		DATA_UUID=$$(sfdisk -d easyenclave.raw \
-			| grep -i "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709" \
-			| sed 's/.*uuid=\([^, ]*\).*/\1/' | tr -d '-' | tr '[:upper:]' '[:lower:]'); \
-		HASH_UUID=$$(sfdisk -d easyenclave.raw \
-			| grep -i "2C7357ED-EBD2-46D9-AEC1-23D437EC2BF5" \
-			| sed 's/.*uuid=\([^, ]*\).*/\1/' | tr -d '-' | tr '[:upper:]' '[:lower:]'); \
-		ROOTHASH="$${DATA_UUID}$${HASH_UUID}"; \
-		if [ $${#ROOTHASH} -ne 64 ]; then \
-			echo "Error: could not extract roothash from GPT (got '$$ROOTHASH')"; \
-			echo "  data UUID: $$DATA_UUID"; \
-			echo "  hash UUID: $$HASH_UUID"; \
-			sfdisk -d easyenclave.raw; \
-			exit 1; \
-		fi; \
-		echo "Roothash: $$ROOTHASH"; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH rd.systemd.log_level=debug rd.systemd.log_target=kmsg console=tty0 console=ttyS0,115200" \
-			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 	else \
 		echo "Warning: easyenclave.raw not found"; \
 	fi
@@ -77,5 +71,5 @@ $(EXTRA_DIR)/launcher.py: $(LAUNCHER_FILES)
 clean:
 	rm -rf mkosi.output mkosi.extra $(OUTPUT_DIR)
 	rm -f easyenclave easyenclave.raw easyenclave.vmlinuz easyenclave.initrd
-	rm -f easyenclave.root-*.raw easyenclave.manifest
+	rm -f easyenclave.efi easyenclave.root-*.raw easyenclave.manifest
 	mkosi clean 2>/dev/null || true
