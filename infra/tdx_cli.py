@@ -15,7 +15,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import uuid
@@ -131,70 +130,6 @@ class TDXManager:
             "Or set TDX_VERITY_IMAGE_DIR to the directory containing the artifacts."
         )
 
-    def _create_config_disk(self, vm_id: str, config: dict) -> Path:
-        """Create a small ext4 image containing config.json.
-
-        Replaces cloud-init for verity images. The image is mounted
-        read-only at /mnt/config inside the VM.
-
-        Args:
-            vm_id: Unique VM identifier
-            config: Configuration dict to write as config.json
-
-        Returns:
-            Path to the config disk image
-        """
-        img_path = self.WORKDIR / f"config.{vm_id}.img"
-        config_json = json.dumps(config)
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Write config.json to a temp directory
-            config_file = Path(tmpdir) / "config.json"
-            config_file.write_text(config_json)
-
-            # Create a small ext4 image (8MB is plenty for config)
-            subprocess.run(
-                ["dd", "if=/dev/zero", f"of={img_path}", "bs=1M", "count=8"],
-                check=True,
-                capture_output=True,
-            )
-            subprocess.run(
-                ["mkfs.ext4", "-q", "-d", tmpdir, str(img_path)],
-                check=True,
-                capture_output=True,
-            )
-
-        img_path.chmod(0o644)
-        return img_path
-
-    def _create_data_disk(self, vm_id: str, size_gb: int = 20) -> Path:
-        """Create an ext4-formatted raw disk for Docker storage and workloads.
-
-        This disk is mounted at /data inside the VM and provides writable
-        storage on the otherwise read-only verity rootfs. Uses a sparse raw
-        file (~2MB on host for metadata only).
-
-        Args:
-            vm_id: Unique VM identifier
-            size_gb: Disk size in GiB (default 20)
-
-        Returns:
-            Path to the data disk image
-        """
-        img_path = self.WORKDIR / f"data.{vm_id}.raw"
-        subprocess.run(
-            ["truncate", "-s", f"{size_gb}G", str(img_path)],
-            check=True,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["mkfs.ext4", "-q", str(img_path)],
-            check=True,
-            capture_output=True,
-        )
-        img_path.chmod(0o666)
-        return img_path
-
     def _create_cloud_init_iso(self, vm_id: str, config: dict, debug: bool = False) -> Path:
         """Create NoCloud ISO with VM configuration.
 
@@ -276,7 +211,6 @@ runcmd:
         memory_gib: int = 16,
         vcpu_count: int = 32,
         verity: bool = False,
-        data_disk_gb: int = 20,
     ) -> dict:
         """Create and boot a new TDX VM.
 
@@ -292,7 +226,6 @@ runcmd:
             memory_gib: VM memory in GiB
             vcpu_count: Number of vCPUs
             verity: If True, use dm-verity image with direct kernel boot
-            data_disk_gb: Size of data disk in GiB (verity mode only, default 20)
 
         Returns:
             Dict with vm_name, uuid, and info
@@ -332,17 +265,19 @@ runcmd:
         xml_content = xml_content.replace("VCPU_COUNT", str(vcpu_count))
 
         if verity:
-            # dm-verity boot: direct kernel boot with 3 separate disks
+            # dm-verity boot: direct kernel boot, config passed via cmdline
             artifacts = self._find_verity_image(image)
-            config_img = self._create_config_disk(rand_str, launcher_config)
-            data_img = self._create_data_disk(rand_str, size_gb=data_disk_gb)
+
+            # Base64-encode config JSON and append to kernel cmdline
+            import base64 as _b64
+
+            config_b64 = _b64.b64encode(json.dumps(launcher_config).encode()).decode()
+            cmdline = f"{artifacts['cmdline']} easyenclave.config={config_b64}"
 
             xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
             xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
-            xml_content = xml_content.replace("KERNEL_CMDLINE", artifacts["cmdline"])
+            xml_content = xml_content.replace("KERNEL_CMDLINE", cmdline)
             xml_content = xml_content.replace("ROOT_IMG_PATH", str(artifacts["root"]))
-            xml_content = xml_content.replace("DATA_IMG_PATH", str(data_img))
-            xml_content = xml_content.replace("CONFIG_IMG_PATH", str(config_img))
         else:
             # Legacy boot: overlay qcow2 + cloud-init ISO
             image_path = self._find_image(image)
@@ -395,7 +330,7 @@ runcmd:
         # Get VM info
         result = self._virsh("dominfo", vm_name, text=True)
 
-        ret = {
+        return {
             "name": vm_name,
             "uuid": vm_uuid,
             "mode": mode,
@@ -403,9 +338,6 @@ runcmd:
             "serial_log": str(serial_log),
             "info": result.stdout,
         }
-        if verity:
-            ret["config_disk"] = str(config_img)
-        return ret
 
     def control_plane_new(
         self,
@@ -415,7 +347,6 @@ runcmd:
         memory_gib: int = 16,
         vcpu_count: int = 32,
         verity: bool = False,
-        data_disk_gb: int = 20,
     ) -> dict:
         """Launch a control plane in a TDX VM.
 
@@ -465,7 +396,6 @@ runcmd:
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
             verity=verity,
-            data_disk_gb=data_disk_gb,
         )
         result["control_plane_port"] = port
 
@@ -543,25 +473,6 @@ runcmd:
                 info[key.strip().lower().replace(" ", "_")] = value.strip()
 
         return info
-
-    def _read_config_disk(self, config_disk: str, filename: str) -> str | None:
-        """Read a file from an ext4 config disk image using debugfs.
-
-        Args:
-            config_disk: Path to the ext4 image
-            filename: File to read (e.g. "measurements.json")
-
-        Returns:
-            File contents as string, or None on failure
-        """
-        result = subprocess.run(
-            ["debugfs", "-R", f"cat {filename}", config_disk],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-        return None
 
     def _dump_serial_log(self, serial_log: str | None):
         """Dump last 500 lines of serial log for diagnostics."""
@@ -763,12 +674,6 @@ To start a new EasyEnclave network:
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
     cp_new_parser.add_argument(
-        "--data-disk-gb",
-        type=int,
-        default=20,
-        help="Data disk size in GiB (verity mode, default 20)",
-    )
-    cp_new_parser.add_argument(
         "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
     )
     cp_new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
@@ -795,12 +700,6 @@ To start a new EasyEnclave network:
     )
     new_parser.add_argument(
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
-    )
-    new_parser.add_argument(
-        "--data-disk-gb",
-        type=int,
-        default=20,
-        help="Data disk size in GiB (verity mode, default 20)",
     )
     new_parser.add_argument("--memory", type=int, default=16, help="VM memory in GiB (default 16)")
     new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
@@ -846,7 +745,6 @@ To start a new EasyEnclave network:
                     memory_gib=args.memory,
                     vcpu_count=args.vcpus,
                     verity=args.verity,
-                    data_disk_gb=args.data_disk_gb,
                 )
 
                 if args.wait:
@@ -917,7 +815,6 @@ To start a new EasyEnclave network:
                     memory_gib=args.memory,
                     vcpu_count=args.vcpus,
                     verity=args.verity,
-                    data_disk_gb=args.data_disk_gb,
                 )
                 print(json.dumps(result, indent=2))
 

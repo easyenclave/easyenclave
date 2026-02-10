@@ -41,18 +41,6 @@
       <target dev="vda" bus="virtio"/>
       <readonly/>
     </disk>
-    <!-- Data disk (writable, for Docker storage + workloads) -->
-    <disk type="file" device="disk">
-      <driver name="qemu" type="raw"/>
-      <source file="DATA_IMG_PATH"/>
-      <target dev="vdb" bus="virtio"/>
-    </disk>
-    <!-- Config disk (launcher config.json, mounted ro by systemd unit) -->
-    <disk type="file" device="disk">
-      <driver name="qemu" type="raw"/>
-      <source file="CONFIG_IMG_PATH"/>
-      <target dev="vdc" bus="virtio"/>
-    </disk>
     <interface type='network'>
       <source network='default'/>
       <model type='virtio'/>

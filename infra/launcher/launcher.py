@@ -73,10 +73,10 @@ else:
 
 TSM_REPORT_PATH = Path("/sys/kernel/config/tsm/report")
 
-# Config file search chain: env override → verity config disk → legacy cloud-init
+# Config file search chain: env override → legacy cloud-init
+# (verity images pass config via kernel cmdline instead)
 CONFIG_PATHS = [
     Path(os.environ.get("EASYENCLAVE_CONFIG", "/dev/null")),
-    Path("/mnt/config/config.json"),  # verity image (config disk)
     Path("/etc/easyenclave/config.json"),  # legacy image (cloud-init)
 ]
 
@@ -609,17 +609,48 @@ def collect_system_stats() -> dict:
         return {}
 
 
+def _parse_cmdline_config() -> dict | None:
+    """Try to read config from kernel cmdline (easyenclave.config=<b64>).
+
+    Returns:
+        Parsed config dict, or None if not found/parseable.
+    """
+    try:
+        cmdline = Path("/proc/cmdline").read_text().strip()
+    except Exception:
+        return None
+
+    for param in cmdline.split():
+        if param.startswith("easyenclave.config="):
+            b64_value = param.split("=", 1)[1]
+            try:
+                config = json.loads(base64.b64decode(b64_value))
+                logger.info(
+                    f"Loaded config from kernel cmdline: mode={config.get('mode', MODE_AGENT)}"
+                )
+                return config
+            except Exception as e:
+                logger.warning(f"Failed to decode kernel cmdline config: {e}")
+    return None
+
+
 def get_launcher_config() -> dict:
-    """Read config from the first available config path.
+    """Read config from the first available source.
 
     Search order:
-      1. EASYENCLAVE_CONFIG env var
-      2. /mnt/config/config.json (verity image — config disk)
+      1. Kernel cmdline easyenclave.config=<b64> (verity image)
+      2. EASYENCLAVE_CONFIG env var
       3. /etc/easyenclave/config.json (legacy image — cloud-init)
 
     Returns:
         Config dict with mode and other settings
     """
+    # Highest priority: kernel cmdline (verity images)
+    config = _parse_cmdline_config()
+    if config is not None:
+        return config
+
+    # File-based config paths
     for config_path in CONFIG_PATHS:
         if config_path.exists() and config_path.is_file():
             try:
@@ -1600,24 +1631,17 @@ def run_control_plane_mode(config: dict):
 
 
 def run_measure_mode(config: dict):
-    """Run in measure mode - generate TDX quote, write measurements to config disk, poweroff.
+    """Run in measure mode - generate TDX quote, print measurements, poweroff.
 
     This mode only requires ConfigFS-TSM. No Docker, network, Intel TA,
     or control plane registration needed. Used by `tdx_cli.py vm measure`
     to capture MRTD and RTMRs from a temporary VM.
 
-    Flow:
-    1. Generate TDX quote and parse measurements
-    2. Remount /mnt/config read-write
-    3. Write measurements.json to config disk
-    4. Trigger poweroff so the host can read the config disk
+    The host parses EASYENCLAVE_MEASUREMENTS=<json> from the serial log.
 
     Args:
         config: Launcher config (unused, but kept for consistency)
     """
-    config_dir = Path("/mnt/config")
-    result_file = config_dir / "measurements.json"
-
     logger.info("Starting in MEASURE mode")
     logger.info("Generating TDX quote for measurement...")
 
@@ -1628,7 +1652,7 @@ def run_measure_mode(config: dict):
         if "error" in measurements:
             error_msg = measurements["error"]
             logger.error(f"Failed to parse TDX quote: {error_msg}")
-            _write_measure_result(config_dir, result_file, {"error": error_msg})
+            print(f"EASYENCLAVE_MEASURE_ERROR={error_msg}", flush=True)
             return
 
         result = {
@@ -1640,40 +1664,16 @@ def run_measure_mode(config: dict):
         }
 
         logger.info(f"MRTD: {result['mrtd'][:32]}...")
-
-        # Print to serial console so the host can parse even if config disk write fails
         print(f"EASYENCLAVE_MEASUREMENTS={json.dumps(result)}", flush=True)
-
-        _write_measure_result(config_dir, result_file, result)
         logger.info("Measurement complete.")
 
     except Exception as e:
         logger.error(f"Measurement failed: {e}")
         print(f"EASYENCLAVE_MEASURE_ERROR={e}", flush=True)
-        try:
-            _write_measure_result(config_dir, result_file, {"error": str(e)})
-        except Exception as write_err:
-            logger.error(f"Also failed to write error to config disk: {write_err}")
 
     finally:
-        # Poweroff so the host can read the config disk
         logger.info("Powering off VM...")
         subprocess.run(["systemctl", "poweroff"], check=False)
-
-
-def _write_measure_result(config_dir: Path, result_file: Path, data: dict):
-    """Remount config disk rw and write measurement results.
-
-    Raises on failure — the caller must handle this so the VM still powers off.
-    """
-    subprocess.run(
-        ["mount", "-o", "remount,rw", str(config_dir)],
-        check=True,
-        capture_output=True,
-    )
-    result_file.write_text(json.dumps(data))
-    subprocess.run(["sync"], check=False)
-    logger.info(f"Wrote measurements to {result_file}")
 
 
 def run_agent_mode(config: dict):
@@ -1786,10 +1786,6 @@ def main():
     logger.info("TDX Launcher starting...")
     logger.info(f"Version: {VERSION}")
 
-    # Ensure writable directories exist (data disk starts empty in verity mode)
-    WORKLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    CONTROL_PLANE_DIR.mkdir(parents=True, exist_ok=True)
-
     # Read config to determine mode
     config = get_launcher_config()
     mode = config.get("mode", MODE_AGENT)
@@ -1797,11 +1793,17 @@ def main():
     logger.info(f"Mode: {mode}")
 
     if mode == MODE_MEASURE:
+        # Measure mode doesn't need writable dirs
         run_measure_mode(config)
-    elif mode == MODE_CONTROL_PLANE:
-        run_control_plane_mode(config)
     else:
-        run_agent_mode(config)
+        # Ensure writable directories exist (tmpfs /data in verity mode)
+        WORKLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        CONTROL_PLANE_DIR.mkdir(parents=True, exist_ok=True)
+
+        if mode == MODE_CONTROL_PLANE:
+            run_control_plane_mode(config)
+        else:
+            run_agent_mode(config)
 
 
 if __name__ == "__main__":

@@ -1,14 +1,11 @@
 # TDX VM Launcher Service
-# Reads config from /mnt/config/config.json (verity) or /etc/easyenclave/config.json (legacy)
+# Reads config from kernel cmdline (easyenclave.config=<b64>) or /etc/easyenclave/config.json (legacy)
 # and runs in control-plane or agent mode.
 
 [Unit]
 Description=TDX VM Launcher Service
-After=data.mount mnt-config.mount docker.service network-online.target
+After=docker.service network-online.target
 Wants=docker.service network-online.target
-# Don't hard-fail if config disk is missing (legacy boot)
-After=mnt-config.mount
-Wants=mnt-config.mount
 
 [Service]
 Type=simple

@@ -36,51 +36,49 @@ class TestMeasureMode:
     """Test the run_measure_mode function in launcher.py."""
 
     @patch("launcher.subprocess.run")
-    @patch("launcher._write_measure_result")
-    def test_writes_measurements_to_config_disk(self, mock_write, mock_run):
-        """Measure mode writes JSON measurements to config disk and powers off."""
+    def test_prints_measurements_and_powers_off(self, mock_run, capsys):
+        """Measure mode prints JSON measurements to stdout and powers off."""
         fake_quote = _build_fake_quote(FAKE_MRTD, FAKE_RTMRS)
         fake_quote_b64 = base64.b64encode(fake_quote).decode()
 
         with patch("launcher.generate_tdx_quote", return_value=fake_quote_b64):
             launcher.run_measure_mode({})
 
-        # Check measurements were written
-        mock_write.assert_called_once()
-        written_data = mock_write.call_args[0][2]
-        assert written_data["mrtd"] == FAKE_MRTD
-        assert written_data["rtmr0"] == "bb" * 48
-        assert written_data["rtmr1"] == "cc" * 48
-        assert written_data["rtmr2"] == "dd" * 48
-        assert written_data["rtmr3"] == "ee" * 48
+        # Check measurements were printed to stdout
+        import json
+
+        captured = capsys.readouterr()
+        assert "EASYENCLAVE_MEASUREMENTS=" in captured.out
+        json_str = captured.out.split("EASYENCLAVE_MEASUREMENTS=", 1)[1].strip()
+        data = json.loads(json_str)
+        assert data["mrtd"] == FAKE_MRTD
+        assert data["rtmr0"] == "bb" * 48
+        assert data["rtmr1"] == "cc" * 48
 
         # Check poweroff was called
         mock_run.assert_called_once_with(["systemctl", "poweroff"], check=False)
 
     @patch("launcher.subprocess.run")
-    @patch("launcher._write_measure_result")
-    def test_writes_error_on_failure(self, mock_write, mock_run):
-        """On TDX failure, writes error to config disk and still powers off."""
+    def test_prints_error_on_failure(self, mock_run, capsys):
+        """On TDX failure, prints error to stdout and still powers off."""
         with patch("launcher.generate_tdx_quote", side_effect=RuntimeError("TDX not available")):
             launcher.run_measure_mode({})
 
-        # Should have tried to write error
-        mock_write.assert_called_once()
-        written_data = mock_write.call_args[0][2]
-        assert "error" in written_data
-        assert "TDX not available" in written_data["error"]
+        # Should have printed error
+        captured = capsys.readouterr()
+        assert "EASYENCLAVE_MEASURE_ERROR=" in captured.out
+        assert "TDX not available" in captured.out
 
         # Poweroff must still happen
         mock_run.assert_called_once_with(["systemctl", "poweroff"], check=False)
 
     @patch("launcher.subprocess.run")
-    @patch("launcher._write_measure_result", side_effect=OSError("disk full"))
-    def test_powers_off_even_if_write_fails(self, mock_write, mock_run):
-        """VM powers off even if writing to config disk fails."""
+    def test_powers_off_even_on_exception(self, mock_run):
+        """VM powers off even if quote generation raises."""
         with patch("launcher.generate_tdx_quote", side_effect=RuntimeError("TDX not available")):
             launcher.run_measure_mode({})
 
-        # Poweroff must still happen despite write failure
+        # Poweroff must still happen
         mock_run.assert_called_once_with(["systemctl", "poweroff"], check=False)
 
     def test_parse_tdx_quote_extracts_all_fields(self):
