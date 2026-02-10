@@ -36,41 +36,33 @@ build: $(EXTRA_DIR)/launcher.py
 	@if [ -f "easyenclave.raw" ]; then \
 		cp --sparse=never easyenclave.raw $(OUTPUT_DIR)/easyenclave.root.raw; \
 	fi
-	@# Extract roothash from verity hash partition and build cmdline
-	@VERITY_HASH=""; \
-	for f in easyenclave*verity*.raw; do \
-		[ -f "$$f" ] && VERITY_HASH="$$f" && break; \
-	done 2>/dev/null; \
-	ROOT_DATA=""; \
-	for f in easyenclave*.root*.raw; do \
-		case "$$f" in *verity*) continue;; esac; \
-		[ -f "$$f" ] && ROOT_DATA="$$f" && break; \
-	done 2>/dev/null; \
-	if [ -n "$$VERITY_HASH" ] && [ -n "$$ROOT_DATA" ]; then \
-		echo "Verity hash file: $$VERITY_HASH ($$(stat -c%s "$$VERITY_HASH") bytes)"; \
-		echo "Root data file: $$ROOT_DATA ($$(stat -c%s "$$ROOT_DATA") bytes)"; \
-		echo "--- veritysetup dump ---"; \
-		veritysetup dump "$$VERITY_HASH" || echo "veritysetup dump FAILED"; \
-		echo "--- end dump ---"; \
-		SALT=$$(veritysetup dump "$$VERITY_HASH" | grep "Salt:" | awk '{print $$NF}'); \
-		ROOTHASH=$$(veritysetup format "$$ROOT_DATA" /tmp/verity-recompute.raw \
-			--salt="$$SALT" 2>&1 | grep "Root hash:" | awk '{print $$NF}'); \
-		rm -f /tmp/verity-recompute.raw; \
-		echo "Roothash: $$ROOTHASH"; \
-		if [ -n "$$ROOTHASH" ]; then \
-			echo "Verifying verity integrity..."; \
-			veritysetup verify "$$ROOT_DATA" "$$VERITY_HASH" "$$ROOTHASH" \
-				&& echo "Verity verification: PASSED" \
-				|| echo "Verity verification: FAILED (roothash mismatch!)"; \
+	@# Extract roothash from GPT partition UUIDs.
+	@# systemd-repart derives partition UUIDs from the roothash per the
+	@# Discoverable Partitions Specification: data UUID = first 128 bits,
+	@# verity hash UUID = last 128 bits.  We reconstruct the full 256-bit
+	@# roothash by concatenating them.
+	@# (We cannot use veritysetup dump because mkosi's systemd-repart
+	@#  creates verity without a superblock that older veritysetup can read.)
+	@if [ -f "easyenclave.raw" ]; then \
+		DATA_UUID=$$(sfdisk -d easyenclave.raw \
+			| grep -i "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709" \
+			| sed 's/.*uuid=\([^, ]*\).*/\1/' | tr -d '-' | tr '[:upper:]' '[:lower:]'); \
+		HASH_UUID=$$(sfdisk -d easyenclave.raw \
+			| grep -i "2C7357ED-EBD2-46D9-AEC1-23D437EC2BF5" \
+			| sed 's/.*uuid=\([^, ]*\).*/\1/' | tr -d '-' | tr '[:upper:]' '[:lower:]'); \
+		ROOTHASH="$${DATA_UUID}$${HASH_UUID}"; \
+		if [ $${#ROOTHASH} -ne 64 ]; then \
+			echo "Error: could not extract roothash from GPT (got '$$ROOTHASH')"; \
+			echo "  data UUID: $$DATA_UUID"; \
+			echo "  hash UUID: $$HASH_UUID"; \
+			sfdisk -d easyenclave.raw; \
+			exit 1; \
 		fi; \
-		echo "Checking rootfs contents..."; \
-		debugfs -R "ls -l /usr/lib/" "$$ROOT_DATA" 2>&1 | head -5 || echo "(debugfs not available)"; \
-		debugfs -R "stat /usr/lib/os-release" "$$ROOT_DATA" 2>&1 || echo "(debugfs not available)"; \
-		debugfs -R "stat /etc/os-release" "$$ROOT_DATA" 2>&1 || echo "(debugfs not available)"; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH rd.systemd.log_level=debug rd.systemd.log_target=kmsg console=tty0 console=ttyS0,115200" \
+		echo "Roothash: $$ROOTHASH"; \
+		echo "root=/dev/dm-0 roothash=$$ROOTHASH console=tty0 console=ttyS0,115200" \
 			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 	else \
-		echo "Warning: verity partition files not found"; \
+		echo "Warning: easyenclave.raw not found"; \
 	fi
 	@echo ""
 	@echo "Build complete. Artifacts in $(OUTPUT_DIR)/:"

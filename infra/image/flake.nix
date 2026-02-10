@@ -20,7 +20,6 @@
             pkgs.bubblewrap
             pkgs.coreutils
             pkgs.util-linux
-            pkgs.e2fsprogs
           ];
 
           shellHook = ''
