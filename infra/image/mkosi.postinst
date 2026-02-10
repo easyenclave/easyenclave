@@ -47,14 +47,14 @@ echo "[mkosi.postinst] Third-party packages installed."
 # =============================================================================
 # Enable services
 # =============================================================================
-systemctl enable docker.service
-systemctl enable containerd.service
+# Docker and containerd auto-enable during apt install (see symlinks above).
+# Only enable our custom services and disable SSH.
 
 # Launcher (files placed by ExtraTrees)
 mkdir -p /opt/launcher
 chmod +x /opt/launcher/launcher.py 2>/dev/null || true
-systemctl enable tdx-launcher.service
-systemctl enable tdx-tsm-setup.service
+systemctl enable tdx-launcher.service 2>/dev/null || true
+systemctl enable tdx-tsm-setup.service 2>/dev/null || true
 
 # Disable SSH by default (read-only rootfs, no password access)
 systemctl disable ssh.service 2>/dev/null || true
