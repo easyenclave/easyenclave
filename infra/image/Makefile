@@ -10,8 +10,7 @@
 # Outputs (in output/):
 #   easyenclave.vmlinuz     - Kernel
 #   easyenclave.initrd      - Initrd with dm-verity support
-#   easyenclave.root.raw    - Root filesystem (read-only)
-#   easyenclave.root.verity - Verity hash tree
+#   easyenclave.root.raw    - Full GPT disk (root + verity hash partitions)
 #   easyenclave.cmdline     - Kernel cmdline with roothash=
 
 LAUNCHER_DIR := ../launcher
@@ -32,13 +31,11 @@ build: $(EXTRA_DIR)/launcher.py
 	@for f in easyenclave*.initrd; do \
 		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.initrd && break; \
 	done 2>/dev/null || true
-	@for f in easyenclave*.root*.raw; do \
-		case "$$f" in *verity*) continue;; esac; \
-		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.root.raw && break; \
-	done 2>/dev/null || true
-	@for f in easyenclave*.root*verity*.raw; do \
-		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.root.verity && break; \
-	done 2>/dev/null || true
+	@# Copy the full GPT disk image (contains both root + verity hash partitions).
+	@# The initrd's systemd-veritysetup-generator discovers partitions via GPT types.
+	@if [ -f "easyenclave.raw" ]; then \
+		cp easyenclave.raw $(OUTPUT_DIR)/easyenclave.root.raw; \
+	fi
 	@# Compute roothash from verity data+hash partitions
 	@VERITY_HASH=""; \
 	for f in easyenclave*verity*.raw; do \
@@ -54,7 +51,7 @@ build: $(EXTRA_DIR)/launcher.py
 		ROOTHASH=$$(veritysetup format "$$ROOT_DATA" /tmp/verity-recompute.raw \
 			--salt="$$SALT" 2>&1 | grep "Root hash:" | awk '{print $$NF}'); \
 		rm -f /tmp/verity-recompute.raw; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH console=ttyS0,115200 console=tty0" \
+		echo "root=/dev/dm-0 roothash=$$ROOTHASH console=tty0 console=ttyS0,115200" \
 			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 		echo "Roothash: $$ROOTHASH"; \
 	else \
