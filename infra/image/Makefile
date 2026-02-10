@@ -24,31 +24,41 @@ LAUNCHER_FILES := $(LAUNCHER_DIR)/launcher.py $(wildcard $(LAUNCHER_DIR)/admin.h
 
 build: $(EXTRA_DIR)/launcher.py
 	mkosi build --sandbox=no
-	@# Copy split artifacts to output/ for easy consumption by tdx_cli.py
 	mkdir -p $(OUTPUT_DIR)
-	@# mkosi puts split artifacts in the build directory
-	@# Find and copy the key artifacts
-	@for f in mkosi.output/easyenclave*.vmlinuz; do \
+	@# mkosi v25 places split artifacts in CWD (not mkosi.output/)
+	@for f in easyenclave*.vmlinuz; do \
 		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.vmlinuz && break; \
 	done 2>/dev/null || true
-	@for f in mkosi.output/easyenclave*.initrd; do \
+	@for f in easyenclave*.initrd; do \
 		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.initrd && break; \
 	done 2>/dev/null || true
-	@for f in mkosi.output/easyenclave*.root*.raw; do \
+	@for f in easyenclave*.root*.raw; do \
+		case "$$f" in *verity*) continue;; esac; \
 		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.root.raw && break; \
 	done 2>/dev/null || true
-	@for f in mkosi.output/easyenclave*.root*.verity; do \
+	@for f in easyenclave*.root*verity*.raw; do \
 		[ -f "$$f" ] && cp "$$f" $(OUTPUT_DIR)/easyenclave.root.verity && break; \
 	done 2>/dev/null || true
-	@# Extract roothash from mkosi output and create cmdline file
-	@if [ -f mkosi.output/easyenclave*.roothash ]; then \
-		ROOTHASH=$$(cat mkosi.output/easyenclave*.roothash); \
+	@# Compute roothash from verity data+hash partitions
+	@VERITY_HASH=""; \
+	for f in easyenclave*verity*.raw; do \
+		[ -f "$$f" ] && VERITY_HASH="$$f" && break; \
+	done 2>/dev/null; \
+	ROOT_DATA=""; \
+	for f in easyenclave*.root*.raw; do \
+		case "$$f" in *verity*) continue;; esac; \
+		[ -f "$$f" ] && ROOT_DATA="$$f" && break; \
+	done 2>/dev/null; \
+	if [ -n "$$VERITY_HASH" ] && [ -n "$$ROOT_DATA" ]; then \
+		SALT=$$(veritysetup dump "$$VERITY_HASH" | grep "Salt:" | awk '{print $$NF}'); \
+		ROOTHASH=$$(veritysetup format "$$ROOT_DATA" /tmp/verity-recompute.raw \
+			--salt="$$SALT" 2>&1 | grep "Root hash:" | awk '{print $$NF}'); \
+		rm -f /tmp/verity-recompute.raw; \
 		echo "root=/dev/dm-0 roothash=$$ROOTHASH console=ttyS0,115200 console=tty0" \
 			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 		echo "Roothash: $$ROOTHASH"; \
 	else \
-		echo "Warning: roothash file not found in mkosi output"; \
-		ls mkosi.output/ 2>/dev/null || true; \
+		echo "Warning: verity partition files not found"; \
 	fi
 	@echo ""
 	@echo "Build complete. Artifacts in $(OUTPUT_DIR)/:"
@@ -62,4 +72,6 @@ $(EXTRA_DIR)/launcher.py: $(LAUNCHER_FILES)
 
 clean:
 	rm -rf mkosi.output mkosi.extra $(OUTPUT_DIR)
+	rm -f easyenclave easyenclave.raw easyenclave.vmlinuz easyenclave.initrd
+	rm -f easyenclave.root-*.raw easyenclave.manifest
 	mkosi clean 2>/dev/null || true
