@@ -402,3 +402,147 @@ The reserve aims to mirror the network's withdrawal demand profile:
 | Operational buffer | 5% | Gas fees, miner fees, unexpected costs |
 
 Rebalancing occurs weekly or when any asset deviates more than 10% from its target. Rebalancing transactions are logged in the ledger and visible on-chain.
+
+## Appendix C: Direct Bitcoin Settlement -- Implementation
+
+The settlement gateway does not depend on any third-party custodian or bridge. The enclave is a native Bitcoin participant: it holds keys, constructs transactions, signs them, and broadcasts them to the Bitcoin P2P network. This appendix describes how.
+
+### C.1 Why Direct Settlement Matters
+
+Every intermediary between the enclave and the Bitcoin network is a point of trust, censorship, and failure. If the gateway sends BTC through an exchange API, the exchange can freeze funds, go offline, or impose KYC on the enclave. If it uses a bridge protocol, the bridge's security model is added to the trust stack. Direct settlement means the only counterparty is the Bitcoin network itself -- 60,000+ nodes with no single point of control.
+
+The enclave wallet is no different from any other Bitcoin wallet. It holds a private key, it constructs and signs transactions according to the Bitcoin protocol, and it broadcasts them to peers. The difference is that the private key exists inside hardware-encrypted memory that the host operator cannot read, and the signing logic is committed to a measurement (MRTD) that anyone can verify.
+
+### C.2 Key Generation
+
+At first boot, the control plane enclave generates a BIP-340 Schnorr keypair for the taproot wallet:
+
+```
+master_secret  = os.urandom(32)           # Generated inside TDX-encrypted memory
+master_pubkey  = schnorr_pubkey(master_secret)
+taproot_address = bech32m_encode(master_pubkey)   # bc1p...
+```
+
+The `master_secret` never leaves the enclave. It is persisted to the enclave's encrypted storage (the SQLite database on the dm-verity filesystem). The `taproot_address` is the deposit address published to users.
+
+Key derivation follows BIP-86 (taproot single-key) for simplicity. Each user gets a derived address via BIP-32 child key derivation, so deposits can be attributed to specific accounts without on-chain linkage.
+
+### C.3 Transaction Construction and Signing
+
+The gateway constructs Bitcoin transactions entirely within the enclave using pure Python. The stack:
+
+| Layer | Library | Role |
+|---|---|---|
+| PSBT construction | **embit** | Build Partially Signed Bitcoin Transactions with taproot inputs/outputs |
+| Schnorr signing | **embit** (pure Python secp256k1 fallback) | Sign with BIP-340 Schnorr, no C dependency required |
+| Taproot script-path (future) | **python-bitcoin-utils** | Multi-leaf taptrees for recovery and multisig policies |
+| Address encoding | **embit** | bech32m for P2TR addresses |
+
+The construction flow for a withdrawal:
+
+```
+1. Select UTXOs from the enclave's known UTXO set.
+2. Build a PSBT:
+   - Input:  enclave's taproot UTXO(s)
+   - Output: recipient's address (withdrawal destination)
+   - Output: change back to the enclave's taproot address
+   - Fee:    estimated from recent feerate (see C.5)
+3. Sign the PSBT with the enclave's master key (Schnorr key-path spend).
+4. Finalize and extract the raw transaction hex.
+5. Broadcast (see C.4).
+6. Record the txid in the LedgerEntry.
+```
+
+Both `embit` and `python-bitcoin-utils` are pure Python with no mandatory C extensions. This is critical: the enclave's dm-verity root filesystem is read-only and measured. Every byte of code that runs is committed to the MRTD. A pure Python stack means the entire signing path is auditable as source, not as a compiled binary blob.
+
+### C.4 Broadcasting
+
+The enclave broadcasts signed transactions through multiple independent channels for redundancy and censorship resistance:
+
+**Primary: Direct P2P.** The enclave connects to Bitcoin peers discovered via DNS seeds (`seed.bitcoin.sipa.be`, `seed.btc.petertodd.net`, etc.). It performs the version handshake and sends a `tx` message containing the raw transaction. This requires ~200 lines of Python and no special dependencies -- just TCP sockets.
+
+```
+Peer discovery:   DNS lookup on well-known seed nodes
+Handshake:        version → verack (standard Bitcoin P2P protocol)
+Broadcast:        inv(TX, txid) → peer requests getdata → respond with tx
+```
+
+The enclave connects to at least 8 peers across different /16 subnets to minimize eclipse risk.
+
+**Fallback: Public Esplora/Mempool APIs.** If P2P connections fail (e.g., network restrictions on the host), the enclave POSTs the raw transaction hex to multiple public APIs:
+
+```
+POST https://blockstream.info/api/tx     (Blockstream Esplora)
+POST https://mempool.space/api/tx        (mempool.space)
+```
+
+These are simple HTTPS calls using `httpx` (already a dependency of EasyEnclave). The enclave tries all endpoints and considers the broadcast successful if any one confirms acceptance.
+
+**Future: Compact Block Filters (BIP-157/158).** For the most trustless lightweight experience without running a full node, the enclave can use BIP-157 compact block filters to verify incoming transactions against block headers. This removes trust in any API server for deposit monitoring while keeping bandwidth minimal.
+
+### C.5 Fee Estimation and UTXO Management
+
+**Fee estimation.** The enclave queries feerate data from multiple sources:
+
+- `GET https://mempool.space/api/v1/fees/recommended` -- returns `fastestFee`, `halfHourFee`, `hourFee` in sat/vB.
+- `GET https://blockstream.info/api/fee-estimates` -- returns fee estimates by target confirmation block.
+
+The enclave takes the median across sources for the target confirmation time:
+- Withdrawals: target 3 blocks (~30 min). Balances speed against cost.
+- Reserve rebalancing: target 6 blocks (~1 hour). Non-urgent.
+- Time-sensitive settlements: target next block. Pays premium.
+
+**UTXO tracking.** The enclave maintains a local UTXO set for its addresses. It is updated by:
+
+1. Monitoring the Electrum protocol (`blockchain.scripthash.listunspent`) for the enclave's addresses.
+2. Tracking the change outputs of its own transactions.
+3. Periodic reconciliation against a public API.
+
+UTXO consolidation runs as a background task during low-fee periods (weekends, late night UTC) to prevent UTXO set bloat from many small deposits.
+
+### C.6 Deposit Monitoring
+
+When a user requests a deposit, the gateway returns a derived taproot address. The enclave then monitors for incoming transactions to that address:
+
+**Electrum subscription (real-time):**
+```
+blockchain.scripthash.subscribe(sha256(scriptPubKey))
+```
+
+This pushes a notification whenever the address's history changes. The enclave then queries the full transaction and counts confirmations.
+
+**Confirmation thresholds:**
+
+| Amount | Required confirmations | Approximate wait |
+|---|---|---|
+| < $1,000 | 1 confirmation | ~10 minutes |
+| $1,000 -- $10,000 | 3 confirmations | ~30 minutes |
+| $10,000 -- $100,000 | 6 confirmations | ~1 hour |
+| > $100,000 | 6 confirmations + 1 hour hold | ~2 hours |
+
+The hold period for very large deposits provides additional reorg protection beyond raw confirmation count.
+
+### C.7 Time-Locked Recovery
+
+The taproot address includes a script-path leaf with a time-locked recovery clause:
+
+```
+Key-path:    enclave master key (normal operation)
+Script-path: OP_CHECKSEQUENCEVERIFY(26280 blocks ≈ 6 months) + recovery_key
+```
+
+If the enclave is permanently destroyed and keys are lost, a recovery key (held via Shamir's Secret Sharing across N-of-M enclave instances) can sweep the funds after the timelock expires. During normal operation, the key-path spend is used -- it is indistinguishable from any other taproot transaction on-chain (the script-path is hidden in the tweak).
+
+### C.8 Trust Properties
+
+The direct settlement design achieves:
+
+| Property | How |
+|---|---|
+| **No custodian** | Keys generated and held inside TDX enclave |
+| **No bridge** | Direct P2P broadcast to Bitcoin network |
+| **No exchange** | BTC/USD rate aggregated from public APIs inside enclave |
+| **Auditable signing logic** | Pure Python, measured in MRTD, open source |
+| **Censorship resistant** | Multiple independent broadcast paths (P2P + APIs) |
+| **Recoverable** | Taproot time-locked script-path with Shamir-split recovery key |
+| **Privacy** | Taproot key-path spends are indistinguishable from single-sig |
