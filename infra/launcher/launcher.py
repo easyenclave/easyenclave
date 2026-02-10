@@ -1640,11 +1640,16 @@ def run_measure_mode(config: dict):
         }
 
         logger.info(f"MRTD: {result['mrtd'][:32]}...")
+
+        # Print to serial console so the host can parse even if config disk write fails
+        print(f"EASYENCLAVE_MEASUREMENTS={json.dumps(result)}", flush=True)
+
         _write_measure_result(config_dir, result_file, result)
         logger.info("Measurement complete.")
 
     except Exception as e:
         logger.error(f"Measurement failed: {e}")
+        print(f"EASYENCLAVE_MEASURE_ERROR={e}", flush=True)
         try:
             _write_measure_result(config_dir, result_file, {"error": str(e)})
         except Exception as write_err:

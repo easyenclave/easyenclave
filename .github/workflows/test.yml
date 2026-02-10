@@ -54,10 +54,6 @@ jobs:
     permissions:
       packages: write
 
-    outputs:
-      measurer_image: ${{ steps.measurer.outputs.image }}
-      oram_contacts_image: ${{ steps.oram_contacts.outputs.image }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -121,12 +117,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-  deploy:
+  build-and-deploy:
     runs-on: [self-hosted, tdx]
     if: github.event_name == 'push'
-    needs: [test, docker]
 
     permissions:
+      actions: read
       id-token: write
       attestations: write
       contents: read
@@ -154,6 +150,8 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
+      # ---- Build (runs in parallel with test + docker) ----
+
       - name: Build and measure
         id: build
         run: ./scripts/ci-build-measure.sh
@@ -164,12 +162,40 @@ jobs:
           subject-name: ghcr.io/${{ github.repository }}/tdx-runner
           subject-digest: sha256:${{ steps.build.outputs.digest }}
 
+      # ---- Wait for test + docker jobs before deploying ----
+
+      - name: Wait for test and docker jobs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Waiting for test and docker jobs to complete..."
+          while true; do
+            JOBS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs" --jq '.jobs')
+            TEST=$(echo "$JOBS" | jq -r '.[] | select(.name == "test") | .conclusion // "pending"')
+            DOCKER=$(echo "$JOBS" | jq -r '.[] | select(.name == "docker") | .conclusion // "pending"')
+
+            if [ "$TEST" = "failure" ] || [ "$DOCKER" = "failure" ]; then
+              echo "::error::Dependency job failed (test=$TEST, docker=$DOCKER)"
+              exit 1
+            fi
+
+            if [ "$TEST" = "success" ] && [ "$DOCKER" = "success" ]; then
+              echo "test and docker jobs completed successfully"
+              break
+            fi
+
+            echo "  test=$TEST docker=$DOCKER — waiting 15s..."
+            sleep 15
+          done
+
+      # ---- Deploy ----
+
       - name: Deploy and bootstrap
         env:
           TRUSTED_AGENT_MRTDS: ${{ steps.build.outputs.mrtd }}
           TRUSTED_AGENT_RTMRS: ${{ steps.build.outputs.rtmrs }}
           ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
           ADMIN_PASSWORD: ${{ secrets.CONTROL_PLANE_ADMIN_PASSWORD }}
-          MEASURER_IMAGE: ${{ needs.docker.outputs.measurer_image }}
-          ORAM_IMAGE: ${{ needs.docker.outputs.oram_contacts_image }}
+          MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
+          ORAM_IMAGE: ghcr.io/${{ github.repository }}/oram-contacts:${{ github.sha }}
         run: ./scripts/ci-deploy.sh

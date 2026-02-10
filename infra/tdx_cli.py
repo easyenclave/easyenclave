@@ -574,6 +574,24 @@ runcmd:
             print("  (no serial log found)", file=sys.stderr)
         print("=== End serial log ===\n", file=sys.stderr)
 
+    def _parse_measurements_from_serial(self, serial_log: str) -> dict | None:
+        """Parse EASYENCLAVE_MEASUREMENTS=<json> from serial log as fallback."""
+        if not Path(serial_log).exists():
+            return None
+        for line in Path(serial_log).read_text().splitlines():
+            if "EASYENCLAVE_MEASUREMENTS=" in line:
+                try:
+                    raw = line.split("EASYENCLAVE_MEASUREMENTS=", 1)[1].strip()
+                    data = json.loads(raw)
+                    if data.get("mrtd"):
+                        return data
+                except (json.JSONDecodeError, IndexError):
+                    pass
+            if "EASYENCLAVE_MEASURE_ERROR=" in line:
+                err = line.split("EASYENCLAVE_MEASURE_ERROR=", 1)[1].strip()
+                print(f"Measurement error (from serial): {err}", file=sys.stderr)
+        return None
+
     def vm_measure(
         self,
         image: str | None = None,
@@ -648,9 +666,18 @@ runcmd:
                     except json.JSONDecodeError as e:
                         print(f"Failed to parse measurements: {e}", file=sys.stderr)
 
+            if not measurements and serial_log:
+                # Fallback: parse measurements from serial console output
+                measurements = self._parse_measurements_from_serial(serial_log)
+                if measurements:
+                    print("Recovered measurements from serial log", file=sys.stderr)
+
             if not measurements:
                 self._dump_serial_log(serial_log)
-                print("Warning: Could not read measurements from config disk", file=sys.stderr)
+                print(
+                    "Warning: Could not read measurements from config disk or serial log",
+                    file=sys.stderr,
+                )
 
         finally:
             # Always clean up the VM
