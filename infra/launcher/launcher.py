@@ -888,8 +888,6 @@ def generate_initial_attestation(config: dict, vm_name: str = None) -> dict:
     measurements = parse_tdx_quote(quote_b64)
     mrtd = measurements.get("mrtd", "unknown")
     logger.info(f"Generated TDX quote, MRTD: {mrtd[:32]}...")
-    # Log full MRTD for vm_measure command to capture
-    print(f"MRTD_FULL={mrtd}", flush=True)
 
     # Verify nonce was included in REPORTDATA
     if nonce:
@@ -1602,15 +1600,24 @@ def run_control_plane_mode(config: dict):
 
 
 def run_measure_mode(config: dict):
-    """Run in measure mode - generate TDX quote, print measurements, exit.
+    """Run in measure mode - generate TDX quote, write measurements to config disk, poweroff.
 
     This mode only requires ConfigFS-TSM. No Docker, network, Intel TA,
     or control plane registration needed. Used by `tdx_cli.py vm measure`
     to capture MRTD and RTMRs from a temporary VM.
 
+    Flow:
+    1. Generate TDX quote and parse measurements
+    2. Remount /mnt/config read-write
+    3. Write measurements.json to config disk
+    4. Trigger poweroff so the host can read the config disk
+
     Args:
         config: Launcher config (unused, but kept for consistency)
     """
+    config_dir = Path("/mnt/config")
+    result_file = config_dir / "measurements.json"
+
     logger.info("Starting in MEASURE mode")
     logger.info("Generating TDX quote for measurement...")
 
@@ -1619,29 +1626,49 @@ def run_measure_mode(config: dict):
         measurements = parse_tdx_quote(quote_b64)
 
         if "error" in measurements:
-            logger.error(f"Failed to parse TDX quote: {measurements['error']}")
-            print(f"MEASURE_ERROR={measurements['error']}", flush=True)
+            error_msg = measurements["error"]
+            logger.error(f"Failed to parse TDX quote: {error_msg}")
+            _write_measure_result(config_dir, result_file, {"error": error_msg})
             return
 
-        mrtd = measurements.get("mrtd", "")
-        rtmr0 = measurements.get("rtmr0", "")
-        rtmr1 = measurements.get("rtmr1", "")
-        rtmr2 = measurements.get("rtmr2", "")
-        rtmr3 = measurements.get("rtmr3", "")
+        result = {
+            "mrtd": measurements.get("mrtd", ""),
+            "rtmr0": measurements.get("rtmr0", ""),
+            "rtmr1": measurements.get("rtmr1", ""),
+            "rtmr2": measurements.get("rtmr2", ""),
+            "rtmr3": measurements.get("rtmr3", ""),
+        }
 
-        # Print structured output for vm_measure to capture from serial log
-        print(f"MRTD_FULL={mrtd}", flush=True)
-        print(f"RTMR0={rtmr0}", flush=True)
-        print(f"RTMR1={rtmr1}", flush=True)
-        print(f"RTMR2={rtmr2}", flush=True)
-        print(f"RTMR3={rtmr3}", flush=True)
-
-        logger.info(f"MRTD: {mrtd[:32]}...")
-        logger.info("Measurement complete, exiting.")
+        logger.info(f"MRTD: {result['mrtd'][:32]}...")
+        _write_measure_result(config_dir, result_file, result)
+        logger.info("Measurement complete.")
 
     except Exception as e:
         logger.error(f"Measurement failed: {e}")
-        print(f"MEASURE_ERROR={e}", flush=True)
+        try:
+            _write_measure_result(config_dir, result_file, {"error": str(e)})
+        except Exception as write_err:
+            logger.error(f"Also failed to write error to config disk: {write_err}")
+
+    finally:
+        # Poweroff so the host can read the config disk
+        logger.info("Powering off VM...")
+        subprocess.run(["systemctl", "poweroff"], check=False)
+
+
+def _write_measure_result(config_dir: Path, result_file: Path, data: dict):
+    """Remount config disk rw and write measurement results.
+
+    Raises on failure — the caller must handle this so the VM still powers off.
+    """
+    subprocess.run(
+        ["mount", "-o", "remount,rw", str(config_dir)],
+        check=True,
+        capture_output=True,
+    )
+    result_file.write_text(json.dumps(data))
+    subprocess.run(["sync"], check=False)
+    logger.info(f"Wrote measurements to {result_file}")
 
 
 def run_agent_mode(config: dict):

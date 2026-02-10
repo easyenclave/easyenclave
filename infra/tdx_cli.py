@@ -390,7 +390,7 @@ runcmd:
         # Get VM info
         result = self._virsh("dominfo", vm_name, text=True)
 
-        return {
+        ret = {
             "name": vm_name,
             "uuid": vm_uuid,
             "mode": mode,
@@ -398,6 +398,9 @@ runcmd:
             "serial_log": str(serial_log),
             "info": result.stdout,
         }
+        if verity:
+            ret["config_disk"] = str(config_img)
+        return ret
 
     def control_plane_new(
         self,
@@ -536,6 +539,36 @@ runcmd:
 
         return info
 
+    def _read_config_disk(self, config_disk: str, filename: str) -> str | None:
+        """Read a file from an ext4 config disk image using debugfs.
+
+        Args:
+            config_disk: Path to the ext4 image
+            filename: File to read (e.g. "measurements.json")
+
+        Returns:
+            File contents as string, or None on failure
+        """
+        result = subprocess.run(
+            ["debugfs", "-R", f"cat {filename}", config_disk],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return None
+
+    def _dump_serial_log(self, serial_log: str | None):
+        """Dump last 50 lines of serial log for diagnostics."""
+        print("\n=== Serial log (last 50 lines) ===", file=sys.stderr)
+        if serial_log and Path(serial_log).exists():
+            lines = Path(serial_log).read_text().splitlines()
+            for line in lines[-50:]:
+                print(f"  {line}", file=sys.stderr)
+        else:
+            print("  (no serial log found)", file=sys.stderr)
+        print("=== End serial log ===\n", file=sys.stderr)
+
     def vm_measure(
         self,
         image: str | None = None,
@@ -546,21 +579,20 @@ runcmd:
     ) -> dict:
         """Boot a temporary VM to capture MRTD and RTMRs, then destroy it.
 
-        Uses measure mode: the launcher generates a TDX quote, prints
-        measurements, and exits. No Docker, network, Intel TA, or control
-        plane needed.
+        Uses measure mode: the launcher generates a TDX quote, writes
+        measurements to the config disk, and powers off the VM. The host
+        then reads the config disk with debugfs. No Docker, network,
+        Intel TA, or control plane needed.
 
         Args:
             image: Path to TDX VM image (auto-detected if not provided)
-            timeout: Max seconds to wait for measurements (default 180)
+            timeout: Max seconds to wait for VM to shut off (default 180)
 
         Returns:
             Dict with mrtd, rtmr0-3, and vm_name
         """
-        import re
-
-        # Boot a temporary VM in measure mode — only generates TDX quote and prints
-        # measurements, then exits. No Intel API key or control plane needed.
+        # Boot a temporary VM in measure mode — only generates TDX quote,
+        # writes measurements to config disk, and powers off.
         config = {
             "control_plane_url": "",  # Not needed for measure mode
             "intel_api_key": "",  # Not needed for measure mode
@@ -578,73 +610,58 @@ runcmd:
         )
         vm_name = result["name"]
         serial_log = result.get("serial_log")
+        config_disk = result.get("config_disk")
 
         print(f"VM started: {vm_name}", file=sys.stderr)
-        print(f"Serial log: {serial_log}", file=sys.stderr)
 
-        mrtd = None
-        rtmrs = {}
+        measurements = None
         try:
+            # Wait for VM to shut off (measure mode calls systemctl poweroff)
             start = time.time()
             while time.time() - start < timeout:
-                if serial_log and Path(serial_log).exists():
-                    log_content = Path(serial_log).read_text()
-
-                    # Look for MRTD (printed by measure mode)
-                    if not mrtd:
-                        match = re.search(r"MRTD_FULL=([a-f0-9]{96})", log_content, re.IGNORECASE)
-                        if match:
-                            mrtd = match.group(1)
-                            print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)
-
-                    # Look for RTMRs
-                    for i in range(4):
-                        key = f"rtmr{i}"
-                        if key not in rtmrs:
-                            match = re.search(
-                                rf"RTMR{i}=([a-f0-9]{{96}})", log_content, re.IGNORECASE
-                            )
-                            if match:
-                                rtmrs[key] = match.group(1)
-
-                    # Check for error output
-                    error_match = re.search(r"MEASURE_ERROR=(.+)", log_content)
-                    if error_match:
-                        print(f"Measurement error: {error_match.group(1)}", file=sys.stderr)
-                        break
-
-                    # All measurements found
-                    if mrtd and len(rtmrs) == 4:
-                        print("All measurements captured.", file=sys.stderr)
-                        break
-
+                state = self._virsh("domstate", vm_name, text=True)
+                if state.returncode == 0 and "shut off" in state.stdout:
+                    print("VM has shut off.", file=sys.stderr)
+                    break
                 time.sleep(2)
+            else:
+                print(f"Timeout: VM did not shut off within {timeout}s", file=sys.stderr)
+                self._dump_serial_log(serial_log)
 
-            if not mrtd:
-                # Dump last 50 lines of serial log for diagnostics
-                print("\n=== Serial log (last 50 lines) ===", file=sys.stderr)
-                if serial_log and Path(serial_log).exists():
-                    lines = Path(serial_log).read_text().splitlines()
-                    for line in lines[-50:]:
-                        print(f"  {line}", file=sys.stderr)
-                else:
-                    print("  (no serial log found)", file=sys.stderr)
-                print("=== End serial log ===\n", file=sys.stderr)
-                print("Warning: Could not find MRTD in logs", file=sys.stderr)
+            # Read measurements from config disk
+            if config_disk:
+                raw = self._read_config_disk(config_disk, "measurements.json")
+                if raw:
+                    try:
+                        measurements = json.loads(raw)
+                        if "error" in measurements:
+                            print(f"Measurement error: {measurements['error']}", file=sys.stderr)
+                            measurements = None
+                        else:
+                            mrtd = measurements.get("mrtd", "")
+                            print(f"MRTD: {mrtd[:32]}...", file=sys.stderr)
+                    except json.JSONDecodeError as e:
+                        print(f"Failed to parse measurements: {e}", file=sys.stderr)
+
+            if not measurements:
+                self._dump_serial_log(serial_log)
+                print("Warning: Could not read measurements from config disk", file=sys.stderr)
 
         finally:
             # Always clean up the VM
             print(f"Destroying temporary VM: {vm_name}", file=sys.stderr)
             self.vm_delete(vm_name)
 
-        return {
-            "mrtd": mrtd,
-            "rtmr0": rtmrs.get("rtmr0"),
-            "rtmr1": rtmrs.get("rtmr1"),
-            "rtmr2": rtmrs.get("rtmr2"),
-            "rtmr3": rtmrs.get("rtmr3"),
-            "vm_name": vm_name,
-        }
+        if measurements:
+            return {
+                "mrtd": measurements.get("mrtd"),
+                "rtmr0": measurements.get("rtmr0"),
+                "rtmr1": measurements.get("rtmr1"),
+                "rtmr2": measurements.get("rtmr2"),
+                "rtmr3": measurements.get("rtmr3"),
+                "vm_name": vm_name,
+            }
+        return {"mrtd": None, "vm_name": vm_name}
 
 
 def main():
