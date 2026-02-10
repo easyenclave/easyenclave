@@ -571,11 +571,11 @@ runcmd:
         return None
 
     def _dump_serial_log(self, serial_log: str | None):
-        """Dump last 200 lines of serial log for diagnostics."""
-        print("\n=== Serial log (last 200 lines) ===", file=sys.stderr)
+        """Dump last 500 lines of serial log for diagnostics."""
+        print("\n=== Serial log (last 500 lines) ===", file=sys.stderr)
         if serial_log and Path(serial_log).exists():
             lines = Path(serial_log).read_text().splitlines()
-            for line in lines[-200:]:
+            for line in lines[-500:]:
                 print(f"  {line}", file=sys.stderr)
         else:
             print("  (no serial log found)", file=sys.stderr)

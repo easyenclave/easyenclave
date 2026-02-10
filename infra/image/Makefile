@@ -56,7 +56,7 @@ build: $(EXTRA_DIR)/launcher.py
 		ROOTHASH=$$(veritysetup format "$$ROOT_DATA" /tmp/verity-recompute.raw \
 			--salt="$$SALT" 2>&1 | grep "Root hash:" | awk '{print $$NF}'); \
 		rm -f /tmp/verity-recompute.raw; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH systemd.verity_root_data=/dev/vda systemd.verity_root_hash=/dev/vdd console=tty0 console=ttyS0,115200" \
+		echo "root=/dev/dm-0 roothash=$$ROOTHASH systemd.verity_root_data=/dev/vda systemd.verity_root_hash=/dev/vdd rd.systemd.log_level=debug console=tty0 console=ttyS0,115200" \
 			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 		echo "Roothash: $$ROOTHASH"; \
 	else \
