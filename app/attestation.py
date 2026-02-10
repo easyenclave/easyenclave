@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .ita import extract_intel_ta_claims, verify_attestation_token
 from .settings import get_setting, get_setting_set
-from .storage import agent_store, get_trusted_mrtd
+from .storage import agent_store, get_trusted_mrtd, get_trusted_rtmrs
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,10 @@ def _tcb_enforcement_mode() -> str:
 
 def _allowed_tcb_statuses() -> set[str]:
     return get_setting_set("operational.allowed_tcb_statuses")
+
+
+def _rtmr_enforcement_mode() -> str:
+    return get_setting("operational.rtmr_enforcement_mode").lower()
 
 
 class AttestationError(Exception):
@@ -47,6 +51,7 @@ class AgentVerificationResult:
     intel_ta_token: str
     mrtd_type: str  # "agent" or "proxy"
     tcb_status: str
+    rtmrs: dict[str, str] | None = None
 
 
 @dataclass
@@ -160,11 +165,44 @@ async def verify_agent_registration(attestation: dict) -> AgentVerificationResul
             detail=f"MRTD is type '{mrtd_type}', not 'agent' or 'proxy'",
         )
 
+    # Step 4: Check RTMRs against trusted baseline (if configured)
+    agent_rtmrs = extract_rtmrs(attestation)
+    rtmr_mode = _rtmr_enforcement_mode()
+
+    if rtmr_mode != "disabled":
+        trusted_rtmrs = get_trusted_rtmrs(mrtd_type)
+        if trusted_rtmrs and agent_rtmrs:
+            mismatches = []
+            for key in ["rtmr0", "rtmr1", "rtmr2", "rtmr3"]:
+                expected = trusted_rtmrs.get(key, "")
+                actual = agent_rtmrs.get(key, "")
+                if expected and actual and expected != actual:
+                    mismatches.append(
+                        f"{key.upper()}: expected {expected[:16]}..., got {actual[:16]}..."
+                    )
+
+            if mismatches:
+                error_msg = f"RTMR mismatch: {'; '.join(mismatches)}"
+                if rtmr_mode == "strict":
+                    raise AttestationError(detail=error_msg, status_code=403)
+                else:  # warn mode
+                    logger.warning(
+                        f"Agent registration proceeding with RTMR warning: {error_msg} "
+                        f"(MRTD: {mrtd[:16]}...)"
+                    )
+        elif trusted_rtmrs and not agent_rtmrs:
+            msg = "Agent attestation does not contain RTMRs but trusted RTMRs are configured"
+            if rtmr_mode == "strict":
+                raise AttestationError(detail=msg, status_code=403)
+            else:
+                logger.warning(f"RTMR warning: {msg}")
+
     return AgentVerificationResult(
         mrtd=mrtd,
         intel_ta_token=intel_ta_token,
         mrtd_type=mrtd_type,
         tcb_status=tcb_status,
+        rtmrs=agent_rtmrs,
     )
 
 

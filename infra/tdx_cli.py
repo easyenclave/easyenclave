@@ -443,6 +443,9 @@ runcmd:
             # Trusted MRTDs (comma-separated)
             "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS"),
             "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS"),
+            # Trusted RTMRs (JSON)
+            "trusted_agent_rtmrs": os.environ.get("TRUSTED_AGENT_RTMRS"),
+            "trusted_proxy_rtmrs": os.environ.get("TRUSTED_PROXY_RTMRS"),
             # Admin password hash for control plane dashboard
             "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH"),
         }
@@ -541,36 +544,34 @@ runcmd:
         vcpu_count: int = 32,
         verity: bool = False,
     ) -> dict:
-        """Boot a temporary VM to capture MRTD, then destroy it.
+        """Boot a temporary VM to capture MRTD and RTMRs, then destroy it.
 
-        This is useful for getting the MRTD before trusting it in the control plane.
-        The VM boots, generates attestation, and the MRTD is extracted from the
-        serial console output.
+        Uses measure mode: the launcher generates a TDX quote, prints
+        measurements, and exits. No Docker, network, Intel TA, or control
+        plane needed.
 
         Args:
             image: Path to TDX VM image (auto-detected if not provided)
-            timeout: Max seconds to wait for attestation (default 180)
+            timeout: Max seconds to wait for measurements (default 180)
 
         Returns:
-            Dict with mrtd and vm_name
+            Dict with mrtd, rtmr0-3, and vm_name
         """
         import re
 
-        # Boot a temporary VM in agent mode (but it won't be able to register
-        # since MRTD isn't trusted yet - that's the point)
-        # We need to give it a control plane URL that won't work but won't
-        # cause it to crash before generating attestation
+        # Boot a temporary VM in measure mode — only generates TDX quote and prints
+        # measurements, then exits. No Intel API key or control plane needed.
         config = {
-            "control_plane_url": "http://localhost:9999",  # Dummy URL
-            "intel_api_key": os.environ.get("INTEL_API_KEY", ""),
+            "control_plane_url": "",  # Not needed for measure mode
+            "intel_api_key": "",  # Not needed for measure mode
         }
 
-        print("Booting temporary VM to measure MRTD...", file=sys.stderr)
+        print("Booting temporary VM to capture measurements...", file=sys.stderr)
         result = self.vm_new(
             image=image,
-            mode=AGENT_MODE,
+            mode="measure",
             config=config,
-            debug=True,
+            debug=False,
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
             verity=verity,
@@ -582,39 +583,53 @@ runcmd:
         print(f"Serial log: {serial_log}", file=sys.stderr)
 
         mrtd = None
+        rtmrs = {}
         try:
-            # Wait for MRTD to appear in serial log
-            # The launcher prints: "MRTD_FULL=<96-char hex>" for vm_measure to capture
             start = time.time()
             while time.time() - start < timeout:
                 if serial_log and Path(serial_log).exists():
                     log_content = Path(serial_log).read_text()
 
-                    # Look for full MRTD (printed by launcher for measurement)
-                    # Pattern: "MRTD_FULL=<96-char hex>"
-                    match = re.search(r"MRTD_FULL=([a-f0-9]{96})", log_content, re.IGNORECASE)
-                    if match:
-                        mrtd = match.group(1)
-                        print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)
-                        break
-
-                    # Check for attestation failure (Intel TA key missing)
-                    if "Intel Trust Authority API key required" in log_content:
-                        print("Error: INTEL_API_KEY not set", file=sys.stderr)
-                        break
-
-                    # Check for registration rejection (means attestation worked)
-                    if "Registration rejected" in log_content or "MRTD not trusted" in log_content:
-                        # MRTD should have been printed before the rejection
+                    # Look for MRTD (printed by measure mode)
+                    if not mrtd:
                         match = re.search(r"MRTD_FULL=([a-f0-9]{96})", log_content, re.IGNORECASE)
                         if match:
                             mrtd = match.group(1)
                             print(f"Found MRTD: {mrtd[:32]}...", file=sys.stderr)
-                            break
+
+                    # Look for RTMRs
+                    for i in range(4):
+                        key = f"rtmr{i}"
+                        if key not in rtmrs:
+                            match = re.search(
+                                rf"RTMR{i}=([a-f0-9]{{96}})", log_content, re.IGNORECASE
+                            )
+                            if match:
+                                rtmrs[key] = match.group(1)
+
+                    # Check for error output
+                    error_match = re.search(r"MEASURE_ERROR=(.+)", log_content)
+                    if error_match:
+                        print(f"Measurement error: {error_match.group(1)}", file=sys.stderr)
+                        break
+
+                    # All measurements found
+                    if mrtd and len(rtmrs) == 4:
+                        print("All measurements captured.", file=sys.stderr)
+                        break
 
                 time.sleep(2)
 
             if not mrtd:
+                # Dump last 50 lines of serial log for diagnostics
+                print("\n=== Serial log (last 50 lines) ===", file=sys.stderr)
+                if serial_log and Path(serial_log).exists():
+                    lines = Path(serial_log).read_text().splitlines()
+                    for line in lines[-50:]:
+                        print(f"  {line}", file=sys.stderr)
+                else:
+                    print("  (no serial log found)", file=sys.stderr)
+                print("=== End serial log ===\n", file=sys.stderr)
                 print("Warning: Could not find MRTD in logs", file=sys.stderr)
 
         finally:
@@ -624,6 +639,10 @@ runcmd:
 
         return {
             "mrtd": mrtd,
+            "rtmr0": rtmrs.get("rtmr0"),
+            "rtmr1": rtmrs.get("rtmr1"),
+            "rtmr2": rtmrs.get("rtmr2"),
+            "rtmr3": rtmrs.get("rtmr3"),
             "vm_name": vm_name,
         }
 
@@ -721,13 +740,16 @@ To start a new EasyEnclave network:
     del_parser = vm_sub.add_parser("delete", help="Delete TDX VM")
     del_parser.add_argument("name", help="VM name or 'all'")
 
-    measure_parser = vm_sub.add_parser("measure", help="Boot temp VM to capture MRTD")
+    measure_parser = vm_sub.add_parser("measure", help="Boot temp VM to capture measurements")
     measure_parser.add_argument("-i", "--image", help="Path to TDX image")
     measure_parser.add_argument(
         "--timeout", type=int, default=180, help="Timeout in seconds (default 180)"
     )
     measure_parser.add_argument(
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
+    )
+    measure_parser.add_argument(
+        "--json", action="store_true", help="Output all measurements as JSON (MRTD + RTMRs)"
     )
     measure_parser.add_argument(
         "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
@@ -858,8 +880,22 @@ To start a new EasyEnclave network:
                     verity=args.verity,
                 )
                 if result.get("mrtd"):
-                    # Print just the MRTD for easy scripting
-                    print(result["mrtd"])
+                    if args.json:
+                        # Output all measurements as JSON
+                        print(
+                            json.dumps(
+                                {
+                                    "mrtd": result["mrtd"],
+                                    "rtmr0": result.get("rtmr0"),
+                                    "rtmr1": result.get("rtmr1"),
+                                    "rtmr2": result.get("rtmr2"),
+                                    "rtmr3": result.get("rtmr3"),
+                                }
+                            )
+                        )
+                    else:
+                        # Print just the MRTD for backward compat
+                        print(result["mrtd"])
                 else:
                     print("Error: Could not capture MRTD", file=sys.stderr)
                     sys.exit(1)

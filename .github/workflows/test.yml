@@ -173,17 +173,26 @@ jobs:
           subject-name: ghcr.io/${{ github.repository }}/tdx-runner
           subject-digest: sha256:${{ steps.build.outputs.digest }}
 
-      - name: Measure MRTD
+      - name: Measure MRTD and RTMRs
         id: measure
         run: |
-          echo "Measuring MRTD from temp VM..."
-          MRTD=$(python3 infra/tdx_cli.py vm measure --verity --timeout 180)
-          if [ -z "$MRTD" ]; then
+          echo "Measuring MRTD and RTMRs from temp VM..."
+          MEASURES=$(python3 infra/tdx_cli.py vm measure --verity --json --timeout 180)
+          if [ -z "$MEASURES" ]; then
+            echo "::error::Failed to capture measurements"
+            exit 1
+          fi
+          echo "Raw measurements: $MEASURES"
+          MRTD=$(echo "$MEASURES" | jq -r '.mrtd')
+          RTMRS=$(echo "$MEASURES" | jq -c '{rtmr0,rtmr1,rtmr2,rtmr3}')
+          if [ -z "$MRTD" ] || [ "$MRTD" = "null" ]; then
             echo "::error::Failed to measure MRTD"
             exit 1
           fi
           echo "MRTD: ${MRTD:0:32}..."
+          echo "RTMRs: $RTMRS"
           echo "mrtd=$MRTD" >> "$GITHUB_OUTPUT"
+          echo "rtmrs=$RTMRS" >> "$GITHUB_OUTPUT"
 
       - name: Delete all VMs
         run: python3 infra/tdx_cli.py vm delete all || true
@@ -191,6 +200,7 @@ jobs:
       - name: Deploy control plane
         env:
           TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtd }}
+          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
           ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
         run: |
           python3 infra/tdx_cli.py control-plane new --verity --wait --port 8080

@@ -157,6 +157,14 @@ _reg(
     "operational",
 )
 _reg(
+    "operational.rtmr_enforcement_mode",
+    "RTMR_ENFORCEMENT_MODE",
+    "warn",
+    False,
+    "RTMR enforcement mode: strict, warn, or disabled",
+    "operational",
+)
+_reg(
     "operational.agent_attestation_interval",
     "AGENT_ATTESTATION_INTERVAL",
     "3600",

@@ -513,6 +513,52 @@ def list_trusted_mrtds() -> dict[str, str]:
     return dict(_trusted_mrtds)
 
 
+# ==============================================================================
+# Trusted RTMR lookup (env-var-only, no DB)
+# ==============================================================================
+
+_trusted_rtmrs: dict[str, dict[str, str]] = {}  # type ("agent"/"proxy") -> {rtmr0: ..., rtmr3: ...}
+
+
+def load_trusted_rtmrs():
+    """Load trusted RTMRs from environment variables.
+
+    Expected format: JSON object with rtmr0-3 keys, e.g.
+    TRUSTED_AGENT_RTMRS='{"rtmr0":"abc...","rtmr1":"def...","rtmr2":"ghi...","rtmr3":"jkl..."}'
+    """
+    global _trusted_rtmrs
+    _trusted_rtmrs = {}
+    for env_var, mrtd_type in [
+        ("TRUSTED_AGENT_RTMRS", "agent"),
+        ("TRUSTED_PROXY_RTMRS", "proxy"),
+    ]:
+        val = os.environ.get(env_var, "").strip()
+        if not val:
+            continue
+        try:
+            import json
+
+            rtmrs = json.loads(val)
+            if isinstance(rtmrs, dict) and all(f"rtmr{i}" in rtmrs for i in range(4)):
+                _trusted_rtmrs[mrtd_type] = rtmrs
+                logger.info(
+                    f"Loaded trusted {mrtd_type} RTMRs: "
+                    f"RTMR0={rtmrs['rtmr0'][:16]}... "
+                    f"RTMR1={rtmrs['rtmr1'][:16]}... "
+                    f"RTMR2={rtmrs['rtmr2'][:16]}... "
+                    f"RTMR3={rtmrs['rtmr3'][:16]}..."
+                )
+            else:
+                logger.warning(f"Invalid {env_var}: must be JSON with rtmr0-rtmr3 keys")
+        except Exception as e:
+            logger.warning(f"Could not parse {env_var}: {e}")
+
+
+def get_trusted_rtmrs(mrtd_type: str) -> dict[str, str] | None:
+    """Return trusted RTMRs for a given type, or None if not configured."""
+    return _trusted_rtmrs.get(mrtd_type)
+
+
 class AppStore:
     """Storage for apps."""
 
@@ -773,5 +819,6 @@ account_store = AccountStore()
 transaction_store = TransactionStore()
 admin_session_store = AdminSessionStore()
 
-# Load trusted MRTDs from env vars at import time
+# Load trusted MRTDs and RTMRs from env vars at import time
 load_trusted_mrtds()
+load_trusted_rtmrs()

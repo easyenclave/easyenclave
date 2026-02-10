@@ -1,5 +1,6 @@
-"""Tests for RTMR extraction, drift detection, and backfill."""
+"""Tests for RTMR extraction, drift detection, backfill, and registration verification."""
 
+import os
 from unittest.mock import patch
 
 import pytest
@@ -166,3 +167,334 @@ class TestAttestationChainIncludesRtmrs:
 
         chain = await build_attestation_chain(agent)
         assert chain["rtmrs"] is None
+
+
+# ── RTMR verification at registration ────────────────────────────────────
+
+TRUSTED_RTMRS = {
+    "rtmr0": "a" * 96,
+    "rtmr1": "b" * 96,
+    "rtmr2": "c" * 96,
+    "rtmr3": "d" * 96,
+}
+
+MRTD_HEX = "e" * 96
+
+
+@pytest.fixture(autouse=False)
+def reset_rtmr_config():
+    """Reset RTMR enforcement config around a test."""
+    orig_mode = os.environ.get("RTMR_ENFORCEMENT_MODE")
+    orig_rtmrs = os.environ.get("TRUSTED_AGENT_RTMRS")
+
+    yield
+
+    if orig_mode is None:
+        os.environ.pop("RTMR_ENFORCEMENT_MODE", None)
+    else:
+        os.environ["RTMR_ENFORCEMENT_MODE"] = orig_mode
+
+    if orig_rtmrs is None:
+        os.environ.pop("TRUSTED_AGENT_RTMRS", None)
+    else:
+        os.environ["TRUSTED_AGENT_RTMRS"] = orig_rtmrs
+
+    # Reload to pick up changes
+    import importlib
+
+    import app.attestation
+    import app.storage
+
+    importlib.reload(app.storage)
+    importlib.reload(app.attestation)
+
+
+def _make_attestation(rtmrs=None):
+    """Build attestation dict with optional RTMRs."""
+    measurements = {"mrtd": MRTD_HEX}
+    if rtmrs:
+        measurements.update(rtmrs)
+    return {"tdx": {"intel_ta_token": "fake.jwt.token", "measurements": measurements}}
+
+
+class TestRtmrRegistrationVerification:
+    """Test RTMR verification at agent registration time."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("reset_rtmr_config")
+    async def test_strict_mode_rejects_mismatch(self):
+        """Strict mode rejects when RTMRs don't match trusted baseline."""
+        import importlib
+        import json
+
+        os.environ["RTMR_ENFORCEMENT_MODE"] = "strict"
+        os.environ["TRUSTED_AGENT_RTMRS"] = json.dumps(TRUSTED_RTMRS)
+
+        import app.attestation
+        import app.storage
+
+        importlib.reload(app.storage)
+        importlib.reload(app.attestation)
+
+        # Attestation with mismatched rtmr1
+        bad_rtmrs = {**TRUSTED_RTMRS, "rtmr1": "f" * 96}
+        attestation = _make_attestation(bad_rtmrs)
+
+        with patch("app.attestation.verify_attestation_token") as mock_verify:
+            with patch("app.attestation.get_trusted_mrtd") as mock_mrtd:
+                mock_verify.return_value = {
+                    "verified": True,
+                    "details": {"tdx_mrtd": MRTD_HEX, "attester_tcb_status": "UpToDate"},
+                }
+                mock_mrtd.return_value = "agent"
+
+                with pytest.raises(app.attestation.AttestationError) as exc_info:
+                    await app.attestation.verify_agent_registration(attestation)
+
+                assert exc_info.value.status_code == 403
+                assert "RTMR mismatch" in exc_info.value.detail
+                assert "RTMR1" in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("reset_rtmr_config")
+    async def test_strict_mode_allows_match(self):
+        """Strict mode allows when RTMRs match trusted baseline."""
+        import importlib
+        import json
+
+        os.environ["RTMR_ENFORCEMENT_MODE"] = "strict"
+        os.environ["TRUSTED_AGENT_RTMRS"] = json.dumps(TRUSTED_RTMRS)
+
+        import app.attestation
+        import app.storage
+
+        importlib.reload(app.storage)
+        importlib.reload(app.attestation)
+
+        attestation = _make_attestation(TRUSTED_RTMRS)
+
+        with patch("app.attestation.verify_attestation_token") as mock_verify:
+            with patch("app.attestation.get_trusted_mrtd") as mock_mrtd:
+                mock_verify.return_value = {
+                    "verified": True,
+                    "details": {"tdx_mrtd": MRTD_HEX, "attester_tcb_status": "UpToDate"},
+                }
+                mock_mrtd.return_value = "agent"
+
+                result = await app.attestation.verify_agent_registration(attestation)
+                assert result.mrtd == MRTD_HEX
+                assert result.rtmrs == TRUSTED_RTMRS
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("reset_rtmr_config")
+    async def test_warn_mode_logs_mismatch(self):
+        """Warn mode logs warning but allows registration on mismatch."""
+        import importlib
+        import json
+
+        os.environ["RTMR_ENFORCEMENT_MODE"] = "warn"
+        os.environ["TRUSTED_AGENT_RTMRS"] = json.dumps(TRUSTED_RTMRS)
+
+        import app.attestation
+        import app.storage
+
+        importlib.reload(app.storage)
+        importlib.reload(app.attestation)
+
+        bad_rtmrs = {**TRUSTED_RTMRS, "rtmr2": "f" * 96}
+        attestation = _make_attestation(bad_rtmrs)
+
+        with patch("app.attestation.verify_attestation_token") as mock_verify:
+            with patch("app.attestation.get_trusted_mrtd") as mock_mrtd:
+                with patch("app.attestation.logger") as mock_logger:
+                    mock_verify.return_value = {
+                        "verified": True,
+                        "details": {"tdx_mrtd": MRTD_HEX, "attester_tcb_status": "UpToDate"},
+                    }
+                    mock_mrtd.return_value = "agent"
+
+                    result = await app.attestation.verify_agent_registration(attestation)
+                    assert result.mrtd == MRTD_HEX
+
+                    # Should have logged a warning
+                    warning_calls = [
+                        c for c in mock_logger.warning.call_args_list if "RTMR warning" in str(c)
+                    ]
+                    assert len(warning_calls) >= 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("reset_rtmr_config")
+    async def test_disabled_mode_skips_check(self):
+        """Disabled mode skips RTMR check entirely."""
+        import importlib
+        import json
+
+        os.environ["RTMR_ENFORCEMENT_MODE"] = "disabled"
+        os.environ["TRUSTED_AGENT_RTMRS"] = json.dumps(TRUSTED_RTMRS)
+
+        import app.attestation
+        import app.storage
+
+        importlib.reload(app.storage)
+        importlib.reload(app.attestation)
+
+        # Completely wrong RTMRs should still pass
+        bad_rtmrs = {f"rtmr{i}": "f" * 96 for i in range(4)}
+        attestation = _make_attestation(bad_rtmrs)
+
+        with patch("app.attestation.verify_attestation_token") as mock_verify:
+            with patch("app.attestation.get_trusted_mrtd") as mock_mrtd:
+                mock_verify.return_value = {
+                    "verified": True,
+                    "details": {"tdx_mrtd": MRTD_HEX, "attester_tcb_status": "UpToDate"},
+                }
+                mock_mrtd.return_value = "agent"
+
+                result = await app.attestation.verify_agent_registration(attestation)
+                assert result.mrtd == MRTD_HEX
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("reset_rtmr_config")
+    async def test_no_trusted_rtmrs_configured(self):
+        """When no trusted RTMRs configured, verification passes."""
+        import importlib
+
+        os.environ["RTMR_ENFORCEMENT_MODE"] = "strict"
+        os.environ.pop("TRUSTED_AGENT_RTMRS", None)
+
+        import app.attestation
+        import app.storage
+
+        importlib.reload(app.storage)
+        importlib.reload(app.attestation)
+
+        attestation = _make_attestation(TRUSTED_RTMRS)
+
+        with patch("app.attestation.verify_attestation_token") as mock_verify:
+            with patch("app.attestation.get_trusted_mrtd") as mock_mrtd:
+                mock_verify.return_value = {
+                    "verified": True,
+                    "details": {"tdx_mrtd": MRTD_HEX, "attester_tcb_status": "UpToDate"},
+                }
+                mock_mrtd.return_value = "agent"
+
+                result = await app.attestation.verify_agent_registration(attestation)
+                assert result.mrtd == MRTD_HEX
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("reset_rtmr_config")
+    async def test_strict_rejects_missing_rtmrs_in_attestation(self):
+        """Strict mode rejects when trusted RTMRs configured but agent has none."""
+        import importlib
+        import json
+
+        os.environ["RTMR_ENFORCEMENT_MODE"] = "strict"
+        os.environ["TRUSTED_AGENT_RTMRS"] = json.dumps(TRUSTED_RTMRS)
+
+        import app.attestation
+        import app.storage
+
+        importlib.reload(app.storage)
+        importlib.reload(app.attestation)
+
+        # Attestation without any RTMRs
+        attestation = _make_attestation(rtmrs=None)
+
+        with patch("app.attestation.verify_attestation_token") as mock_verify:
+            with patch("app.attestation.get_trusted_mrtd") as mock_mrtd:
+                mock_verify.return_value = {
+                    "verified": True,
+                    "details": {"tdx_mrtd": MRTD_HEX, "attester_tcb_status": "UpToDate"},
+                }
+                mock_mrtd.return_value = "agent"
+
+                with pytest.raises(app.attestation.AttestationError) as exc_info:
+                    await app.attestation.verify_agent_registration(attestation)
+
+                assert exc_info.value.status_code == 403
+                assert "does not contain RTMRs" in exc_info.value.detail
+
+
+class TestTrustedRtmrsLoading:
+    """Test trusted RTMR loading from environment variables."""
+
+    def test_load_valid_json(self):
+        import importlib
+        import json
+
+        orig = os.environ.get("TRUSTED_AGENT_RTMRS")
+        try:
+            os.environ["TRUSTED_AGENT_RTMRS"] = json.dumps(TRUSTED_RTMRS)
+
+            import app.storage
+
+            importlib.reload(app.storage)
+
+            result = app.storage.get_trusted_rtmrs("agent")
+            assert result == TRUSTED_RTMRS
+        finally:
+            if orig is None:
+                os.environ.pop("TRUSTED_AGENT_RTMRS", None)
+            else:
+                os.environ["TRUSTED_AGENT_RTMRS"] = orig
+            importlib.reload(app.storage)
+
+    def test_load_empty_env(self):
+        import importlib
+
+        orig = os.environ.get("TRUSTED_AGENT_RTMRS")
+        try:
+            os.environ.pop("TRUSTED_AGENT_RTMRS", None)
+
+            import app.storage
+
+            importlib.reload(app.storage)
+
+            result = app.storage.get_trusted_rtmrs("agent")
+            assert result is None
+        finally:
+            if orig is not None:
+                os.environ["TRUSTED_AGENT_RTMRS"] = orig
+            importlib.reload(app.storage)
+
+    def test_load_invalid_json(self):
+        import importlib
+
+        orig = os.environ.get("TRUSTED_AGENT_RTMRS")
+        try:
+            os.environ["TRUSTED_AGENT_RTMRS"] = "not-valid-json"
+
+            import app.storage
+
+            importlib.reload(app.storage)
+
+            result = app.storage.get_trusted_rtmrs("agent")
+            assert result is None
+        finally:
+            if orig is None:
+                os.environ.pop("TRUSTED_AGENT_RTMRS", None)
+            else:
+                os.environ["TRUSTED_AGENT_RTMRS"] = orig
+            importlib.reload(app.storage)
+
+    def test_load_missing_keys(self):
+        """JSON that's missing some rtmr keys should not load."""
+        import importlib
+        import json
+
+        orig = os.environ.get("TRUSTED_AGENT_RTMRS")
+        try:
+            os.environ["TRUSTED_AGENT_RTMRS"] = json.dumps({"rtmr0": "a" * 96})
+
+            import app.storage
+
+            importlib.reload(app.storage)
+
+            result = app.storage.get_trusted_rtmrs("agent")
+            assert result is None
+        finally:
+            if orig is None:
+                os.environ.pop("TRUSTED_AGENT_RTMRS", None)
+            else:
+                os.environ["TRUSTED_AGENT_RTMRS"] = orig
+            importlib.reload(app.storage)

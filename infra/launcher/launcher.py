@@ -56,6 +56,7 @@ VERSION = "1.0.0"
 # Modes
 MODE_CONTROL_PLANE = "control-plane"
 MODE_AGENT = "agent"
+MODE_MEASURE = "measure"
 
 # Admin server
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8081"))
@@ -1471,6 +1472,10 @@ def run_control_plane_mode(config: dict):
         env["TRUSTED_AGENT_MRTDS"] = config["trusted_agent_mrtds"]
     if config.get("trusted_proxy_mrtds"):
         env["TRUSTED_PROXY_MRTDS"] = config["trusted_proxy_mrtds"]
+    if config.get("trusted_agent_rtmrs"):
+        env["TRUSTED_AGENT_RTMRS"] = config["trusted_agent_rtmrs"]
+    if config.get("trusted_proxy_rtmrs"):
+        env["TRUSTED_PROXY_RTMRS"] = config["trusted_proxy_rtmrs"]
     if config.get("admin_password_hash"):
         env["ADMIN_PASSWORD_HASH"] = config["admin_password_hash"]
 
@@ -1596,6 +1601,49 @@ def run_control_plane_mode(config: dict):
         time.sleep(30)
 
 
+def run_measure_mode(config: dict):
+    """Run in measure mode - generate TDX quote, print measurements, exit.
+
+    This mode only requires ConfigFS-TSM. No Docker, network, Intel TA,
+    or control plane registration needed. Used by `tdx_cli.py vm measure`
+    to capture MRTD and RTMRs from a temporary VM.
+
+    Args:
+        config: Launcher config (unused, but kept for consistency)
+    """
+    logger.info("Starting in MEASURE mode")
+    logger.info("Generating TDX quote for measurement...")
+
+    try:
+        quote_b64 = generate_tdx_quote()
+        measurements = parse_tdx_quote(quote_b64)
+
+        if "error" in measurements:
+            logger.error(f"Failed to parse TDX quote: {measurements['error']}")
+            print(f"MEASURE_ERROR={measurements['error']}", flush=True)
+            return
+
+        mrtd = measurements.get("mrtd", "")
+        rtmr0 = measurements.get("rtmr0", "")
+        rtmr1 = measurements.get("rtmr1", "")
+        rtmr2 = measurements.get("rtmr2", "")
+        rtmr3 = measurements.get("rtmr3", "")
+
+        # Print structured output for vm_measure to capture from serial log
+        print(f"MRTD_FULL={mrtd}", flush=True)
+        print(f"RTMR0={rtmr0}", flush=True)
+        print(f"RTMR1={rtmr1}", flush=True)
+        print(f"RTMR2={rtmr2}", flush=True)
+        print(f"RTMR3={rtmr3}", flush=True)
+
+        logger.info(f"MRTD: {mrtd[:32]}...")
+        logger.info("Measurement complete, exiting.")
+
+    except Exception as e:
+        logger.error(f"Measurement failed: {e}")
+        print(f"MEASURE_ERROR={e}", flush=True)
+
+
 def run_agent_mode(config: dict):
     """Run in agent mode - wait for control plane to push deployments.
 
@@ -1716,7 +1764,9 @@ def main():
 
     logger.info(f"Mode: {mode}")
 
-    if mode == MODE_CONTROL_PLANE:
+    if mode == MODE_MEASURE:
+        run_measure_mode(config)
+    elif mode == MODE_CONTROL_PLANE:
         run_control_plane_mode(config)
     else:
         run_agent_mode(config)
