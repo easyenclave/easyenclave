@@ -47,11 +47,18 @@
       <source file="DATA_IMG_PATH"/>
       <target dev="vdb" bus="virtio"/>
     </disk>
-    <!-- Config disk (read-only, launcher config.json) -->
+    <!-- Config disk (launcher config.json, mounted ro by systemd unit) -->
     <disk type="file" device="disk">
       <driver name="qemu" type="raw"/>
       <source file="CONFIG_IMG_PATH"/>
       <target dev="vdc" bus="virtio"/>
+    </disk>
+    <!-- Verity hash disk (read-only, used by systemd-veritysetup-generator) -->
+    <disk type="file" device="disk">
+      <driver name="qemu" type="raw" cache="none"/>
+      <source file="VERITY_IMG_PATH"/>
+      <target dev="vdd" bus="virtio"/>
+      <readonly/>
     </disk>
     <interface type='network'>
       <source network='default'/>

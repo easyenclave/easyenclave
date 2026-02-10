@@ -101,9 +101,9 @@ class TDXManager:
         return self.infra_dir / "vm_templates" / f"{name}.xml.template"
 
     def _find_verity_image(self, image_path: str | None = None) -> dict:
-        """Find verity image artifacts (kernel, initrd, rootfs, cmdline).
+        """Find verity image artifacts (kernel, initrd, rootfs, verity hash, cmdline).
 
-        Returns dict with paths to kernel, initrd, root, and cmdline content.
+        Returns dict with paths to kernel, initrd, root, verity, and cmdline content.
         """
         search_dirs = [
             image_path,
@@ -118,14 +118,18 @@ class TDXManager:
             kernel = p / "easyenclave.vmlinuz"
             initrd = p / "easyenclave.initrd"
             root = p / "easyenclave.root.raw"
+            verity = p / "easyenclave.root.verity"
             cmdline_file = p / "easyenclave.cmdline"
             if kernel.exists() and initrd.exists() and root.exists() and cmdline_file.exists():
-                return {
+                result = {
                     "kernel": kernel.resolve(),
                     "initrd": initrd.resolve(),
                     "root": root.resolve(),
                     "cmdline": cmdline_file.read_text().strip(),
                 }
+                if verity.exists():
+                    result["verity"] = verity.resolve()
+                return result
         raise FileNotFoundError(
             "Verity image artifacts not found. Build with: cd infra/image && make build\n"
             "Or set TDX_VERITY_IMAGE_DIR to the directory containing the artifacts."
@@ -332,7 +336,8 @@ runcmd:
         xml_content = xml_content.replace("VCPU_COUNT", str(vcpu_count))
 
         if verity:
-            # dm-verity boot: direct kernel boot with 3 separate disks
+            # dm-verity boot: direct kernel boot with 4 separate disks
+            # (root data, data, config, verity hash)
             artifacts = self._find_verity_image(image)
             config_img = self._create_config_disk(rand_str, launcher_config)
             data_img = self._create_data_disk(rand_str, size_gb=data_disk_gb)
@@ -343,6 +348,8 @@ runcmd:
             xml_content = xml_content.replace("ROOT_IMG_PATH", str(artifacts["root"]))
             xml_content = xml_content.replace("DATA_IMG_PATH", str(data_img))
             xml_content = xml_content.replace("CONFIG_IMG_PATH", str(config_img))
+            verity_path = artifacts.get("verity", "")
+            xml_content = xml_content.replace("VERITY_IMG_PATH", str(verity_path))
         else:
             # Legacy boot: overlay qcow2 + cloud-init ISO
             image_path = self._find_image(image)
