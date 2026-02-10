@@ -57,6 +57,24 @@ build: $(EXTRA_DIR)/launcher.py
 	else \
 		echo "Warning: verity partition files not found"; \
 	fi
+	@# Verify rootfs has essential files
+	@echo "Verifying rootfs contents..."
+	@LOOP=$$(sudo losetup --find --show --partscan $(OUTPUT_DIR)/easyenclave.root.raw 2>/dev/null) && \
+	if [ -n "$$LOOP" ]; then \
+		sudo mkdir -p /tmp/rootfs-verify && \
+		sudo mount -o ro "$${LOOP}p1" /tmp/rootfs-verify 2>/dev/null && \
+		echo "Root partition contents:" && \
+		ls /tmp/rootfs-verify/ && \
+		echo "Init check:" && \
+		ls -la /tmp/rootfs-verify/usr/lib/systemd/systemd 2>/dev/null || echo "  /usr/lib/systemd/systemd NOT FOUND" && \
+		ls -la /tmp/rootfs-verify/sbin/init 2>/dev/null || echo "  /sbin/init NOT FOUND" && \
+		echo "Disk usage:" && \
+		du -sh /tmp/rootfs-verify/ 2>/dev/null || true && \
+		sudo umount /tmp/rootfs-verify 2>/dev/null; \
+		sudo losetup -d "$$LOOP" 2>/dev/null; \
+	else \
+		echo "Warning: could not set up loop device (skipping rootfs verification)"; \
+	fi
 	@echo ""
 	@echo "Build complete. Artifacts in $(OUTPUT_DIR)/:"
 	@ls -lh $(OUTPUT_DIR)/ 2>/dev/null || true
