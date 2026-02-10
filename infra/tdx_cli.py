@@ -168,10 +168,11 @@ class TDXManager:
         return img_path
 
     def _create_data_disk(self, vm_id: str, size_gb: int = 20) -> Path:
-        """Create an empty qcow2 disk for Docker storage and workloads.
+        """Create an ext4-formatted raw disk for Docker storage and workloads.
 
         This disk is mounted at /data inside the VM and provides writable
-        storage on the otherwise read-only verity rootfs.
+        storage on the otherwise read-only verity rootfs. Uses a sparse raw
+        file (~2MB on host for metadata only).
 
         Args:
             vm_id: Unique VM identifier
@@ -180,12 +181,16 @@ class TDXManager:
         Returns:
             Path to the data disk image
         """
-        img_path = self.WORKDIR / f"data.{vm_id}.qcow2"
+        img_path = self.WORKDIR / f"data.{vm_id}.raw"
         subprocess.run(
-            ["qemu-img", "create", "-f", "qcow2", str(img_path), f"{size_gb}G"],
+            ["truncate", "-s", f"{size_gb}G", str(img_path)],
             check=True,
             capture_output=True,
-            text=True,
+        )
+        subprocess.run(
+            ["mkfs.ext4", "-q", str(img_path)],
+            check=True,
+            capture_output=True,
         )
         img_path.chmod(0o666)
         return img_path

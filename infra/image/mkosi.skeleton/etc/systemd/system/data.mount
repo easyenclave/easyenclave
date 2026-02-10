@@ -1,5 +1,5 @@
 # Mount the data disk at /data
-# This is a separate writable qcow2 for Docker storage and workload files.
+# This is a separate writable ext4 disk for Docker storage and workload files.
 # Created by tdx_cli.py and attached as /dev/vdb.
 
 [Unit]
