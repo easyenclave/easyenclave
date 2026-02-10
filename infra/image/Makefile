@@ -51,35 +51,11 @@ build: $(EXTRA_DIR)/launcher.py
 		ROOTHASH=$$(veritysetup format "$$ROOT_DATA" /tmp/verity-recompute.raw \
 			--salt="$$SALT" 2>&1 | grep "Root hash:" | awk '{print $$NF}'); \
 		rm -f /tmp/verity-recompute.raw; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH rd.systemd.log_level=debug rd.systemd.log_target=kmsg console=tty0 console=ttyS0,115200" \
+		echo "root=/dev/dm-0 roothash=$$ROOTHASH console=tty0 console=ttyS0,115200" \
 			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 		echo "Roothash: $$ROOTHASH"; \
 	else \
 		echo "Warning: verity partition files not found"; \
-	fi
-	@# Verify rootfs has essential files
-	@echo "Verifying rootfs contents..."
-	@LOOP=$$(sudo losetup --find --show --partscan $(OUTPUT_DIR)/easyenclave.root.raw 2>/dev/null) && \
-	if [ -n "$$LOOP" ]; then \
-		sudo mkdir -p /tmp/rootfs-verify && \
-		sudo mount -o ro "$${LOOP}p1" /tmp/rootfs-verify 2>/dev/null && \
-		echo "Root partition top-level (ls -la):" && \
-		ls -la /tmp/rootfs-verify/ | head -20 && \
-		echo "Init binary:" && \
-		ls -la /tmp/rootfs-verify/usr/lib/systemd/systemd 2>/dev/null || echo "  NOT FOUND" && \
-		echo "/sbin/init:" && \
-		ls -la /tmp/rootfs-verify/sbin/init 2>/dev/null || echo "  NOT FOUND" && \
-		echo "Dynamic linker:" && \
-		ls -la /tmp/rootfs-verify/lib64/ld-linux-x86-64.so.2 2>/dev/null || echo "  NOT FOUND" && \
-		ls -la /tmp/rootfs-verify/usr/lib64/ld-linux-x86-64.so.2 2>/dev/null || echo "  NOT FOUND in /usr/lib64 either" && \
-		echo "USR merge symlinks:" && \
-		ls -ld /tmp/rootfs-verify/bin /tmp/rootfs-verify/sbin /tmp/rootfs-verify/lib /tmp/rootfs-verify/lib64 2>/dev/null && \
-		echo "Disk usage:" && \
-		du -sh /tmp/rootfs-verify/ 2>/dev/null || true && \
-		sudo umount /tmp/rootfs-verify 2>/dev/null; \
-		sudo losetup -d "$$LOOP" 2>/dev/null; \
-	else \
-		echo "Warning: could not set up loop device (skipping rootfs verification)"; \
 	fi
 	@echo ""
 	@echo "Build complete. Artifacts in $(OUTPUT_DIR)/:"
