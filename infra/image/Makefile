@@ -59,7 +59,7 @@ build: $(EXTRA_DIR)/launcher.py
 			exit 1; \
 		fi; \
 		echo "Roothash: $$ROOTHASH"; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH systemd.verity_root_data=/dev/vda1 systemd.verity_root_hash=/dev/vda2 fsck.mode=skip console=tty0 console=ttyS0,115200" \
+		echo "roothash=$$ROOTHASH systemd.verity_root_data=/dev/vda1 systemd.verity_root_hash=/dev/vda2 fsck.mode=skip console=tty0 console=ttyS0,115200" \
 			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 	else \
 		echo "Warning: easyenclave.raw not found"; \
