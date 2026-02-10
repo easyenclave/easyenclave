@@ -36,7 +36,7 @@ build: $(EXTRA_DIR)/launcher.py
 	@if [ -f "easyenclave.raw" ]; then \
 		cp --sparse=never easyenclave.raw $(OUTPUT_DIR)/easyenclave.root.raw; \
 	fi
-	@# Compute roothash from verity data+hash partitions
+	@# Extract roothash from verity hash partition and build cmdline
 	@VERITY_HASH=""; \
 	for f in easyenclave*verity*.raw; do \
 		[ -f "$$f" ] && VERITY_HASH="$$f" && break; \
@@ -47,13 +47,28 @@ build: $(EXTRA_DIR)/launcher.py
 		[ -f "$$f" ] && ROOT_DATA="$$f" && break; \
 	done 2>/dev/null; \
 	if [ -n "$$VERITY_HASH" ] && [ -n "$$ROOT_DATA" ]; then \
+		echo "Verity hash file: $$VERITY_HASH ($$(stat -c%s "$$VERITY_HASH") bytes)"; \
+		echo "Root data file: $$ROOT_DATA ($$(stat -c%s "$$ROOT_DATA") bytes)"; \
+		echo "--- veritysetup dump ---"; \
+		veritysetup dump "$$VERITY_HASH" || echo "veritysetup dump FAILED"; \
+		echo "--- end dump ---"; \
 		SALT=$$(veritysetup dump "$$VERITY_HASH" | grep "Salt:" | awk '{print $$NF}'); \
 		ROOTHASH=$$(veritysetup format "$$ROOT_DATA" /tmp/verity-recompute.raw \
 			--salt="$$SALT" 2>&1 | grep "Root hash:" | awk '{print $$NF}'); \
 		rm -f /tmp/verity-recompute.raw; \
-		echo "root=/dev/dm-0 roothash=$$ROOTHASH console=tty0 console=ttyS0,115200" \
-			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 		echo "Roothash: $$ROOTHASH"; \
+		if [ -n "$$ROOTHASH" ]; then \
+			echo "Verifying verity integrity..."; \
+			veritysetup verify "$$ROOT_DATA" "$$VERITY_HASH" "$$ROOTHASH" \
+				&& echo "Verity verification: PASSED" \
+				|| echo "Verity verification: FAILED (roothash mismatch!)"; \
+		fi; \
+		echo "Checking rootfs contents..."; \
+		debugfs -R "ls -l /usr/lib/" "$$ROOT_DATA" 2>&1 | head -5 || echo "(debugfs not available)"; \
+		debugfs -R "stat /usr/lib/os-release" "$$ROOT_DATA" 2>&1 || echo "(debugfs not available)"; \
+		debugfs -R "stat /etc/os-release" "$$ROOT_DATA" 2>&1 || echo "(debugfs not available)"; \
+		echo "root=/dev/dm-0 roothash=$$ROOTHASH rd.systemd.log_level=debug rd.systemd.log_target=kmsg console=tty0 console=ttyS0,115200" \
+			> $(OUTPUT_DIR)/easyenclave.cmdline; \
 	else \
 		echo "Warning: verity partition files not found"; \
 	fi
