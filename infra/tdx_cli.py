@@ -474,6 +474,19 @@ runcmd:
 
         return info
 
+    def _dump_network_info(self, name: str):
+        """Dump VM network interface info for diagnostics."""
+        print("\n=== VM network interfaces ===", file=sys.stderr)
+        for cmd in ("domiflist", "domifaddr"):
+            result = self._virsh(cmd, name, text=True)
+            print(f"  virsh {cmd}:", file=sys.stderr)
+            if result.returncode == 0 and result.stdout.strip():
+                for line in result.stdout.strip().split("\n"):
+                    print(f"    {line}", file=sys.stderr)
+            else:
+                print("    (no output)", file=sys.stderr)
+        print("=== End network info ===\n", file=sys.stderr)
+
     def _dump_serial_log(self, serial_log: str | None):
         """Dump last 500 lines of serial log for diagnostics."""
         print("\n=== Serial log (last 500 lines) ===", file=sys.stderr)
@@ -796,8 +809,11 @@ To start a new EasyEnclave network:
                         # Always print final result with IP
                         print(json.dumps(result, indent=2))
                     else:
-                        print("Warning: Could not get VM IP", file=sys.stderr)
+                        print("Error: Could not get VM IP", file=sys.stderr)
+                        mgr._dump_network_info(result["name"])
+                        mgr._dump_serial_log(result.get("serial_log"))
                         print(json.dumps(result, indent=2))
+                        sys.exit(1)
                 else:
                     # No --wait, just print immediately
                     print(json.dumps(result, indent=2))
@@ -827,7 +843,10 @@ To start a new EasyEnclave network:
                         result["ip"] = ip
                         print(json.dumps(result, indent=2))
                     else:
-                        print("Warning: Could not get VM IP", file=sys.stderr)
+                        print("Error: Could not get VM IP", file=sys.stderr)
+                        mgr._dump_network_info(result["name"])
+                        mgr._dump_serial_log(result.get("serial_log"))
+                        sys.exit(1)
             elif args.vm_command == "list":
                 for vm in mgr.vm_list():
                     print(vm)
