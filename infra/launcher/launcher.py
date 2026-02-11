@@ -1500,9 +1500,20 @@ def run_control_plane_mode(config: dict):
         logger.info(f"Writing docker-compose.yml with image: {image}")
         compose_file.write_text(COMPOSE_TEMPLATE.format(image=image, port=port))
 
-    # Pull the latest image
+    # Pull the latest image (retry — DNS may not be ready on early boot)
     logger.info(f"Pulling control plane image: {image}")
-    subprocess.run(["docker", "compose", "pull"], cwd=CONTROL_PLANE_DIR, check=True)
+    for attempt in range(12):
+        result = subprocess.run(
+            ["docker", "compose", "pull"],
+            cwd=CONTROL_PLANE_DIR,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            break
+        logger.warning(f"Pull failed (attempt {attempt + 1}/12), retrying in 10s...")
+        time.sleep(10)
+    else:
+        raise RuntimeError("Failed to pull control plane image after 12 attempts")
 
     # Generate attestation for the control plane VM
     logger.info("Generating control plane attestation...")

@@ -789,7 +789,7 @@ To start a new EasyEnclave network:
                             tail_thread.daemon = True
                             tail_thread.start()
 
-                        for _ in range(120):  # 4 minutes for docker build on first boot
+                        for _ in range(120):  # 4 minutes for image pull + boot
                             try:
                                 with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
                                     if resp.status == 200:
