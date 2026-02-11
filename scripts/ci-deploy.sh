@@ -209,6 +209,17 @@ done
 VERIFIED=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null | jq '[.agents[] | select(.verified == true)] | length')
 if [ "$VERIFIED" -lt "$NUM_AGENTS" ]; then
   echo "::error::Not all agents verified after 5 minutes ($VERIFIED/$NUM_AGENTS)"
+  echo ""
+  echo "=== Agent VM serial logs (last 80 lines each) ==="
+  for log in /var/tmp/tdvirsh/console.*.log; do
+    [ -f "$log" ] || continue
+    echo ""
+    echo "--- $log ---"
+    tail -80 "$log"
+  done
+  echo ""
+  echo "=== Control plane container logs ==="
+  curl -sf "$CP_URL/api/v1/logs/control-plane?limit=50" 2>/dev/null | jq -r '.logs[]?.message' || true
   exit 1
 fi
 
