@@ -761,6 +761,18 @@ To start a new EasyEnclave network:
                 )
 
                 if args.wait:
+                    # Start tailing serial log immediately so boot output is visible
+                    serial_log = result.get("serial_log")
+                    stop_tail = threading.Event()
+                    tail_thread = None
+                    if serial_log:
+                        print(f"\n=== Streaming VM console ({serial_log}) ===", file=sys.stderr)
+                        tail_thread = threading.Thread(
+                            target=tail_log, args=(serial_log, stop_tail)
+                        )
+                        tail_thread.daemon = True
+                        tail_thread.start()
+
                     print("\nWaiting for VM to get IP...", file=sys.stderr)
                     ip = mgr.get_vm_ip(result["name"])
                     if ip:
@@ -776,18 +788,6 @@ To start a new EasyEnclave network:
                         # Always include IP in result so workflow can proceed
                         result["ip"] = ip
                         result["control_plane_url"] = url
-
-                        # Start tailing serial log in background
-                        serial_log = result.get("serial_log")
-                        stop_tail = threading.Event()
-                        tail_thread = None
-                        if serial_log:
-                            print(f"\n=== Streaming VM console ({serial_log}) ===", file=sys.stderr)
-                            tail_thread = threading.Thread(
-                                target=tail_log, args=(serial_log, stop_tail)
-                            )
-                            tail_thread.daemon = True
-                            tail_thread.start()
 
                         for _ in range(120):  # 4 minutes for image pull + boot
                             try:
@@ -809,6 +809,7 @@ To start a new EasyEnclave network:
                         # Always print final result with IP
                         print(json.dumps(result, indent=2))
                     else:
+                        stop_tail.set()
                         print("Error: Could not get VM IP", file=sys.stderr)
                         mgr._dump_network_info(result["name"])
                         mgr._dump_serial_log(result.get("serial_log"))
