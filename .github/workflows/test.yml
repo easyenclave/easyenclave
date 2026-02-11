@@ -117,6 +117,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Build and push control plane image
+        id: control_plane
+        if: github.event_name == 'push'
+        run: |
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          IMAGE="ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}"
+          LATEST="ghcr.io/${{ github.repository }}/control-plane:latest"
+          docker build -t "$IMAGE" -t "$LATEST" .
+          docker push "$IMAGE"
+          docker push "$LATEST"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+          # Make package public (control plane VM needs access without GHCR credentials)
+          PACKAGE_NAME="${{ github.event.repository.name }}%2Fcontrol-plane"
+          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
+            -f visibility=public || echo "::warning::Could not set package visibility to public"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   build-and-deploy:
     runs-on: [self-hosted, tdx]
     if: github.event_name == 'push'
@@ -196,6 +215,7 @@ jobs:
           TRUSTED_AGENT_RTMRS: ${{ steps.build.outputs.rtmrs }}
           ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
           ADMIN_PASSWORD: ${{ secrets.CONTROL_PLANE_ADMIN_PASSWORD }}
+          CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           ORAM_IMAGE: ghcr.io/${{ github.repository }}/oram-contacts:${{ github.sha }}
         run: ./scripts/ci-deploy.sh

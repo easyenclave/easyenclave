@@ -371,7 +371,7 @@ runcmd:
         """
         config = {
             "port": port,
-            "easyenclave_repo": "https://github.com/easyenclave/easyenclave.git",
+            "control_plane_image": os.environ.get("CONTROL_PLANE_IMAGE"),
             # Cloudflare config for self-tunneling (if env vars are set)
             "cloudflare_api_token": os.environ.get("CLOUDFLARE_API_TOKEN"),
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),

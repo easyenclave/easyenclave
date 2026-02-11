@@ -4,7 +4,7 @@ TDX Launcher - Runs control plane or agent mode
 
 This launcher supports two modes:
 1. CONTROL-PLANE MODE: Runs the EasyEnclave control plane directly
-   - Clones the easyenclave repo and runs docker-compose
+   - Pulls pre-built image and runs docker-compose
    - Bootstraps a new EasyEnclave network
 
 2. AGENT MODE (default): Polls control plane for deployments
@@ -87,6 +87,43 @@ LOG_LEVEL_MAP = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
+
+# Docker Compose template for control plane mode (image pulled from GHCR)
+COMPOSE_TEMPLATE = """\
+services:
+  easyenclave:
+    image: {image}
+    ports:
+      - "{port}:8080"
+    environment:
+      - ITA_API_URL=${{ITA_API_URL:-https://api.trustauthority.intel.com/appraisal/v2}}
+      - ITA_API_KEY=${{ITA_API_KEY:-}}
+      - CLOUDFLARE_API_TOKEN=${{CLOUDFLARE_API_TOKEN:-}}
+      - CLOUDFLARE_ACCOUNT_ID=${{CLOUDFLARE_ACCOUNT_ID:-}}
+      - CLOUDFLARE_ZONE_ID=${{CLOUDFLARE_ZONE_ID:-}}
+      - EASYENCLAVE_DOMAIN=${{EASYENCLAVE_DOMAIN:-easyenclave.com}}
+      - TRUSTED_AGENT_MRTDS=${{TRUSTED_AGENT_MRTDS:-}}
+      - TRUSTED_PROXY_MRTDS=${{TRUSTED_PROXY_MRTDS:-}}
+      - TRUSTED_AGENT_RTMRS=${{TRUSTED_AGENT_RTMRS:-}}
+      - TRUSTED_PROXY_RTMRS=${{TRUSTED_PROXY_RTMRS:-}}
+      - TCB_ENFORCEMENT_MODE=${{TCB_ENFORCEMENT_MODE:-warn}}
+      - ALLOWED_TCB_STATUSES=${{ALLOWED_TCB_STATUSES:-UpToDate}}
+      - NONCE_ENFORCEMENT_MODE=${{NONCE_ENFORCEMENT_MODE:-optional}}
+      - NONCE_TTL_SECONDS=${{NONCE_TTL_SECONDS:-300}}
+      - NONCE_LENGTH=${{NONCE_LENGTH:-32}}
+      - AGENT_ATTESTATION_INTERVAL=${{AGENT_ATTESTATION_INTERVAL:-3600}}
+      - AGENT_STALE_HOURS=${{AGENT_STALE_HOURS:-24}}
+      - ADMIN_PASSWORD_HASH=${{ADMIN_PASSWORD_HASH:-}}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+"""
 
 # Global state for admin server
 _admin_state = {
@@ -1444,33 +1481,28 @@ def run_control_plane_mode(config: dict):
     """Run the control plane directly in this VM.
 
     This mode is used to bootstrap a new EasyEnclave network.
-    The control plane runs via docker-compose.
+    The control plane runs via docker-compose with a pre-built image.
 
     Args:
-        config: Launcher config with repo URL, port, Cloudflare creds, etc.
+        config: Launcher config with image, port, Cloudflare creds, etc.
     """
     write_status("control-plane-starting")
     logger.info("Starting in CONTROL PLANE mode")
 
-    repo_url = config.get("easyenclave_repo", "https://github.com/easyenclave/easyenclave.git")
     port = config.get("port", 8080)
+    image = config.get(
+        "control_plane_image", "ghcr.io/easyenclave/easyenclave/control-plane:latest"
+    )
 
-    # Clone or update the easyenclave repo
-    if CONTROL_PLANE_DIR.exists():
-        logger.info("Updating easyenclave repo...")
-        subprocess.run(
-            ["git", "pull"],
-            cwd=CONTROL_PLANE_DIR,
-            check=True,
-            capture_output=True,
-        )
-    else:
-        logger.info(f"Cloning easyenclave repo from {repo_url}...")
-        subprocess.run(
-            ["git", "clone", repo_url, str(CONTROL_PLANE_DIR)],
-            check=True,
-            capture_output=True,
-        )
+    # Write docker-compose.yml for the control plane container
+    compose_file = CONTROL_PLANE_DIR / "docker-compose.yml"
+    if not compose_file.exists():
+        logger.info(f"Writing docker-compose.yml with image: {image}")
+        compose_file.write_text(COMPOSE_TEMPLATE.format(image=image, port=port))
+
+    # Pull the latest image
+    logger.info(f"Pulling control plane image: {image}")
+    subprocess.run(["docker", "compose", "pull"], cwd=CONTROL_PLANE_DIR, check=True)
 
     # Generate attestation for the control plane VM
     logger.info("Generating control plane attestation...")
@@ -1486,7 +1518,7 @@ def run_control_plane_mode(config: dict):
     env = os.environ.copy()
     env["PORT"] = str(port)
 
-    # Pass Cloudflare credentials to the control plane container
+    # Pass config values to the control plane container via environment
     if config.get("cloudflare_api_token"):
         env["CLOUDFLARE_API_TOKEN"] = config["cloudflare_api_token"]
     if config.get("cloudflare_account_id"):
@@ -1514,17 +1546,6 @@ def run_control_plane_mode(config: dict):
         cwd=CONTROL_PLANE_DIR,
         capture_output=True,
     )
-
-    # Build fresh to pick up code changes (no cache)
-    # Output flows to console for visibility during --wait
-    logger.info("Building control plane image...")
-    build_result = subprocess.run(
-        ["docker", "compose", "build"],
-        cwd=CONTROL_PLANE_DIR,
-        env=env,
-    )
-    if build_result.returncode != 0:
-        logger.warning("Docker build failed, check output above")
 
     # Start the control plane
     result = subprocess.run(
