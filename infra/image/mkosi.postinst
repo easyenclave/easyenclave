@@ -47,12 +47,16 @@ echo "[mkosi.postinst] Third-party packages installed."
 # =============================================================================
 # Enable services
 # =============================================================================
-# Docker and containerd auto-enable during apt install (see symlinks above).
-# Networking and custom services must be explicitly enabled for Ubuntu
-# (Ubuntu defaults to NetworkManager, not systemd-networkd).
-
-systemctl enable systemd-networkd.service
-systemctl enable systemd-resolved.service
+# Docker and containerd auto-enable during apt install.
+# systemd-resolved auto-enables too. systemd-networkd is part of the systemd
+# package on Ubuntu but not enabled by default (Ubuntu uses NetworkManager).
+# systemctl enable doesn't work in mkosi's build sandbox, so create symlinks.
+mkdir -p /etc/systemd/system/multi-user.target.wants \
+         /etc/systemd/system/network-online.target.wants \
+         /etc/systemd/system/sockets.target.wants
+ln -sf /usr/lib/systemd/system/systemd-networkd.service /etc/systemd/system/multi-user.target.wants/
+ln -sf /usr/lib/systemd/system/systemd-networkd.socket /etc/systemd/system/sockets.target.wants/
+ln -sf /usr/lib/systemd/system/systemd-networkd-wait-online.service /etc/systemd/system/network-online.target.wants/
 
 # Launcher (files placed by ExtraTrees)
 mkdir -p /opt/launcher
