@@ -1502,18 +1502,21 @@ def run_control_plane_mode(config: dict):
 
     # Pull the latest image (retry — DNS may not be ready on early boot)
     logger.info(f"Pulling control plane image: {image}")
-    for attempt in range(12):
+    for attempt in range(3):
         result = subprocess.run(
             ["docker", "compose", "pull"],
             cwd=CONTROL_PLANE_DIR,
             capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             break
-        logger.warning(f"Pull failed (attempt {attempt + 1}/12), retrying in 10s...")
+        logger.warning(f"Pull failed (attempt {attempt + 1}/3): {result.stderr.strip()}")
         time.sleep(10)
     else:
-        raise RuntimeError("Failed to pull control plane image after 12 attempts")
+        raise RuntimeError(
+            f"Failed to pull control plane image after 3 attempts: {result.stderr.strip()}"
+        )
 
     # Generate attestation for the control plane VM
     logger.info("Generating control plane attestation...")
