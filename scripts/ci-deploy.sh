@@ -26,17 +26,17 @@ NUM_AGENTS="${NUM_AGENTS:-5}"
 
 admin_login() {
   local resp token
-  echo "Logging in to admin panel..."
+  echo "Logging in to admin panel..." >&2
   resp=$(curl -sf -w "\nHTTP_CODE:%{http_code}" "$CP_URL/admin/login" \
     -H "Content-Type: application/json" \
     -d "{\"password\": \"$ADMIN_PASSWORD\"}")
   token=$(echo "$resp" | grep -v "HTTP_CODE:" | jq -r '.token')
   if [ -z "$token" ] || [ "$token" = "null" ]; then
-    echo "Admin login failed"
-    echo "$resp"
+    echo "Admin login failed" >&2
+    echo "$resp" >&2
     exit 1
   fi
-  echo "Admin login successful"
+  echo "Admin login successful" >&2
   echo "$token"
 }
 
