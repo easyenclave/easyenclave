@@ -34,6 +34,7 @@ from .auth import (
     get_owner_identities,
     get_token_prefix,
     hash_api_key,
+    hash_password,
     is_admin_session,
     require_owner_or_admin,
     verify_account_api_key,
@@ -136,8 +137,6 @@ _log_handler.setLevel(logging.DEBUG)
 logging.getLogger().addHandler(_log_handler)
 
 
-# Admin authentication
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
 # Store valid admin tokens (in production, use Redis or similar)
 _admin_tokens: set[str] = set()
 
@@ -439,9 +438,17 @@ def validate_environment():
     """Validate environment configuration on startup."""
     warnings = []
 
-    # Admin authentication
+    # Admin authentication — auto-generate password if not configured
     if not os.environ.get("ADMIN_PASSWORD_HASH"):
-        warnings.append("ADMIN_PASSWORD_HASH not set - password login will be disabled")
+        import secrets as _secrets
+
+        generated_pw = _secrets.token_urlsafe(16)
+        pw_hash = hash_password(generated_pw)
+        os.environ["ADMIN_PASSWORD_HASH"] = pw_hash
+        logger.warning("=" * 60)
+        logger.warning("ADMIN_PASSWORD_HASH not set — generated admin password:")
+        logger.warning(f"  {generated_pw}")
+        logger.warning("=" * 60)
 
     # GitHub OAuth (optional but if one is set, all should be set)
     gh_id = get_setting("github_oauth.client_id")
@@ -453,12 +460,6 @@ def validate_environment():
         warnings.append(
             "Partial GitHub OAuth configuration detected. "
             "Set all of: client_id, client_secret, redirect_uri (via Settings or env vars)"
-        )
-
-    if not any([os.environ.get("ADMIN_PASSWORD_HASH"), all(github_vars)]):
-        warnings.append(
-            "No admin authentication configured! "
-            "Set either ADMIN_PASSWORD_HASH or GitHub OAuth credentials."
         )
 
     # Intel Trust Authority (required for attestation)
