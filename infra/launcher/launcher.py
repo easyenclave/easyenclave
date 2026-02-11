@@ -60,7 +60,14 @@ MODE_MEASURE = "measure"
 
 # Admin server
 ADMIN_PORT = int(os.environ.get("ADMIN_PORT", "8081"))
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+_generated_agent_password: str | None = None
+if os.environ.get("ADMIN_PASSWORD"):
+    ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+else:
+    import secrets as _secrets
+
+    ADMIN_PASSWORD = _secrets.token_urlsafe(16)
+    _generated_agent_password = ADMIN_PASSWORD
 
 # Paths — detect verity image (data disk at /data) vs legacy image
 _DATA_MOUNT = Path("/data")
@@ -374,6 +381,13 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/status":
             # Alias for health without attestation
             self._send_json(200, self._get_health(include_attestation=False))
+            return
+
+        if path == "/api/auth/methods":
+            result = {"password": True}
+            if _generated_agent_password:
+                result["generated_password"] = _generated_agent_password
+            self._send_json(200, result)
             return
 
         # Admin endpoints (require admin auth)

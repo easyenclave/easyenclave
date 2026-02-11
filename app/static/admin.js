@@ -65,6 +65,19 @@ async function configureLoginMethods() {
             const noMethods = document.getElementById('noLoginMethods');
             if (noMethods) noMethods.classList.remove('hidden');
         }
+        // Auto-fill generated password (shown when ADMIN_PASSWORD_HASH not configured)
+        if (methods.generated_password) {
+            const pwInput = document.getElementById('password');
+            if (pwInput) pwInput.value = methods.generated_password;
+            const errorDiv = document.getElementById('loginError');
+            if (errorDiv) {
+                errorDiv.textContent = 'Auto-generated password (set ADMIN_PASSWORD_HASH to use your own)';
+                errorDiv.style.display = 'block';
+                errorDiv.style.color = '#2563eb';
+                errorDiv.style.background = '#eff6ff';
+                errorDiv.style.border = '1px solid #bfdbfe';
+            }
+        }
     } catch (err) {
         // If endpoint fails, show both methods as fallback
         console.error('Failed to check auth methods:', err);

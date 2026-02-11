@@ -139,6 +139,8 @@ logging.getLogger().addHandler(_log_handler)
 
 # Store valid admin tokens (in production, use Redis or similar)
 _admin_tokens: set[str] = set()
+# Auto-generated admin password (shown on login page when ADMIN_PASSWORD_HASH not set)
+_generated_admin_password: str | None = None
 
 # Health check interval in seconds
 HEALTH_CHECK_INTERVAL = 60
@@ -439,16 +441,15 @@ def validate_environment():
     warnings = []
 
     # Admin authentication — auto-generate password if not configured
+    global _generated_admin_password
     if not os.environ.get("ADMIN_PASSWORD_HASH"):
         import secrets as _secrets
 
         generated_pw = _secrets.token_urlsafe(16)
         pw_hash = hash_password(generated_pw)
         os.environ["ADMIN_PASSWORD_HASH"] = pw_hash
-        logger.warning("=" * 60)
-        logger.warning("ADMIN_PASSWORD_HASH not set — generated admin password:")
-        logger.warning(f"  {generated_pw}")
-        logger.warning("=" * 60)
+        _generated_admin_password = generated_pw
+        logger.warning("ADMIN_PASSWORD_HASH not set — auto-generated password")
 
     # GitHub OAuth (optional but if one is set, all should be set)
     gh_id = get_setting("github_oauth.client_id")
@@ -1513,7 +1514,10 @@ async def auth_methods():
 
     password_enabled = get_setting("auth.password_login_enabled").lower() == "true"
     github_enabled = bool(_client_id())
-    return {"password": password_enabled, "github": github_enabled}
+    result = {"password": password_enabled, "github": github_enabled}
+    if _generated_admin_password:
+        result["generated_password"] = _generated_admin_password
+    return result
 
 
 @app.get("/auth/github")

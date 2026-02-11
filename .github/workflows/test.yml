@@ -213,8 +213,6 @@ jobs:
         env:
           TRUSTED_AGENT_MRTDS: ${{ steps.build.outputs.mrtd }}
           TRUSTED_AGENT_RTMRS: ${{ steps.build.outputs.rtmrs }}
-          ADMIN_PASSWORD_HASH: ${{ secrets.ADMIN_PASSWORD_HASH }}
-          ADMIN_PASSWORD: ${{ secrets.CONTROL_PLANE_ADMIN_PASSWORD }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           ORAM_IMAGE: ghcr.io/${{ github.repository }}/oram-contacts:${{ github.sha }}

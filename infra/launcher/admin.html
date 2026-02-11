@@ -94,7 +94,17 @@
 
     <script>
         let token = sessionStorage.getItem("agentToken");
-        if (token) showDashboard();
+        if (token) { showDashboard(); } else {
+            fetch("/api/auth/methods").then(r => r.json()).then(m => {
+                if (m.generated_password) {
+                    document.getElementById("password").value = m.generated_password;
+                    const err = document.getElementById("loginError");
+                    err.textContent = "Auto-generated password (set ADMIN_PASSWORD to use your own)";
+                    err.style.display = "block";
+                    err.style.color = "#2563eb";
+                }
+            }).catch(() => {});
+        }
 
         async function login(e) {
             e.preventDefault();
