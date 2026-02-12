@@ -275,6 +275,7 @@ class AgentStore:
                 return False
             agent.status = "undeployed"
             agent.current_deployment_id = None
+            agent.deployed_app = None
             agent.service_url = None
             agent.health_status = "unknown"
             agent.last_health_check = None
@@ -344,6 +345,16 @@ class AgentStore:
             return []
         with get_db() as session:
             return list(session.exec(select(Agent).where(Agent.github_owner.in_(owners))).all())
+
+    def set_deployed_app(self, agent_id: str, deployed_app: str | None) -> bool:
+        """Set or clear the deployed_app field on an agent."""
+        with get_db() as session:
+            agent = session.get(Agent, agent_id)
+            if not agent:
+                return False
+            agent.deployed_app = deployed_app
+            session.add(agent)
+            return True
 
     def set_github_owner(self, agent_id: str, github_owner: str | None) -> bool:
         """Set or clear the github_owner field on an agent."""

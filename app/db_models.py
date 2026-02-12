@@ -89,6 +89,8 @@ class Agent(SQLModel, table=True):
     node_size: str = Field(default="", index=True)
     # GitHub ownership
     github_owner: str | None = Field(default=None, index=True)
+    # Currently deployed app name (set on deploy, cleared on reset)
+    deployed_app: str | None = None
 
 
 class Deployment(SQLModel, table=True):

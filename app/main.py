@@ -1110,6 +1110,7 @@ async def reset_agent(agent_id: str):
     # Reset status to undeployed
     agent_store.update_status(agent_id, "undeployed", None)
     agent_store.update_attestation_status(agent_id, attestation_valid=True)
+    agent_store.set_deployed_app(agent_id, None)
     logger.info(f"Reset agent {agent_id} to undeployed status")
 
     # Create tunnel if needed
@@ -1182,6 +1183,7 @@ async def reset_my_agent(agent_id: str, session: AdminSession = Depends(verify_a
 
     agent_store.update_status(agent_id, "undeployed", None)
     agent_store.update_attestation_status(agent_id, attestation_valid=True)
+    agent_store.set_deployed_app(agent_id, None)
     logger.info(f"Owner {session.github_login} reset agent {agent_id}")
 
     # Create tunnel if needed
@@ -2258,6 +2260,7 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
                 # Agent accepted the deployment
                 deployment_store.update_status(deployment_id, "deploying")
                 agent_store.update_status(request.agent_id, "deploying", deployment_id)
+                agent_store.set_deployed_app(request.agent_id, name)
                 logger.info(f"Deployment {deployment_id} pushed to agent {request.agent_id}")
                 return DeploymentCreateResponse(deployment_id=deployment_id, status="deploying")
             else:
