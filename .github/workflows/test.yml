@@ -208,4 +208,5 @@ jobs:
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           ORAM_IMAGE: ghcr.io/${{ github.repository }}/oram-contacts:${{ github.sha }}
+          NUM_LLM_AGENTS: 1
         run: ./scripts/ci-deploy.sh

@@ -89,6 +89,7 @@ jobs:
           health_endpoint: /
           agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
+          node_size: llm
 
       - name: Set up Python
         uses: actions/setup-python@v5
