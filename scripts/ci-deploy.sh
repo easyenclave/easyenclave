@@ -53,8 +53,6 @@ find_reference_agent_measurement() {
     agents_json=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
     candidate=$(echo "$agents_json" | jq -c --arg ns "$node_size" '
       [.agents[] | select(.verified == true
-        and (.mrtd // "") != ""
-        and (.rtmrs // null) != null
         and (if $ns != "" then .node_size == $ns else true end))
       ] | first')
 
@@ -123,6 +121,7 @@ deploy_app() {
   local compose_b64 version publish_resp version_id
   local deployed=false agent_ids agent_id http_code
   local manual_attest_body="" reference_agent reference_agent_id reference_mrtd reference_rtmrs
+  local attestation_detail
   local reference_measurement measured_at attest_qs="" max_attempts require_mrtd
 
   echo ""
@@ -160,13 +159,29 @@ deploy_app() {
     reference_agent_id=$(echo "$reference_agent" | jq -r '.agent_id')
     reference_mrtd=$(echo "$reference_agent" | jq -r '.mrtd')
     reference_rtmrs=$(echo "$reference_agent" | jq -c '.rtmrs')
+
+    if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ] || [ "$reference_rtmrs" = "null" ]; then
+      attestation_detail=$(curl -sf "$CP_URL/api/v1/agents/$reference_agent_id/attestation" 2>/dev/null || echo '{}')
+      if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ]; then
+        reference_mrtd=$(echo "$attestation_detail" | jq -r '.mrtd // ""')
+      fi
+      if [ "$reference_rtmrs" = "null" ]; then
+        reference_rtmrs=$(echo "$attestation_detail" | jq -c '.rtmrs // null')
+      fi
+    fi
+
+    if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ]; then
+      echo "::error::Reference agent $reference_agent_id has no MRTD for node_size='$node_size'"
+      exit 1
+    fi
+
     measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     reference_measurement=$(jq -cn \
       --arg ns "$node_size" \
       --arg aid "$reference_agent_id" \
       --arg mrtd "$reference_mrtd" \
       --arg measured_at "$measured_at" \
-      --argjson rtmrs "$reference_rtmrs" \
+      --argjson rtmrs "${reference_rtmrs:-null}" \
       '{bootstrap: true, measurement_type: "agent_reference", node_size: $ns, agent_id: $aid, mrtd: $mrtd, rtmrs: $rtmrs, measured_at: $measured_at}')
     manual_attest_body=$(jq -cn \
       --arg mrtd "$reference_mrtd" \
