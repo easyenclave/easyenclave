@@ -50,3 +50,9 @@ else
 fi
 
 mkdir -p /data/docker /data/containerd /data/workload /data/easyenclave
+
+# Symlink default containerd/docker paths to /data so storage lands on
+# the data disk (or tmpfs) regardless of daemon config.
+rm -rf /var/lib/containerd /var/lib/docker
+ln -s /data/containerd /var/lib/containerd
+ln -s /data/docker /var/lib/docker
