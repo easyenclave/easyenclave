@@ -203,6 +203,7 @@ class DeployFromVersionRequest(BaseModel):
 
     agent_id: str
     config: dict | None = None
+    node_size: str = ""  # Required agent node_size (e.g., "tiny", "standard", "llm"). Empty = any.
     # Billing fields
     account_id: str | None = None  # Optional for backward compatibility
     sla_class: str = "adhoc"  # adhoc|three_nines|four_nines|five_nines

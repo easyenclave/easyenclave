@@ -2131,11 +2131,21 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
     if agent is None:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    # 5. Check if agent is verified (MRTD in trusted list)
+    # 4b. Check node_size matches if requested
+    if request.node_size and agent.node_size != request.node_size:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Agent node_size mismatch: app requires '{request.node_size}' "
+                f"but agent '{agent.vm_name}' is '{agent.node_size or 'unknown'}'"
+            ),
+        )
+
+    # 5. Check if agent is verified (MRTD, RTMRs, TCB status, nonce)
     if not agent.verified:
         raise HTTPException(
             status_code=403,
-            detail=f"Agent not verified: {agent.verification_error or 'MRTD not trusted'}",
+            detail=f"Agent not verified: {agent.verification_error or 'attestation not completed'}",
         )
 
     # 6. Check if agent has a tunnel hostname

@@ -42,6 +42,10 @@ inputs:
     description: GitHub user or org to set as the agent owner (for owner-scoped access)
     required: false
     default: ''
+  node_size:
+    description: 'Required agent node_size (e.g., "tiny", "standard", "llm"). Empty = any.'
+    required: false
+    default: ''
 
 outputs:
   deployment_id:
@@ -151,12 +155,14 @@ runs:
         HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
         AGENT_ADMIN_PASSWORD: ${{ inputs.agent_admin_password }}
         GITHUB_OWNER: ${{ inputs.github_owner }}
+        NODE_SIZE: ${{ inputs.node_size }}
       run: |
         set -e
 
         find_available_agents() {
           curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null \
-            | jq -r '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy" and .status == "undeployed")] | .[].agent_id'
+            | jq -r --arg ns "$NODE_SIZE" \
+              '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy" and .status == "undeployed" and (if $ns != "" then .node_size == $ns else true end))] | .[].agent_id'
         }
 
         try_deploy() {
@@ -175,11 +181,13 @@ runs:
           body=$(jq -n \
             --arg agent_id "$agent_id" \
             --arg github_owner "$GITHUB_OWNER" \
+            --arg node_size "$NODE_SIZE" \
             --argjson config "$config_json" \
             '{
               agent_id: $agent_id,
               config: $config
-            } + (if $github_owner != "" then {github_owner: $github_owner} else {} end)')
+            } + (if $github_owner != "" then {github_owner: $github_owner} else {} end)
+              + (if $node_size != "" then {node_size: $node_size} else {} end)')
           http_code=$(curl -s -o /tmp/deploy_response.json -w "%{http_code}" \
             -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions/$VERSION/deploy" \
             -H "Content-Type: application/json" \
