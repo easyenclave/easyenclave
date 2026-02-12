@@ -957,31 +957,104 @@ To start a new EasyEnclave network:
                 cp_url = getattr(args, "easyenclave_url", "")
                 admin_token = getattr(args, "admin_token", "")
 
+                def _direct_cf_cleanup(tunnel_id: str, hostname: str):
+                    """Delete a Cloudflare tunnel and its DNS record directly via CF API."""
+                    import urllib.request
+
+                    cf_token = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+                    cf_account = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "")
+                    cf_zone = os.environ.get("CLOUDFLARE_ZONE_ID", "")
+                    if not (cf_token and cf_account):
+                        return
+                    cf_headers = {
+                        "Authorization": f"Bearer {cf_token}",
+                        "Content-Type": "application/json",
+                    }
+                    cf_api = "https://api.cloudflare.com/client/v4"
+
+                    # Delete tunnel (clean connections first)
+                    if tunnel_id:
+                        try:
+                            req = urllib.request.Request(
+                                f"{cf_api}/accounts/{cf_account}/cfd_tunnel/{tunnel_id}/connections",
+                                method="DELETE",
+                            )
+                            for k, v in cf_headers.items():
+                                req.add_header(k, v)
+                            urllib.request.urlopen(req, timeout=10)
+                        except Exception:
+                            pass
+                        try:
+                            req = urllib.request.Request(
+                                f"{cf_api}/accounts/{cf_account}/cfd_tunnel/{tunnel_id}",
+                                method="DELETE",
+                            )
+                            for k, v in cf_headers.items():
+                                req.add_header(k, v)
+                            urllib.request.urlopen(req, timeout=10)
+                            print(f"  Deleted Cloudflare tunnel {tunnel_id}")
+                        except Exception as e:
+                            print(f"  Failed to delete tunnel {tunnel_id}: {e}", file=sys.stderr)
+
+                    # Delete DNS record
+                    if hostname and cf_zone:
+                        try:
+                            req = urllib.request.Request(
+                                f"{cf_api}/zones/{cf_zone}/dns_records?name={hostname}&type=CNAME",
+                            )
+                            for k, v in cf_headers.items():
+                                req.add_header(k, v)
+                            resp = urllib.request.urlopen(req, timeout=10)
+                            records = json.loads(resp.read()).get("result", [])
+                            if records:
+                                record_id = records[0]["id"]
+                                dreq = urllib.request.Request(
+                                    f"{cf_api}/zones/{cf_zone}/dns_records/{record_id}",
+                                    method="DELETE",
+                                )
+                                for k, v in cf_headers.items():
+                                    dreq.add_header(k, v)
+                                urllib.request.urlopen(dreq, timeout=10)
+                                print(f"  Deleted DNS record for {hostname}")
+                        except Exception as e:
+                            print(f"  Failed to delete DNS for {hostname}: {e}", file=sys.stderr)
+
                 def _cleanup_agent(vm_name: str):
-                    """Best-effort: delete the agent from the control plane."""
+                    """Best-effort: delete the agent + tunnel + DNS."""
                     if not cp_url:
                         return
-                    try:
-                        import urllib.request
+                    import urllib.request
 
-                        # Look up agent by vm_name
+                    tunnel_id = ""
+                    hostname = ""
+
+                    try:
+                        # Look up agent by vm_name to get tunnel_id and hostname
                         req = urllib.request.Request(f"{cp_url}/api/v1/agents")
                         resp = urllib.request.urlopen(req, timeout=5)
                         agents = json.loads(resp.read())
                         for agent in agents.get("agents", []):
                             if agent.get("vm_name") == vm_name:
                                 aid = agent["agent_id"]
+                                tunnel_id = agent.get("tunnel_id", "")
+                                hostname = agent.get("hostname", "")
+
+                                # Try CP-based delete (handles tunnel+DNS server-side)
                                 dreq = urllib.request.Request(
                                     f"{cp_url}/api/v1/agents/{aid}",
                                     method="DELETE",
                                 )
                                 if admin_token:
                                     dreq.add_header("Authorization", f"Bearer {admin_token}")
-                                urllib.request.urlopen(dreq, timeout=5)
-                                print(f"  Cleaned up agent {aid} from control plane")
+                                urllib.request.urlopen(dreq, timeout=10)
+                                print(f"  Cleaned up agent {aid} via control plane")
                                 return
                     except Exception as e:
-                        print(f"  Agent cleanup skipped: {e}", file=sys.stderr)
+                        print(f"  CP cleanup failed: {e}", file=sys.stderr)
+                        # Fall through to direct CF cleanup if we captured tunnel info
+                        if tunnel_id or hostname:
+                            print("  Falling back to direct Cloudflare cleanup...")
+                            _direct_cf_cleanup(tunnel_id, hostname)
 
                 if args.name == "all":
                     for vm in mgr.vm_list():
