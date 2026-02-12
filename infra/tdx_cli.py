@@ -289,6 +289,12 @@ runcmd:
             config_b64 = _b64.b64encode(json.dumps(launcher_config).encode()).decode()
             cmdline = f"{artifacts['cmdline']} easyenclave.config={config_b64}"
 
+            # Large TDX VMs fail to allocate the default proportional swiotlb
+            # bounce buffer (e.g. 1GB for 128G RAM).  Force a fixed 512MB buffer
+            # which is small enough to allocate but sufficient for I/O.
+            if memory_gib >= 64:
+                cmdline += " swiotlb=131072"
+
             xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
             xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
             xml_content = xml_content.replace("KERNEL_CMDLINE", cmdline)
