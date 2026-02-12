@@ -12,6 +12,7 @@
 # Optional env vars:
 #   CP_URL      - control plane URL (default: https://app.easyenclave.com)
 #   NUM_AGENTS  - number of agents to launch (default: 5)
+#   NUM_LLM_AGENTS - number of LLM-sized agents to launch (default: 0)
 #   ADMIN_PASSWORD - admin password (auto-detected from CP logs if not set)
 set -euo pipefail
 
@@ -19,6 +20,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 CP_URL="${CP_URL:-https://app.easyenclave.com}"
 NUM_AGENTS="${NUM_AGENTS:-5}"
+NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-0}"
 
 # ===================================================================
 # Helpers
@@ -40,10 +42,12 @@ admin_login() {
   echo "$token"
 }
 
-# deploy_app APP_NAME DESCRIPTION IMAGE TAGS SERVICE_CONFIG
+# deploy_app APP_NAME DESCRIPTION IMAGE TAGS SERVICE_CONFIG [NODE_SIZE]
 #   Registers app, publishes version, attests, deploys, waits healthy.
+#   NODE_SIZE (optional): filter agents by node_size (e.g. "llm").
 deploy_app() {
   local app_name="$1" description="$2" image="$3" tags="$4" service_config="$5"
+  local node_size="${6:-}"
   local compose_b64 version publish_resp version_id
   local deployed=false agent_ids agent_id http_code
 
@@ -76,7 +80,9 @@ deploy_app() {
   # Find undeployed agent and deploy (retry)
   for attempt in {1..12}; do
     agent_ids=$(curl -f "$CP_URL/api/v1/agents" 2>/dev/null | \
-      jq -r '[.agents[] | select(.verified == true and .hostname != null and .status == "undeployed")] | .[].agent_id')
+      jq -r --arg ns "$node_size" \
+        '[.agents[] | select(.verified == true and .hostname != null and .status == "undeployed"
+          and (if $ns != "" then .node_size == $ns else true end))] | .[].agent_id')
 
     for agent_id in $agent_ids; do
       local agent_host
@@ -187,36 +193,43 @@ fi
 # ===================================================================
 # 4. Launch agents in parallel
 # ===================================================================
-echo "==> Launching $NUM_AGENTS agents..."
+TOTAL_AGENTS=$((NUM_AGENTS + NUM_LLM_AGENTS))
+echo "==> Launching $TOTAL_AGENTS agents ($NUM_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
 for _i in $(seq 1 "$NUM_AGENTS"); do
   python3 infra/tdx_cli.py vm new --verity \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
 done
+for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
+  python3 infra/tdx_cli.py vm new --verity --size llm \
+    --easyenclave-url "$CP_URL" \
+    --intel-api-key "$INTEL_API_KEY" \
+    --wait &
+done
 wait
-echo "All $NUM_AGENTS agents launched"
+echo "All $TOTAL_AGENTS agents launched"
 
 # ===================================================================
 # 5. Wait for agents to register and verify
 # ===================================================================
-echo "==> Waiting for $NUM_AGENTS agents to register and be verified..."
+echo "==> Waiting for $TOTAL_AGENTS agents to register and be verified..."
 for i in {1..30}; do
   AGENTS=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
   VERIFIED=$(echo "$AGENTS" | jq '[.agents[] | select(.verified == true)] | length')
-  if [ "$VERIFIED" -ge "$NUM_AGENTS" ]; then
-    echo "All $NUM_AGENTS agents verified"
+  if [ "$VERIFIED" -ge "$TOTAL_AGENTS" ]; then
+    echo "All $TOTAL_AGENTS agents verified"
     break
-  elif [ "$VERIFIED" -ge $((NUM_AGENTS - 1)) ]; then
-    echo "Warning: only $VERIFIED/$NUM_AGENTS agents verified"
+  elif [ "$VERIFIED" -ge $((TOTAL_AGENTS - 1)) ]; then
+    echo "Warning: only $VERIFIED/$TOTAL_AGENTS agents verified"
   fi
-  echo "$VERIFIED/$NUM_AGENTS agents verified, waiting... ($i/30)"
+  echo "$VERIFIED/$TOTAL_AGENTS agents verified, waiting... ($i/30)"
   sleep 10
 done
 
 VERIFIED=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null | jq '[.agents[] | select(.verified == true)] | length')
-if [ "$VERIFIED" -lt "$NUM_AGENTS" ]; then
-  echo "::error::Not all agents verified after 5 minutes ($VERIFIED/$NUM_AGENTS)"
+if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
+  echo "::error::Not all agents verified after 5 minutes ($VERIFIED/$TOTAL_AGENTS)"
   echo ""
   echo "=== Agent VM serial logs (last 80 lines each) ==="
   for log in /var/tmp/tdvirsh/console.*.log; do
