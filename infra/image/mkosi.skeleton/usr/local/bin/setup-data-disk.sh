@@ -26,8 +26,10 @@ if [ -b /dev/vdb ]; then
     # Shred key file — kernel dm-crypt holds the key internally now
     shred -u /run/data-disk.key
 
-    # Format (fresh dm-crypt device has no filesystem)
-    mkfs.ext4 -q -L data /dev/mapper/data_crypt
+    # Format (fresh dm-crypt device has no filesystem).
+    # lazy_itable_init + lazy_journal_init defer inode/journal zeroing to
+    # background, cutting 500G format from ~60s to <2s.
+    mkfs.ext4 -q -E lazy_itable_init=1,lazy_journal_init=1 -L data /dev/mapper/data_crypt
     mount -o nosuid,nodev /dev/mapper/data_crypt /data
 
     # Still set up zram swap for memory overflow (smaller: 2x RAM)
