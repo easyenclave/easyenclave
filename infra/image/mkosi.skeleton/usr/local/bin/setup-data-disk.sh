@@ -25,4 +25,4 @@ swapon -p 100 /dev/zram0
 tmpfs_kb=$((mem_kb + zram_kb))
 mount -t tmpfs -o "nosuid,nodev,size=${tmpfs_kb}k" tmpfs /data
 
-mkdir -p /data/docker /data/workload /data/easyenclave
+mkdir -p /data/docker /data/containerd /data/workload /data/easyenclave

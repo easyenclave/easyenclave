@@ -82,6 +82,7 @@ class AgentRegistrationRequest(BaseModel):
     attestation: dict
     vm_name: str
     version: str = "1.0.0"
+    node_size: str = ""
 
 
 class AgentRegistrationResponse(BaseModel):

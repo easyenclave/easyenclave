@@ -1035,12 +1035,15 @@ def request_nonce_challenge(vm_name: str) -> str:
         return ""
 
 
-def register_with_control_plane(attestation: dict, vm_name: str) -> dict:
+def register_with_control_plane(
+    attestation: dict, vm_name: str, config: dict | None = None
+) -> dict:
     """Register agent with the control plane.
 
     Args:
         attestation: Initial TDX attestation
         vm_name: VM name for identification
+        config: Launcher config (used to forward node_size)
 
     Returns:
         Registration response dict containing:
@@ -1058,6 +1061,7 @@ def register_with_control_plane(attestation: dict, vm_name: str) -> dict:
             "attestation": attestation,
             "vm_name": vm_name,
             "version": VERSION,
+            "node_size": (config or {}).get("node_size", ""),
         },
         timeout=30,
     )
@@ -1769,7 +1773,7 @@ def run_agent_mode(config: dict):
 
     for attempt in range(10):
         try:
-            reg_response = register_with_control_plane(attestation, vm_name)
+            reg_response = register_with_control_plane(attestation, vm_name, config)
             agent_id = reg_response["agent_id"]
             tunnel_hostname = reg_response.get("hostname")
 
@@ -1817,7 +1821,7 @@ def run_agent_mode(config: dict):
                     logger.warning(f"cloudflared exited with code {poll_result}, restarting...")
                     # Re-register to get fresh tunnel token
                     try:
-                        reg_response = register_with_control_plane(attestation, vm_name)
+                        reg_response = register_with_control_plane(attestation, vm_name, config)
                         if reg_response.get("tunnel_token"):
                             cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
                     except Exception as e:

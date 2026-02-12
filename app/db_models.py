@@ -85,6 +85,8 @@ class Agent(SQLModel, table=True):
     # TCB (Trusted Computing Base) status
     tcb_status: str | None = Field(default=None, index=True)
     tcb_verified_at: datetime | None = None
+    # Node size preset (tiny/standard/llm)
+    node_size: str = Field(default="", index=True)
     # GitHub ownership
     github_owner: str | None = Field(default=None, index=True)
 

@@ -892,6 +892,7 @@ async def register_agent(request: AgentRegistrationRequest):
         "rtmrs": rtmrs,
         "intel_ta_token": intel_ta_token,
         "version": request.version,
+        "node_size": request.node_size,
         "status": "undeployed",
         "verified": verified,
         "verification_error": None,

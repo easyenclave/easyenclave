@@ -425,6 +425,7 @@ async function loadAgents() {
                     <tr>
                         <th>VM Name</th>
                         <th>Status</th>
+                        <th>Size</th>
                         <th>Health</th>
                         <th>Verified</th>
                         <th>MRTD</th>
@@ -438,6 +439,7 @@ async function loadAgents() {
                         <tr>
                             <td><strong>${agent.vm_name}</strong><br><code style="font-size: 0.7rem">${agent.agent_id.substring(0, 8)}...</code></td>
                             <td><span class="status-badge ${agent.status}">${agent.status}</span></td>
+                            <td>${agent.node_size ? `<span class="status-badge">${agent.node_size}</span>` : ''}</td>
                             <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>
                             <td>${agent.verified ? '<span class="verified-badge">Verified</span>' : '<span class="unverified-badge">Unverified</span>'}</td>
                             <td><code>${agent.mrtd ? agent.mrtd.substring(0, 16) + '...' : 'N/A'}</code></td>

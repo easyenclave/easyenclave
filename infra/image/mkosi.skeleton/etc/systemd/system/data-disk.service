@@ -1,7 +1,7 @@
 [Unit]
 Description=Format and mount data disk
 DefaultDependencies=no
-Before=docker.service tdx-launcher.service local-fs.target
+Before=docker.service containerd.service tdx-launcher.service local-fs.target
 After=systemd-udevd.service
 
 [Service]

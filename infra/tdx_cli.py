@@ -221,6 +221,7 @@ runcmd:
         memory_gib: int = 16,
         vcpu_count: int = 32,
         verity: bool = False,
+        size_name: str = "",
     ) -> dict:
         """Create and boot a new TDX VM.
 
@@ -257,6 +258,7 @@ runcmd:
         launcher_config = {
             "mode": mode,
             "vm_id": rand_str,
+            "node_size": size_name,
             **(config or {}),
         }
 
@@ -654,11 +656,11 @@ runcmd:
         return {"mrtd": None, "vm_name": vm_name}
 
 
-def _resolve_size(args) -> tuple[int, int]:
+def _resolve_size(args) -> tuple[int, int, str]:
     """Resolve --size preset with optional --memory/--vcpus overrides.
 
     Priority: --memory/--vcpus > --size > EASYENCLAVE_DEFAULT_SIZE > tiny.
-    Returns (memory_gib, vcpu_count).
+    Returns (memory_gib, vcpu_count, size_name).
     """
     size_name = getattr(args, "size", None) or DEFAULT_SIZE
     base_mem, base_vcpus = NODE_SIZES[size_name]
@@ -667,6 +669,7 @@ def _resolve_size(args) -> tuple[int, int]:
     return (
         memory if memory is not None else base_mem,
         vcpus if vcpus is not None else base_vcpus,
+        size_name,
     )
 
 
@@ -784,7 +787,7 @@ To start a new EasyEnclave network:
         if args.command == "control-plane":
             if args.cp_command == "new":
                 print("Launching control plane in TDX VM...", file=sys.stderr)
-                mem, vcpus = _resolve_size(args)
+                mem, vcpus, size_name = _resolve_size(args)
                 result = mgr.control_plane_new(
                     args.image,
                     args.port,
@@ -859,7 +862,7 @@ To start a new EasyEnclave network:
                     "control_plane_url": args.easyenclave_url,
                     "intel_api_key": args.intel_api_key,
                 }
-                mem, vcpus = _resolve_size(args)
+                mem, vcpus, size_name = _resolve_size(args)
                 result = mgr.vm_new(
                     args.image,
                     config=config,
@@ -867,6 +870,7 @@ To start a new EasyEnclave network:
                     memory_gib=mem,
                     vcpu_count=vcpus,
                     verity=args.verity,
+                    size_name=size_name,
                 )
                 print(json.dumps(result, indent=2))
 
@@ -897,7 +901,7 @@ To start a new EasyEnclave network:
                 else:
                     mgr.vm_delete(args.name)
             elif args.vm_command == "measure":
-                mem, vcpus = _resolve_size(args)
+                mem, vcpus, size_name = _resolve_size(args)
                 result = mgr.vm_measure(
                     args.image,
                     args.timeout,
