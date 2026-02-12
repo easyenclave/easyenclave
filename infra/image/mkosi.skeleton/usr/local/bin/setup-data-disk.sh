@@ -32,23 +32,19 @@ if [ -b /dev/vdb ]; then
     mkfs.ext4 -q -E lazy_itable_init=1,lazy_journal_init=1 -L data /dev/mapper/data_crypt
     mount -o nosuid,nodev /dev/mapper/data_crypt /data
 
-    # Still set up zram swap for memory overflow (smaller: 2x RAM)
-    zram_kb=$((mem_kb * 2))
+    # No zram needed — Docker storage lives on the data disk, not RAM.
 else
     # ── Mode 2: zram + tmpfs (no data disk) ──────────────────────────
     # zram = 4x RAM for proportional swap at every size.
     zram_kb=$((mem_kb * 4))
-fi
 
-# Set up zram swap (both modes benefit from compressed swap)
-modprobe zram num_devices=1
-echo lz4 > /sys/block/zram0/comp_algorithm
-echo "${zram_kb}K" > /sys/block/zram0/disksize
-mkswap /dev/zram0
-swapon -p 100 /dev/zram0
+    modprobe zram num_devices=1
+    echo lz4 > /sys/block/zram0/comp_algorithm
+    echo "${zram_kb}K" > /sys/block/zram0/disksize
+    mkswap /dev/zram0
+    swapon -p 100 /dev/zram0
 
-if [ ! -b /dev/vdb ]; then
-    # No data disk — mount /data as tmpfs backed by RAM + zram
+    # Mount /data as tmpfs backed by RAM + zram
     tmpfs_kb=$((mem_kb + zram_kb))
     mount -t tmpfs -o "nosuid,nodev,size=${tmpfs_kb}k" tmpfs /data
 fi
