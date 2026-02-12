@@ -7,7 +7,7 @@
 #   2. No data disk: fall back to zram swap + tmpfs (all in TDX-encrypted RAM).
 #
 # Runs as a oneshot systemd service before Docker and the launcher.
-set -e
+set -ex
 
 # Get total RAM in KiB
 mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)

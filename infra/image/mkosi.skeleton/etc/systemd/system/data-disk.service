@@ -8,6 +8,8 @@ After=systemd-udevd.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/setup-data-disk.sh
+StandardOutput=journal+console
+StandardError=journal+console
 
 [Install]
 WantedBy=local-fs.target
