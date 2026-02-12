@@ -171,6 +171,7 @@ class AppVersionCreateRequest(BaseModel):
 
     version: str
     compose: str
+    node_size: str = ""
     image_digest: str | None = None
     source_commit: str | None = None
     source_tag: str | None = None
@@ -183,6 +184,7 @@ class AppVersionResponse(BaseModel):
     version_id: str
     app_name: str
     version: str
+    node_size: str = ""
     ingress: list[dict] | None = None
     mrtd: str | None = None
     attestation: dict | None = None

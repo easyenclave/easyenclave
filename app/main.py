@@ -404,27 +404,49 @@ async def send_measurement_request(measure_url: str, version: AppVersion, callba
 
 
 async def background_measurement_processor():
-    """Send pending app versions to the measuring enclave for measurement."""
+    """Send pending app versions to the measuring enclave for measurement.
+
+    Groups pending versions by node_size and routes each to the matching
+    measuring enclave service (e.g. measuring-enclave-tiny, measuring-enclave-llm).
+    Falls back to "measuring-enclave" for versions with empty node_size.
+    """
     while True:
         try:
-            # Find the measuring enclave service
-            measurer = store.get_by_name("measuring-enclave")
-            if measurer and measurer.health_status == "healthy":
-                # Find pending versions
-                pending = app_version_store.list_by_status("pending")
+            pending = app_version_store.list_by_status("pending")
+            if pending:
+                # Group by node_size
+                by_size: dict[str, list] = {}
                 for version in pending:
-                    # Determine callback base URL
-                    cp_url = os.environ.get("EASYENCLAVE_CP_URL", "https://app.easyenclave.com")
-                    # Send to measurer
+                    by_size.setdefault(version.node_size, []).append(version)
+
+                cp_url = os.environ.get("EASYENCLAVE_CP_URL", "https://app.easyenclave.com")
+
+                for node_size, versions in by_size.items():
+                    # Determine measurer service name
+                    if node_size:
+                        measurer_name = f"measuring-enclave-{node_size}"
+                    else:
+                        measurer_name = "measuring-enclave"
+
+                    measurer = store.get_by_name(measurer_name)
+                    if not measurer or measurer.health_status != "healthy":
+                        logger.debug(
+                            f"No healthy measurer '{measurer_name}' for node_size='{node_size}', "
+                            f"skipping {len(versions)} pending version(s)"
+                        )
+                        continue
+
                     url = list(measurer.endpoints.values())[0]
                     measure_url = url.rstrip("/") + "/api/measure"
-                    try:
-                        await send_measurement_request(measure_url, version, cp_url)
-                        app_version_store.update_status(version.version_id, status="attesting")
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to send measurement request for {version.version_id}: {e}"
-                        )
+
+                    for version in versions:
+                        try:
+                            await send_measurement_request(measure_url, version, cp_url)
+                            app_version_store.update_status(version.version_id, status="attesting")
+                        except Exception as e:
+                            logger.error(
+                                f"Failed to send measurement request for {version.version_id}: {e}"
+                            )
         except Exception as e:
             logger.error(f"Measurement processor error: {e}")
         await asyncio.sleep(MEASUREMENT_CHECK_INTERVAL)
@@ -1982,17 +2004,20 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
     if not request.compose:
         raise HTTPException(status_code=400, detail="Compose file is required (base64 encoded)")
 
-    # Check if version already exists
-    existing = app_version_store.get_by_version(name, request.version)
+    # Check if version already exists for this node_size
+    existing = app_version_store.get_by_version(name, request.version, request.node_size)
     if existing:
+        size_label = f" (node_size='{request.node_size}')" if request.node_size else ""
         raise HTTPException(
-            status_code=409, detail=f"Version '{request.version}' already exists for app '{name}'"
+            status_code=409,
+            detail=f"Version '{request.version}'{size_label} already exists for app '{name}'",
         )
 
     # Create version record (status: pending)
     new_version = AppVersion(
         app_name=name,
         version=request.version,
+        node_size=request.node_size,
         compose=request.compose,
         image_digest=request.image_digest,
         source_commit=request.source_commit,
@@ -2001,13 +2026,17 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
         status="pending",
     )
     app_version_store.create(new_version)
-    logger.info(f"Version created: {name}@{request.version} ({new_version.version_id})")
+    logger.info(
+        f"Version created: {name}@{request.version} node_size='{request.node_size}' "
+        f"({new_version.version_id})"
+    )
 
     # Version stays "pending" until the measuring enclave processes it
     return AppVersionResponse(
         version_id=new_version.version_id,
         app_name=new_version.app_name,
         version=new_version.version,
+        node_size=new_version.node_size,
         mrtd=new_version.mrtd,
         attestation=new_version.attestation,
         ingress=new_version.ingress,
@@ -2029,13 +2058,13 @@ async def list_app_versions(name: str):
 
 
 @app.get("/api/v1/apps/{name}/versions/{version}", response_model=AppVersion)
-async def get_app_version(name: str, version: str):
+async def get_app_version(name: str, version: str, node_size: str = ""):
     """Get details for a specific version of an app."""
     found_app = app_store.get_by_name(name)
     if found_app is None:
         raise HTTPException(status_code=404, detail="App not found")
 
-    found_version = app_version_store.get_by_version(name, version)
+    found_version = app_version_store.get_by_version(name, version, node_size)
     if found_version is None:
         raise HTTPException(status_code=404, detail="Version not found")
 
@@ -2046,18 +2075,19 @@ async def get_app_version(name: str, version: str):
 async def manual_attest_version(
     name: str,
     version: str,
+    node_size: str = "",
     _admin: bool = Depends(verify_admin_token),
 ):
     """Manually attest an app version (admin only).
 
     Used to bootstrap the measuring enclave itself (chicken-and-egg problem).
     """
-    found_version = app_version_store.get_by_version(name, version)
+    found_version = app_version_store.get_by_version(name, version, node_size)
     if found_version is None:
         raise HTTPException(status_code=404, detail="Version not found")
 
     app_version_store.update_status(found_version.version_id, status="attested")
-    logger.info(f"Manually attested: {name}@{version}")
+    logger.info(f"Manually attested: {name}@{version} node_size='{node_size}'")
     return {"status": "attested", "version_id": found_version.version_id}
 
 
@@ -2107,14 +2137,24 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
     if found_app is None:
         raise HTTPException(status_code=404, detail=f"App '{name}' not found")
 
-    # 2. Validate version exists
-    found_version = app_version_store.get_by_version(name, version)
+    # 2. Validate agent exists (need agent.node_size to look up correct version variant)
+    agent = agent_store.get(request.agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # 3. Look up version matching the agent's node_size
+    agent_node_size = agent.node_size or ""
+    found_version = app_version_store.get_by_version(name, version, agent_node_size)
     if found_version is None:
         raise HTTPException(
-            status_code=404, detail=f"Version '{version}' not found for app '{name}'"
+            status_code=404,
+            detail=(
+                f"No attested version '{version}' for app '{name}' "
+                f"with node_size='{agent_node_size}'"
+            ),
         )
 
-    # 3. Validate version status is "attested"
+    # 4. Validate version status is "attested"
     if found_version.status != "attested":
         if found_version.status == "rejected":
             raise HTTPException(
@@ -2124,21 +2164,6 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
         raise HTTPException(
             status_code=400,
             detail=f"Version '{version}' is not attested (status: {found_version.status})",
-        )
-
-    # 4. Validate agent exists
-    agent = agent_store.get(request.agent_id)
-    if agent is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-
-    # 4b. Check node_size matches if requested
-    if request.node_size and agent.node_size != request.node_size:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Agent node_size mismatch: app requires '{request.node_size}' "
-                f"but agent '{agent.vm_name}' is '{agent.node_size or 'unknown'}'"
-            ),
         )
 
     # 5. Check if agent is verified (MRTD, RTMRs, TCB status, nonce)

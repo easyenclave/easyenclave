@@ -616,7 +616,7 @@
                 <button class="tab active" onclick="showAdminTab('agents')">Agents</button>
                 <button class="tab" onclick="showAdminTab('apps')">Apps</button>
                 <button class="tab" onclick="showAdminTab('accounts')">Accounts</button>
-                <button class="tab" onclick="showAdminTab('mrtds')">Trusted MRTDs</button>
+                <button class="tab" onclick="showAdminTab('measurements')">Measurements</button>
                 <button class="tab" onclick="showAdminTab('settings')">Settings</button>
                 <button class="tab" onclick="showAdminTab('cloudflare')">Cloudflare</button>
                 <button class="tab" onclick="showAdminTab('logs')">Logs</button>
@@ -667,21 +667,34 @@
                 </div>
             </section>
 
-            <!-- Trusted MRTDs Tab -->
-            <section id="mrtds-admin-tab" class="tab-content hidden">
+            <!-- Measurements Tab -->
+            <section id="measurements-admin-tab" class="tab-content hidden">
                 <div class="section-header">
-                    <h2>Trusted MRTDs</h2>
-                    <button class="btn-primary refresh-btn" onclick="loadMrtds()">Refresh</button>
+                    <h2>Platform Measurements</h2>
+                    <button class="btn-primary refresh-btn" onclick="loadMeasurements()">Refresh</button>
                 </div>
                 <div class="section-card">
                     <p style="color: var(--gray-600); margin-bottom: 10px;">
-                        Trusted MRTDs are loaded from environment variables
-                        (<code>TRUSTED_AGENT_MRTDS</code>, <code>TRUSTED_PROXY_MRTDS</code>).
-                        To update, change the env vars and redeploy.
+                        Trusted baselines are loaded from environment variables
+                        (<code>TRUSTED_AGENT_MRTDS</code>, <code>TRUSTED_AGENT_RTMRS</code>).
+                        Each node size has its own measuring enclave for per-size attestation.
                     </p>
                 </div>
-                <div id="mrtdsAdminList">
-                    <div class="loading">Loading MRTDs...</div>
+                <div id="measurementsAdminList">
+                    <div class="loading">Loading measurements...</div>
+                </div>
+                <!-- Measurement visualizer modal -->
+                <div id="measurementModal" class="modal hidden">
+                    <div class="modal-overlay" onclick="closeMeasurementModal()"></div>
+                    <div class="modal-content" style="max-width: 800px;">
+                        <div class="modal-header">
+                            <h2 id="measurementModalTitle">Measurements</h2>
+                            <button class="modal-close" onclick="closeMeasurementModal()">&times;</button>
+                        </div>
+                        <div id="measurementDetails">
+                            <div class="loading">Loading...</div>
+                        </div>
+                    </div>
                 </div>
             </section>
 

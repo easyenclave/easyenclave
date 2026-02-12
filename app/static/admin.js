@@ -158,8 +158,8 @@ async function loadUserInfo() {
 }
 
 function configureUIForRole() {
-    // Admin-only tabs: settings, mrtds, cloudflare, system, accounts
-    const adminOnlyTabs = ['settings', 'mrtds', 'cloudflare', 'system', 'accounts'];
+    // Admin-only tabs: settings, measurements, cloudflare, system, accounts
+    const adminOnlyTabs = ['settings', 'measurements', 'cloudflare', 'system', 'accounts'];
 
     if (!isAdmin) {
         // Hide admin-only tab buttons
@@ -234,7 +234,7 @@ function showAdminTab(tabName) {
     // Load data for tab
     if (tabName === 'agents') loadAgents();
     else if (tabName === 'accounts') loadAccounts();
-    else if (tabName === 'mrtds') loadMrtds();
+    else if (tabName === 'measurements') loadMeasurements();
     else if (tabName === 'settings') loadSettings();
     else if (tabName === 'logs') {
         loadLogs();
@@ -317,8 +317,8 @@ async function loadAppVersions(appName) {
                 <thead>
                     <tr>
                         <th>Version</th>
+                        <th>Size</th>
                         <th>Status</th>
-                        <th>MRTD</th>
                         <th>Ingress</th>
                         <th>Published</th>
                         <th>Actions</th>
@@ -328,8 +328,8 @@ async function loadAppVersions(appName) {
                     ${data.versions.map(version => `
                         <tr>
                             <td><strong>${version.version}</strong></td>
+                            <td>${version.node_size ? `<span class="status-badge">${version.node_size}</span>` : ''}</td>
                             <td><span class="status-badge ${version.status}">${version.status}</span></td>
-                            <td><code>${version.mrtd ? version.mrtd.substring(0, 16) + '...' : 'N/A'}</code></td>
                             <td>${version.ingress ? `${version.ingress.length} rule(s)` : 'Default'}</td>
                             <td>${new Date(version.published_at).toLocaleString()}</td>
                             <td class="action-buttons">
@@ -376,11 +376,25 @@ async function showAppVersionDetails(appName, version) {
             `;
         }
 
+        let attestationHtml = '<p>Not yet measured</p>';
+        if (data.attestation) {
+            const att = data.attestation;
+            let rows = [];
+            if (att.compose_hash) rows.push(`<tr><td>Compose Hash</td><td><code>${att.compose_hash}</code></td></tr>`);
+            if (att.resolved_images) {
+                for (const [svc, img] of Object.entries(att.resolved_images)) {
+                    rows.push(`<tr><td>Image: ${svc}</td><td><code style="font-size:0.75rem">${img.digest || img.original || JSON.stringify(img)}</code></td></tr>`);
+                }
+            }
+            attestationHtml = rows.length > 0 ? `<table class="data-table">${rows.join('')}</table>` : '<p>Attested (no details)</p>';
+        }
+
         detailsDiv.innerHTML = `
             <div class="section-card">
                 <h3>Version Info</h3>
                 <p><strong>Status:</strong> <span class="status-badge ${data.status}">${data.status}</span></p>
                 <p><strong>Version ID:</strong> <code>${data.version_id}</code></p>
+                ${data.node_size ? `<p><strong>Node Size:</strong> <span class="status-badge">${data.node_size}</span></p>` : ''}
                 <p><strong>Published:</strong> ${new Date(data.published_at).toLocaleString()}</p>
                 ${data.source_commit ? `<p><strong>Source Commit:</strong> <code>${data.source_commit}</code></p>` : ''}
                 ${data.source_tag ? `<p><strong>Source Tag:</strong> <code>${data.source_tag}</code></p>` : ''}
@@ -391,8 +405,8 @@ async function showAppVersionDetails(appName, version) {
                 ${ingressHtml}
             </div>
             <div class="section-card">
-                <h3>Measurement (MRTD)</h3>
-                ${data.mrtd ? `<p><code>${data.mrtd}</code></p>` : '<p>Not yet measured</p>'}
+                <h3>Attestation</h3>
+                ${attestationHtml}
             </div>
         `;
     } catch (error) {
@@ -428,7 +442,6 @@ async function loadAgents() {
                         <th>Size</th>
                         <th>Health</th>
                         <th>Verified</th>
-                        <th>MRTD</th>
                         ${isAdmin ? '<th>Owner</th>' : ''}
                         <th>Hostname</th>
                         <th>Actions</th>
@@ -442,7 +455,6 @@ async function loadAgents() {
                             <td>${agent.node_size ? `<span class="status-badge">${agent.node_size}</span>` : ''}</td>
                             <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>
                             <td>${agent.verified ? '<span class="verified-badge">Verified</span>' : '<span class="unverified-badge">Unverified</span>'}</td>
-                            <td><code>${agent.mrtd ? agent.mrtd.substring(0, 16) + '...' : 'N/A'}</code></td>
                             ${isAdmin ? `<td>${agent.github_owner ? `<code>${agent.github_owner}</code>` : '<span style="color:#666">none</span>'} <button class="btn-small btn-secondary" onclick="setAgentOwner('${agent.agent_id}', '${agent.github_owner || ''}')">Set</button></td>` : ''}
                             <td>${agent.hostname ? `<a href="https://${agent.hostname}" target="_blank">${agent.hostname}</a>` : 'No tunnel'}</td>
                             <td class="action-buttons">
@@ -512,38 +524,207 @@ async function setAgentOwner(agentId, currentOwner) {
     }
 }
 
-// MRTDs (read-only, loaded from env vars)
-async function loadMrtds() {
-    const container = document.getElementById('mrtdsAdminList');
-    try {
-        const data = await fetchJSON('/api/v1/trusted-mrtds');
+// Measurements overview — tree view showing shared vs. divergent measurements
+const RTMR_LABELS = {
+    rtmr0: 'Firmware measurement',
+    rtmr1: 'OS kernel + initrd',
+    rtmr2: 'Runtime configuration (cmdline, roothash)',
+    rtmr3: 'Application layer',
+};
 
-        if (data.trusted_mrtds.length === 0) {
-            container.innerHTML = '<div class="empty">No trusted MRTDs configured</div>';
+async function loadMeasurements() {
+    const container = document.getElementById('measurementsAdminList');
+    try {
+        const agentData = await fetchJSON('/api/v1/agents');
+
+        // Group verified agents by node_size, pick a representative per size
+        const bySize = {};
+        for (const agent of agentData.agents) {
+            const size = agent.node_size || '(default)';
+            if (!bySize[size]) bySize[size] = { verified: 0, total: 0, agents: [], sample: null };
+            bySize[size].total++;
+            if (agent.verified) {
+                bySize[size].verified++;
+                if (!bySize[size].sample && agent.mrtd) bySize[size].sample = agent;
+            }
+        }
+
+        const sizes = Object.keys(bySize).sort();
+        if (sizes.length === 0) {
+            container.innerHTML = '<div class="empty">No agents registered</div>';
             return;
         }
 
-        container.innerHTML = `
+        // Collect per-measurement values across sizes to find shared vs. divergent
+        const measurementKeys = ['mrtd', 'rtmr0', 'rtmr1', 'rtmr2', 'rtmr3'];
+        const measurementLabels = {
+            mrtd:  'TD identity (firmware + kernel + initrd + cmdline)',
+            rtmr0: 'Firmware measurement',
+            rtmr1: 'OS kernel + initrd',
+            rtmr2: 'Runtime config (cmdline, roothash)',
+            rtmr3: 'Application layer',
+        };
+
+        // Build map: key -> { size -> value }
+        const valuesByKey = {};
+        for (const key of measurementKeys) {
+            valuesByKey[key] = {};
+            for (const size of sizes) {
+                const agent = bySize[size].sample;
+                if (!agent) continue;
+                if (key === 'mrtd') {
+                    valuesByKey[key][size] = agent.mrtd || null;
+                } else {
+                    valuesByKey[key][size] = agent.rtmrs?.[key] || null;
+                }
+            }
+        }
+
+        // Render measurement tree
+        let treeHtml = '<div class="section-card"><h3>Measurement Tree</h3>';
+        treeHtml += '<div style="font-family:monospace;font-size:0.85rem;line-height:1.8">';
+
+        for (const key of measurementKeys) {
+            const vals = valuesByKey[key];
+            const uniqueVals = new Set(Object.values(vals).filter(v => v));
+            const allSame = uniqueVals.size <= 1;
+            const label = key === 'mrtd' ? 'MRTD' : key.toUpperCase();
+            const desc = measurementLabels[key];
+
+            if (allSame && uniqueVals.size === 1) {
+                const val = [...uniqueVals][0];
+                treeHtml += `<div style="margin-bottom:8px">`;
+                treeHtml += `<span style="color:green">&#9679;</span> `;
+                treeHtml += `<strong>${label}</strong> <span style="color:var(--gray-500)">${desc}</span><br>`;
+                treeHtml += `&nbsp;&nbsp;&nbsp;&nbsp;<code style="font-size:0.75rem;color:var(--gray-600)">${val.substring(0, 24)}...</code> `;
+                treeHtml += `<span style="color:green;font-size:0.8rem">shared across all sizes</span>`;
+                treeHtml += `</div>`;
+            } else if (uniqueVals.size > 1) {
+                treeHtml += `<div style="margin-bottom:8px">`;
+                treeHtml += `<span style="color:orange">&#9679;</span> `;
+                treeHtml += `<strong>${label}</strong> <span style="color:var(--gray-500)">${desc}</span><br>`;
+                const sizeList = Object.entries(vals).filter(([, v]) => v);
+                sizeList.forEach(([size, val], i) => {
+                    const connector = i < sizeList.length - 1 ? '&#x251C;&#x2500;' : '&#x2514;&#x2500;';
+                    treeHtml += `&nbsp;&nbsp;&nbsp;&nbsp;${connector} <span class="status-badge" style="font-size:0.7rem">${size}</span> <code style="font-size:0.75rem">${val.substring(0, 24)}...</code><br>`;
+                });
+                treeHtml += `</div>`;
+            } else {
+                treeHtml += `<div style="margin-bottom:8px;color:var(--gray-400)">`;
+                treeHtml += `<span>&#9675;</span> <strong>${label}</strong> <span>${desc}</span> &mdash; no data`;
+                treeHtml += `</div>`;
+            }
+        }
+
+        treeHtml += '</div></div>';
+
+        // Node size overview table
+        let tableHtml = `
+            <div class="section-card"><h3>Node Sizes</h3>
             <table class="data-table">
                 <thead>
                     <tr>
+                        <th>Size</th>
+                        <th>Agents</th>
                         <th>MRTD</th>
-                        <th>Type</th>
+                        <th>Measurer</th>
+                        <th></th>
                     </tr>
                 </thead>
                 <tbody>
-                    ${data.trusted_mrtds.map(mrtd => `
-                        <tr>
-                            <td><code>${mrtd.mrtd.substring(0, 24)}...</code></td>
-                            <td><span class="status-badge">${mrtd.type}</span></td>
-                        </tr>
-                    `).join('')}
+                    ${sizes.map(size => {
+                        const info = bySize[size];
+                        const mrtdPreview = info.sample ? info.sample.mrtd.substring(0, 16) + '...' : 'N/A';
+                        return `
+                            <tr>
+                                <td><span class="status-badge">${size}</span></td>
+                                <td>${info.verified}/${info.total} verified</td>
+                                <td><code>${mrtdPreview}</code></td>
+                                <td><span id="measurer-${size.replace(/[^a-z0-9]/gi, '')}">checking...</span></td>
+                                <td><button class="btn-small btn-info" onclick="showMeasurementDetails('${size}')">Details</button></td>
+                            </tr>
+                        `;
+                    }).join('')}
                 </tbody>
-            </table>
+            </table></div>
         `;
+
+        container.innerHTML = treeHtml + tableHtml;
+
+        // Async: check measurer health
+        for (const size of sizes) {
+            const cleanSize = size.replace(/[^a-z0-9]/gi, '');
+            const el = document.getElementById(`measurer-${cleanSize}`);
+            if (!el) continue;
+            const measurerName = size === '(default)' ? 'measuring-enclave' : `measuring-enclave-${size}`;
+            try {
+                const services = await fetchJSON(`/api/v1/services?name=${measurerName}`);
+                const svc = services.services?.find(s => s.name === measurerName);
+                if (svc && svc.health_status === 'healthy') {
+                    el.innerHTML = '<span class="verified-badge">healthy</span>';
+                } else if (svc) {
+                    el.innerHTML = `<span class="unverified-badge">${svc.health_status}</span>`;
+                } else {
+                    el.innerHTML = '<span style="color:#999">not deployed</span>';
+                }
+            } catch {
+                el.innerHTML = '<span style="color:#999">unknown</span>';
+            }
+        }
     } catch (error) {
-        container.innerHTML = `<div class="error">Error loading MRTDs: ${error.message}</div>`;
+        container.innerHTML = `<div class="error">Error loading measurements: ${error.message}</div>`;
     }
+}
+
+async function showMeasurementDetails(nodeSize) {
+    document.getElementById('measurementModal').classList.remove('hidden');
+    document.getElementById('measurementModalTitle').textContent = `Node: ${nodeSize}`;
+    const container = document.getElementById('measurementDetails');
+    container.innerHTML = '<div class="loading">Loading...</div>';
+
+    try {
+        const agentData = await fetchJSON('/api/v1/agents');
+        const agents = agentData.agents.filter(a => (a.node_size || '(default)') === nodeSize);
+        const verifiedAgents = agents.filter(a => a.verified);
+        const sampleAgent = verifiedAgents[0] || agents[0];
+
+        let html = '<div class="section-card"><h3>Platform Measurements</h3>';
+        if (sampleAgent) {
+            html += `<table class="data-table">`;
+            html += `<tr><td><strong>MRTD</strong></td><td><code style="font-size:0.75rem;word-break:break-all">${sampleAgent.mrtd || 'N/A'}</code></td><td style="color:var(--gray-600)">TD identity</td></tr>`;
+            if (sampleAgent.rtmrs) {
+                for (const [key, value] of Object.entries(sampleAgent.rtmrs)) {
+                    html += `<tr><td><strong>${key.toUpperCase()}</strong></td><td><code style="font-size:0.75rem;word-break:break-all">${value}</code></td><td style="color:var(--gray-600)">${RTMR_LABELS[key] || ''}</td></tr>`;
+                }
+            }
+            html += `</table>`;
+        } else {
+            html += '<p>No agents for this node size</p>';
+        }
+        html += '</div>';
+
+        // Live agents
+        html += '<div class="section-card"><h3>Agents</h3>';
+        html += `<table class="data-table"><thead><tr><th>VM Name</th><th>Status</th><th>Verified</th><th>MRTD Match</th></tr></thead><tbody>`;
+        for (const agent of agents) {
+            const mrtdMatch = sampleAgent && agent.mrtd === sampleAgent.mrtd;
+            html += `<tr>
+                <td>${agent.vm_name}</td>
+                <td><span class="status-badge ${agent.status}">${agent.status}</span></td>
+                <td>${agent.verified ? '<span class="verified-badge">Yes</span>' : '<span class="unverified-badge">No</span>'}</td>
+                <td>${agent.mrtd ? (mrtdMatch ? '<span style="color:green">Match</span>' : '<span style="color:red">Mismatch</span>') : 'N/A'}</td>
+            </tr>`;
+        }
+        html += `</tbody></table></div>`;
+
+        container.innerHTML = html;
+    } catch (error) {
+        container.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+    }
+}
+
+function closeMeasurementModal() {
+    document.getElementById('measurementModal').classList.add('hidden');
 }
 
 // Logs viewer

@@ -608,11 +608,13 @@ class AppVersionStore:
         with get_db() as session:
             return session.get(AppVersion, version_id)
 
-    def get_by_version(self, app_name: str, version: str) -> AppVersion | None:
+    def get_by_version(self, app_name: str, version: str, node_size: str = "") -> AppVersion | None:
         with get_db() as session:
             return session.exec(
                 select(AppVersion).where(
-                    AppVersion.app_name == app_name, AppVersion.version == version
+                    AppVersion.app_name == app_name,
+                    AppVersion.version == version,
+                    AppVersion.node_size == node_size,
                 )
             ).first()
 

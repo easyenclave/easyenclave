@@ -141,6 +141,7 @@ class AppVersion(SQLModel, table=True):
     version_id: str = Field(default_factory=generate_uuid, primary_key=True)
     app_name: str = Field(index=True)
     version: str
+    node_size: str = Field(default="", index=True)
     compose: str
     image_digest: str | None = None
     source_commit: str | None = None

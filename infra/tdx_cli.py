@@ -813,6 +813,16 @@ To start a new EasyEnclave network:
 
     del_parser = vm_sub.add_parser("delete", help="Delete TDX VM")
     del_parser.add_argument("name", help="VM name or 'all'")
+    del_parser.add_argument(
+        "--easyenclave-url",
+        default=os.environ.get("EASYENCLAVE_CP_URL", ""),
+        help="Control plane URL — if set, also deletes the agent registration",
+    )
+    del_parser.add_argument(
+        "--admin-token",
+        default=os.environ.get("ADMIN_TOKEN", ""),
+        help="Admin bearer token for agent deletion (or set ADMIN_TOKEN env var)",
+    )
 
     measure_parser = vm_sub.add_parser("measure", help="Boot temp VM to capture measurements")
     measure_parser.add_argument("-i", "--image", help="Path to TDX image")
@@ -944,11 +954,42 @@ To start a new EasyEnclave network:
                 result = mgr.vm_status(args.name)
                 print(json.dumps(result, indent=2))
             elif args.vm_command == "delete":
+                cp_url = getattr(args, "easyenclave_url", "")
+                admin_token = getattr(args, "admin_token", "")
+
+                def _cleanup_agent(vm_name: str):
+                    """Best-effort: delete the agent from the control plane."""
+                    if not cp_url:
+                        return
+                    try:
+                        import urllib.request
+
+                        # Look up agent by vm_name
+                        req = urllib.request.Request(f"{cp_url}/api/v1/agents")
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        agents = json.loads(resp.read())
+                        for agent in agents.get("agents", []):
+                            if agent.get("vm_name") == vm_name:
+                                aid = agent["agent_id"]
+                                dreq = urllib.request.Request(
+                                    f"{cp_url}/api/v1/agents/{aid}",
+                                    method="DELETE",
+                                )
+                                if admin_token:
+                                    dreq.add_header("Authorization", f"Bearer {admin_token}")
+                                urllib.request.urlopen(dreq, timeout=5)
+                                print(f"  Cleaned up agent {aid} from control plane")
+                                return
+                    except Exception as e:
+                        print(f"  Agent cleanup skipped: {e}", file=sys.stderr)
+
                 if args.name == "all":
                     for vm in mgr.vm_list():
                         print(f"Deleting {vm}...")
+                        _cleanup_agent(vm)
                         mgr.vm_delete(vm)
                 else:
+                    _cleanup_agent(args.name)
                     mgr.vm_delete(args.name)
             elif args.vm_command == "measure":
                 mem, vcpus, disk, size_name = _resolve_size(args)

@@ -65,16 +65,25 @@ deploy_app() {
   compose_b64=$(echo "$image" | make_compose "$app_name" | base64 -w 0)
   version="bootstrap-$(date -u +%Y%m%d-%H%M%S)"
 
-  echo "Publishing $app_name version $version..."
+  echo "Publishing $app_name version $version (node_size=$node_size)..."
+  local publish_body="{\"version\": \"$version\", \"compose\": \"$compose_b64\""
+  if [ -n "$node_size" ]; then
+    publish_body="$publish_body, \"node_size\": \"$node_size\""
+  fi
+  publish_body="$publish_body}"
   publish_resp=$(curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions" \
     -H "Content-Type: application/json" \
-    -d "{\"version\": \"$version\", \"compose\": \"$compose_b64\"}")
+    -d "$publish_body")
   version_id=$(echo "$publish_resp" | jq -r '.version_id')
   echo "Published $app_name@$version ($version_id)"
 
   # Manual attest (bootstrap)
-  echo "Manually attesting $app_name version $version..."
-  curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/attest" \
+  local attest_qs=""
+  if [ -n "$node_size" ]; then
+    attest_qs="?node_size=$node_size"
+  fi
+  echo "Manually attesting $app_name version $version (node_size=$node_size)..."
+  curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/attest${attest_qs}" \
     -H "Authorization: Bearer $ADMIN_TOKEN"
   echo "Attested $app_name@$version"
 
@@ -142,7 +151,7 @@ make_compose() {
   local image
   read -r image
   case "$app_name" in
-    measuring-enclave)
+    measuring-enclave*)
       printf 'services:\n  measuring-enclave:\n    image: %s\n    ports:\n      - "8080:8080"\n' "$image"
       ;;
     oram-contacts)
@@ -256,11 +265,25 @@ fi
 # ===================================================================
 ADMIN_TOKEN=$(admin_login)
 
-deploy_app "measuring-enclave" \
-  "Measuring enclave for app version attestation" \
+deploy_app "measuring-enclave-tiny" \
+  "Measuring enclave for tiny node attestation" \
   "$MEASURER_IMAGE" \
   "" \
-  '{"service_name": "measuring-enclave"}' \
+  '{"service_name": "measuring-enclave-tiny"}' \
   tiny
+
+deploy_app "measuring-enclave-standard" \
+  "Measuring enclave for standard node attestation" \
+  "$MEASURER_IMAGE" \
+  "" \
+  '{"service_name": "measuring-enclave-standard"}' \
+  standard
+
+deploy_app "measuring-enclave-llm" \
+  "Measuring enclave for llm node attestation" \
+  "$MEASURER_IMAGE" \
+  "" \
+  '{"service_name": "measuring-enclave-llm"}' \
+  llm
 
 echo "==> Deploy complete!"

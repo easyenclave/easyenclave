@@ -71,6 +71,7 @@ def _migrate_add_columns():
     # (table, column, sql_type, default)
     migrations = [
         ("agents", "node_size", "TEXT", "''"),
+        ("app_versions", "node_size", "TEXT", "''"),
     ]
 
     for table, column, sql_type, default in migrations:
@@ -78,6 +79,16 @@ def _migrate_add_columns():
         existing = {row[1] for row in cursor.fetchall()}
         if column not in existing:
             cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type} DEFAULT {default}")
+
+    # Unique index: (app_name, version, node_size) on app_versions
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='ix_app_versions_name_ver_size'"
+    )
+    if not cursor.fetchone():
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_app_versions_name_ver_size "
+            "ON app_versions(app_name, version, node_size)"
+        )
 
     conn.commit()
     conn.close()

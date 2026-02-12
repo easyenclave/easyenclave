@@ -108,19 +108,26 @@ runs:
         compose_file: ${{ inputs.compose_file }}
         source_commit: ${{ github.sha }}
         control_plane_url: ${{ inputs.control_plane_url }}
+        node_size: ${{ inputs.node_size }}
 
     - name: Wait for version to be attested
       shell: bash
+      env:
+        NODE_SIZE: ${{ inputs.node_size }}
       run: |
         # Wait for measuring enclave to attest the version
         VERSION_STATUS="${{ steps.publish.outputs.status }}"
+        NODE_SIZE_QS=""
+        if [ -n "$NODE_SIZE" ]; then
+          NODE_SIZE_QS="?node_size=$NODE_SIZE"
+        fi
         if [ "$VERSION_STATUS" = "attested" ]; then
           echo "Version already attested"
         else
           echo "Version status: $VERSION_STATUS - waiting for measurement..."
           for i in {1..60}; do  # 5 min timeout (60 * 5s)
             VERSION_JSON=$(curl -sf \
-              "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/${{ steps.version.outputs.version }}" \
+              "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/${{ steps.version.outputs.version }}${NODE_SIZE_QS}" \
               2>/dev/null || echo '{}')
             VERSION_STATUS=$(echo "$VERSION_JSON" | jq -r '.status // "unknown"')
 

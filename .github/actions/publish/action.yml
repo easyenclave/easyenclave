@@ -30,6 +30,10 @@ inputs:
     description: 'EasyEnclave control plane URL'
     required: false
     default: 'https://app.easyenclave.com'
+  node_size:
+    description: 'Target node size for attestation (e.g., "tiny", "standard", "llm"). Empty = default.'
+    required: false
+    default: ''
 
 outputs:
   version_id:
@@ -90,13 +94,15 @@ runs:
           --arg image_digest "${{ inputs.image_digest }}" \
           --arg source_commit "$SOURCE_COMMIT" \
           --arg source_tag "$SOURCE_TAG" \
+          --arg node_size "${{ inputs.node_size }}" \
           '{
             version: $version,
             compose: $compose,
             source_commit: $source_commit
           }
           + (if $image_digest != "" then {image_digest: $image_digest} else {} end)
-          + (if $source_tag != "" then {source_tag: $source_tag} else {} end)')
+          + (if $source_tag != "" then {source_tag: $source_tag} else {} end)
+          + (if $node_size != "" then {node_size: $node_size} else {} end)')
 
         # Publish the version
         RESPONSE=$(curl -s -X POST "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions" \
