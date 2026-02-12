@@ -11,16 +11,18 @@
 #
 # Optional env vars:
 #   CP_URL      - control plane URL (default: https://app.easyenclave.com)
-#   NUM_AGENTS  - number of agents to launch (default: 5)
-#   NUM_LLM_AGENTS - number of LLM-sized agents to launch (default: 0)
+#   NUM_TINY_AGENTS    - number of tiny agents to launch (default: 2)
+#   NUM_STANDARD_AGENTS - number of standard agents to launch (default: 2)
+#   NUM_LLM_AGENTS     - number of LLM-sized agents to launch (default: 1)
 #   ADMIN_PASSWORD - admin password (auto-detected from CP logs if not set)
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
 CP_URL="${CP_URL:-https://app.easyenclave.com}"
-NUM_AGENTS="${NUM_AGENTS:-5}"
-NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-0}"
+NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-2}"
+NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-2}"
+NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-1}"
 
 # ===================================================================
 # Helpers
@@ -193,10 +195,16 @@ fi
 # ===================================================================
 # 4. Launch agents in parallel
 # ===================================================================
-TOTAL_AGENTS=$((NUM_AGENTS + NUM_LLM_AGENTS))
-echo "==> Launching $TOTAL_AGENTS agents ($NUM_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
-for _i in $(seq 1 "$NUM_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --verity \
+TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS))
+echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
+for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
+  python3 infra/tdx_cli.py vm new --verity --size tiny \
+    --easyenclave-url "$CP_URL" \
+    --intel-api-key "$INTEL_API_KEY" \
+    --wait &
+done
+for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
+  python3 infra/tdx_cli.py vm new --verity --size standard \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
