@@ -46,6 +46,10 @@ inputs:
     description: 'Required agent node_size (e.g., "tiny", "standard", "llm"). Empty = any.'
     required: false
     default: ''
+  allow_measuring_enclave_fallback:
+    description: 'If true, allows deploying onto measuring-enclave agents when no other agents match.'
+    required: false
+    default: 'false'
 
 outputs:
   deployment_id:
@@ -163,15 +167,17 @@ runs:
         AGENT_ADMIN_PASSWORD: ${{ inputs.agent_admin_password }}
         GITHUB_OWNER: ${{ inputs.github_owner }}
         NODE_SIZE: ${{ inputs.node_size }}
+        ALLOW_MEASURER_FALLBACK: ${{ inputs.allow_measuring_enclave_fallback }}
       run: |
         set -e
 
         find_available_agents() {
+          local include_measurer="${1:-false}"
           curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null \
-            | jq -r --arg ns "$NODE_SIZE" \
+            | jq -r --arg ns "$NODE_SIZE" --arg include_measurer "$include_measurer" \
               '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy"
                 and (.status == "undeployed" or .status == "deployed")
-                and ((.deployed_app // "") | startswith("measuring-enclave") | not)
+                and (if $include_measurer == "true" then true else ((.deployed_app // "") | startswith("measuring-enclave") | not) end)
                 and (if $ns != "" then .node_size == $ns else true end))]
                 | sort_by(if .status == "undeployed" then 0 else 1 end)
                 | .[].agent_id'
@@ -209,7 +215,11 @@ runs:
 
         echo "Finding agent and deploying version $VERSION..."
         for attempt in {1..12}; do
-          AGENTS=$(find_available_agents)
+          AGENTS=$(find_available_agents false)
+          if [ -z "$AGENTS" ] && [ "$ALLOW_MEASURER_FALLBACK" = "true" ]; then
+            echo "::warning::No non-measuring agents available; trying measuring-enclave fallback"
+            AGENTS=$(find_available_agents true)
+          fi
           for AGENT_ID in $AGENTS; do
             echo "Trying agent $AGENT_ID..."
             HTTP_CODE=$(try_deploy "$AGENT_ID")

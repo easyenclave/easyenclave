@@ -91,6 +91,7 @@ jobs:
           agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
           node_size: llm
+          allow_measuring_enclave_fallback: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
