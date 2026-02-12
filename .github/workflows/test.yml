@@ -142,8 +142,6 @@ jobs:
 
     permissions:
       actions: read
-      id-token: write
-      attestations: write
       contents: read
 
     env:
@@ -211,13 +209,3 @@ jobs:
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           ORAM_IMAGE: ghcr.io/${{ github.repository }}/oram-contacts:${{ github.sha }}
         run: ./scripts/ci-deploy.sh
-
-      # ---- Attestation (after deploy so it doesn't block the critical path) ----
-
-      - name: Attest build provenance
-        if: always() && steps.build.outcome == 'success'
-        continue-on-error: true
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-name: ghcr.io/${{ github.repository }}/tdx-runner
-          subject-digest: sha256:${{ steps.build.outputs.digest }}
