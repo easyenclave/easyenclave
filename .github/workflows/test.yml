@@ -207,4 +207,6 @@ jobs:
           TRUSTED_AGENT_RTMRS: ${{ steps.build.outputs.rtmrs }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
+          # Keep one LLM agent for measuring-enclave-llm and one for user LLM apps.
+          NUM_LLM_AGENTS: "2"
         run: ./scripts/ci-deploy.sh
