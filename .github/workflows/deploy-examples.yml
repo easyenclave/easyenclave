@@ -109,7 +109,8 @@ jobs:
   deploy-oram-contacts:
     name: Deploy ORAM Contacts
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: deploy-hello-tdx
+    if: always() && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
     steps:
       - uses: actions/checkout@v4
         with:
