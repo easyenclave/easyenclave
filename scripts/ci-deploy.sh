@@ -7,7 +7,6 @@
 #   INTEL_API_KEY        - Intel Trust Authority key
 #   ITA_API_KEY          - alias (usually same as INTEL_API_KEY)
 #   MEASURER_IMAGE       - ghcr.io image ref for measuring enclave
-#   ORAM_IMAGE           - ghcr.io image ref for oram-contacts
 #
 # Optional env vars:
 #   CP_URL      - control plane URL (default: https://app.easyenclave.com)
@@ -262,13 +261,6 @@ deploy_app "measuring-enclave" \
   "$MEASURER_IMAGE" \
   "" \
   '{"service_name": "measuring-enclave"}' \
-  tiny
-
-deploy_app "oram-contacts" \
-  "Privacy-preserving contact discovery with ORAM" \
-  "$ORAM_IMAGE" \
-  '["privacy", "oram", "contacts", "example"]' \
-  '{"service_name": "oram-contacts", "health_endpoint": "/health"}' \
   tiny
 
 echo "==> Deploy complete!"

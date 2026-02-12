@@ -207,5 +207,4 @@ jobs:
           TRUSTED_AGENT_RTMRS: ${{ steps.build.outputs.rtmrs }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
-          ORAM_IMAGE: ghcr.io/${{ github.repository }}/oram-contacts:${{ github.sha }}
         run: ./scripts/ci-deploy.sh
