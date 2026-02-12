@@ -28,7 +28,11 @@ AGENT_MODE = "agent"
 NODE_SIZES = {
     "tiny": (4, 4),
     "standard": (16, 16),
+    "llm": (64, 16),
 }
+# Network-level default; override with EASYENCLAVE_DEFAULT_SIZE env var.
+# Early-stage networks run tiny; prod can set "standard" for more headroom.
+DEFAULT_SIZE = os.environ.get("EASYENCLAVE_DEFAULT_SIZE", "tiny")
 
 
 def tail_log(path: str, stop_event: threading.Event) -> None:
@@ -650,12 +654,13 @@ runcmd:
         return {"mrtd": None, "vm_name": vm_name}
 
 
-def _resolve_size(args, default_size: str) -> tuple[int, int]:
+def _resolve_size(args) -> tuple[int, int]:
     """Resolve --size preset with optional --memory/--vcpus overrides.
 
+    Priority: --memory/--vcpus > --size > EASYENCLAVE_DEFAULT_SIZE > tiny.
     Returns (memory_gib, vcpu_count).
     """
-    size_name = getattr(args, "size", None) or default_size
+    size_name = getattr(args, "size", None) or DEFAULT_SIZE
     base_mem, base_vcpus = NODE_SIZES[size_name]
     memory = getattr(args, "memory", None)
     vcpus = getattr(args, "vcpus", None)
@@ -665,13 +670,13 @@ def _resolve_size(args, default_size: str) -> tuple[int, int]:
     )
 
 
-def _add_size_args(parser, default_size: str | None = None):
+def _add_size_args(parser):
     """Add --size, --memory, --vcpus arguments to a subparser."""
     parser.add_argument(
         "--size",
         choices=list(NODE_SIZES.keys()),
-        default=default_size,
-        help=f"Node size preset (default: {default_size})",
+        default=None,
+        help=f"Node size preset (env EASYENCLAVE_DEFAULT_SIZE, default: {DEFAULT_SIZE})",
     )
     parser.add_argument(
         "--memory", type=int, default=None, help="VM memory in GiB (overrides --size)"
@@ -723,7 +728,7 @@ To start a new EasyEnclave network:
     cp_new_parser.add_argument(
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
-    _add_size_args(cp_new_parser, default_size="tiny")
+    _add_size_args(cp_new_parser)
 
     # VM commands
     vm_parser = subparsers.add_parser("vm", help="VM lifecycle management")
@@ -748,7 +753,7 @@ To start a new EasyEnclave network:
     new_parser.add_argument(
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
-    _add_size_args(new_parser, default_size="tiny")
+    _add_size_args(new_parser)
 
     vm_sub.add_parser("list", help="List TDX VMs")
 
@@ -769,7 +774,7 @@ To start a new EasyEnclave network:
     measure_parser.add_argument(
         "--json", action="store_true", help="Output all measurements as JSON (MRTD + RTMRs)"
     )
-    _add_size_args(measure_parser, default_size="tiny")
+    _add_size_args(measure_parser)
 
     args = parser.parse_args()
     workspace = Path(os.environ.get("GITHUB_WORKSPACE", "."))
@@ -779,7 +784,7 @@ To start a new EasyEnclave network:
         if args.command == "control-plane":
             if args.cp_command == "new":
                 print("Launching control plane in TDX VM...", file=sys.stderr)
-                mem, vcpus = _resolve_size(args, "tiny")
+                mem, vcpus = _resolve_size(args)
                 result = mgr.control_plane_new(
                     args.image,
                     args.port,
@@ -854,7 +859,7 @@ To start a new EasyEnclave network:
                     "control_plane_url": args.easyenclave_url,
                     "intel_api_key": args.intel_api_key,
                 }
-                mem, vcpus = _resolve_size(args, "tiny")
+                mem, vcpus = _resolve_size(args)
                 result = mgr.vm_new(
                     args.image,
                     config=config,
@@ -892,7 +897,7 @@ To start a new EasyEnclave network:
                 else:
                     mgr.vm_delete(args.name)
             elif args.vm_command == "measure":
-                mem, vcpus = _resolve_size(args, "tiny")
+                mem, vcpus = _resolve_size(args)
                 result = mgr.vm_measure(
                     args.image,
                     args.timeout,
