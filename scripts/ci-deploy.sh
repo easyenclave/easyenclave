@@ -261,12 +261,14 @@ deploy_app "measuring-enclave" \
   "Measuring enclave for app version attestation" \
   "$MEASURER_IMAGE" \
   "" \
-  '{"service_name": "measuring-enclave"}'
+  '{"service_name": "measuring-enclave"}' \
+  tiny
 
 deploy_app "oram-contacts" \
   "Privacy-preserving contact discovery with ORAM" \
   "$ORAM_IMAGE" \
   '["privacy", "oram", "contacts", "example"]' \
-  '{"service_name": "oram-contacts", "health_endpoint": "/health"}'
+  '{"service_name": "oram-contacts", "health_endpoint": "/health"}' \
+  tiny
 
 echo "==> Deploy complete!"
