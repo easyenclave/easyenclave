@@ -7,40 +7,39 @@ set -euo pipefail
 echo "[mkosi.postinst] Starting post-installation..."
 
 # =============================================================================
-# Docker CE
+# Third-party repos + packages (Docker CE, cloudflared)
 # =============================================================================
-echo "[mkosi.postinst] Installing Docker CE..."
+echo "[mkosi.postinst] Adding third-party repos..."
 
 install -m 0755 -d /etc/apt/keyrings
+ARCH=$(dpkg --print-architecture)
+
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
     | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
-
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] \
 https://download.docker.com/linux/ubuntu noble stable" \
     > /etc/apt/sources.list.d/docker.list
 
-# =============================================================================
-# Cloudflared
-# =============================================================================
-echo "[mkosi.postinst] Adding cloudflared repo..."
-
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
     | gpg --batch --yes --dearmor -o /etc/apt/keyrings/cloudflare.gpg
-chmod a+r /etc/apt/keyrings/cloudflare.gpg
-
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/cloudflare.gpg] \
+echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/cloudflare.gpg] \
 https://pkg.cloudflare.com/cloudflared noble main" \
     > /etc/apt/sources.list.d/cloudflared.list
 
-# =============================================================================
-# Install third-party packages
-# =============================================================================
+echo "[mkosi.postinst] Installing packages..."
 apt-get update
 apt-get install -y --no-install-recommends \
     docker-ce docker-ce-cli containerd.io \
     docker-buildx-plugin docker-compose-plugin \
     cloudflared
+
+# Redirect containerd storage to /data/containerd (swap-backed tmpfs).
+# Must be written AFTER containerd.io installs its default config.
+mkdir -p /etc/containerd
+cat > /etc/containerd/config.toml <<'TOML'
+version = 2
+root = "/data/containerd"
+TOML
 
 echo "[mkosi.postinst] Third-party packages installed."
 
