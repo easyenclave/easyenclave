@@ -1,29 +1,24 @@
 #!/bin/bash
-# Mount /data from a virtio data disk (/dev/vdb) or fall back to tmpfs.
-# When a data disk is present, it is encrypted with dm-crypt using an
-# ephemeral key generated in guest memory. The host only sees ciphertext
-# on the qcow2 — the key never leaves TDX-protected RAM.
+# Set up zram swap and mount /data as swap-backed tmpfs.
+# zram compresses pages in TDX-encrypted guest memory — the host sees nothing.
+# With lz4 compression, effective capacity is ~2-3x physical RAM.
 # Runs as a oneshot systemd service before Docker and the launcher.
 set -e
 
-if [ -b /dev/vdb ]; then
-    # Generate ephemeral encryption key (lives only in TDX-protected guest RAM)
-    dd if=/dev/urandom of=/run/data-disk.key bs=32 count=1 2>/dev/null
+# Get total RAM in KiB
+mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 
-    # Open dm-crypt on the raw block device
-    cryptsetup open --type plain \
-        --cipher aes-xts-plain64 --key-size 256 \
-        --key-file /run/data-disk.key \
-        /dev/vdb data
+# Create zram device sized to match RAM (lz4 compressed → ~2-3x effective)
+modprobe zram num_devices=1
+echo lz4 > /sys/block/zram0/comp_algorithm
+echo "${mem_kb}K" > /sys/block/zram0/disksize
+mkswap /dev/zram0
+swapon -p 100 /dev/zram0
 
-    # Shred the key file — kernel dm-crypt holds the key internally now
-    shred -u /run/data-disk.key
-
-    # Format on first open (fresh dm-crypt device has no filesystem)
-    mkfs.ext4 -q -L data /dev/mapper/data
-    mount -o nosuid,nodev /dev/mapper/data /data
-else
-    mount -t tmpfs -o nosuid,nodev,size=1G tmpfs /data
-fi
+# Mount /data as tmpfs. With zram swap, cold pages get compressed and
+# swapped out, so we can safely size it larger than physical RAM.
+# Size = 150% of RAM; with swap backing this won't OOM.
+tmpfs_kb=$((mem_kb * 3 / 2))
+mount -t tmpfs -o "nosuid,nodev,size=${tmpfs_kb}k" tmpfs /data
 
 mkdir -p /data/docker /data/workload /data/easyenclave
