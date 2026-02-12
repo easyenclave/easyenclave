@@ -28,7 +28,7 @@ AGENT_MODE = "agent"
 NODE_SIZES = {
     "tiny": (4, 4),
     "standard": (16, 16),
-    "llm": (64, 16),
+    "llm": (128, 16),
 }
 # Network-level default; override with EASYENCLAVE_DEFAULT_SIZE env var.
 # Early-stage networks run tiny; prod can set "standard" for more headroom.
