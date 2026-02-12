@@ -77,6 +77,7 @@ from .models import (
     DeploymentListResponse,
     DepositRequest,
     HealthResponse,
+    ManualAttestRequest,
     MeasurementCallbackRequest,
     RateCardResponse,
     Service,
@@ -2078,6 +2079,7 @@ async def manual_attest_version(
     name: str,
     version: str,
     node_size: str = "",
+    request: ManualAttestRequest | None = None,
     _admin: bool = Depends(verify_admin_token),
 ):
     """Manually attest an app version (admin only).
@@ -2088,8 +2090,16 @@ async def manual_attest_version(
     if found_version is None:
         raise HTTPException(status_code=404, detail="Version not found")
 
-    app_version_store.update_status(found_version.version_id, status="attested")
-    logger.info(f"Manually attested: {name}@{version} node_size='{node_size}'")
+    app_version_store.update_status(
+        found_version.version_id,
+        status="attested",
+        mrtd=request.mrtd if request else None,
+        attestation=request.attestation if request else None,
+    )
+    logger.info(
+        f"Manually attested: {name}@{version} node_size='{node_size}' "
+        f"(mrtd_set={bool(request and request.mrtd)})"
+    )
     return {"status": "attested", "version_id": found_version.version_id}
 
 
@@ -2101,9 +2111,13 @@ async def measurement_callback(request: MeasurementCallbackRequest):
         raise HTTPException(status_code=404, detail="Version not found")
 
     if request.status == "success":
+        measured_mrtd = None
+        if isinstance(request.measurement, dict):
+            measured_mrtd = request.measurement.get("mrtd")
         app_version_store.update_status(
             request.version_id,
             status="attested",
+            mrtd=measured_mrtd,
             attestation=request.measurement,
         )
         logger.info(f"Measurement success: {found_version.app_name}@{found_version.version}")

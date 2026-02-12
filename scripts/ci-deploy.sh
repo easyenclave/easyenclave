@@ -43,6 +43,77 @@ admin_login() {
   echo "$token"
 }
 
+find_reference_agent_measurement() {
+  local node_size="$1"
+  local attempts="${2:-30}"
+  local delay_seconds="${3:-10}"
+  local agents_json candidate
+
+  for attempt in $(seq 1 "$attempts"); do
+    agents_json=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
+    candidate=$(echo "$agents_json" | jq -c --arg ns "$node_size" '
+      [.agents[] | select(.verified == true
+        and (.mrtd // "") != ""
+        and (.rtmrs // null) != null
+        and (if $ns != "" then .node_size == $ns else true end))
+      ] | first')
+
+    if [ -n "$candidate" ] && [ "$candidate" != "null" ]; then
+      echo "$candidate"
+      return 0
+    fi
+
+    echo "Waiting for measurement reference (node_size=${node_size:-any})... ($attempt/$attempts)"
+    sleep "$delay_seconds"
+  done
+
+  return 1
+}
+
+verify_app_version_variant() {
+  local app_name="$1"
+  local version="$2"
+  local node_size="${3:-}"
+  local require_mrtd="${4:-false}"
+  local qs=""
+  local version_json actual_node_size actual_status attested_node_size measured_mrtd
+
+  if [ -n "$node_size" ]; then
+    qs="?node_size=$node_size"
+  fi
+
+  version_json=$(curl -sf "$CP_URL/api/v1/apps/$app_name/versions/$version$qs")
+  actual_node_size=$(echo "$version_json" | jq -r '.node_size // ""')
+  actual_status=$(echo "$version_json" | jq -r '.status // ""')
+
+  if [ "$actual_node_size" != "$node_size" ]; then
+    echo "::error::Version node_size mismatch for $app_name@$version: expected '$node_size', got '$actual_node_size'"
+    return 1
+  fi
+  if [ "$actual_status" != "attested" ]; then
+    echo "::error::Version is not attested for $app_name@$version (node_size='$node_size', status='$actual_status')"
+    return 1
+  fi
+
+  if [ -n "$node_size" ]; then
+    attested_node_size=$(echo "$version_json" | jq -r '.attestation.node_size // ""')
+    if [ "$attested_node_size" != "$node_size" ]; then
+      echo "::error::Attestation node_size mismatch for $app_name@$version: expected '$node_size', got '$attested_node_size'"
+      return 1
+    fi
+  fi
+
+  if [ "$require_mrtd" = "true" ]; then
+    measured_mrtd=$(echo "$version_json" | jq -r '.mrtd // ""')
+    if [ -z "$measured_mrtd" ] || [ "$measured_mrtd" = "null" ]; then
+      echo "::error::Missing MRTD for $app_name@$version (node_size='$node_size')"
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
 # deploy_app APP_NAME DESCRIPTION IMAGE TAGS SERVICE_CONFIG [NODE_SIZE]
 #   Registers app, publishes version, attests, deploys, waits healthy.
 #   NODE_SIZE (optional): filter agents by node_size (e.g. "llm").
@@ -51,6 +122,8 @@ deploy_app() {
   local node_size="${6:-}"
   local compose_b64 version publish_resp version_id
   local deployed=false agent_ids agent_id http_code
+  local manual_attest_body="" reference_agent reference_agent_id reference_mrtd reference_rtmrs
+  local reference_measurement measured_at attest_qs="" max_attempts require_mrtd
 
   echo ""
   echo "===== Deploying $app_name ====="
@@ -77,21 +150,64 @@ deploy_app() {
   version_id=$(echo "$publish_resp" | jq -r '.version_id')
   echo "Published $app_name@$version ($version_id)"
 
-  # Manual attest (bootstrap)
-  local attest_qs=""
+  # Manual attest (bootstrap) with node-size-specific measurement metadata when available.
   if [ -n "$node_size" ]; then
+    echo "Capturing measurement reference from a verified '$node_size' agent..."
+    reference_agent=$(find_reference_agent_measurement "$node_size" 30 10) || {
+      echo "::error::Could not find verified '$node_size' agent with MRTD/RTMRs for $app_name"
+      exit 1
+    }
+    reference_agent_id=$(echo "$reference_agent" | jq -r '.agent_id')
+    reference_mrtd=$(echo "$reference_agent" | jq -r '.mrtd')
+    reference_rtmrs=$(echo "$reference_agent" | jq -c '.rtmrs')
+    measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    reference_measurement=$(jq -cn \
+      --arg ns "$node_size" \
+      --arg aid "$reference_agent_id" \
+      --arg mrtd "$reference_mrtd" \
+      --arg measured_at "$measured_at" \
+      --argjson rtmrs "$reference_rtmrs" \
+      '{bootstrap: true, measurement_type: "agent_reference", node_size: $ns, agent_id: $aid, mrtd: $mrtd, rtmrs: $rtmrs, measured_at: $measured_at}')
+    manual_attest_body=$(jq -cn \
+      --arg mrtd "$reference_mrtd" \
+      --argjson attestation "$reference_measurement" \
+      '{mrtd: $mrtd, attestation: $attestation}')
+    echo "Using reference agent $reference_agent_id for $node_size bootstrap measurement"
     attest_qs="?node_size=$node_size"
   fi
+
   echo "Manually attesting $app_name version $version (node_size=$node_size)..."
-  curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/attest${attest_qs}" \
-    -H "Authorization: Bearer $ADMIN_TOKEN"
+  if [ -n "$manual_attest_body" ]; then
+    curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/attest${attest_qs}" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "$manual_attest_body"
+  else
+    curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/attest${attest_qs}" \
+      -H "Authorization: Bearer $ADMIN_TOKEN"
+  fi
   echo "Attested $app_name@$version"
 
+  require_mrtd=false
+  if [ -n "$node_size" ]; then
+    require_mrtd=true
+  fi
+  verify_app_version_variant "$app_name" "$version" "$node_size" "$require_mrtd"
+  echo "Verified app store variant for $app_name@$version (node_size='$node_size')"
+
   # Find undeployed agent and deploy (retry)
-  for attempt in {1..12}; do
+  max_attempts="${DEPLOY_APP_MAX_ATTEMPTS:-}"
+  if [ -z "$max_attempts" ]; then
+    max_attempts=12
+    if [ "$node_size" = "llm" ]; then
+      max_attempts=24
+    fi
+  fi
+
+  for attempt in $(seq 1 "$max_attempts"); do
     agent_ids=$(curl -f "$CP_URL/api/v1/agents" 2>/dev/null | \
       jq -r --arg ns "$node_size" \
-        '[.agents[] | select(.verified == true and .hostname != null and .status == "undeployed"
+        '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy" and .status == "undeployed"
           and (if $ns != "" then .node_size == $ns else true end))] | .[].agent_id')
 
     for agent_id in $agent_ids; do
@@ -100,7 +216,7 @@ deploy_app() {
       echo "Trying agent $agent_id ($agent_host)..."
 
       # Check tunnel reachable
-      if ! curl -sf "https://$agent_host/api/health" > /dev/null 2>&1; then
+      if ! curl -sf --connect-timeout 3 --max-time 8 "https://$agent_host/api/health" > /dev/null 2>&1; then
         echo "  Tunnel not reachable, skipping"
         continue
       fi
@@ -118,12 +234,17 @@ deploy_app() {
       echo "  HTTP $http_code: $(jq -r '.detail // empty' /tmp/deploy_resp.json)"
     done
 
-    echo "No available agents, waiting 30s... ($attempt/12)"
+    echo "No available agents, waiting 30s... ($attempt/$max_attempts)"
     sleep 30
   done
 
   if [ "$deployed" != "true" ]; then
-    echo "::error::Could not deploy $app_name after 12 attempts"
+    echo "::error::Could not deploy $app_name after $max_attempts attempts"
+    echo ""
+    echo "=== Candidate agents for node_size='${node_size:-any}' ==="
+    curl -sf "$CP_URL/api/v1/agents" 2>/dev/null | jq -r --arg ns "$node_size" \
+      '[.agents[] | select(if $ns != "" then .node_size == $ns else true end)
+        | {agent_id, node_size, status, health_status, verified, hostname, has_mrtd: (.mrtd != null), has_rtmrs: (.rtmrs != null)}]'
     exit 1
   fi
 

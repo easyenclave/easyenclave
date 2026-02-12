@@ -137,6 +137,7 @@ class TestMeasurementCallback:
 
         measurement = {
             "compose_hash": "abc123",
+            "mrtd": "deadbeef" * 12,
             "resolved_images": {"web": {"original": "nginx:latest", "digest": "sha256:def456"}},
         }
         resp = client.post(
@@ -152,6 +153,7 @@ class TestMeasurementCallback:
         # Check version is now attested
         ver = client.get(f"/api/v1/apps/{sample_app}/versions/1.0.0")
         assert ver.json()["status"] == "attested"
+        assert ver.json()["mrtd"] == measurement["mrtd"]
         assert ver.json()["attestation"] == measurement
 
     def test_callback_failure(self, client, sample_app, sample_compose):
@@ -230,6 +232,48 @@ class TestManualAttest:
         # Verify only the tiny version is attested
         ver = client.get(f"/api/v1/apps/{sample_app}/versions/1.0.0?node_size=tiny")
         assert ver.json()["status"] == "attested"
+
+    def test_manual_attest_with_measurement_metadata(
+        self, client, admin_token, sample_app, sample_compose
+    ):
+        """Manual attestation can persist node-size-specific measurement metadata."""
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+
+        payload = {
+            "mrtd": "cafebabe" * 12,
+            "attestation": {
+                "bootstrap": True,
+                "node_size": "llm",
+                "measurement_type": "agent_reference",
+                "agent_id": "agent-123",
+                "rtmrs": {
+                    "rtmr0": "0" * 96,
+                    "rtmr1": "1" * 96,
+                    "rtmr2": "2" * 96,
+                    "rtmr3": "3" * 96,
+                },
+            },
+        }
+
+        app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+        try:
+            resp = client.post(
+                f"/api/v1/apps/{sample_app}/versions/1.0.0/attest?node_size=llm",
+                json=payload,
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert resp.status_code == 200
+            assert resp.json()["status"] == "attested"
+        finally:
+            app.dependency_overrides.clear()
+
+        ver = client.get(f"/api/v1/apps/{sample_app}/versions/1.0.0?node_size=llm")
+        assert ver.json()["status"] == "attested"
+        assert ver.json()["mrtd"] == payload["mrtd"]
+        assert ver.json()["attestation"]["node_size"] == "llm"
 
     def test_manual_attest_requires_auth(self, client, sample_app, sample_compose):
         """Manual attest without auth should fail."""

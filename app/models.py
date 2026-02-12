@@ -232,6 +232,13 @@ class MeasurementCallbackRequest(BaseModel):
     measurement: dict | None = None  # {compose_hash, resolved_images}
 
 
+class ManualAttestRequest(BaseModel):
+    """Optional metadata for admin bootstrap attestation."""
+
+    mrtd: str | None = None
+    attestation: dict | None = None
+
+
 # =============================================================================
 # Billing API
 # =============================================================================
