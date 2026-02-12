@@ -41,6 +41,13 @@
       <target dev="vda" bus="virtio"/>
       <readonly/>
     </disk>
+    <!-- DATA_DISK_START -->
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2" cache="writeback"/>
+      <source file="DATA_IMG_PATH"/>
+      <target dev="vdb" bus="virtio"/>
+    </disk>
+    <!-- DATA_DISK_END -->
     <interface type='network'>
       <source network='default'/>
       <model type='virtio'/>

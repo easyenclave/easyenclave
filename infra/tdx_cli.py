@@ -24,6 +24,12 @@ from pathlib import Path
 CONTROL_PLANE_MODE = "control-plane"
 AGENT_MODE = "agent"
 
+# Node size presets: (memory_gib, vcpu_count, disk_gib)
+NODE_SIZES = {
+    "tiny": (4, 4, 0),
+    "standard": (16, 16, 40),
+}
+
 
 def tail_log(path: str, stop_event: threading.Event) -> None:
     """Tail a log file until stop_event is set.
@@ -211,6 +217,7 @@ runcmd:
         memory_gib: int = 16,
         vcpu_count: int = 32,
         verity: bool = False,
+        disk_gib: int = 0,
     ) -> dict:
         """Create and boot a new TDX VM.
 
@@ -226,6 +233,7 @@ runcmd:
             memory_gib: VM memory in GiB
             vcpu_count: Number of vCPUs
             verity: If True, use dm-verity image with direct kernel boot
+            disk_gib: Data disk size in GiB (0 = no disk, tmpfs fallback)
 
         Returns:
             Dict with vm_name, uuid, and info
@@ -278,6 +286,35 @@ runcmd:
             xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
             xml_content = xml_content.replace("KERNEL_CMDLINE", cmdline)
             xml_content = xml_content.replace("ROOT_IMG_PATH", str(artifacts["root"]))
+
+            if disk_gib > 0:
+                # Create writable data disk for Docker storage + workloads
+                data_disk_path = self.WORKDIR / f"data.{rand_str}.qcow2"
+                subprocess.run(
+                    [
+                        "qemu-img",
+                        "create",
+                        "-f",
+                        "qcow2",
+                        str(data_disk_path),
+                        f"{disk_gib}G",
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                data_disk_path.chmod(0o666)
+                xml_content = xml_content.replace("DATA_IMG_PATH", str(data_disk_path))
+            else:
+                # No data disk — strip the optional block from XML
+                import re
+
+                xml_content = re.sub(
+                    r"\s*<!-- DATA_DISK_START -->.*?<!-- DATA_DISK_END -->",
+                    "",
+                    xml_content,
+                    flags=re.DOTALL,
+                )
         else:
             # Legacy boot: overlay qcow2 + cloud-init ISO
             image_path = self._find_image(image)
@@ -347,6 +384,7 @@ runcmd:
         memory_gib: int = 16,
         vcpu_count: int = 32,
         verity: bool = False,
+        disk_gib: int = 0,
     ) -> dict:
         """Launch a control plane in a TDX VM.
 
@@ -396,6 +434,7 @@ runcmd:
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
             verity=verity,
+            disk_gib=disk_gib,
         )
         result["control_plane_port"] = port
 
@@ -574,6 +613,7 @@ runcmd:
         memory_gib: int = 16,
         vcpu_count: int = 32,
         verity: bool = False,
+        disk_gib: int = 0,
     ) -> dict:
         """Boot a temporary VM to capture MRTD and RTMRs, then destroy it.
 
@@ -601,6 +641,7 @@ runcmd:
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
             verity=verity,
+            disk_gib=disk_gib,
         )
         vm_name = result["name"]
         serial_log = result.get("serial_log")
@@ -642,6 +683,42 @@ runcmd:
                 "vm_name": vm_name,
             }
         return {"mrtd": None, "vm_name": vm_name}
+
+
+def _resolve_size(args, default_size: str) -> tuple[int, int, int]:
+    """Resolve --size preset with optional --memory/--vcpus/--disk overrides.
+
+    Returns (memory_gib, vcpu_count, disk_gib).
+    """
+    size_name = getattr(args, "size", None) or default_size
+    base_mem, base_vcpus, base_disk = NODE_SIZES[size_name]
+    memory = getattr(args, "memory", None)
+    vcpus = getattr(args, "vcpus", None)
+    disk = getattr(args, "disk", None)
+    return (
+        memory if memory is not None else base_mem,
+        vcpus if vcpus is not None else base_vcpus,
+        disk if disk is not None else base_disk,
+    )
+
+
+def _add_size_args(parser, default_size: str | None = None):
+    """Add --size, --memory, --vcpus, --disk arguments to a subparser."""
+    parser.add_argument(
+        "--size",
+        choices=list(NODE_SIZES.keys()),
+        default=default_size,
+        help=f"Node size preset (default: {default_size})",
+    )
+    parser.add_argument(
+        "--memory", type=int, default=None, help="VM memory in GiB (overrides --size)"
+    )
+    parser.add_argument(
+        "--vcpus", type=int, default=None, help="Number of vCPUs (overrides --size)"
+    )
+    parser.add_argument(
+        "--disk", type=int, default=None, help="Data disk size in GiB, 0=none (overrides --size)"
+    )
 
 
 def main():
@@ -686,10 +763,7 @@ To start a new EasyEnclave network:
     cp_new_parser.add_argument(
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
-    cp_new_parser.add_argument(
-        "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
-    )
-    cp_new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
+    _add_size_args(cp_new_parser, default_size="tiny")
 
     # VM commands
     vm_parser = subparsers.add_parser("vm", help="VM lifecycle management")
@@ -714,8 +788,7 @@ To start a new EasyEnclave network:
     new_parser.add_argument(
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
-    new_parser.add_argument("--memory", type=int, default=16, help="VM memory in GiB (default 16)")
-    new_parser.add_argument("--vcpus", type=int, default=32, help="Number of vCPUs (default 32)")
+    _add_size_args(new_parser, default_size="tiny")
 
     vm_sub.add_parser("list", help="List TDX VMs")
 
@@ -736,12 +809,7 @@ To start a new EasyEnclave network:
     measure_parser.add_argument(
         "--json", action="store_true", help="Output all measurements as JSON (MRTD + RTMRs)"
     )
-    measure_parser.add_argument(
-        "--memory", type=int, default=16, help="VM memory in GiB (default 16)"
-    )
-    measure_parser.add_argument(
-        "--vcpus", type=int, default=32, help="Number of vCPUs (default 32)"
-    )
+    _add_size_args(measure_parser, default_size="tiny")
 
     args = parser.parse_args()
     workspace = Path(os.environ.get("GITHUB_WORKSPACE", "."))
@@ -751,13 +819,15 @@ To start a new EasyEnclave network:
         if args.command == "control-plane":
             if args.cp_command == "new":
                 print("Launching control plane in TDX VM...", file=sys.stderr)
+                mem, vcpus, disk = _resolve_size(args, "tiny")
                 result = mgr.control_plane_new(
                     args.image,
                     args.port,
                     debug=args.debug,
-                    memory_gib=args.memory,
-                    vcpu_count=args.vcpus,
+                    memory_gib=mem,
+                    vcpu_count=vcpus,
                     verity=args.verity,
+                    disk_gib=disk,
                 )
 
                 if args.wait:
@@ -825,13 +895,15 @@ To start a new EasyEnclave network:
                     "control_plane_url": args.easyenclave_url,
                     "intel_api_key": args.intel_api_key,
                 }
+                mem, vcpus, disk = _resolve_size(args, "tiny")
                 result = mgr.vm_new(
                     args.image,
                     config=config,
                     debug=args.debug,
-                    memory_gib=args.memory,
-                    vcpu_count=args.vcpus,
+                    memory_gib=mem,
+                    vcpu_count=vcpus,
                     verity=args.verity,
+                    disk_gib=disk,
                 )
                 print(json.dumps(result, indent=2))
 
@@ -862,12 +934,14 @@ To start a new EasyEnclave network:
                 else:
                     mgr.vm_delete(args.name)
             elif args.vm_command == "measure":
+                mem, vcpus, disk = _resolve_size(args, "tiny")
                 result = mgr.vm_measure(
                     args.image,
                     args.timeout,
-                    memory_gib=args.memory,
-                    vcpu_count=args.vcpus,
+                    memory_gib=mem,
+                    vcpu_count=vcpus,
                     verity=args.verity,
+                    disk_gib=disk,
                 )
                 if result.get("mrtd"):
                     if args.json:

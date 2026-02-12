@@ -192,7 +192,7 @@ for _i in $(seq 1 "$NUM_AGENTS"); do
   python3 infra/tdx_cli.py vm new --verity \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
-    --memory 4 --vcpus 4 --wait &
+    --wait &
 done
 wait
 echo "All $NUM_AGENTS agents launched"

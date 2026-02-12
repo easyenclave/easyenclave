@@ -63,6 +63,7 @@ mkdir -p /opt/launcher
 chmod +x /opt/launcher/launcher.py 2>/dev/null || true
 systemctl enable tdx-launcher.service 2>/dev/null || true
 systemctl enable tdx-tsm-setup.service 2>/dev/null || true
+systemctl enable data-disk.service 2>/dev/null || true
 
 # Disable SSH by default (read-only rootfs, no password access)
 systemctl disable ssh.service 2>/dev/null || true
