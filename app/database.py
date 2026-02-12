@@ -54,6 +54,33 @@ def init_db():
     from . import db_models  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
+    _migrate_add_columns()
+
+
+def _migrate_add_columns():
+    """Add columns that create_all() won't add to existing tables.
+
+    This is idempotent and runs on every startup. To add a new column,
+    append a tuple to the migrations list below.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+
+    # (table, column, sql_type, default)
+    migrations = [
+        ("agents", "node_size", "TEXT", "''"),
+    ]
+
+    for table, column, sql_type, default in migrations:
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in cursor.fetchall()}
+        if column not in existing:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type} DEFAULT {default}")
+
+    conn.commit()
+    conn.close()
 
 
 def run_migrations():

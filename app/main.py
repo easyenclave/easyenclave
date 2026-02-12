@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import cloudflare, proxy
@@ -2515,6 +2515,78 @@ async def get_container_logs(
             all_logs.append({"container": name, "line": "[error fetching logs]"})
 
     return {"logs": all_logs, "count": len(all_logs)}
+
+
+@app.get("/api/v1/logs/export")
+async def export_logs(
+    since: str = Query("1h", description="Container logs since (e.g., '5m', '1h')"),
+    min_level: str = Query("DEBUG", description="Min level for control-plane logs"),
+):
+    """Export control plane + container logs as a zip file."""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Control-plane logs from in-memory buffer
+        level_num = getattr(logging, min_level.upper(), logging.DEBUG)
+        filtered = [
+            rec for rec in _log_handler.records if getattr(logging, rec["level"], 0) >= level_num
+        ]
+        cp_lines = [
+            f"{rec['timestamp']} {rec['level']:7s} [{rec['logger']}] {rec['message']}"
+            for rec in filtered
+        ]
+        zf.writestr("control-plane.log", "\n".join(cp_lines))
+
+        # Container logs via docker CLI
+        container_lines: list[str] = []
+        import shutil
+
+        if shutil.which("docker"):
+            try:
+                ps_proc = await asyncio.create_subprocess_exec(
+                    "docker",
+                    "ps",
+                    "--format",
+                    "{{.Names}}",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                ps_stdout, _ = await asyncio.wait_for(ps_proc.communicate(), timeout=10)
+                container_names = [n for n in ps_stdout.decode().strip().split("\n") if n]
+
+                for name in container_names:
+                    try:
+                        log_proc = await asyncio.create_subprocess_exec(
+                            "docker",
+                            "logs",
+                            "--since",
+                            since,
+                            name,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.STDOUT,
+                        )
+                        log_stdout, _ = await asyncio.wait_for(log_proc.communicate(), timeout=10)
+                        for line in log_stdout.decode(errors="replace").strip().split("\n"):
+                            if line:
+                                container_lines.append(f"[{name}] {line}")
+                    except (asyncio.TimeoutError, OSError):
+                        container_lines.append(f"[{name}] [error fetching logs]")
+            except (asyncio.TimeoutError, OSError):
+                container_lines.append("[error] failed to list containers")
+        else:
+            container_lines.append("[info] docker CLI not available")
+
+        zf.writestr("containers.log", "\n".join(container_lines))
+
+    buf.seek(0)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="easyenclave-logs-{ts}.zip"'},
+    )
 
 
 # ==============================================================================

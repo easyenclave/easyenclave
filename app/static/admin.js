@@ -619,6 +619,12 @@ function toggleLogAutoRefresh() {
     }
 }
 
+function exportLogs() {
+    const minLevel = document.getElementById('logLevelFilter').value;
+    const since = document.getElementById('containerLogSince').value;
+    window.open(`/api/v1/logs/export?since=${encodeURIComponent(since)}&min_level=${encodeURIComponent(minLevel)}`, '_blank');
+}
+
 // System status
 async function loadSystem() {
     // Health check
