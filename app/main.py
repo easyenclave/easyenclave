@@ -74,6 +74,9 @@ from .models import (
     AppVersionCreateRequest,
     AppVersionListResponse,
     AppVersionResponse,
+    CloudResourceAgent,
+    CloudResourceCloudSummary,
+    CloudResourceInventoryResponse,
     CreatePaymentIntentRequest,
     DeployFromVersionRequest,
     Deployment,
@@ -1146,6 +1149,114 @@ async def reconcile_agent_capacity(
         total_shortfall=total_shortfall,
         targets=target_results,
         dispatches=dispatch_results,
+    )
+
+
+@app.get(
+    "/api/v1/admin/cloud/resources",
+    response_model=CloudResourceInventoryResponse,
+)
+async def list_cloud_resources(
+    _admin: bool = Depends(verify_admin_token),
+):
+    """List observed cloud resources used by the control plane.
+
+    This is an inventory view derived from registered agents and deployments.
+    """
+    agents = agent_store.list()
+    deployments = deployment_store.list()
+    active_statuses = {"pending", "deploying", "running", "in_progress"}
+
+    cloud_rollups: dict[str, dict] = {}
+    resource_agents: list[CloudResourceAgent] = []
+
+    for agent in agents:
+        datacenter = (agent.datacenter or "").strip().lower()
+        cloud = _extract_cloud(datacenter) or "unknown"
+        az = _extract_availability_zone(datacenter)
+        region = _extract_region_from_zone(az)
+        node_size = (agent.node_size or "").strip().lower()
+        status = (agent.status or "").strip().lower()
+        health_status = (agent.health_status or "").strip().lower()
+
+        resource_agents.append(
+            CloudResourceAgent(
+                agent_id=agent.agent_id,
+                vm_name=agent.vm_name,
+                cloud=cloud,
+                datacenter=datacenter,
+                availability_zone=az,
+                region=region,
+                node_size=node_size,
+                status=status,
+                health_status=health_status,
+                verified=agent.verified,
+                deployed_app=agent.deployed_app,
+                hostname=agent.hostname,
+            )
+        )
+
+        bucket = cloud_rollups.setdefault(
+            cloud,
+            {
+                "total_agents": 0,
+                "healthy_agents": 0,
+                "verified_agents": 0,
+                "undeployed_agents": 0,
+                "deployed_agents": 0,
+                "deploying_agents": 0,
+                "node_size_counts": {},
+                "datacenters": set(),
+            },
+        )
+        bucket["total_agents"] += 1
+        if health_status == "healthy":
+            bucket["healthy_agents"] += 1
+        if agent.verified:
+            bucket["verified_agents"] += 1
+        if status == "undeployed":
+            bucket["undeployed_agents"] += 1
+        elif status == "deployed":
+            bucket["deployed_agents"] += 1
+        elif status == "deploying":
+            bucket["deploying_agents"] += 1
+
+        if node_size:
+            bucket["node_size_counts"][node_size] = bucket["node_size_counts"].get(node_size, 0) + 1
+        if datacenter:
+            bucket["datacenters"].add(datacenter)
+
+    cloud_summaries: list[CloudResourceCloudSummary] = []
+    for cloud, bucket in sorted(cloud_rollups.items(), key=lambda kv: kv[0]):
+        cloud_summaries.append(
+            CloudResourceCloudSummary(
+                cloud=cloud,
+                total_agents=bucket["total_agents"],
+                healthy_agents=bucket["healthy_agents"],
+                verified_agents=bucket["verified_agents"],
+                undeployed_agents=bucket["undeployed_agents"],
+                deployed_agents=bucket["deployed_agents"],
+                deploying_agents=bucket["deploying_agents"],
+                node_size_counts=bucket["node_size_counts"],
+                datacenters=sorted(bucket["datacenters"]),
+            )
+        )
+
+    resource_agents.sort(key=lambda a: (a.cloud, a.datacenter, a.node_size, a.vm_name))
+
+    return CloudResourceInventoryResponse(
+        generated_at=datetime.now(timezone.utc),
+        total_agents=len(resource_agents),
+        total_deployments=len(deployments),
+        active_deployments=len(
+            [
+                d
+                for d in deployments
+                if isinstance(d.status, str) and d.status.strip().lower() in active_statuses
+            ]
+        ),
+        clouds=cloud_summaries,
+        agents=resource_agents,
     )
 
 
@@ -2307,6 +2418,25 @@ def _extract_cloud(datacenter: str | None) -> str:
         return ""
     prefix = value.split(":", 1)[0].strip()
     return next(iter(_normalize_clouds([prefix])), "")
+
+
+def _extract_availability_zone(datacenter: str | None) -> str:
+    value = (datacenter or "").strip().lower()
+    if ":" not in value:
+        return ""
+    return value.split(":", 1)[1].strip()
+
+
+def _extract_region_from_zone(zone: str | None) -> str:
+    value = (zone or "").strip().lower()
+    if not value:
+        return ""
+    parts = [p for p in value.split("-") if p]
+    if len(parts) >= 2:
+        last = parts[-1]
+        if last.isdigit() or (len(last) == 1 and last.isalpha()):
+            return "-".join(parts[:-1])
+    return value
 
 
 def _deploy_issue(

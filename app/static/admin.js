@@ -158,8 +158,8 @@ async function loadUserInfo() {
 }
 
 function configureUIForRole() {
-    // Admin-only tabs: settings, measurements, cloudflare, system, accounts
-    const adminOnlyTabs = ['settings', 'measurements', 'cloudflare', 'system', 'accounts'];
+    // Admin-only tabs: settings, measurements, cloud/cloudflare, system, accounts
+    const adminOnlyTabs = ['settings', 'measurements', 'cloud', 'cloudflare', 'system', 'accounts'];
 
     if (!isAdmin) {
         // Hide admin-only tab buttons
@@ -236,6 +236,7 @@ function showAdminTab(tabName) {
     else if (tabName === 'accounts') loadAccounts();
     else if (tabName === 'measurements') loadMeasurements();
     else if (tabName === 'settings') loadSettings();
+    else if (tabName === 'cloud') loadCloudResources();
     else if (tabName === 'logs') {
         loadLogs();
         loadContainerLogs();
@@ -259,6 +260,20 @@ async function adminFetch(url, options = {}) {
         throw new Error('Session expired');
     }
     return response;
+}
+
+async function adminFetchJSON(url, options = {}) {
+    const response = await adminFetch(url, options);
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`HTTP ${response.status}: ${text.substring(0, 200)}`);
+    }
+    const ct = response.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+        const body = await response.text();
+        throw new Error(`Expected JSON from ${url} but got ${ct}: ${body.substring(0, 100)}`);
+    }
+    return response.json();
 }
 
 function normalizeCloudName(value) {
@@ -307,6 +322,125 @@ function renderAgentLocation(agent) {
         <div>${parsed.raw ? `<code>${parsed.raw}</code>` : '<span style="color:#666">N/A</span>'}</div>
         ${meta ? `<div style="font-size:0.75rem;color:#666">${meta}</div>` : ''}
     `;
+}
+
+async function loadCloudResources() {
+    const summaryCards = document.getElementById('cloudSummaryCards');
+    const summaryTable = document.getElementById('cloudSummaryTable');
+    const agentTable = document.getElementById('cloudAgentTable');
+
+    summaryCards.innerHTML = '<div class="loading">Loading cloud summary...</div>';
+    summaryTable.innerHTML = '<div class="loading">Loading cloud rollups...</div>';
+    agentTable.innerHTML = '<div class="loading">Loading agent inventory...</div>';
+
+    try {
+        const data = await adminFetchJSON('/api/v1/admin/cloud/resources');
+        const clouds = data.clouds || [];
+        const agents = data.agents || [];
+        const generatedAt = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'N/A';
+
+        summaryCards.innerHTML = `
+            <div class="stat-card">
+                <span class="stat-value">${data.total_agents || 0}</span>
+                <span class="stat-label">Agents</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">${clouds.length}</span>
+                <span class="stat-label">Clouds</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">${data.total_deployments || 0}</span>
+                <span class="stat-label">Deployments</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">${data.active_deployments || 0}</span>
+                <span class="stat-label">Active Deployments</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" style="font-size:0.95rem">${generatedAt}</span>
+                <span class="stat-label">Generated</span>
+            </div>
+        `;
+
+        if (clouds.length === 0) {
+            summaryTable.innerHTML = '<div class="empty">No cloud resources observed</div>';
+        } else {
+            summaryTable.innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Cloud</th>
+                            <th>Agents</th>
+                            <th>Healthy</th>
+                            <th>Verified</th>
+                            <th>Undeployed</th>
+                            <th>Deployed</th>
+                            <th>Deploying</th>
+                            <th>Node Sizes</th>
+                            <th>Datacenters</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${clouds.map(cloud => `
+                            <tr>
+                                <td><strong>${cloud.cloud}</strong></td>
+                                <td>${cloud.total_agents}</td>
+                                <td>${cloud.healthy_agents}</td>
+                                <td>${cloud.verified_agents}</td>
+                                <td>${cloud.undeployed_agents}</td>
+                                <td>${cloud.deployed_agents}</td>
+                                <td>${cloud.deploying_agents}</td>
+                                <td>${Object.entries(cloud.node_size_counts || {}).map(([k, v]) => `${k}:${v}`).join(', ') || 'N/A'}</td>
+                                <td>${(cloud.datacenters || []).map(dc => `<code>${dc}</code>`).join('<br>') || 'N/A'}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        if (agents.length === 0) {
+            agentTable.innerHTML = '<div class="empty">No agents in inventory</div>';
+        } else {
+            agentTable.innerHTML = `
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>VM Name</th>
+                            <th>Cloud</th>
+                            <th>Location</th>
+                            <th>Size</th>
+                            <th>Status</th>
+                            <th>Health</th>
+                            <th>Verified</th>
+                            <th>App</th>
+                            <th>Hostname</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${agents.map(agent => `
+                            <tr>
+                                <td><strong>${agent.vm_name}</strong><br><code style="font-size:0.7rem">${agent.agent_id.substring(0, 8)}...</code></td>
+                                <td>${agent.cloud || 'unknown'}</td>
+                                <td>${renderAgentLocation(agent)}</td>
+                                <td>${agent.node_size ? `<span class="status-badge">${agent.node_size}</span>` : 'N/A'}</td>
+                                <td><span class="status-badge ${agent.status}">${agent.status}</span></td>
+                                <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>
+                                <td>${agent.verified ? '<span class="verified-badge">Yes</span>' : '<span class="unverified-badge">No</span>'}</td>
+                                <td>${agent.deployed_app ? `<code>${agent.deployed_app}</code>` : '<span style="color:#666">none</span>'}</td>
+                                <td>${agent.hostname ? `<a href="https://${agent.hostname}" target="_blank">${agent.hostname}</a>` : 'No tunnel'}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            `;
+        }
+    } catch (error) {
+        const msg = `<div class="error">Error loading cloud resources: ${error.message}</div>`;
+        summaryCards.innerHTML = msg;
+        summaryTable.innerHTML = msg;
+        agentTable.innerHTML = msg;
+    }
 }
 
 // Apps management

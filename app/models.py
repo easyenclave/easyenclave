@@ -179,6 +179,48 @@ class AgentCapacityReconcileResponse(BaseModel):
     dispatches: list[AgentCapacityDispatchResult] = Field(default_factory=list)
 
 
+class CloudResourceAgent(BaseModel):
+    """Observed cloud resource represented by a registered agent."""
+
+    agent_id: str
+    vm_name: str
+    cloud: str
+    datacenter: str
+    availability_zone: str = ""
+    region: str = ""
+    node_size: str = ""
+    status: str
+    health_status: str = ""
+    verified: bool
+    deployed_app: str | None = None
+    hostname: str | None = None
+
+
+class CloudResourceCloudSummary(BaseModel):
+    """Per-cloud aggregate counts for observed resources."""
+
+    cloud: str
+    total_agents: int
+    healthy_agents: int
+    verified_agents: int
+    undeployed_agents: int
+    deployed_agents: int
+    deploying_agents: int
+    node_size_counts: dict[str, int] = Field(default_factory=dict)
+    datacenters: list[str] = Field(default_factory=list)
+
+
+class CloudResourceInventoryResponse(BaseModel):
+    """Admin response for cloud resource inventory."""
+
+    generated_at: datetime
+    total_agents: int
+    total_deployments: int
+    active_deployments: int
+    clouds: list[CloudResourceCloudSummary] = Field(default_factory=list)
+    agents: list[CloudResourceAgent] = Field(default_factory=list)
+
+
 # =============================================================================
 # Deployment API
 # =============================================================================

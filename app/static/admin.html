@@ -618,6 +618,7 @@
                 <button class="tab" onclick="showAdminTab('accounts')">Accounts</button>
                 <button class="tab" onclick="showAdminTab('measurements')">Measurements</button>
                 <button class="tab" onclick="showAdminTab('settings')">Settings</button>
+                <button class="tab" onclick="showAdminTab('cloud')">Clouds</button>
                 <button class="tab" onclick="showAdminTab('cloudflare')">Cloudflare</button>
                 <button class="tab" onclick="showAdminTab('logs')">Logs</button>
                 <button class="tab" onclick="showAdminTab('system')">System</button>
@@ -715,6 +716,34 @@
                 </div>
                 <div id="settingsAdminList">
                     <div class="loading">Loading settings...</div>
+                </div>
+            </section>
+
+            <!-- Clouds Tab -->
+            <section id="cloud-admin-tab" class="tab-content hidden">
+                <div class="section-header">
+                    <h2>Cloud Resources</h2>
+                    <button class="btn-primary refresh-btn" onclick="loadCloudResources()">Refresh</button>
+                </div>
+                <div class="section-card">
+                    <p style="color: var(--gray-600); margin-bottom: 10px;">
+                        Observed cloud inventory derived from control-plane state (registered agents and deployments).
+                    </p>
+                    <div id="cloudSummaryCards" class="stats-grid">
+                        <div class="loading">Loading cloud summary...</div>
+                    </div>
+                </div>
+                <div class="section-card">
+                    <h3>Per-Cloud Summary</h3>
+                    <div id="cloudSummaryTable">
+                        <div class="loading">Loading cloud rollups...</div>
+                    </div>
+                </div>
+                <div class="section-card">
+                    <h3>Agent Inventory</h3>
+                    <div id="cloudAgentTable">
+                        <div class="loading">Loading agent inventory...</div>
+                    </div>
                 </div>
             </section>
 
@@ -857,6 +886,6 @@
         </div>
     </div>
 
-    <script src="/static/admin.js?v=11"></script>
+    <script src="/static/admin.js?v=12"></script>
 </body>
 </html>
