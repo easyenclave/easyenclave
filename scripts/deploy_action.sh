@@ -71,6 +71,83 @@ build_deploy_body() {
     + (if ($denied_clouds | length) > 0 then {denied_clouds: $denied_clouds} else {} end)'
 }
 
+list_filtered_agents() {
+  local agents_json allowed_datacenters denied_datacenters allowed_clouds denied_clouds
+  agents_json="$(curl -sf "${CONTROL_PLANE_URL}/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')"
+  allowed_datacenters="$(csv_to_json_array "${ALLOWED_DATACENTERS:-}" | jq -c 'map(ascii_downcase)')"
+  denied_datacenters="$(csv_to_json_array "${DENIED_DATACENTERS:-}" | jq -c 'map(ascii_downcase)')"
+  allowed_clouds="$(csv_to_json_array "${ALLOWED_CLOUDS:-}" | jq -c 'map(ascii_downcase)')"
+  denied_clouds="$(csv_to_json_array "${DENIED_CLOUDS:-}" | jq -c 'map(ascii_downcase)')"
+
+  echo "$agents_json" | jq -c \
+    --arg ns "${NODE_SIZE:-}" \
+    --argjson allowed_dcs "$allowed_datacenters" \
+    --argjson denied_dcs "$denied_datacenters" \
+    --argjson allowed_cs "$allowed_clouds" \
+    --argjson denied_cs "$denied_clouds" '
+    [.agents[]
+      | . as $agent
+      | (($agent.datacenter // "") | tostring | ascii_downcase) as $dc
+      | (($dc | split(":"))[0]) as $cloud
+      | select(($agent.verified // false) == true)
+      | select(($agent.health_status // "") == "healthy")
+      | select(($agent.hostname // "") != "")
+      | select((($agent.status // "") == "undeployed") or (($agent.status // "") == "deployed"))
+      | select(if $ns != "" then (($agent.node_size // "") == $ns) else true end)
+      | select(if ($allowed_dcs | length) > 0 then (($allowed_dcs | index($dc)) != null) else true end)
+      | select(if ($denied_dcs | length) > 0 then (($denied_dcs | index($dc)) == null) else true end)
+      | select(if ($allowed_cs | length) > 0 then (($allowed_cs | index($cloud)) != null) else true end)
+      | select(if ($denied_cs | length) > 0 then (($denied_cs | index($cloud)) == null) else true end)
+      | {
+          agent_id: ($agent.agent_id // ""),
+          status: ($agent.status // ""),
+          datacenter: $dc,
+          cloud: $cloud,
+          node_size: ($agent.node_size // "")
+        }
+    ]'
+}
+
+ensure_undeployed_candidate() {
+  local candidates undeployed_agent deployed_agent reset_code reset_resp status
+
+  candidates="$(list_filtered_agents)"
+  undeployed_agent="$(echo "$candidates" | jq -r '[.[] | select(.status == "undeployed") | .agent_id] | first // empty')"
+  if [ -n "$undeployed_agent" ]; then
+    echo "Found undeployed candidate agent: $undeployed_agent"
+    return 0
+  fi
+
+  deployed_agent="$(echo "$candidates" | jq -r '[.[] | select(.status == "deployed") | .agent_id] | first // empty')"
+  if [ -z "$deployed_agent" ]; then
+    echo "::warning::No matching healthy verified agents found for current placement filters yet"
+    return 0
+  fi
+
+  echo "No undeployed candidate found; resetting deployed agent $deployed_agent to undeployed"
+  reset_code="$(curl -s -o /tmp/reset_agent_response.json -w "%{http_code}" \
+    -X POST "${CONTROL_PLANE_URL}/api/v1/agents/${deployed_agent}/reset")"
+  reset_resp="$(cat /tmp/reset_agent_response.json)"
+
+  if [ "$reset_code" -ge 400 ]; then
+    echo "::warning::Failed to reset agent $deployed_agent (HTTP $reset_code): $reset_resp"
+    return 0
+  fi
+
+  for i in {1..12}; do
+    status="$(curl -sf "${CONTROL_PLANE_URL}/api/v1/agents/${deployed_agent}" 2>/dev/null | jq -r '.status // ""')"
+    if [ "$status" = "undeployed" ]; then
+      echo "Agent $deployed_agent is now undeployed"
+      return 0
+    fi
+    echo "Waiting for agent $deployed_agent to transition to undeployed... ($i/12)"
+    sleep 5
+  done
+
+  echo "::warning::Timed out waiting for reset agent $deployed_agent to become undeployed"
+  return 0
+}
+
 wait_attested() {
   require_vars CONTROL_PLANE_URL APP_NAME VERSION
 
@@ -161,6 +238,8 @@ print_preflight_diagnostics() {
 find_and_deploy() {
   require_vars CONTROL_PLANE_URL APP_NAME VERSION SERVICE_NAME HEALTH_ENDPOINT
 
+  ensure_undeployed_candidate
+
   local preflight_code preflight_resp
   preflight_code="$(run_preflight)"
   preflight_resp="$(cat /tmp/deploy_preflight_response.json)"
@@ -197,6 +276,7 @@ find_and_deploy() {
 
     echo "  HTTP $http_code: $detail"
     if [ "$http_code" = "503" ] || echo "$detail" | grep -qi "No eligible agents"; then
+      ensure_undeployed_candidate
       echo "No eligible agents yet, waiting 30s... ($attempt/12)"
       sleep 30
       continue

@@ -1,6 +1,6 @@
 # Deploy Examples
 #
-# Deploys example apps after the CI workflow deploys the control plane.
+# Deploys example apps after CI passes, using the shared control plane.
 
 name: Deploy Examples
 
@@ -39,8 +39,8 @@ jobs:
           fi
           echo "Deploy correctly failed for unregistered app"
 
-  deploy-hello-tdx:
-    name: Deploy Hello TDX
+  register-hello-tdx:
+    name: Register Hello TDX
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
@@ -54,6 +54,20 @@ jobs:
           name: hello-tdx
           description: "Hello TDX - Example app demonstrating TDX attestation"
 
+  deploy-hello-tdx-clouds:
+    name: Deploy Hello TDX (${{ matrix.cloud }})
+    runs-on: ubuntu-latest
+    needs: register-hello-tdx
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [gcp, azure]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
       - name: Deploy to EasyEnclave
         uses: ./.github/actions/deploy
         with:
@@ -63,7 +77,8 @@ jobs:
           health_endpoint: /
           agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
-          node_size: standard
+          node_size: tiny
+          allowed_clouds: ${{ matrix.cloud }}
 
   deploy-private-llm:
     name: Deploy Private LLM
