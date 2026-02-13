@@ -1,0 +1,243 @@
+name: Cloud Confidential Agents
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Control plane URL"
+        required: false
+        default: "https://app.easyenclave.com"
+      enable_gcp:
+        description: "Provision GCP confidential TDX agent"
+        required: false
+        type: boolean
+        default: true
+      enable_azure:
+        description: "Provision Azure confidential VM agent"
+        required: false
+        type: boolean
+        default: true
+      node_size:
+        description: "Agent node_size label"
+        required: false
+        default: "tiny"
+      gcp_zone:
+        description: "GCP zone"
+        required: false
+        default: "us-central1-a"
+      gcp_region:
+        description: "GCP region"
+        required: false
+        default: "us-central1"
+      gcp_machine_type:
+        description: "GCP machine type"
+        required: false
+        default: "c3-standard-4"
+      azure_location:
+        description: "Azure region"
+        required: false
+        default: "eastus2"
+      azure_zone_label:
+        description: "Azure zone label for datacenter metadata (e.g. eastus2-1)"
+        required: false
+        default: "eastus2-1"
+      azure_vm_size:
+        description: "Azure VM size"
+        required: false
+        default: "Standard_DC2es_v6"
+      verify_app_name:
+        description: "Optional app name for deploy preflight checks"
+        required: false
+        default: ""
+      verify_app_version:
+        description: "Optional app version for deploy preflight checks"
+        required: false
+        default: ""
+
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  provision-verify-cleanup:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    env:
+      CP_URL: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+      NODE_SIZE: ${{ github.event.inputs.node_size || 'tiny' }}
+      GCP_ZONE: ${{ github.event.inputs.gcp_zone || 'us-central1-a' }}
+      GCP_REGION: ${{ github.event.inputs.gcp_region || 'us-central1' }}
+      GCP_MACHINE_TYPE: ${{ github.event.inputs.gcp_machine_type || 'c3-standard-4' }}
+      AZURE_LOCATION: ${{ github.event.inputs.azure_location || 'eastus2' }}
+      AZURE_ZONE_LABEL: ${{ github.event.inputs.azure_zone_label || 'eastus2-1' }}
+      AZURE_VM_SIZE: ${{ github.event.inputs.azure_vm_size || 'Standard_DC2es_v6' }}
+      VERIFY_APP_NAME: ${{ github.event.inputs.verify_app_name || '' }}
+      VERIFY_APP_VERSION: ${{ github.event.inputs.verify_app_version || '' }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set run metadata
+        run: |
+          RUN_TAG="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "RUN_TAG=$RUN_TAG" >> "$GITHUB_ENV"
+          echo "LAUNCHER_URL=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/infra/launcher/launcher.py" >> "$GITHUB_ENV"
+
+      - name: Validate minimum secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${INTEL_API_KEY:-}" ]; then
+            echo "::error::Missing INTEL_API_KEY secret"
+            exit 1
+          fi
+          if [ "${{ github.event.inputs.enable_gcp || 'true' }}" = "true" ]; then
+            if [ -z "${GCP_PROJECT_ID:-}" ]; then
+              echo "::error::enable_gcp=true but GCP_PROJECT_ID is missing"
+              exit 1
+            fi
+          fi
+          if [ "${{ github.event.inputs.enable_azure || 'true' }}" = "true" ]; then
+            if [ -z "${AZURE_RESOURCE_GROUP:-}" ]; then
+              echo "::error::enable_azure=true but AZURE_RESOURCE_GROUP is missing"
+              exit 1
+            fi
+          fi
+
+      - name: Authenticate to Google Cloud (OIDC)
+        if: (github.event.inputs.enable_gcp != 'false') && env.GCP_WIF_PROVIDER != '' && env.GCP_WIF_SERVICE_ACCOUNT != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (service account key fallback)
+        if: (github.event.inputs.enable_gcp != 'false') && env.GCP_WIF_PROVIDER == '' && env.GCP_SERVICE_ACCOUNT_KEY != ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Setup gcloud
+        if: github.event.inputs.enable_gcp != 'false'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Authenticate to Azure (OIDC)
+        if: (github.event.inputs.enable_azure != 'false') && env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != ''
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Authenticate to Azure (credentials fallback)
+        if: (github.event.inputs.enable_azure != 'false') && env.AZURE_CLIENT_ID == '' && env.AZURE_CREDENTIALS != ''
+        uses: azure/login@v2
+        with:
+          creds: ${{ env.AZURE_CREDENTIALS }}
+
+      - name: Provision GCP agent
+        if: github.event.inputs.enable_gcp != 'false'
+        run: |
+          set -euo pipefail
+          python3 scripts/cloud_provisioner.py provision \
+            --provider gcp \
+            --run-id "$RUN_TAG" \
+            --cp-url "$CP_URL" \
+            --intel-api-key "$INTEL_API_KEY" \
+            --node-size "$NODE_SIZE" \
+            --launcher-url "$LAUNCHER_URL" \
+            --gcp-project "$GCP_PROJECT_ID" \
+            --gcp-zone "$GCP_ZONE" \
+            --gcp-region "$GCP_REGION" \
+            --gcp-machine-type "$GCP_MACHINE_TYPE" \
+            --gcp-count 1 \
+            --wait-registration \
+            --wait-seconds 2400
+
+      - name: Provision Azure agent
+        if: github.event.inputs.enable_azure != 'false'
+        run: |
+          set -euo pipefail
+          python3 scripts/cloud_provisioner.py provision \
+            --provider azure \
+            --run-id "$RUN_TAG" \
+            --cp-url "$CP_URL" \
+            --intel-api-key "$INTEL_API_KEY" \
+            --node-size "$NODE_SIZE" \
+            --launcher-url "$LAUNCHER_URL" \
+            --azure-resource-group "$AZURE_RESOURCE_GROUP" \
+            --azure-location "$AZURE_LOCATION" \
+            --azure-zone-label "$AZURE_ZONE_LABEL" \
+            --azure-vm-size "$AZURE_VM_SIZE" \
+            --azure-count 1 \
+            --wait-registration \
+            --wait-seconds 2400
+
+      - name: Verify cloud readiness
+        run: |
+          set -euo pipefail
+          CLOUDS=""
+          if [ "${{ github.event.inputs.enable_gcp || 'true' }}" = "true" ]; then
+            CLOUDS="gcp"
+          fi
+          if [ "${{ github.event.inputs.enable_azure || 'true' }}" = "true" ]; then
+            if [ -n "$CLOUDS" ]; then
+              CLOUDS="$CLOUDS,azure"
+            else
+              CLOUDS="azure"
+            fi
+          fi
+          if [ -z "$CLOUDS" ]; then
+            echo "::error::No clouds selected"
+            exit 1
+          fi
+
+          CP_URL="$CP_URL" \
+          CLOUDS="$CLOUDS" \
+          NODE_SIZE="$NODE_SIZE" \
+          VERIFY_APP_NAME="$VERIFY_APP_NAME" \
+          VERIFY_APP_VERSION="$VERIFY_APP_VERSION" \
+          DC_GCP="gcp:${GCP_ZONE}" \
+          DC_AZURE="azure:${AZURE_ZONE_LABEL}" \
+          SKIP_MISSING_DATACENTER="false" \
+          FAIL_ON_UNSUPPORTED_CLOUDS="false" \
+          ./scripts/verify-tdx-clouds.sh
+
+      - name: Cleanup managed cloud resources
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.enable_gcp || 'true' }}" = "true" ]; then
+            python3 scripts/cloud_provisioner.py cleanup \
+              --provider gcp \
+              --run-id "$RUN_TAG" \
+              --gcp-project "$GCP_PROJECT_ID" \
+              --gcp-zone "$GCP_ZONE" \
+              --gcp-region "$GCP_REGION" || true
+          fi
+
+          if [ "${{ github.event.inputs.enable_azure || 'true' }}" = "true" ]; then
+            python3 scripts/cloud_provisioner.py cleanup \
+              --provider azure \
+              --run-id "$RUN_TAG" \
+              --azure-resource-group "$AZURE_RESOURCE_GROUP" \
+              --azure-location "$AZURE_LOCATION" \
+              --azure-zone-label "$AZURE_ZONE_LABEL" || true
+          fi
