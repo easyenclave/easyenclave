@@ -57,6 +57,10 @@ from .models import (
     AdminLoginRequest,
     AdminLoginResponse,
     Agent,
+    AgentCapacityDispatchResult,
+    AgentCapacityReconcileRequest,
+    AgentCapacityReconcileResponse,
+    AgentCapacityTargetResult,
     AgentChallengeResponse,
     AgentDeployedRequest,
     AgentListResponse,
@@ -91,6 +95,7 @@ from .models import (
     VerificationResponse,
 )
 from .pricing import calculate_deployment_cost_per_hour
+from .provisioner import dispatch_provision_request
 from .settings import (
     SETTING_DEFS,
     delete_setting,
@@ -1052,6 +1057,96 @@ async def list_agents(
     """List all registered launcher agents."""
     agents = agent_store.list(build_filters(status=status, vm_name=vm_name))
     return AgentListResponse(agents=agents, total=len(agents))
+
+
+def _normalize_statuses(values: list[str]) -> set[str]:
+    return {value.strip().lower() for value in values if isinstance(value, str) and value.strip()}
+
+
+@app.post(
+    "/api/v1/admin/agents/capacity/reconcile",
+    response_model=AgentCapacityReconcileResponse,
+)
+async def reconcile_agent_capacity(
+    request: AgentCapacityReconcileRequest,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Compute and optionally dispatch agent capacity shortfalls per datacenter/size."""
+    if not request.targets:
+        raise HTTPException(status_code=422, detail="At least one target is required")
+
+    allowed_statuses = _normalize_statuses(request.allowed_statuses)
+    if not allowed_statuses:
+        raise HTTPException(
+            status_code=422, detail="allowed_statuses must include at least one status"
+        )
+
+    agents = agent_store.list()
+    target_results: list[AgentCapacityTargetResult] = []
+    dispatch_results: list[AgentCapacityDispatchResult] = []
+    total_shortfall = 0
+    reason = request.reason.strip() or "agent-capacity-reconcile"
+
+    for target in request.targets:
+        target_datacenter = target.datacenter.strip().lower()
+        if not target_datacenter:
+            raise HTTPException(status_code=422, detail="target.datacenter must be non-empty")
+        target_node_size = target.node_size.strip().lower()
+
+        eligible_agent_ids: list[str] = []
+        for agent in agents:
+            agent_status = (agent.status or "").strip().lower()
+            if agent_status not in allowed_statuses:
+                continue
+            if request.require_verified and not agent.verified:
+                continue
+            if request.require_healthy and (agent.health_status or "").strip().lower() != "healthy":
+                continue
+            if request.require_hostname and not (agent.hostname or "").strip():
+                continue
+            if (agent.datacenter or "").strip().lower() != target_datacenter:
+                continue
+            if target_node_size and (agent.node_size or "").strip().lower() != target_node_size:
+                continue
+            eligible_agent_ids.append(agent.agent_id)
+
+        shortfall = max(0, target.min_count - len(eligible_agent_ids))
+        total_shortfall += shortfall
+        target_results.append(
+            AgentCapacityTargetResult(
+                datacenter=target_datacenter,
+                node_size=target_node_size,
+                min_count=target.min_count,
+                eligible_count=len(eligible_agent_ids),
+                shortfall=shortfall,
+                eligible_agent_ids=eligible_agent_ids,
+            )
+        )
+
+        if request.dispatch and shortfall > 0:
+            dispatched, status_code, detail = await dispatch_provision_request(
+                datacenter=target_datacenter,
+                node_size=target_node_size,
+                count=shortfall,
+                reason=reason,
+            )
+            dispatch_results.append(
+                AgentCapacityDispatchResult(
+                    datacenter=target_datacenter,
+                    node_size=target_node_size,
+                    requested_count=shortfall,
+                    dispatched=dispatched,
+                    status_code=status_code,
+                    detail=detail,
+                )
+            )
+
+    return AgentCapacityReconcileResponse(
+        eligible=total_shortfall == 0,
+        total_shortfall=total_shortfall,
+        targets=target_results,
+        dispatches=dispatch_results,
+    )
 
 
 @app.get("/api/v1/agents/{agent_id}", response_model=Agent)

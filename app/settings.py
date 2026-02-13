@@ -181,6 +181,32 @@ _reg(
     "operational",
 )
 
+# External provisioner webhook
+_reg(
+    "provisioner.webhook_url",
+    "AGENT_PROVISIONER_WEBHOOK_URL",
+    "",
+    False,
+    "Webhook URL for external agent provisioning requests",
+    "provisioner",
+)
+_reg(
+    "provisioner.webhook_token",
+    "AGENT_PROVISIONER_WEBHOOK_TOKEN",
+    "",
+    True,
+    "Bearer token used when calling the provisioner webhook",
+    "provisioner",
+)
+_reg(
+    "provisioner.timeout_seconds",
+    "AGENT_PROVISIONER_TIMEOUT_SECONDS",
+    "20",
+    False,
+    "Timeout in seconds for provisioner webhook calls",
+    "provisioner",
+)
+
 # Auth
 _reg(
     "auth.password_login_enabled",

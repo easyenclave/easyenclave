@@ -126,6 +126,59 @@ class AgentListResponse(BaseModel):
     total: int
 
 
+class AgentCapacityTarget(BaseModel):
+    """Desired minimum capacity for a datacenter/node-size pool."""
+
+    datacenter: str
+    node_size: str = ""
+    min_count: int = Field(default=1, ge=0)
+
+
+class AgentCapacityReconcileRequest(BaseModel):
+    """Request for control-plane agent capacity reconciliation."""
+
+    targets: list[AgentCapacityTarget] = Field(default_factory=list)
+    require_verified: bool = True
+    require_healthy: bool = True
+    require_hostname: bool = True
+    allowed_statuses: list[str] = Field(
+        default_factory=lambda: ["undeployed", "deployed", "deploying"]
+    )
+    dispatch: bool = False
+    reason: str = ""
+
+
+class AgentCapacityTargetResult(BaseModel):
+    """Observed capacity and shortfall for one datacenter/node-size pool."""
+
+    datacenter: str
+    node_size: str = ""
+    min_count: int
+    eligible_count: int
+    shortfall: int
+    eligible_agent_ids: list[str] = Field(default_factory=list)
+
+
+class AgentCapacityDispatchResult(BaseModel):
+    """Result of dispatching an external provisioning request."""
+
+    datacenter: str
+    node_size: str = ""
+    requested_count: int
+    dispatched: bool
+    status_code: int | None = None
+    detail: str | None = None
+
+
+class AgentCapacityReconcileResponse(BaseModel):
+    """Response for agent capacity reconciliation."""
+
+    eligible: bool
+    total_shortfall: int
+    targets: list[AgentCapacityTargetResult]
+    dispatches: list[AgentCapacityDispatchResult] = Field(default_factory=list)
+
+
 # =============================================================================
 # Deployment API
 # =============================================================================
