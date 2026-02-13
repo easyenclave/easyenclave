@@ -261,6 +261,54 @@ async function adminFetch(url, options = {}) {
     return response;
 }
 
+function normalizeCloudName(value) {
+    const cloud = (value || '').trim().toLowerCase();
+    if (!cloud) return '';
+    if (cloud === 'google') return 'gcp';
+    if (cloud === 'az') return 'azure';
+    if (cloud === 'bare-metal' || cloud === 'onprem' || cloud === 'on-prem' || cloud === 'self-hosted') {
+        return 'baremetal';
+    }
+    return cloud;
+}
+
+function parseDatacenterLabel(datacenter) {
+    const raw = (datacenter || '').trim();
+    if (!raw) {
+        return { raw: '', cloud: '', zone: '' };
+    }
+    const parts = raw.split(':', 2);
+    if (parts.length === 2) {
+        return {
+            raw,
+            cloud: normalizeCloudName(parts[0]),
+            zone: (parts[1] || '').trim(),
+        };
+    }
+    return { raw, cloud: normalizeCloudName(raw), zone: '' };
+}
+
+function renderAgentLocation(agent) {
+    const parsed = parseDatacenterLabel(agent.datacenter);
+    const cloud = normalizeCloudName(agent.cloud_provider) || parsed.cloud;
+    const zone = (agent.availability_zone || parsed.zone || '').trim();
+    const region = (agent.region || '').trim();
+    const meta = [
+        cloud ? `cloud: ${cloud}` : '',
+        zone ? `az: ${zone}` : '',
+        region ? `region: ${region}` : '',
+    ].filter(Boolean).join(' | ');
+
+    if (!parsed.raw && !meta) {
+        return '<span style="color:#666">N/A</span>';
+    }
+
+    return `
+        <div>${parsed.raw ? `<code>${parsed.raw}</code>` : '<span style="color:#666">N/A</span>'}</div>
+        ${meta ? `<div style="font-size:0.75rem;color:#666">${meta}</div>` : ''}
+    `;
+}
+
 // Apps management
 async function loadApps() {
     const container = document.getElementById('appsAdminList');
@@ -440,6 +488,7 @@ async function loadAgents() {
                         <th>VM Name</th>
                         <th>Status</th>
                         <th>Size</th>
+                        <th>Location</th>
                         <th>Health</th>
                         <th>Verified</th>
                         ${isAdmin ? '<th>Owner</th>' : ''}
@@ -453,6 +502,7 @@ async function loadAgents() {
                             <td><strong>${agent.vm_name}</strong><br><code style="font-size: 0.7rem">${agent.agent_id.substring(0, 8)}...</code></td>
                             <td><span class="status-badge ${agent.status}">${agent.status}</span></td>
                             <td>${agent.node_size ? `<span class="status-badge">${agent.node_size}</span>` : ''}</td>
+                            <td>${renderAgentLocation(agent)}</td>
                             <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>
                             <td>${agent.verified ? '<span class="verified-badge">Verified</span>' : '<span class="unverified-badge">Unverified</span>'}</td>
                             ${isAdmin ? `<td>${agent.github_owner ? `<code>${agent.github_owner}</code>` : '<span style="color:#666">none</span>'} <button class="btn-small btn-secondary" onclick="setAgentOwner('${agent.agent_id}', '${agent.github_owner || ''}')">Set</button></td>` : ''}
@@ -946,10 +996,23 @@ async function loadAgentAttestation(agentId) {
     container.innerHTML = '<div class="loading">Loading attestation...</div>';
 
     try {
-        const data = await fetchJSON(`/api/v1/agents/${agentId}/attestation`);
+        const [data, agent] = await Promise.all([
+            fetchJSON(`/api/v1/agents/${agentId}/attestation`),
+            fetchJSON(`/api/v1/agents/${agentId}`),
+        ]);
 
         const rows = [];
+        const parsed = parseDatacenterLabel(agent?.datacenter);
+        const cloud = normalizeCloudName(agent?.cloud_provider) || parsed.cloud;
+        const zone = (agent?.availability_zone || parsed.zone || '').trim();
+        const region = (agent?.region || '').trim();
+
         rows.push(`<tr><td>Verified</td><td>${data.verified ? '<span class="verified-badge">Yes</span>' : '<span class="unverified-badge">No</span>'}</td></tr>`);
+        rows.push(`<tr><td>Node Size</td><td>${agent?.node_size ? `<span class="status-badge">${agent.node_size}</span>` : 'N/A'}</td></tr>`);
+        rows.push(`<tr><td>Datacenter</td><td>${parsed.raw ? `<code>${parsed.raw}</code>` : 'N/A'}</td></tr>`);
+        rows.push(`<tr><td>Cloud</td><td>${cloud || 'N/A'}</td></tr>`);
+        rows.push(`<tr><td>Availability Zone</td><td>${zone || 'N/A'}</td></tr>`);
+        rows.push(`<tr><td>Region</td><td>${region || 'N/A'}</td></tr>`);
         rows.push(`<tr><td>MRTD</td><td><code style="font-size: 0.75rem; word-break: break-all;">${data.mrtd || 'N/A'}</code></td></tr>`);
         if (data.mrtd_type) {
             rows.push(`<tr><td>MRTD Type</td><td>${data.mrtd_type}</td></tr>`);
