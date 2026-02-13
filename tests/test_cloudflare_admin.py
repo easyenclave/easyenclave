@@ -253,9 +253,6 @@ class TestCloudflareCleanup:
             },
         ]
 
-        # After deletion, only tun-keep remains
-        post_delete_tunnels = [tunnels[0]]
-
         dns_records = [
             {
                 "record_id": "rec-keep",
@@ -275,7 +272,7 @@ class TestCloudflareCleanup:
 
         delete_tunnel_mock = AsyncMock(return_value=True)
         delete_dns_mock = AsyncMock(return_value=True)
-        list_tunnels_mock = AsyncMock(side_effect=[tunnels, post_delete_tunnels])
+        list_tunnels_mock = AsyncMock(return_value=tunnels)
 
         with patch("app.main.cloudflare.is_configured", return_value=True):
             with patch("app.main.cloudflare.list_tunnels", list_tunnels_mock):
@@ -292,6 +289,10 @@ class TestCloudflareCleanup:
         data = resp.json()
         assert data["tunnels_deleted"] == 1
         assert data["dns_deleted"] == 1
+        assert data["tunnels_candidates"] == 1
+        assert data["dns_candidates"] == 1
+        assert data["tunnels_failed"] == 0
+        assert data["dns_failed"] == 0
 
         # Only the orphan tunnel should have been deleted
         delete_tunnel_mock.assert_called_once_with("tun-orphan")

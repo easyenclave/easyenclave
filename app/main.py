@@ -1831,32 +1831,56 @@ async def cloudflare_cleanup(_admin: bool = Depends(verify_admin_token)):
         if agent.tunnel_id:
             tunnel_to_agent[agent.tunnel_id] = agent
 
-    # Delete orphaned tunnels
-    tunnels_deleted = 0
-    for t in tunnels:
-        if t["tunnel_id"] not in tunnel_to_agent:
-            if await cloudflare.delete_tunnel(t["tunnel_id"]):
-                tunnels_deleted += 1
+    orphan_tunnel_ids = [
+        tunnel["tunnel_id"]
+        for tunnel in tunnels
+        if tunnel.get("tunnel_id") and tunnel["tunnel_id"] not in tunnel_to_agent
+    ]
 
-    # Get DNS records and remaining tunnels
+    tunnel_results = await _cloudflare_delete_many(
+        ids=orphan_tunnel_ids,
+        delete_fn=cloudflare.delete_tunnel,
+        concurrency=8,
+    )
+    tunnels_deleted = tunnel_results["deleted"]
+    tunnels_failed = tunnel_results["failed"]
+
+    # Get DNS records and infer remaining tunnels from deletion results.
+    # This avoids another list_tunnels() call during large cleanups.
     records = await cloudflare.list_dns_records()
-    remaining_tunnels = await cloudflare.list_tunnels()
-    remaining_ids = {t["tunnel_id"] for t in remaining_tunnels}
+    initial_tunnel_ids = {tunnel.get("tunnel_id") for tunnel in tunnels if tunnel.get("tunnel_id")}
+    remaining_ids = initial_tunnel_ids - set(tunnel_results["deleted_ids"])
 
-    # Delete orphaned DNS records
-    dns_deleted = 0
-    for r in records:
-        content = r.get("content", "")
-        if content.endswith(".cfargotunnel.com"):
-            linked_id = content.replace(".cfargotunnel.com", "")
-            if linked_id not in remaining_ids:
-                if await cloudflare.delete_dns_record_by_id(r["record_id"]):
-                    dns_deleted += 1
+    orphan_dns_record_ids = []
+    for record in records:
+        content = (record.get("content") or "").strip()
+        if not content.endswith(".cfargotunnel.com"):
+            continue
+        linked_id = content.replace(".cfargotunnel.com", "")
+        if linked_id not in remaining_ids and record.get("record_id"):
+            orphan_dns_record_ids.append(record["record_id"])
 
-    logger.info(f"Cloudflare cleanup: {tunnels_deleted} tunnels, {dns_deleted} DNS records deleted")
+    dns_results = await _cloudflare_delete_many(
+        ids=orphan_dns_record_ids,
+        delete_fn=cloudflare.delete_dns_record_by_id,
+        concurrency=8,
+    )
+    dns_deleted = dns_results["deleted"]
+    dns_failed = dns_results["failed"]
+
+    logger.info(
+        "Cloudflare cleanup complete: "
+        f"tunnels_deleted={tunnels_deleted}/{len(orphan_tunnel_ids)} "
+        f"dns_deleted={dns_deleted}/{len(orphan_dns_record_ids)} "
+        f"tunnels_failed={tunnels_failed} dns_failed={dns_failed}"
+    )
     return {
         "tunnels_deleted": tunnels_deleted,
         "dns_deleted": dns_deleted,
+        "tunnels_candidates": len(orphan_tunnel_ids),
+        "dns_candidates": len(orphan_dns_record_ids),
+        "tunnels_failed": tunnels_failed,
+        "dns_failed": dns_failed,
     }
 
 
@@ -2662,6 +2686,37 @@ def _extract_cleanup_requested_count(payload: dict) -> int:
                 continue
             return max(0, parsed)
     return 0
+
+
+async def _cloudflare_delete_many(
+    *,
+    ids: list[str],
+    delete_fn,
+    concurrency: int = 8,
+) -> dict[str, object]:
+    """Delete many Cloudflare resources with bounded concurrency."""
+    if not ids:
+        return {"deleted": 0, "failed": 0, "deleted_ids": []}
+
+    semaphore = asyncio.Semaphore(max(1, concurrency))
+    deleted_ids: list[str] = []
+
+    async def _delete_one(resource_id: str) -> bool:
+        async with semaphore:
+            try:
+                return bool(await delete_fn(resource_id))
+            except Exception as exc:
+                logger.warning(f"Cloudflare cleanup delete failed for {resource_id}: {exc}")
+                return False
+
+    results = await asyncio.gather(*[_delete_one(resource_id) for resource_id in ids])
+    deleted = 0
+    for resource_id, result in zip(ids, results, strict=True):
+        if result:
+            deleted += 1
+            deleted_ids.append(resource_id)
+
+    return {"deleted": deleted, "failed": len(ids) - deleted, "deleted_ids": deleted_ids}
 
 
 def _deploy_issue(

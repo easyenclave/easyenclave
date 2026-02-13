@@ -1653,19 +1653,47 @@ async function deleteDnsRecord(recordId, name) {
     }
 }
 
-async function cloudflareCleanup() {
+async function cloudflareCleanup(buttonEl) {
     if (!confirm('Delete ALL orphaned tunnels and DNS records?')) return;
     if (!confirm('Are you REALLY sure? This will permanently delete all orphaned Cloudflare resources.')) return;
+
+    const button = buttonEl instanceof HTMLElement ? buttonEl : null;
+    const originalLabel = button ? button.textContent : null;
+    if (button) {
+        button.disabled = true;
+        button.textContent = 'Cleaning...';
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
         const result = await fetchJSON('/api/v1/admin/cloudflare/cleanup', {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${adminToken}` }
+            headers: { 'Authorization': `Bearer ${adminToken}` },
+            signal: controller.signal,
         });
-        alert(`Cleanup complete: ${result.tunnels_deleted} tunnels and ${result.dns_deleted} DNS records deleted.`);
+        const failedParts = [];
+        if (result.tunnels_failed > 0) failedParts.push(`${result.tunnels_failed} tunnel delete(s) failed`);
+        if (result.dns_failed > 0) failedParts.push(`${result.dns_failed} DNS delete(s) failed`);
+        const failedSummary = failedParts.length > 0 ? `\nWarnings: ${failedParts.join('; ')}` : '';
+        alert(
+            `Cleanup complete: ${result.tunnels_deleted}/${result.tunnels_candidates} tunnels and ` +
+            `${result.dns_deleted}/${result.dns_candidates} DNS records deleted.${failedSummary}`
+        );
         loadCloudflare();
     } catch (error) {
-        alert('Error during cleanup: ' + error.message);
+        if (error.name === 'AbortError') {
+            alert('Cleanup is taking longer than 3 minutes. Check logs and refresh Cloudflare resources in a moment.');
+        } else {
+            alert('Error during cleanup: ' + error.message);
+        }
+    } finally {
+        clearTimeout(timeoutId);
+        if (button) {
+            button.disabled = false;
+            button.textContent = originalLabel || 'Cleanup All Orphaned Resources';
+        }
     }
 }
 
