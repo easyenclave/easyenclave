@@ -185,6 +185,8 @@ jobs:
       # ---- Build (runs in parallel with test + docker) ----
 
       - name: Reproducibility gate
+        env:
+          CI_REPRO_MODE: "cached"
         run: ./scripts/ci-reproducibility-check.sh
 
       - name: Build and measure

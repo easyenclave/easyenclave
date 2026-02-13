@@ -4,7 +4,7 @@ This runbook documents how we verify reproducibility for the TDX dm-verity image
 
 ## What is checked
 
-The CI reproducibility gate runs two clean `mkosi` builds and verifies:
+The CI reproducibility gate runs two builds and verifies:
 
 1. `infra/image/output/easyenclave.vmlinuz` SHA256 is identical
 2. `infra/image/output/easyenclave.initrd` SHA256 is identical
@@ -14,12 +14,21 @@ The CI reproducibility gate runs two clean `mkosi` builds and verifies:
 
 If any value differs, CI fails before deployment.
 
+By default, CI uses `CI_REPRO_MODE=cached` (artifact reset, mkosi cache retained) to keep the gate stable on self-hosted capacity.
+For deep checks, run `CI_REPRO_MODE=full` to force two clean builds.
+
 ## CI entrypoint
 
 The gate is executed by:
 
 ```bash
 ./scripts/ci-reproducibility-check.sh
+```
+
+To force full clean reproducibility locally:
+
+```bash
+CI_REPRO_MODE=full ./scripts/ci-reproducibility-check.sh
 ```
 
 ## Running locally

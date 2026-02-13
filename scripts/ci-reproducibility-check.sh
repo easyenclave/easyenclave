@@ -1,14 +1,24 @@
 #!/usr/bin/env bash
 # Reproducibility gate for EasyEnclave verity image builds.
 #
-# Runs two clean builds back-to-back and verifies:
+# Runs two builds back-to-back and verifies:
 #  1) Split verity artifacts are byte-identical
 #  2) Measured tiny-profile TDX values are identical
+#
+# Modes:
+#   CI_REPRO_MODE=cached (default): reset build artifacts, keep mkosi cache
+#   CI_REPRO_MODE=full: run `make clean` before each build
 #
 # Exits non-zero on any mismatch.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+
+REPRO_MODE="${CI_REPRO_MODE:-cached}"
+if [ "$REPRO_MODE" != "cached" ] && [ "$REPRO_MODE" != "full" ]; then
+  echo "::error::Invalid CI_REPRO_MODE='$REPRO_MODE' (expected 'cached' or 'full')"
+  exit 1
+fi
 
 ARTIFACTS=(
   "easyenclave.vmlinuz"
@@ -21,18 +31,44 @@ TMP_DIR="$(mktemp -d /tmp/easyenclave-repro-XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "==> Reproducibility gate: build #1 and build #2"
+echo "Mode: $REPRO_MODE"
 echo "Temporary comparison dir: $TMP_DIR"
 
 # mkosi requires this setting in CI.
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null
+
+clean_image_artifacts_only() {
+  rm -rf infra/image/mkosi.extra infra/image/output
+  rm -f infra/image/easyenclave
+  rm -f infra/image/easyenclave.raw
+  rm -f infra/image/easyenclave.vmlinuz
+  rm -f infra/image/easyenclave.initrd
+  rm -f infra/image/easyenclave.efi
+  rm -f infra/image/easyenclave.root-*.raw
+  rm -f infra/image/easyenclave.manifest
+  rm -f infra/image/initrd
+  rm -f infra/image/initrd.cpio.zst
+}
+
+build_image() {
+  local label="$1"
+  if [ "$REPRO_MODE" = "full" ]; then
+    echo "[$label] full clean build"
+    (cd infra/image && nix develop --command bash -lc 'make clean && make build')
+  else
+    echo "[$label] cached build (artifact reset, mkosi cache retained)"
+    clean_image_artifacts_only
+    (cd infra/image && nix develop --command make build)
+  fi
+}
 
 build_once() {
   local label="$1"
   local out_dir="$TMP_DIR/$label"
   mkdir -p "$out_dir"
 
-  echo "---- [$label] clean build ----"
-  (cd infra/image && nix develop --command make clean && nix develop --command make build)
+  echo "---- [$label] build ----"
+  build_image "$label"
 
   for name in "${ARTIFACTS[@]}"; do
     local src="infra/image/output/$name"
