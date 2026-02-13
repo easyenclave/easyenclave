@@ -2237,6 +2237,35 @@ def _normalize_datacenters(values: list[str]) -> set[str]:
     return {value.strip().lower() for value in values if isinstance(value, str) and value.strip()}
 
 
+def _normalize_clouds(values: list[str]) -> set[str]:
+    normalized: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        cloud = value.strip().lower()
+        if not cloud:
+            continue
+        if cloud in ("google", "gcp"):
+            normalized.add("gcp")
+            continue
+        if cloud in ("azure", "az"):
+            normalized.add("azure")
+            continue
+        if cloud in ("bare-metal", "baremetal", "onprem", "on-prem", "self-hosted"):
+            normalized.add("baremetal")
+            continue
+        normalized.add(cloud)
+    return normalized
+
+
+def _extract_cloud(datacenter: str | None) -> str:
+    value = (datacenter or "").strip().lower()
+    if not value:
+        return ""
+    prefix = value.split(":", 1)[0].strip()
+    return next(iter(_normalize_clouds([prefix])), "")
+
+
 def _deploy_issue(
     code: str,
     message: str,
@@ -2365,6 +2394,14 @@ def _evaluate_deploy_request(
             "Datacenter policy conflict: same datacenter appears in both allowed and denied lists",
             code="DATACENTER_POLICY_CONFLICT",
         )
+    allowed_clouds = _normalize_clouds(request.allowed_clouds)
+    denied_clouds = _normalize_clouds(request.denied_clouds)
+    if allowed_clouds.intersection(denied_clouds):
+        return fail(
+            400,
+            "Cloud policy conflict: same cloud appears in both allowed and denied lists",
+            code="CLOUD_POLICY_CONFLICT",
+        )
 
     if request.account_id:
         balance = account_store.get_balance(request.account_id)
@@ -2389,6 +2426,7 @@ def _evaluate_deploy_request(
             return fail(404, "Agent not found", code="AGENT_NOT_FOUND")
 
         agent_datacenter = (agent.datacenter or "").strip().lower()
+        agent_cloud = _extract_cloud(agent.datacenter)
         if allowed_datacenters and agent_datacenter not in allowed_datacenters:
             return fail(
                 400,
@@ -2403,6 +2441,20 @@ def _evaluate_deploy_request(
                 400,
                 f"Agent datacenter '{agent.datacenter}' is denied by deployment policy",
                 code="AGENT_DATACENTER_DENIED",
+                agent=agent,
+            )
+        if allowed_clouds and agent_cloud not in allowed_clouds:
+            return fail(
+                400,
+                f"Agent cloud '{agent_cloud or 'unknown'}' is not in allowed_clouds",
+                code="AGENT_CLOUD_NOT_ALLOWED",
+                agent=agent,
+            )
+        if denied_clouds and agent_cloud in denied_clouds:
+            return fail(
+                400,
+                f"Agent cloud '{agent_cloud}' is denied by deployment policy",
+                code="AGENT_CLOUD_DENIED",
                 agent=agent,
             )
 
@@ -2422,6 +2474,7 @@ def _evaluate_deploy_request(
         candidates = []
         for agent in agent_store.list():
             agent_datacenter = (agent.datacenter or "").strip().lower()
+            agent_cloud = _extract_cloud(agent.datacenter)
             if not agent.verified:
                 issues.append(
                     _deploy_issue("AGENT_NOT_VERIFIED", "Agent is not verified", agent=agent)
@@ -2473,6 +2526,24 @@ def _evaluate_deploy_request(
                     _deploy_issue(
                         "AGENT_DATACENTER_DENIED",
                         f"Agent datacenter '{agent.datacenter}' is denied by deployment policy",
+                        agent=agent,
+                    )
+                )
+                continue
+            if allowed_clouds and agent_cloud not in allowed_clouds:
+                issues.append(
+                    _deploy_issue(
+                        "AGENT_CLOUD_NOT_ALLOWED",
+                        f"Agent cloud '{agent_cloud or 'unknown'}' is not in allowed_clouds",
+                        agent=agent,
+                    )
+                )
+                continue
+            if denied_clouds and agent_cloud in denied_clouds:
+                issues.append(
+                    _deploy_issue(
+                        "AGENT_CLOUD_DENIED",
+                        f"Agent cloud '{agent_cloud}' is denied by deployment policy",
                         agent=agent,
                     )
                 )
@@ -2618,6 +2689,9 @@ def _build_preflight_response(result: dict[str, object]) -> DeploymentPreflightR
         selected_agent_id=selected_agent.agent_id if selected_agent else None,
         selected_node_size=(selected_agent.node_size or None) if selected_agent else None,
         selected_datacenter=(selected_agent.datacenter or None) if selected_agent else None,
+        selected_cloud=_extract_cloud(selected_agent.datacenter) or None
+        if selected_agent
+        else None,
         issues=result["issues"],
     )
 

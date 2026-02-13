@@ -632,6 +632,121 @@ class TestDeployMeasurementValidation:
         assert data["eligible"] is True
         assert data["selected_agent_id"] == azure_agent.agent_id
         assert data["selected_datacenter"] == "azure:eastus2-1"
+        assert data["selected_cloud"] == "azure"
+
+    def test_preflight_cloud_filter_selects_matching_agent(
+        self, client, admin_token, sample_app, sample_compose
+    ):
+        gcp_agent = Agent(
+            vm_name="test-llm-gcp-cloud",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-gcp-cloud.easyenclave.com",
+            status="undeployed",
+            health_status="healthy",
+            node_size="llm",
+            datacenter="gcp:us-central1-a",
+        )
+        baremetal_agent = Agent(
+            vm_name="test-llm-baremetal-cloud",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-baremetal-cloud.easyenclave.com",
+            status="undeployed",
+            health_status="healthy",
+            node_size="llm",
+            datacenter="baremetal:runner-a",
+        )
+        agent_store.register(gcp_agent)
+        agent_store.register(baremetal_agent)
+
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": gcp_agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy/preflight",
+            json={"node_size": "llm", "allowed_clouds": ["gcp"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["eligible"] is True
+        assert data["selected_agent_id"] == gcp_agent.agent_id
+        assert data["selected_cloud"] == "gcp"
+
+    def test_preflight_cloud_deny_blocks_matching_agents(
+        self, client, admin_token, sample_app, sample_compose
+    ):
+        gcp_agent = Agent(
+            vm_name="test-llm-gcp-deny",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-gcp-deny.easyenclave.com",
+            status="undeployed",
+            health_status="healthy",
+            node_size="llm",
+            datacenter="gcp:us-central1-a",
+        )
+        agent_store.register(gcp_agent)
+
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": gcp_agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy/preflight",
+            json={"node_size": "llm", "denied_clouds": ["gcp"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["eligible"] is False
+        assert any(i["code"] == "AGENT_CLOUD_DENIED" for i in data["issues"])
+
+    def test_preflight_cloud_policy_conflict(self, client, sample_app, sample_compose):
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose},
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy/preflight",
+            json={"allowed_clouds": ["gcp"], "denied_clouds": ["gcp"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["eligible"] is False
+        assert any(i["code"] == "CLOUD_POLICY_CONFLICT" for i in data["issues"])
 
     def test_deploy_dry_run_returns_preflight_payload(
         self, client, admin_token, sample_app, sample_compose

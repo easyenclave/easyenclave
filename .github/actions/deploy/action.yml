@@ -46,6 +46,22 @@ inputs:
     description: 'Required agent node_size (e.g., "tiny", "standard", "llm"). Empty = any.'
     required: false
     default: ''
+  allowed_datacenters:
+    description: 'Comma-separated datacenter allow-list (e.g., "gcp:us-central1-a,azure:eastus2-1")'
+    required: false
+    default: ''
+  denied_datacenters:
+    description: 'Comma-separated datacenter deny-list'
+    required: false
+    default: ''
+  allowed_clouds:
+    description: 'Comma-separated cloud allow-list (e.g., "baremetal,gcp,azure")'
+    required: false
+    default: ''
+  denied_clouds:
+    description: 'Comma-separated cloud deny-list'
+    required: false
+    default: ''
   allow_measuring_enclave_fallback:
     description: 'If true, allows deploying onto measuring-enclave agents when no other agents match.'
     required: false
@@ -122,6 +138,10 @@ runs:
         VERSION: ${{ steps.version.outputs.version }}
         INITIAL_STATUS: ${{ steps.publish.outputs.status }}
         NODE_SIZE: ${{ inputs.node_size }}
+        ALLOWED_DATACENTERS: ${{ inputs.allowed_datacenters }}
+        DENIED_DATACENTERS: ${{ inputs.denied_datacenters }}
+        ALLOWED_CLOUDS: ${{ inputs.allowed_clouds }}
+        DENIED_CLOUDS: ${{ inputs.denied_clouds }}
       run: bash ./scripts/deploy_action.sh wait-attested
 
     - name: Find agent and deploy
@@ -136,6 +156,10 @@ runs:
         AGENT_ADMIN_PASSWORD: ${{ inputs.agent_admin_password }}
         GITHUB_OWNER: ${{ inputs.github_owner }}
         NODE_SIZE: ${{ inputs.node_size }}
+        ALLOWED_DATACENTERS: ${{ inputs.allowed_datacenters }}
+        DENIED_DATACENTERS: ${{ inputs.denied_datacenters }}
+        ALLOWED_CLOUDS: ${{ inputs.allowed_clouds }}
+        DENIED_CLOUDS: ${{ inputs.denied_clouds }}
         ALLOW_MEASURER_FALLBACK: ${{ inputs.allow_measuring_enclave_fallback }}
       run: bash ./scripts/deploy_action.sh find-and-deploy
 

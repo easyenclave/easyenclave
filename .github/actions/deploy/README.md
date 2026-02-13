@@ -36,6 +36,12 @@ curl -X POST https://app.easyenclave.com/api/v1/apps \
 | `health_endpoint` | No | `/health` | Health check endpoint path |
 | `control_plane_url` | No | `https://app.easyenclave.com` | EasyEnclave control plane URL |
 | `github_owner` | No | - | GitHub user or org to set as agent owner |
+| `node_size` | No | `` | Required node size (`tiny`, `standard`, `llm`) |
+| `allowed_datacenters` | No | `` | Comma-separated datacenter allow-list |
+| `denied_datacenters` | No | `` | Comma-separated datacenter deny-list |
+| `allowed_clouds` | No | `` | Comma-separated cloud allow-list (`baremetal,gcp,azure`) |
+| `denied_clouds` | No | `` | Comma-separated cloud deny-list |
+| `allow_measuring_enclave_fallback` | No | `false` | Allow fallback to measuring-enclave agents |
 
 ## Outputs
 
@@ -103,7 +109,7 @@ Any member of the `github.repository_owner` org who logs in via GitHub OAuth wil
 1. Verifies the app is registered in the catalog
 2. Generates a version string (timestamp + git SHA)
 3. Publishes the version with source inspection
-4. Finds an available verified TDX agent
+4. Runs deploy preflight and lets control-plane place onto an eligible agent
 5. Deploys the attested version to the agent
 6. Waits for health checks to pass
 7. Returns the service URL

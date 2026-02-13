@@ -210,6 +210,7 @@ class DeploymentPreflightResponse(BaseModel):
     selected_agent_id: str | None = None
     selected_node_size: str | None = None
     selected_datacenter: str | None = None
+    selected_cloud: str | None = None
     issues: list[DeploymentPreflightIssue] = Field(default_factory=list)
 
 
@@ -285,6 +286,8 @@ class DeployFromVersionRequest(BaseModel):
     dry_run: bool = False
     allowed_datacenters: list[str] = Field(default_factory=list)
     denied_datacenters: list[str] = Field(default_factory=list)
+    allowed_clouds: list[str] = Field(default_factory=list)
+    denied_clouds: list[str] = Field(default_factory=list)
     allow_measuring_enclave_fallback: bool = False
     # Billing fields
     account_id: str | None = None  # Optional for backward compatibility
