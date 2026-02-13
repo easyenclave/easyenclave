@@ -712,6 +712,7 @@
                     <button class="btn-small settings-group-btn" data-group="stripe" onclick="filterSettingsGroup('stripe')">Stripe</button>
                     <button class="btn-small settings-group-btn" data-group="intel_ta" onclick="filterSettingsGroup('intel_ta')">Intel TA</button>
                     <button class="btn-small settings-group-btn" data-group="operational" onclick="filterSettingsGroup('operational')">Operational</button>
+                    <button class="btn-small settings-group-btn" data-group="provisioner" onclick="filterSettingsGroup('provisioner')">Provisioner</button>
                     <button class="btn-small settings-group-btn" data-group="auth" onclick="filterSettingsGroup('auth')">Auth</button>
                 </div>
                 <div id="settingsAdminList">
@@ -743,6 +744,25 @@
                     <h3>Agent Inventory</h3>
                     <div id="cloudAgentTable">
                         <div class="loading">Loading agent inventory...</div>
+                    </div>
+                </div>
+                <div class="section-card">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+                        <h3 style="margin:0;">External Azure/GCP Inventory</h3>
+                        <div>
+                            <button class="btn-small btn-secondary" onclick="externalCloudCleanup(true)">Dry Run Cleanup</button>
+                            <button class="btn-small btn-danger" onclick="externalCloudCleanup(false)">Delete Orphaned Resources</button>
+                        </div>
+                    </div>
+                    <p style="color: var(--gray-600); margin: 10px 0;">
+                        Live inventory from provisioner webhook (`AGENT_PROVISIONER_INVENTORY_URL`) cross-linked with registered agents.
+                    </p>
+                    <div id="cloudExternalStatus" style="margin-bottom:10px;color:var(--gray-600);">Loading external inventory status...</div>
+                    <div id="cloudExternalSummary" class="stats-grid">
+                        <div class="loading">Loading external cloud summary...</div>
+                    </div>
+                    <div id="cloudExternalTable">
+                        <div class="loading">Loading external cloud resources...</div>
                     </div>
                 </div>
             </section>
@@ -886,6 +906,6 @@
         </div>
     </div>
 
-    <script src="/static/admin.js?v=12"></script>
+    <script src="/static/admin.js?v=13"></script>
 </body>
 </html>

@@ -214,6 +214,38 @@ _reg(
     "Timeout in seconds for provisioner webhook calls",
     "provisioner",
 )
+_reg(
+    "provisioner.inventory_url",
+    "AGENT_PROVISIONER_INVENTORY_URL",
+    "",
+    False,
+    "Webhook URL for external cloud inventory (Azure/GCP resources)",
+    "provisioner",
+)
+_reg(
+    "provisioner.inventory_token",
+    "AGENT_PROVISIONER_INVENTORY_TOKEN",
+    "",
+    True,
+    "Bearer token used when calling the inventory webhook (falls back to webhook_token)",
+    "provisioner",
+)
+_reg(
+    "provisioner.cleanup_url",
+    "AGENT_PROVISIONER_CLEANUP_URL",
+    "",
+    False,
+    "Webhook URL for external cloud resource cleanup",
+    "provisioner",
+)
+_reg(
+    "provisioner.cleanup_token",
+    "AGENT_PROVISIONER_CLEANUP_TOKEN",
+    "",
+    True,
+    "Bearer token used when calling the cleanup webhook (falls back to webhook_token)",
+    "provisioner",
+)
 
 # Auth
 _reg(

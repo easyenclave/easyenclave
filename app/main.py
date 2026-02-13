@@ -85,6 +85,10 @@ from .models import (
     DeploymentPreflightIssue,
     DeploymentPreflightResponse,
     DepositRequest,
+    ExternalCloudCleanupRequest,
+    ExternalCloudCleanupResponse,
+    ExternalCloudInventoryResponse,
+    ExternalCloudResource,
     HealthResponse,
     ManualAttestRequest,
     MeasurementCallbackRequest,
@@ -98,7 +102,11 @@ from .models import (
     VerificationResponse,
 )
 from .pricing import calculate_deployment_cost_per_hour
-from .provisioner import dispatch_provision_request
+from .provisioner import (
+    dispatch_external_cleanup,
+    dispatch_provision_request,
+    fetch_external_inventory,
+)
 from .settings import (
     SETTING_DEFS,
     delete_setting,
@@ -1257,6 +1265,177 @@ async def list_cloud_resources(
         ),
         clouds=cloud_summaries,
         agents=resource_agents,
+    )
+
+
+@app.get(
+    "/api/v1/admin/cloud/resources/external",
+    response_model=ExternalCloudInventoryResponse,
+)
+async def list_external_cloud_resources(
+    _admin: bool = Depends(verify_admin_token),
+):
+    """List Azure/GCP resources from external provisioner inventory webhook."""
+    configured, status_code, detail, payload = await fetch_external_inventory()
+    now = datetime.now(timezone.utc)
+    if not configured:
+        return ExternalCloudInventoryResponse(
+            configured=False,
+            generated_at=now,
+            detail=detail,
+        )
+
+    if detail:
+        return ExternalCloudInventoryResponse(
+            configured=True,
+            generated_at=now,
+            detail=detail,
+        )
+
+    raw_resources = _extract_external_resource_items(payload)
+    tracked_agents = agent_store.list()
+    agents_by_id = {a.agent_id: a for a in tracked_agents}
+    agents_by_vm = {
+        (a.vm_name or "").strip().lower(): a for a in tracked_agents if (a.vm_name or "").strip()
+    }
+    normalized_resources: list[ExternalCloudResource] = []
+    for idx, raw in enumerate(raw_resources):
+        if not isinstance(raw, dict):
+            continue
+
+        provider_raw = str(raw.get("provider") or raw.get("cloud") or "").strip().lower()
+        normalized_clouds = _normalize_clouds([provider_raw]) if provider_raw else set()
+        cloud = next(iter(normalized_clouds), provider_raw or "unknown")
+
+        resource_id = str(
+            raw.get("resource_id") or raw.get("id") or raw.get("instance_id") or ""
+        ).strip()
+        name = str(raw.get("name") or raw.get("vm_name") or "").strip()
+        if not resource_id:
+            resource_id = f"resource-{idx + 1}"
+
+        datacenter = str(raw.get("datacenter") or "").strip().lower()
+        zone = str(raw.get("availability_zone") or raw.get("zone") or "").strip().lower()
+        region = str(raw.get("region") or "").strip().lower()
+
+        if not datacenter and cloud and zone:
+            datacenter = f"{cloud}:{zone}"
+        if datacenter and not zone:
+            zone = _extract_availability_zone(datacenter)
+        if not region:
+            region = _extract_region_from_zone(zone)
+
+        labels = raw.get("labels") if isinstance(raw.get("labels"), dict) else {}
+        metadata = raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {}
+
+        linked_agent_id = str(
+            raw.get("linked_agent_id")
+            or raw.get("agent_id")
+            or metadata.get("agent_id")
+            or labels.get("agent_id")
+            or ""
+        ).strip()
+        linked_vm_name = str(
+            raw.get("linked_vm_name")
+            or raw.get("vm_name")
+            or metadata.get("vm_name")
+            or labels.get("vm_name")
+            or name
+            or ""
+        ).strip()
+
+        linked_agent = None
+        if linked_agent_id:
+            linked_agent = agents_by_id.get(linked_agent_id)
+        if not linked_agent and linked_vm_name:
+            linked_agent = agents_by_vm.get(linked_vm_name.lower())
+            if linked_agent:
+                linked_agent_id = linked_agent.agent_id
+        if linked_agent and not linked_vm_name:
+            linked_vm_name = linked_agent.vm_name
+
+        tracked = bool(raw.get("tracked")) or linked_agent is not None
+        orphaned = bool(raw.get("orphaned")) if "orphaned" in raw else not tracked
+        if linked_agent is not None:
+            orphaned = False
+            if not datacenter:
+                datacenter = (linked_agent.datacenter or "").strip().lower()
+            if not zone:
+                zone = _extract_availability_zone(datacenter)
+            if not region:
+                region = _extract_region_from_zone(zone)
+
+        normalized_resources.append(
+            ExternalCloudResource(
+                provider=provider_raw or cloud,
+                cloud=cloud,
+                resource_id=resource_id,
+                resource_type=str(raw.get("resource_type") or raw.get("type") or "")
+                .strip()
+                .lower(),
+                name=name,
+                datacenter=datacenter,
+                availability_zone=zone,
+                region=region,
+                status=str(raw.get("status") or raw.get("state") or "").strip().lower(),
+                labels={str(k): str(v) for k, v in labels.items()},
+                metadata=metadata,
+                tracked=tracked,
+                orphaned=orphaned,
+                linked_agent_id=linked_agent_id or None,
+                linked_vm_name=linked_vm_name or None,
+            )
+        )
+
+    normalized_resources.sort(
+        key=lambda r: (
+            r.cloud,
+            r.region,
+            r.availability_zone,
+            r.resource_type,
+            r.name,
+            r.resource_id,
+        )
+    )
+    return ExternalCloudInventoryResponse(
+        configured=True,
+        generated_at=now,
+        total_resources=len(normalized_resources),
+        tracked_count=sum(1 for r in normalized_resources if r.tracked),
+        orphaned_count=sum(1 for r in normalized_resources if r.orphaned),
+        detail=_normalize_inventory_detail(payload, status_code),
+        resources=normalized_resources,
+    )
+
+
+@app.post(
+    "/api/v1/admin/cloud/resources/cleanup",
+    response_model=ExternalCloudCleanupResponse,
+)
+async def cleanup_external_cloud_resources(
+    request: ExternalCloudCleanupRequest,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Dispatch Azure/GCP orphan cleanup through external provisioner webhook."""
+    configured, dispatched, status_code, detail, payload = await dispatch_external_cleanup(
+        request.model_dump()
+    )
+    if isinstance(payload.get("dispatched"), bool):
+        dispatched = dispatched and bool(payload.get("dispatched"))
+
+    response_detail = detail
+    if not response_detail and isinstance(payload.get("detail"), str):
+        response_detail = payload.get("detail")
+    if not response_detail and isinstance(payload.get("message"), str):
+        response_detail = payload.get("message")
+
+    return ExternalCloudCleanupResponse(
+        configured=configured,
+        dispatched=dispatched,
+        dry_run=request.dry_run,
+        requested_count=_extract_cleanup_requested_count(payload),
+        status_code=status_code,
+        detail=response_detail,
     )
 
 
@@ -2437,6 +2616,52 @@ def _extract_region_from_zone(zone: str | None) -> str:
         if last.isdigit() or (len(last) == 1 and last.isalpha()):
             return "-".join(parts[:-1])
     return value
+
+
+def _extract_external_resource_items(payload: dict) -> list[dict]:
+    if not isinstance(payload, dict):
+        return []
+    for key in ("resources", "items", "instances", "vms"):
+        maybe_items = payload.get(key)
+        if isinstance(maybe_items, list):
+            return [item for item in maybe_items if isinstance(item, dict)]
+    return []
+
+
+def _normalize_inventory_detail(payload: dict, status_code: int | None) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    detail = payload.get("detail") or payload.get("message")
+    if isinstance(detail, str) and detail.strip():
+        return detail.strip()
+    if status_code is not None:
+        return f"Inventory webhook returned HTTP {status_code}"
+    return None
+
+
+def _extract_cleanup_requested_count(payload: dict) -> int:
+    if not isinstance(payload, dict):
+        return 0
+    for key in (
+        "requested_count",
+        "target_count",
+        "candidate_count",
+        "orphaned_count",
+        "deleted_count",
+        "resources_count",
+    ):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int):
+            return max(0, value)
+        if isinstance(value, str):
+            try:
+                parsed = int(value.strip())
+            except ValueError:
+                continue
+            return max(0, parsed)
+    return 0
 
 
 def _deploy_issue(

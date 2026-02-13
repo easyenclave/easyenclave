@@ -328,13 +328,24 @@ async function loadCloudResources() {
     const summaryCards = document.getElementById('cloudSummaryCards');
     const summaryTable = document.getElementById('cloudSummaryTable');
     const agentTable = document.getElementById('cloudAgentTable');
+    const externalStatus = document.getElementById('cloudExternalStatus');
+    const externalSummary = document.getElementById('cloudExternalSummary');
+    const externalTable = document.getElementById('cloudExternalTable');
 
     summaryCards.innerHTML = '<div class="loading">Loading cloud summary...</div>';
     summaryTable.innerHTML = '<div class="loading">Loading cloud rollups...</div>';
     agentTable.innerHTML = '<div class="loading">Loading agent inventory...</div>';
+    if (externalStatus) externalStatus.textContent = 'Loading external inventory status...';
+    if (externalSummary) externalSummary.innerHTML = '<div class="loading">Loading external cloud summary...</div>';
+    if (externalTable) externalTable.innerHTML = '<div class="loading">Loading external cloud resources...</div>';
 
-    try {
-        const data = await adminFetchJSON('/api/v1/admin/cloud/resources');
+    const [internalResult, externalResult] = await Promise.allSettled([
+        adminFetchJSON('/api/v1/admin/cloud/resources'),
+        adminFetchJSON('/api/v1/admin/cloud/resources/external'),
+    ]);
+
+    if (internalResult.status === 'fulfilled') {
+        const data = internalResult.value;
         const clouds = data.clouds || [];
         const agents = data.agents || [];
         const generatedAt = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'N/A';
@@ -435,11 +446,145 @@ async function loadCloudResources() {
                 </table>
             `;
         }
-    } catch (error) {
-        const msg = `<div class="error">Error loading cloud resources: ${error.message}</div>`;
+    } else {
+        const msg = `<div class="error">Error loading cloud resources: ${internalResult.reason?.message || internalResult.reason}</div>`;
         summaryCards.innerHTML = msg;
         summaryTable.innerHTML = msg;
         agentTable.innerHTML = msg;
+    }
+
+    if (externalResult.status === 'fulfilled') {
+        renderExternalCloudResources(externalResult.value);
+    } else if (externalStatus && externalSummary && externalTable) {
+        const errorMessage = externalResult.reason?.message || String(externalResult.reason || 'unknown error');
+        externalStatus.innerHTML = `<span style="color:#dc2626;">Failed to load external inventory: ${escapeHtml(errorMessage)}</span>`;
+        externalSummary.innerHTML = '<div class="error">Error loading external inventory</div>';
+        externalTable.innerHTML = '<div class="error">Unable to load external cloud resources</div>';
+    }
+}
+
+function renderExternalCloudResources(data) {
+    const statusEl = document.getElementById('cloudExternalStatus');
+    const summaryEl = document.getElementById('cloudExternalSummary');
+    const tableEl = document.getElementById('cloudExternalTable');
+    if (!statusEl || !summaryEl || !tableEl) return;
+
+    if (!data.configured) {
+        statusEl.innerHTML = '<span style="color:#b45309;">External inventory is not configured. Set <code>AGENT_PROVISIONER_INVENTORY_URL</code>.</span>';
+        summaryEl.innerHTML = '<div class="empty">External inventory webhook is not configured.</div>';
+        tableEl.innerHTML = '<div class="empty">No external resources loaded.</div>';
+        return;
+    }
+
+    const resources = Array.isArray(data.resources) ? data.resources : [];
+    const generatedAt = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'N/A';
+    const cloudCount = new Set(resources.map(r => normalizeCloudName(r.cloud || r.provider || 'unknown'))).size;
+    const vmLikeCount = resources.filter(r => (r.resource_type || '').includes('vm') || (r.resource_type || '').includes('instance')).length;
+
+    statusEl.innerHTML = `
+        Last sync: <strong>${generatedAt}</strong>
+        ${data.detail ? `<span style="margin-left:10px;color:#b45309;">${escapeHtml(data.detail)}</span>` : ''}
+    `;
+    summaryEl.innerHTML = `
+        <div class="stat-card">
+            <span class="stat-value">${data.total_resources || 0}</span>
+            <span class="stat-label">External Resources</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value">${data.tracked_count || 0}</span>
+            <span class="stat-label">Tracked</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value" style="color:${(data.orphaned_count || 0) > 0 ? '#dc2626' : 'inherit'}">${data.orphaned_count || 0}</span>
+            <span class="stat-label">Orphaned</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value">${cloudCount}</span>
+            <span class="stat-label">Clouds</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value">${vmLikeCount}</span>
+            <span class="stat-label">VM/Instance Resources</span>
+        </div>
+    `;
+
+    if (resources.length === 0) {
+        tableEl.innerHTML = '<div class="empty">Inventory webhook returned no resources.</div>';
+        return;
+    }
+
+    tableEl.innerHTML = `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Cloud</th>
+                    <th>Type</th>
+                    <th>Name / ID</th>
+                    <th>Location</th>
+                    <th>Status</th>
+                    <th>Agent Link</th>
+                    <th>Tracked</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${resources.map(r => {
+                    const cloud = normalizeCloudName(r.cloud || r.provider || 'unknown') || 'unknown';
+                    const type = (r.resource_type || '').trim() || 'unknown';
+                    const name = (r.name || '').trim();
+                    const locationPieces = [
+                        (r.datacenter || '').trim() ? `<code>${escapeHtml(r.datacenter)}</code>` : '',
+                        (r.region || '').trim() ? `region: ${escapeHtml(r.region)}` : '',
+                        (r.availability_zone || '').trim() ? `az: ${escapeHtml(r.availability_zone)}` : '',
+                    ].filter(Boolean);
+                    const link = r.linked_agent_id
+                        ? `<strong>${escapeHtml(r.linked_vm_name || 'agent')}</strong><br><code style="font-size:0.7rem">${escapeHtml(r.linked_agent_id.substring(0, 8))}...</code>`
+                        : '<span class="orphan-badge">none</span>';
+                    return `
+                        <tr class="${r.orphaned ? 'row-orphaned' : ''}">
+                            <td><strong>${escapeHtml(cloud)}</strong></td>
+                            <td>${escapeHtml(type)}</td>
+                            <td><strong>${escapeHtml(name || 'N/A')}</strong><br><code style="font-size:0.7rem">${escapeHtml(r.resource_id || 'N/A')}</code></td>
+                            <td>${locationPieces.join('<br>') || 'N/A'}</td>
+                            <td>${escapeHtml((r.status || '').trim() || 'unknown')}</td>
+                            <td>${link}</td>
+                            <td>${r.tracked ? '<span class="linked-badge">tracked</span>' : '<span class="orphan-badge">orphaned</span>'}</td>
+                        </tr>
+                    `;
+                }).join('')}
+            </tbody>
+        </table>
+    `;
+}
+
+async function externalCloudCleanup(dryRun) {
+    const modeLabel = dryRun ? 'dry run' : 'deletion';
+    if (!confirm(`Run external cloud cleanup (${modeLabel}) for orphaned resources?`)) return;
+    if (!dryRun && !confirm('This will delete orphaned Azure/GCP resources reported by the provisioner. Continue?')) return;
+
+    try {
+        const result = await adminFetchJSON('/api/v1/admin/cloud/resources/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                dry_run: dryRun,
+                only_orphaned: true,
+                providers: [],
+                resource_ids: [],
+                reason: `admin-cloud-${dryRun ? 'dry-run' : 'cleanup'}`,
+            }),
+        });
+
+        if (!result.configured) {
+            alert(`External cleanup is not configured: ${result.detail || 'set AGENT_PROVISIONER_CLEANUP_URL'}`);
+            return;
+        }
+
+        const statusText = result.dispatched ? 'dispatched' : 'failed';
+        const details = result.detail ? `\nDetail: ${result.detail}` : '';
+        alert(`External cleanup ${statusText} (${modeLabel}).\nRequested resources: ${result.requested_count || 0}${details}`);
+        await loadCloudResources();
+    } catch (error) {
+        alert('Error dispatching external cleanup: ' + error.message);
     }
 }
 
@@ -1610,7 +1755,12 @@ function renderSettingsTable() {
 
 function escapeHtml(str) {
     if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const value = String(str);
+    return value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
 }
 
 async function saveSetting(key) {

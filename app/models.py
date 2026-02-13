@@ -6,6 +6,7 @@ Data models are in db_models.py (SQLModel classes that serve as both ORM and Pyd
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -219,6 +220,59 @@ class CloudResourceInventoryResponse(BaseModel):
     active_deployments: int
     clouds: list[CloudResourceCloudSummary] = Field(default_factory=list)
     agents: list[CloudResourceAgent] = Field(default_factory=list)
+
+
+class ExternalCloudResource(BaseModel):
+    """One cloud resource returned by the external provisioner inventory."""
+
+    provider: str
+    cloud: str
+    resource_id: str
+    resource_type: str = ""
+    name: str = ""
+    datacenter: str = ""
+    availability_zone: str = ""
+    region: str = ""
+    status: str = ""
+    labels: dict[str, str] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    tracked: bool = False
+    orphaned: bool = False
+    linked_agent_id: str | None = None
+    linked_vm_name: str | None = None
+
+
+class ExternalCloudInventoryResponse(BaseModel):
+    """Admin response for external Azure/GCP cloud inventory."""
+
+    configured: bool
+    generated_at: datetime
+    total_resources: int = 0
+    tracked_count: int = 0
+    orphaned_count: int = 0
+    detail: str | None = None
+    resources: list[ExternalCloudResource] = Field(default_factory=list)
+
+
+class ExternalCloudCleanupRequest(BaseModel):
+    """Request to clean up external cloud resources via provisioner."""
+
+    dry_run: bool = True
+    only_orphaned: bool = True
+    providers: list[str] = Field(default_factory=list)
+    resource_ids: list[str] = Field(default_factory=list)
+    reason: str = "admin-cloud-cleanup"
+
+
+class ExternalCloudCleanupResponse(BaseModel):
+    """Response from external cloud cleanup dispatch."""
+
+    configured: bool
+    dispatched: bool
+    dry_run: bool
+    requested_count: int = 0
+    status_code: int | None = None
+    detail: str | None = None
 
 
 # =============================================================================
