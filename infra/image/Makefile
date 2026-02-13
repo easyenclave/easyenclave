@@ -22,6 +22,8 @@ LAUNCHER_FILES := $(LAUNCHER_DIR)/launcher.py $(wildcard $(LAUNCHER_DIR)/admin.h
 .PHONY: build clean
 
 build: $(EXTRA_DIR)/launcher.py
+	@# Git does not preserve 0600 for non-executable files; enforce secure key perms.
+	@if [ -f "mkosi.key" ]; then chmod 600 mkosi.key; fi
 	mkosi build --sandbox=no
 	mkdir -p $(OUTPUT_DIR)
 	@# mkosi v25 places split artifacts in CWD (not mkosi.output/)
