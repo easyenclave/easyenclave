@@ -88,6 +88,8 @@ jobs:
       AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
       AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+      CONTROL_ADMIN_TOKEN: ${{ secrets.CONTROL_ADMIN_TOKEN }}
 
     steps:
       - name: Checkout
@@ -98,8 +100,11 @@ jobs:
       - name: Set run metadata
         run: |
           RUN_TAG="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "RUN_TAG=$RUN_TAG" >> "$GITHUB_ENV"
-          echo "LAUNCHER_URL=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/infra/launcher/launcher.py" >> "$GITHUB_ENV"
+          {
+            echo "RUN_TAG=$RUN_TAG"
+            echo "LAUNCHER_URL=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/infra/launcher/launcher.py"
+            echo "CP_ADMIN_TOKEN=${CP_ADMIN_TOKEN:-${CONTROL_ADMIN_TOKEN:-}}"
+          } >> "$GITHUB_ENV"
 
       - name: Validate minimum secrets
         run: |
@@ -119,6 +124,9 @@ jobs:
               echo "::error::enable_azure=true but AZURE_RESOURCE_GROUP is missing"
               exit 1
             fi
+          fi
+          if [ -z "${CP_ADMIN_TOKEN:-}" ]; then
+            echo "::warning::CP_ADMIN_TOKEN/CONTROL_ADMIN_TOKEN not set; control-plane agent checks may return 401/403"
           fi
 
       - name: Authenticate to Google Cloud (OIDC)
@@ -160,6 +168,7 @@ jobs:
             --provider gcp \
             --run-id "$RUN_TAG" \
             --cp-url "$CP_URL" \
+            --cp-admin-token "$CP_ADMIN_TOKEN" \
             --intel-api-key "$INTEL_API_KEY" \
             --node-size "$NODE_SIZE" \
             --launcher-url "$LAUNCHER_URL" \
@@ -179,6 +188,7 @@ jobs:
             --provider azure \
             --run-id "$RUN_TAG" \
             --cp-url "$CP_URL" \
+            --cp-admin-token "$CP_ADMIN_TOKEN" \
             --intel-api-key "$INTEL_API_KEY" \
             --node-size "$NODE_SIZE" \
             --launcher-url "$LAUNCHER_URL" \
@@ -210,6 +220,7 @@ jobs:
           fi
 
           CP_URL="$CP_URL" \
+          CP_ADMIN_TOKEN="$CP_ADMIN_TOKEN" \
           CLOUDS="$CLOUDS" \
           NODE_SIZE="$NODE_SIZE" \
           VERIFY_APP_NAME="$VERIFY_APP_NAME" \

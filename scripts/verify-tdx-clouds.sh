@@ -16,6 +16,7 @@ CLOUDS="${CLOUDS:-baremetal,gcp,azure}"
 NODE_SIZE="${NODE_SIZE:-standard}"
 VERIFY_APP_NAME="${VERIFY_APP_NAME:-}"
 VERIFY_APP_VERSION="${VERIFY_APP_VERSION:-}"
+CP_ADMIN_TOKEN="${CP_ADMIN_TOKEN:-}"
 ALLOW_MEASURER_FALLBACK="${ALLOW_MEASURER_FALLBACK:-false}"
 SKIP_MISSING_DATACENTER="${SKIP_MISSING_DATACENTER:-false}"
 FAIL_ON_UNSUPPORTED_CLOUDS="${FAIL_ON_UNSUPPORTED_CLOUDS:-false}"
@@ -28,6 +29,14 @@ DC_AWS="${DC_AWS:-}"
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
+
+CP_CURL_ARGS=(
+  -H "Accept: application/json"
+  -H "User-Agent: easyenclave-cloud-verify/1.0"
+)
+if [ -n "$CP_ADMIN_TOKEN" ]; then
+  CP_CURL_ARGS+=(-H "Authorization: Bearer $CP_ADMIN_TOKEN")
+fi
 
 require_tools() {
   local missing=0
@@ -68,7 +77,23 @@ is_unsupported_cloud() {
 }
 
 agents_json() {
-  curl -sf "$CP_URL/api/v1/agents"
+  local tmp code body
+  tmp="$(mktemp)"
+  code="$(curl -sS "${CP_CURL_ARGS[@]}" -o "$tmp" -w "%{http_code}" "$CP_URL/api/v1/agents")" || {
+    rm -f "$tmp"
+    return 1
+  }
+  if [ "$code" -ge 400 ]; then
+    body="$(tr '\n' ' ' < "$tmp" | sed 's/[[:space:]]\+/ /g' | cut -c1-240)"
+    rm -f "$tmp"
+    echo "::error::Control plane agents endpoint returned HTTP $code (${body:-no body})" >&2
+    if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+      echo "::error::Set CP_ADMIN_TOKEN for authenticated agent checks" >&2
+    fi
+    return 1
+  fi
+  cat "$tmp"
+  rm -f "$tmp"
 }
 
 cloud_header() {
@@ -138,6 +163,7 @@ verify_cloud_preflight() {
       allow_measuring_enclave_fallback: ($allow_fallback == "true")
     }')"
   allow_code="$(curl -s -o /tmp/tdx_cloud_preflight_allow.json -w "%{http_code}" \
+    "${CP_CURL_ARGS[@]}" \
     -X POST "$CP_URL/api/v1/apps/$VERIFY_APP_NAME/versions/$VERIFY_APP_VERSION/deploy/preflight" \
     -H "Content-Type: application/json" \
     -d "$allow_body")"
@@ -170,6 +196,7 @@ verify_cloud_preflight() {
       allow_measuring_enclave_fallback: ($allow_fallback == "true")
     }')"
   deny_code="$(curl -s -o /tmp/tdx_cloud_preflight_deny.json -w "%{http_code}" \
+    "${CP_CURL_ARGS[@]}" \
     -X POST "$CP_URL/api/v1/apps/$VERIFY_APP_NAME/versions/$VERIFY_APP_VERSION/deploy/preflight" \
     -H "Content-Type: application/json" \
     -d "$deny_body")"
@@ -248,6 +275,11 @@ main() {
   require_tools
   echo "Pure-TDX cloud verification"
   echo "CP_URL=$CP_URL"
+  if [ -n "$CP_ADMIN_TOKEN" ]; then
+    echo "CP_ADMIN_TOKEN=<set>"
+  else
+    echo "CP_ADMIN_TOKEN=<unset>"
+  fi
   echo "CLOUDS=$CLOUDS"
   echo "NODE_SIZE=${NODE_SIZE:-any}"
   echo "VERIFY_APP_NAME=${VERIFY_APP_NAME:-<none>}"

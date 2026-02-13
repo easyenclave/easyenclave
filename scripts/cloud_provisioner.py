@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -62,6 +63,39 @@ def _json_cmd(cmd: list[str]) -> Any:
     if not raw:
         return None
     return json.loads(raw)
+
+
+def _cp_headers(cp_admin_token: str = "") -> dict[str, str]:
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "easyenclave-cloud-provisioner/1.0",
+    }
+    token = cp_admin_token.strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _cp_get_json(*, cp_url: str, path: str, cp_admin_token: str = "", timeout_seconds: int = 30) -> Any:
+    url = f"{cp_url.rstrip('/')}{path}"
+    req = urllib.request.Request(url, headers=_cp_headers(cp_admin_token))
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        raw = resp.read().decode()
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    detail = f"HTTP {exc.code}"
+    try:
+        body = exc.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        body = ""
+    if body:
+        body_single = re.sub(r"\s+", " ", body)
+        detail = f"{detail}: {body_single[:240]}"
+    return detail
 
 
 def _maybe_int(value: str) -> int | None:
@@ -667,8 +701,6 @@ def _azure_cleanup(args: argparse.Namespace, run_tag: str = "") -> dict[str, Any
             "list",
             "--resource-group",
             args.azure_resource_group,
-            "--tag",
-            "easyenclave=managed",
             "--output",
             "json",
         ]
@@ -679,6 +711,8 @@ def _azure_cleanup(args: argparse.Namespace, run_tag: str = "") -> dict[str, Any
     extra_ids: list[str] = []
     for resource in tagged_resources:
         tags = resource.get("tags") or {}
+        if tags.get("easyenclave") != "managed":
+            continue
         if run_tag and tags.get("ee-run") != run_tag:
             continue
         resource_type = str(resource.get("type") or "")
@@ -707,6 +741,7 @@ def _azure_cleanup(args: argparse.Namespace, run_tag: str = "") -> dict[str, Any
 def _wait_for_registration(
     *,
     cp_url: str,
+    cp_admin_token: str,
     datacenter_targets: dict[str, int],
     timeout_seconds: int,
     poll_seconds: int = 20,
@@ -714,11 +749,36 @@ def _wait_for_registration(
     deadline = time.time() + timeout_seconds
     attempts = 0
     last_counts: dict[str, int] = dict.fromkeys(datacenter_targets, 0)
+    last_error = ""
 
     while time.time() < deadline:
         attempts += 1
-        with urllib.request.urlopen(f"{cp_url.rstrip('/')}/api/v1/agents", timeout=30) as resp:
-            payload = json.loads(resp.read().decode())
+        try:
+            payload = _cp_get_json(
+                cp_url=cp_url,
+                path="/api/v1/agents",
+                cp_admin_token=cp_admin_token,
+                timeout_seconds=30,
+            )
+        except urllib.error.HTTPError as exc:
+            err = _http_error_detail(exc)
+            if exc.code in {401, 403} and not cp_admin_token.strip():
+                return {
+                    "ready": False,
+                    "attempts": attempts,
+                    "counts": last_counts,
+                    "error": (
+                        f"Control plane agent list denied ({err}). "
+                        "Set --cp-admin-token (or CP_ADMIN_TOKEN) for registration checks."
+                    ),
+                }
+            last_error = f"Control plane agent list failed ({err})"
+            time.sleep(poll_seconds)
+            continue
+        except Exception as exc:
+            last_error = f"Control plane agent list failed ({exc})"
+            time.sleep(poll_seconds)
+            continue
 
         agents = payload.get("agents") if isinstance(payload, dict) else []
         if not isinstance(agents, list):
@@ -755,6 +815,7 @@ def _wait_for_registration(
         "ready": False,
         "attempts": attempts,
         "counts": last_counts,
+        "error": last_error,
     }
 
 
@@ -769,6 +830,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dry-run", action="store_true")
 
         p.add_argument("--cp-url", default="https://app.easyenclave.com")
+        p.add_argument("--cp-admin-token", default=os.environ.get("CP_ADMIN_TOKEN", ""))
         p.add_argument("--intel-api-key", default=os.environ.get("INTEL_API_KEY", ""))
         p.add_argument("--node-size", default="tiny")
         p.add_argument("--launcher-url", default="")
@@ -855,6 +917,7 @@ def main() -> int:
                 targets[item.datacenter] = targets.get(item.datacenter, 0) + 1
             wait_result = _wait_for_registration(
                 cp_url=args.cp_url,
+                cp_admin_token=args.cp_admin_token,
                 datacenter_targets=targets,
                 timeout_seconds=args.wait_seconds,
             )
