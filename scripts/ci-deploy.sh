@@ -14,6 +14,10 @@
 #   NUM_STANDARD_AGENTS - number of standard agents to launch (default: 2)
 #   NUM_LLM_AGENTS     - number of LLM-sized agents to launch (default: 1)
 #   ADMIN_PASSWORD - admin password (auto-detected from CP logs if not set)
+#   AGENT_DATACENTER - explicit datacenter label override (e.g. baremetal:github-runner-a)
+#   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: baremetal)
+#   AGENT_DATACENTER_AZ - availability zone/datacenter shard label (default: github-runner)
+#   AGENT_DATACENTER_REGION - optional region label for placement metadata
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -22,6 +26,10 @@ CP_URL="${CP_URL:-https://app.easyenclave.com}"
 NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-2}"
 NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-2}"
 NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-1}"
+AGENT_DATACENTER="${AGENT_DATACENTER:-}"
+AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
+AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
+AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
 
 # ===================================================================
 # Helpers
@@ -341,20 +349,39 @@ fi
 # ===================================================================
 TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS))
 echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
+
+AGENT_LOCATION_ARGS=()
+if [ -n "$AGENT_DATACENTER" ]; then
+  AGENT_LOCATION_ARGS+=(--datacenter "$AGENT_DATACENTER")
+  echo "Using explicit agent datacenter label: $AGENT_DATACENTER"
+else
+  AGENT_LOCATION_ARGS+=(--cloud-provider "$AGENT_CLOUD_PROVIDER")
+  if [ -n "$AGENT_DATACENTER_AZ" ]; then
+    AGENT_LOCATION_ARGS+=(--availability-zone "$AGENT_DATACENTER_AZ")
+  fi
+  if [ -n "$AGENT_DATACENTER_REGION" ]; then
+    AGENT_LOCATION_ARGS+=(--region "$AGENT_DATACENTER_REGION")
+  fi
+  echo "Using agent placement metadata: provider=$AGENT_CLOUD_PROVIDER az=$AGENT_DATACENTER_AZ region=${AGENT_DATACENTER_REGION:-none}"
+fi
+
 for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
   python3 infra/tdx_cli.py vm new --verity --size tiny \
+    "${AGENT_LOCATION_ARGS[@]}" \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
 done
 for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
   python3 infra/tdx_cli.py vm new --verity --size standard \
+    "${AGENT_LOCATION_ARGS[@]}" \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
 done
 for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
   python3 infra/tdx_cli.py vm new --verity --size llm \
+    "${AGENT_LOCATION_ARGS[@]}" \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
