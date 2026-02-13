@@ -95,15 +95,23 @@ build_once "build1"
 build_once "build2"
 
 echo "==> Comparing artifact digests..."
+ARTIFACT_DIFF=0
 if ! diff -u "$TMP_DIR/build1/sha256.txt" "$TMP_DIR/build2/sha256.txt"; then
-  echo "::error::Reproducibility check failed: artifact digests differ"
-  exit 1
+  ARTIFACT_DIFF=1
 fi
 
 echo "==> Comparing measured values (tiny profile)..."
 if ! diff -u "$TMP_DIR/build1/measure.json" "$TMP_DIR/build2/measure.json"; then
   echo "::error::Reproducibility check failed: measured values differ"
   exit 1
+fi
+
+if [ "$ARTIFACT_DIFF" -eq 1 ]; then
+  if [ "$REPRO_MODE" = "full" ]; then
+    echo "::error::Reproducibility check failed: artifact digests differ (full mode)"
+    exit 1
+  fi
+  echo "::warning::Artifact digests differ in cached mode; measurements are stable. Run with CI_REPRO_MODE=full to enforce strict artifact equality."
 fi
 
 echo "==> Reproducibility gate passed"

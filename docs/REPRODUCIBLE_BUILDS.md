@@ -14,8 +14,9 @@ The CI reproducibility gate runs two builds and verifies:
 
 If any value differs, CI fails before deployment.
 
-By default, CI uses `CI_REPRO_MODE=cached` (artifact reset, mkosi cache retained) to keep the gate stable on self-hosted capacity.
-For deep checks, run `CI_REPRO_MODE=full` to force two clean builds.
+By default, CI uses `CI_REPRO_MODE=cached` (artifact reset, mkosi cache retained) to keep the check stable on self-hosted capacity.
+In cached mode, measurement drift is enforced (fail), while artifact hash drift is surfaced as a warning.
+For strict enforcement of both artifact and measurement equality, run `CI_REPRO_MODE=full`.
 
 ## CI entrypoint
 
