@@ -32,7 +32,7 @@ A confidential discovery service for TDX-attested applications. EasyEnclave enab
 - AMD SEV-SNP - 🔜 Coming soon
 - ARM CCA - 🔜 Planned
 
-**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for ORAM details, deployment guides, and additional Q&A.
+**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for ORAM details, deployment guides, and additional Q&A, and [docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md) for reproducibility verification.
 
 ### What is Intel TDX?
 
