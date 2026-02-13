@@ -90,10 +90,27 @@ jobs:
         id: measurer
         if: github.event_name == 'push'
         run: |
+          retry_push() {
+            local image_ref="$1"
+            local attempts=5
+            local delay=3
+            for attempt in $(seq 1 "$attempts"); do
+              if docker push "$image_ref"; then
+                return 0
+              fi
+              if [ "$attempt" -lt "$attempts" ]; then
+                echo "Push failed for $image_ref (attempt $attempt/$attempts), retrying in ${delay}s..."
+                sleep "$delay"
+              fi
+            done
+            echo "::error::Failed to push $image_ref after $attempts attempts"
+            return 1
+          }
+
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMAGE="ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}"
           docker build -t "$IMAGE" apps/measuring-enclave/
-          docker push "$IMAGE"
+          retry_push "$IMAGE"
           DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
           cosign sign --yes "$DIGEST_REF"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
@@ -111,12 +128,29 @@ jobs:
         id: noise_contacts
         if: github.event_name == 'push'
         run: |
+          retry_push() {
+            local image_ref="$1"
+            local attempts=5
+            local delay=3
+            for attempt in $(seq 1 "$attempts"); do
+              if docker push "$image_ref"; then
+                return 0
+              fi
+              if [ "$attempt" -lt "$attempts" ]; then
+                echo "Push failed for $image_ref (attempt $attempt/$attempts), retrying in ${delay}s..."
+                sleep "$delay"
+              fi
+            done
+            echo "::error::Failed to push $image_ref after $attempts attempts"
+            return 1
+          }
+
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMAGE="ghcr.io/${{ github.repository }}/noise-contacts:${{ github.sha }}"
           LATEST="ghcr.io/${{ github.repository }}/noise-contacts:latest"
           docker build -t "$IMAGE" -t "$LATEST" apps/noise-contacts/
-          docker push "$IMAGE"
-          docker push "$LATEST"
+          retry_push "$IMAGE"
+          retry_push "$LATEST"
           DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
           cosign sign --yes "$DIGEST_REF"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
@@ -133,12 +167,29 @@ jobs:
         id: control_plane
         if: github.event_name == 'push'
         run: |
+          retry_push() {
+            local image_ref="$1"
+            local attempts=5
+            local delay=3
+            for attempt in $(seq 1 "$attempts"); do
+              if docker push "$image_ref"; then
+                return 0
+              fi
+              if [ "$attempt" -lt "$attempts" ]; then
+                echo "Push failed for $image_ref (attempt $attempt/$attempts), retrying in ${delay}s..."
+                sleep "$delay"
+              fi
+            done
+            echo "::error::Failed to push $image_ref after $attempts attempts"
+            return 1
+          }
+
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMAGE="ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}"
           LATEST="ghcr.io/${{ github.repository }}/control-plane:latest"
           docker build -t "$IMAGE" -t "$LATEST" .
-          docker push "$IMAGE"
-          docker push "$LATEST"
+          retry_push "$IMAGE"
+          retry_push "$LATEST"
           DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
           cosign sign --yes "$DIGEST_REF"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
