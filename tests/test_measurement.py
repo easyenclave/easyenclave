@@ -1,13 +1,15 @@
 """Tests for the measuring enclave flow."""
 
 import base64
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import verify_admin_token
+from app.db_models import Agent
 from app.main import app
-from app.storage import app_version_store
+from app.storage import agent_store, app_version_store
 
 
 # Mock admin token verification
@@ -338,3 +340,208 @@ class TestListByStatus:
         attested = app_version_store.list_by_status("attested")
         assert len(attested) == 1
         assert attested[0].version == "2.0.0"
+
+
+class TestDeployMeasurementValidation:
+    @pytest.fixture
+    def verified_llm_agent(self, sample_app):
+        agent = Agent(
+            vm_name="test-llm-vm",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-test.easyenclave.com",
+            status="deployed",
+            node_size="llm",
+            deployed_app=sample_app,
+        )
+        agent_store.register(agent)
+        return agent
+
+    def _manual_attest(self, client, admin_token, app_name, payload):
+        app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+        try:
+            resp = client.post(
+                f"/api/v1/apps/{app_name}/versions/1.0.0/attest?node_size=llm",
+                json=payload,
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert resp.status_code == 200
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_deploy_rejects_measurement_node_size_mismatch(
+        self, client, admin_token, sample_app, sample_compose, verified_llm_agent
+    ):
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": verified_llm_agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "tiny",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy",
+            json={"agent_id": verified_llm_agent.agent_id},
+        )
+        assert resp.status_code == 400
+        assert "Measurement node_size mismatch" in resp.json()["detail"]
+
+    def test_deploy_rejects_agent_reference_missing_mrtd(
+        self, client, admin_token, sample_app, sample_compose, verified_llm_agent
+    ):
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy",
+            json={"agent_id": verified_llm_agent.agent_id},
+        )
+        assert resp.status_code == 400
+        assert "has no MRTD recorded" in resp.json()["detail"]
+
+    def test_deploy_rejects_agent_reference_mrtd_mismatch(
+        self, client, admin_token, sample_app, sample_compose, verified_llm_agent
+    ):
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": "a" * 96,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy",
+            json={"agent_id": verified_llm_agent.agent_id},
+        )
+        assert resp.status_code == 400
+        assert "Measurement MRTD mismatch" in resp.json()["detail"]
+
+    def test_deploy_rejects_explicit_agent_assignment_when_not_upgrade(
+        self, client, admin_token, sample_app, sample_compose
+    ):
+        agent = Agent(
+            vm_name="test-llm-non-upgrade",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-test2.easyenclave.com",
+            status="undeployed",
+            node_size="llm",
+        )
+        agent_store.register(agent)
+
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy",
+            json={"agent_id": agent.agent_id},
+        )
+        assert resp.status_code == 400
+        assert "only allowed for upgrades" in resp.json()["detail"]
+
+    def test_deploy_auto_selects_agent_without_agent_id(
+        self, client, admin_token, sample_app, sample_compose
+    ):
+        agent = Agent(
+            vm_name="test-llm-auto",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-test3.easyenclave.com",
+            status="undeployed",
+            health_status="healthy",
+            node_size="llm",
+        )
+        agent_store.register(agent)
+
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        with patch("app.main.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_response = MagicMock()
+            mock_response.status_code = 202
+            mock_client.post = AsyncMock(return_value=mock_response)
+            mock_ctx = AsyncMock()
+            mock_ctx.__aenter__.return_value = mock_client
+            mock_ctx.__aexit__.return_value = False
+            mock_client_cls.return_value = mock_ctx
+
+            resp = client.post(
+                f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy",
+                json={},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["deployment_id"]
+        assert resp.json()["agent_id"] == agent.agent_id

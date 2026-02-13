@@ -203,8 +203,9 @@ jobs:
 
       - name: Deploy and bootstrap
         env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.build.outputs.mrtd }}
+          TRUSTED_AGENT_MRTDS: ${{ steps.build.outputs.mrtds || steps.build.outputs.mrtd }}
           TRUSTED_AGENT_RTMRS: ${{ steps.build.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.build.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
         run: ./scripts/ci-deploy.sh

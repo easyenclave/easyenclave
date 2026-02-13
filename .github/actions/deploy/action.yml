@@ -117,43 +117,12 @@ runs:
     - name: Wait for version to be attested
       shell: bash
       env:
+        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
+        APP_NAME: ${{ inputs.app_name }}
+        VERSION: ${{ steps.version.outputs.version }}
+        INITIAL_STATUS: ${{ steps.publish.outputs.status }}
         NODE_SIZE: ${{ inputs.node_size }}
-      run: |
-        # Wait for measuring enclave to attest the version
-        VERSION_STATUS="${{ steps.publish.outputs.status }}"
-        NODE_SIZE_QS=""
-        if [ -n "$NODE_SIZE" ]; then
-          NODE_SIZE_QS="?node_size=$NODE_SIZE"
-        fi
-        if [ "$VERSION_STATUS" = "attested" ]; then
-          echo "Version already attested"
-        else
-          echo "Version status: $VERSION_STATUS - waiting for measurement..."
-          for i in {1..60}; do  # 5 min timeout (60 * 5s)
-            VERSION_JSON=$(curl -sf \
-              "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/${{ steps.version.outputs.version }}${NODE_SIZE_QS}" \
-              2>/dev/null || echo '{}')
-            VERSION_STATUS=$(echo "$VERSION_JSON" | jq -r '.status // "unknown"')
-
-            if [ "$VERSION_STATUS" = "attested" ]; then
-              echo "Version attested!"
-              break
-            elif [ "$VERSION_STATUS" = "failed" ] || [ "$VERSION_STATUS" = "rejected" ]; then
-              REASON=$(echo "$VERSION_JSON" | jq -r '.rejection_reason // "Unknown"')
-              echo "::error::Measurement failed: $REASON"
-              exit 1
-            fi
-
-            echo "  Status: $VERSION_STATUS ($i/60)"
-            sleep 5
-          done
-
-          if [ "$VERSION_STATUS" != "attested" ]; then
-            echo "::error::Timed out waiting for measurement (status: $VERSION_STATUS)"
-            exit 1
-          fi
-        fi
-        echo "Version ${{ steps.version.outputs.version }} is attested"
+      run: bash ./scripts/deploy_action.sh wait-attested
 
     - name: Find agent and deploy
       id: deploy
@@ -168,79 +137,7 @@ runs:
         GITHUB_OWNER: ${{ inputs.github_owner }}
         NODE_SIZE: ${{ inputs.node_size }}
         ALLOW_MEASURER_FALLBACK: ${{ inputs.allow_measuring_enclave_fallback }}
-      run: |
-        set -e
-
-        find_available_agents() {
-          local include_measurer="${1:-false}"
-          curl -sf "$CONTROL_PLANE_URL/api/v1/agents" 2>/dev/null \
-            | jq -r --arg ns "$NODE_SIZE" --arg include_measurer "$include_measurer" \
-              '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy"
-                and (.status == "undeployed" or .status == "deployed")
-                and (if $include_measurer == "true" then true else ((.deployed_app // "") | startswith("measuring-enclave") | not) end)
-                and (if $ns != "" then .node_size == $ns else true end))]
-                | sort_by(if .status == "undeployed" then 0 else 1 end)
-                | .[].agent_id'
-        }
-
-        try_deploy() {
-          local agent_id="$1"
-          local http_code
-          local config_json
-          config_json=$(jq -n \
-            --arg service_name "$SERVICE_NAME" \
-            --arg health_endpoint "$HEALTH_ENDPOINT" \
-            --arg admin_password "$AGENT_ADMIN_PASSWORD" \
-            '{
-              service_name: $service_name,
-              health_endpoint: $health_endpoint
-            } + (if $admin_password != "" then {agent_admin_password: $admin_password} else {} end)')
-          local body
-          body=$(jq -n \
-            --arg agent_id "$agent_id" \
-            --arg github_owner "$GITHUB_OWNER" \
-            --arg node_size "$NODE_SIZE" \
-            --argjson config "$config_json" \
-            '{
-              agent_id: $agent_id,
-              config: $config
-            } + (if $github_owner != "" then {github_owner: $github_owner} else {} end)
-              + (if $node_size != "" then {node_size: $node_size} else {} end)')
-          http_code=$(curl -s -o /tmp/deploy_response.json -w "%{http_code}" \
-            -X POST "$CONTROL_PLANE_URL/api/v1/apps/$APP_NAME/versions/$VERSION/deploy" \
-            -H "Content-Type: application/json" \
-            -d "$body")
-          echo "$http_code"
-        }
-
-        echo "Finding agent and deploying version $VERSION..."
-        for attempt in {1..12}; do
-          AGENTS=$(find_available_agents false)
-          if [ -z "$AGENTS" ] && [ "$ALLOW_MEASURER_FALLBACK" = "true" ]; then
-            echo "::warning::No non-measuring agents available; trying measuring-enclave fallback"
-            AGENTS=$(find_available_agents true)
-          fi
-          for AGENT_ID in $AGENTS; do
-            echo "Trying agent $AGENT_ID..."
-            HTTP_CODE=$(try_deploy "$AGENT_ID")
-            RESPONSE=$(cat /tmp/deploy_response.json)
-
-            if [ "$HTTP_CODE" -lt 400 ]; then
-              DEPLOYMENT_ID=$(echo "$RESPONSE" | jq -r '.deployment_id')
-              echo "Deployed to agent $AGENT_ID (deployment $DEPLOYMENT_ID)"
-              echo "agent_id=$AGENT_ID" >> "$GITHUB_OUTPUT"
-              echo "deployment_id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-
-            echo "  HTTP $HTTP_CODE: $(echo "$RESPONSE" | jq -r '.detail // empty')"
-          done
-          echo "No available agents, waiting 30s... ($attempt/12)"
-          sleep 30
-        done
-
-        echo "::error::No available agents after 12 attempts"
-        exit 1
+      run: bash ./scripts/deploy_action.sh find-and-deploy
 
     - name: Wait for deployment health
       id: health

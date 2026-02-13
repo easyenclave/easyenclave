@@ -134,6 +134,7 @@ class DeploymentCreateResponse(BaseModel):
     """Response for deployment creation."""
 
     deployment_id: str
+    agent_id: str
     status: str = "pending"
 
 
@@ -203,9 +204,10 @@ class AppVersionListResponse(BaseModel):
 class DeployFromVersionRequest(BaseModel):
     """Request for deploying from an app version."""
 
-    agent_id: str
+    agent_id: str | None = None
     config: dict | None = None
     node_size: str = ""  # Required agent node_size (e.g., "tiny", "standard", "llm"). Empty = any.
+    allow_measuring_enclave_fallback: bool = False
     # Billing fields
     account_id: str | None = None  # Optional for backward compatibility
     sla_class: str = "adhoc"  # adhoc|three_nines|four_nines|five_nines

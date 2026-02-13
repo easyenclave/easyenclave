@@ -119,7 +119,7 @@ deploy_app() {
   local app_name="$1" description="$2" image="$3" tags="$4" service_config="$5"
   local node_size="${6:-}"
   local compose_b64 version publish_resp version_id
-  local deployed=false agent_ids agent_id http_code
+  local deployed=false http_code detail selected_agent
   local manual_attest_body="" reference_agent reference_agent_id reference_mrtd reference_rtmrs
   local attestation_detail
   local reference_measurement measured_at attest_qs="" max_attempts require_mrtd
@@ -220,37 +220,37 @@ deploy_app() {
   fi
 
   for attempt in $(seq 1 "$max_attempts"); do
-    agent_ids=$(curl -f "$CP_URL/api/v1/agents" 2>/dev/null | \
-      jq -r --arg ns "$node_size" \
-        '[.agents[] | select(.verified == true and .hostname != null and .health_status == "healthy" and .status == "undeployed"
-          and (if $ns != "" then .node_size == $ns else true end))] | .[].agent_id')
+    local deploy_body
+    deploy_body=$(jq -cn \
+      --argjson config "$service_config" \
+      --arg node_size "$node_size" \
+      '{config: $config} + (if $node_size != "" then {node_size: $node_size} else {} end)')
 
-    for agent_id in $agent_ids; do
-      local agent_host
-      agent_host=$(curl -f "$CP_URL/api/v1/agents/$agent_id" 2>/dev/null | jq -r '.hostname')
-      echo "Trying agent $agent_id ($agent_host)..."
+    http_code=$(curl -s -o /tmp/deploy_resp.json -w "%{http_code}" \
+      -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/deploy" \
+      -H "Content-Type: application/json" \
+      -d "$deploy_body")
+    detail=$(jq -r '.detail // empty' /tmp/deploy_resp.json 2>/dev/null || true)
 
-      # Check tunnel reachable
-      if ! curl -sf --connect-timeout 3 --max-time 8 "https://$agent_host/api/health" > /dev/null 2>&1; then
-        echo "  Tunnel not reachable, skipping"
-        continue
+    if [ "$http_code" -lt 400 ]; then
+      selected_agent=$(jq -r '.agent_id // empty' /tmp/deploy_resp.json 2>/dev/null || true)
+      if [ -z "$selected_agent" ]; then
+        selected_agent=$(jq -r '.agent_id // empty' < <(curl -sf "$CP_URL/api/v1/deployments/$(jq -r '.deployment_id' /tmp/deploy_resp.json)") 2>/dev/null || true)
       fi
+      echo "Deployed $app_name to agent ${selected_agent:-unknown}"
+      deployed=true
+      break
+    fi
 
-      http_code=$(curl -s -o /tmp/deploy_resp.json -w "%{http_code}" \
-        -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/deploy" \
-        -H "Content-Type: application/json" \
-        -d "{\"agent_id\": \"$agent_id\", \"config\": $service_config}")
+    echo "  HTTP $http_code: $detail"
+    if [ "$http_code" = "503" ] || echo "$detail" | grep -qi "No eligible agents"; then
+      echo "No eligible agents, waiting 30s... ($attempt/$max_attempts)"
+      sleep 30
+      continue
+    fi
 
-      if [ "$http_code" -lt 400 ]; then
-        echo "Deployed $app_name to agent $agent_id"
-        deployed=true
-        break 2
-      fi
-      echo "  HTTP $http_code: $(jq -r '.detail // empty' /tmp/deploy_resp.json)"
-    done
-
-    echo "No available agents, waiting 30s... ($attempt/$max_attempts)"
-    sleep 30
+    echo "::error::Deploy failed for $app_name@$version"
+    exit 1
   done
 
   if [ "$deployed" != "true" ]; then

@@ -186,6 +186,7 @@ def reset_rtmr_config():
     """Reset RTMR enforcement config around a test."""
     orig_mode = os.environ.get("RTMR_ENFORCEMENT_MODE")
     orig_rtmrs = os.environ.get("TRUSTED_AGENT_RTMRS")
+    orig_rtmrs_by_size = os.environ.get("TRUSTED_AGENT_RTMRS_BY_SIZE")
 
     yield
 
@@ -198,6 +199,11 @@ def reset_rtmr_config():
         os.environ.pop("TRUSTED_AGENT_RTMRS", None)
     else:
         os.environ["TRUSTED_AGENT_RTMRS"] = orig_rtmrs
+
+    if orig_rtmrs_by_size is None:
+        os.environ.pop("TRUSTED_AGENT_RTMRS_BY_SIZE", None)
+    else:
+        os.environ["TRUSTED_AGENT_RTMRS_BY_SIZE"] = orig_rtmrs_by_size
 
     # Reload to pick up changes
     import importlib
@@ -355,6 +361,49 @@ class TestRtmrRegistrationVerification:
 
     @pytest.mark.asyncio
     @pytest.mark.usefixtures("reset_rtmr_config")
+    async def test_strict_mode_uses_node_size_specific_baseline(self):
+        """Strict mode should use node_size-specific RTMR profiles when configured."""
+        import importlib
+        import json
+
+        llm_rtmrs = {**TRUSTED_RTMRS, "rtmr0": "f" * 96}
+        os.environ["RTMR_ENFORCEMENT_MODE"] = "strict"
+        os.environ["TRUSTED_AGENT_RTMRS_BY_SIZE"] = json.dumps(
+            {
+                "tiny": TRUSTED_RTMRS,
+                "llm": llm_rtmrs,
+            }
+        )
+
+        import app.attestation
+        import app.storage
+
+        importlib.reload(app.storage)
+        importlib.reload(app.attestation)
+
+        with patch("app.attestation.verify_attestation_token") as mock_verify:
+            with patch("app.attestation.get_trusted_mrtd") as mock_mrtd:
+                mock_verify.return_value = {
+                    "verified": True,
+                    "details": {"tdx_mrtd": MRTD_HEX, "attester_tcb_status": "UpToDate"},
+                }
+                mock_mrtd.return_value = "agent"
+
+                # Matches llm profile -> pass
+                llm_attestation = _make_attestation(llm_rtmrs)
+                result = await app.attestation.verify_agent_registration(
+                    llm_attestation, node_size="llm"
+                )
+                assert result.mrtd == MRTD_HEX
+
+                # Same attestation against tiny profile -> fail
+                with pytest.raises(app.attestation.AttestationError):
+                    await app.attestation.verify_agent_registration(
+                        llm_attestation, node_size="tiny"
+                    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("reset_rtmr_config")
     async def test_no_trusted_rtmrs_configured(self):
         """When no trusted RTMRs configured, verification passes."""
         import importlib
@@ -497,4 +546,32 @@ class TestTrustedRtmrsLoading:
                 os.environ.pop("TRUSTED_AGENT_RTMRS", None)
             else:
                 os.environ["TRUSTED_AGENT_RTMRS"] = orig
+            importlib.reload(app.storage)
+
+    def test_load_node_size_profiles(self):
+        import importlib
+        import json
+
+        orig = os.environ.get("TRUSTED_AGENT_RTMRS_BY_SIZE")
+        try:
+            os.environ["TRUSTED_AGENT_RTMRS_BY_SIZE"] = json.dumps(
+                {
+                    "tiny": TRUSTED_RTMRS,
+                    "llm": {**TRUSTED_RTMRS, "rtmr0": "f" * 96},
+                }
+            )
+            os.environ.pop("TRUSTED_AGENT_RTMRS", None)
+
+            import app.storage
+
+            importlib.reload(app.storage)
+
+            assert app.storage.get_trusted_rtmrs("agent", node_size="tiny") == TRUSTED_RTMRS
+            assert app.storage.get_trusted_rtmrs("agent", node_size="llm")["rtmr0"] == "f" * 96
+            assert app.storage.get_trusted_rtmrs("agent", node_size="standard") is None
+        finally:
+            if orig is None:
+                os.environ.pop("TRUSTED_AGENT_RTMRS_BY_SIZE", None)
+            else:
+                os.environ["TRUSTED_AGENT_RTMRS_BY_SIZE"] = orig
             importlib.reload(app.storage)

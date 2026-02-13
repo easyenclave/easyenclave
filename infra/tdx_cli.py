@@ -437,6 +437,8 @@ runcmd:
             # Trusted RTMRs (JSON)
             "trusted_agent_rtmrs": os.environ.get("TRUSTED_AGENT_RTMRS"),
             "trusted_proxy_rtmrs": os.environ.get("TRUSTED_PROXY_RTMRS"),
+            "trusted_agent_rtmrs_by_size": os.environ.get("TRUSTED_AGENT_RTMRS_BY_SIZE"),
+            "trusted_proxy_rtmrs_by_size": os.environ.get("TRUSTED_PROXY_RTMRS_BY_SIZE"),
             # Admin password hash for control plane dashboard
             "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH"),
         }

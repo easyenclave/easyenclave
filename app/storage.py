@@ -529,6 +529,12 @@ def list_trusted_mrtds() -> dict[str, str]:
 # ==============================================================================
 
 _trusted_rtmrs: dict[str, dict[str, str]] = {}  # type ("agent"/"proxy") -> {rtmr0: ..., rtmr3: ...}
+_trusted_rtmrs_by_size: dict[str, dict[str, dict[str, str]]] = {}
+_RTMR_KEYS = tuple(f"rtmr{i}" for i in range(4))
+
+
+def _is_valid_rtmr_profile(value: object) -> bool:
+    return isinstance(value, dict) and all(k in value for k in _RTMR_KEYS)
 
 
 def load_trusted_rtmrs():
@@ -537,8 +543,11 @@ def load_trusted_rtmrs():
     Expected format: JSON object with rtmr0-3 keys, e.g.
     TRUSTED_AGENT_RTMRS='{"rtmr0":"abc...","rtmr1":"def...","rtmr2":"ghi...","rtmr3":"jkl..."}'
     """
-    global _trusted_rtmrs
+    global _trusted_rtmrs, _trusted_rtmrs_by_size
     _trusted_rtmrs = {}
+    _trusted_rtmrs_by_size = {}
+    import json
+
     for env_var, mrtd_type in [
         ("TRUSTED_AGENT_RTMRS", "agent"),
         ("TRUSTED_PROXY_RTMRS", "proxy"),
@@ -547,10 +556,8 @@ def load_trusted_rtmrs():
         if not val:
             continue
         try:
-            import json
-
             rtmrs = json.loads(val)
-            if isinstance(rtmrs, dict) and all(f"rtmr{i}" in rtmrs for i in range(4)):
+            if _is_valid_rtmr_profile(rtmrs):
                 _trusted_rtmrs[mrtd_type] = rtmrs
                 logger.info(
                     f"Loaded trusted {mrtd_type} RTMRs: "
@@ -564,9 +571,52 @@ def load_trusted_rtmrs():
         except Exception as e:
             logger.warning(f"Could not parse {env_var}: {e}")
 
+    for env_var, mrtd_type in [
+        ("TRUSTED_AGENT_RTMRS_BY_SIZE", "agent"),
+        ("TRUSTED_PROXY_RTMRS_BY_SIZE", "proxy"),
+    ]:
+        val = os.environ.get(env_var, "").strip()
+        if not val:
+            continue
+        try:
+            parsed = json.loads(val)
+            if not isinstance(parsed, dict):
+                logger.warning(
+                    f"Invalid {env_var}: expected JSON object mapping node_size -> RTMR profile"
+                )
+                continue
 
-def get_trusted_rtmrs(mrtd_type: str) -> dict[str, str] | None:
-    """Return trusted RTMRs for a given type, or None if not configured."""
+            loaded: dict[str, dict[str, str]] = {}
+            for node_size, profile in parsed.items():
+                if not isinstance(node_size, str) or not node_size:
+                    logger.warning(f"Invalid {env_var} entry key: {node_size!r}")
+                    continue
+                if not _is_valid_rtmr_profile(profile):
+                    logger.warning(
+                        f"Invalid {env_var} entry for '{node_size}': must include rtmr0-rtmr3"
+                    )
+                    continue
+                loaded[node_size] = profile
+                logger.info(
+                    f"Loaded trusted {mrtd_type} RTMRs for node_size='{node_size}': "
+                    f"RTMR0={profile['rtmr0'][:16]}... "
+                    f"RTMR1={profile['rtmr1'][:16]}... "
+                    f"RTMR2={profile['rtmr2'][:16]}... "
+                    f"RTMR3={profile['rtmr3'][:16]}..."
+                )
+
+            if loaded:
+                _trusted_rtmrs_by_size[mrtd_type] = loaded
+        except Exception as e:
+            logger.warning(f"Could not parse {env_var}: {e}")
+
+
+def get_trusted_rtmrs(mrtd_type: str, node_size: str = "") -> dict[str, str] | None:
+    """Return trusted RTMRs for type/node_size, falling back to type-only baseline."""
+    if node_size:
+        by_size = _trusted_rtmrs_by_size.get(mrtd_type, {})
+        if node_size in by_size:
+            return by_size[node_size]
     return _trusted_rtmrs.get(mrtd_type)
 
 

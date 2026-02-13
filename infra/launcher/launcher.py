@@ -113,6 +113,8 @@ services:
       - TRUSTED_PROXY_MRTDS=${{TRUSTED_PROXY_MRTDS:-}}
       - TRUSTED_AGENT_RTMRS=${{TRUSTED_AGENT_RTMRS:-}}
       - TRUSTED_PROXY_RTMRS=${{TRUSTED_PROXY_RTMRS:-}}
+      - TRUSTED_AGENT_RTMRS_BY_SIZE=${{TRUSTED_AGENT_RTMRS_BY_SIZE:-}}
+      - TRUSTED_PROXY_RTMRS_BY_SIZE=${{TRUSTED_PROXY_RTMRS_BY_SIZE:-}}
       - TCB_ENFORCEMENT_MODE=${{TCB_ENFORCEMENT_MODE:-warn}}
       - ALLOWED_TCB_STATUSES=${{ALLOWED_TCB_STATUSES:-UpToDate}}
       - NONCE_ENFORCEMENT_MODE=${{NONCE_ENFORCEMENT_MODE:-optional}}
@@ -1569,6 +1571,10 @@ def run_control_plane_mode(config: dict):
         env["TRUSTED_AGENT_RTMRS"] = config["trusted_agent_rtmrs"]
     if config.get("trusted_proxy_rtmrs"):
         env["TRUSTED_PROXY_RTMRS"] = config["trusted_proxy_rtmrs"]
+    if config.get("trusted_agent_rtmrs_by_size"):
+        env["TRUSTED_AGENT_RTMRS_BY_SIZE"] = config["trusted_agent_rtmrs_by_size"]
+    if config.get("trusted_proxy_rtmrs_by_size"):
+        env["TRUSTED_PROXY_RTMRS_BY_SIZE"] = config["trusted_proxy_rtmrs_by_size"]
     if config.get("admin_password_hash"):
         env["ADMIN_PASSWORD_HASH"] = config["admin_password_hash"]
 

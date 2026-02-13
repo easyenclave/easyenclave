@@ -94,7 +94,9 @@ def extract_mrtd_from_claims(ita_claims: dict) -> str:
     return mrtd
 
 
-async def verify_agent_registration(attestation: dict) -> AgentVerificationResult:
+async def verify_agent_registration(
+    attestation: dict, node_size: str = ""
+) -> AgentVerificationResult:
     """Verify agent attestation during registration.
 
     Steps:
@@ -170,7 +172,7 @@ async def verify_agent_registration(attestation: dict) -> AgentVerificationResul
     rtmr_mode = _rtmr_enforcement_mode()
 
     if rtmr_mode != "disabled":
-        trusted_rtmrs = get_trusted_rtmrs(mrtd_type)
+        trusted_rtmrs = get_trusted_rtmrs(mrtd_type, node_size=node_size)
         if trusted_rtmrs and agent_rtmrs:
             mismatches = []
             for key in ["rtmr0", "rtmr1", "rtmr2", "rtmr3"]:
@@ -182,7 +184,8 @@ async def verify_agent_registration(attestation: dict) -> AgentVerificationResul
                     )
 
             if mismatches:
-                error_msg = f"RTMR mismatch: {'; '.join(mismatches)}"
+                context = f" node_size='{node_size}'" if node_size else ""
+                error_msg = f"RTMR mismatch{context}: {'; '.join(mismatches)}"
                 if rtmr_mode == "strict":
                     raise AttestationError(detail=error_msg, status_code=403)
                 else:  # warn mode
