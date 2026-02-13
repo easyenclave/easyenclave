@@ -83,6 +83,7 @@ class AgentRegistrationRequest(BaseModel):
     vm_name: str
     version: str = "1.0.0"
     node_size: str = ""
+    datacenter: str = ""
 
 
 class AgentRegistrationResponse(BaseModel):
@@ -136,6 +137,27 @@ class DeploymentCreateResponse(BaseModel):
     deployment_id: str
     agent_id: str
     status: str = "pending"
+
+
+class DeploymentPreflightIssue(BaseModel):
+    """Structured validation issue for deployment preflight."""
+
+    code: str
+    message: str
+    agent_id: str | None = None
+    node_size: str | None = None
+    datacenter: str | None = None
+
+
+class DeploymentPreflightResponse(BaseModel):
+    """Response for deployment preflight checks."""
+
+    dry_run: bool = True
+    eligible: bool
+    selected_agent_id: str | None = None
+    selected_node_size: str | None = None
+    selected_datacenter: str | None = None
+    issues: list[DeploymentPreflightIssue] = Field(default_factory=list)
 
 
 class DeploymentListResponse(BaseModel):
@@ -207,6 +229,9 @@ class DeployFromVersionRequest(BaseModel):
     agent_id: str | None = None
     config: dict | None = None
     node_size: str = ""  # Required agent node_size (e.g., "tiny", "standard", "llm"). Empty = any.
+    dry_run: bool = False
+    allowed_datacenters: list[str] = Field(default_factory=list)
+    denied_datacenters: list[str] = Field(default_factory=list)
     allow_measuring_enclave_fallback: bool = False
     # Billing fields
     account_id: str | None = None  # Optional for backward compatibility

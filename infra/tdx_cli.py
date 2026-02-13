@@ -806,6 +806,26 @@ To start a new EasyEnclave network:
     new_parser.add_argument(
         "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
+    new_parser.add_argument(
+        "--cloud-provider",
+        default="",
+        help="Cloud provider label for placement metadata (e.g., gcp, azure)",
+    )
+    new_parser.add_argument(
+        "--availability-zone",
+        default="",
+        help="Availability zone for placement metadata (treated as datacenter)",
+    )
+    new_parser.add_argument(
+        "--region",
+        default="",
+        help="Region for placement metadata fallback when zone is not set",
+    )
+    new_parser.add_argument(
+        "--datacenter",
+        default="",
+        help="Explicit datacenter label override for placement metadata",
+    )
     _add_size_args(new_parser)
 
     vm_sub.add_parser("list", help="List TDX VMs")
@@ -923,6 +943,14 @@ To start a new EasyEnclave network:
                     "control_plane_url": args.easyenclave_url,
                     "intel_api_key": args.intel_api_key,
                 }
+                if args.cloud_provider:
+                    config["cloud_provider"] = args.cloud_provider
+                if args.availability_zone:
+                    config["availability_zone"] = args.availability_zone
+                if args.region:
+                    config["region"] = args.region
+                if args.datacenter:
+                    config["datacenter"] = args.datacenter
                 mem, vcpus, disk, size_name = _resolve_size(args)
                 result = mgr.vm_new(
                     args.image,

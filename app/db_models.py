@@ -87,6 +87,8 @@ class Agent(SQLModel, table=True):
     tcb_verified_at: datetime | None = None
     # Node size preset (tiny/standard/llm)
     node_size: str = Field(default="", index=True)
+    # Datacenter/region label for placement policy
+    datacenter: str = Field(default="", index=True)
     # GitHub ownership
     github_owner: str | None = Field(default=None, index=True)
     # Currently deployed app name (set on deploy, cleared on reset)

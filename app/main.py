@@ -75,6 +75,8 @@ from .models import (
     Deployment,
     DeploymentCreateResponse,
     DeploymentListResponse,
+    DeploymentPreflightIssue,
+    DeploymentPreflightResponse,
     DepositRequest,
     HealthResponse,
     ManualAttestRequest,
@@ -918,6 +920,7 @@ async def register_agent(request: AgentRegistrationRequest):
         "intel_ta_token": intel_ta_token,
         "version": request.version,
         "node_size": request.node_size,
+        "datacenter": request.datacenter,
         "status": "undeployed",
         "verified": verified,
         "verification_error": None,
@@ -2135,74 +2138,139 @@ async def measurement_callback(request: MeasurementCallbackRequest):
     return {"status": "ok"}
 
 
-@app.post("/api/v1/apps/{name}/versions/{version}/deploy", response_model=DeploymentCreateResponse)
-async def deploy_app_version(name: str, version: str, request: DeployFromVersionRequest):
-    """Deploy a published app version to an agent.
+def _normalize_datacenters(values: list[str]) -> set[str]:
+    return {value.strip().lower() for value in values if isinstance(value, str) and value.strip()}
 
-    This is the only way to create deployments. The app must be registered
-    and the version must be "attested" (passed source inspection).
 
-    Flow (push model):
-    1. Validate app exists
-    2. Validate version exists and status is "attested"
-    3. Validate agent exists, is verified, has tunnel, and available
-    4. Create deployment record
-    5. Push deployment to agent via POST /api/deploy
-    6. Return deployment_id with status from agent
-    """
+def _deploy_issue(
+    code: str,
+    message: str,
+    *,
+    agent: Agent | None = None,
+    node_size: str | None = None,
+    datacenter: str | None = None,
+) -> DeploymentPreflightIssue:
+    resolved_node_size = node_size
+    if resolved_node_size is None and agent:
+        resolved_node_size = agent.node_size or ""
+    resolved_datacenter = datacenter
+    if resolved_datacenter is None and agent:
+        resolved_datacenter = agent.datacenter or ""
+    return DeploymentPreflightIssue(
+        code=code,
+        message=message,
+        agent_id=agent.agent_id if agent else None,
+        node_size=resolved_node_size or None,
+        datacenter=resolved_datacenter or None,
+    )
 
-    def _measurement_error(version_obj: AppVersion, target_agent: Agent) -> str | None:
-        target_node_size = target_agent.node_size or ""
-        measurement = version_obj.attestation if isinstance(version_obj.attestation, dict) else None
 
-        if version_obj.node_size and not measurement:
-            return (
-                f"Version '{version_obj.version}' for node_size='{version_obj.node_size}' is attested "
-                "but missing measurement payload"
-            )
+def _measurement_error(
+    app_name: str,
+    app_version: str,
+    version_obj: AppVersion,
+    target_agent: Agent,
+) -> tuple[str, str] | None:
+    target_node_size = target_agent.node_size or ""
+    measurement = version_obj.attestation if isinstance(version_obj.attestation, dict) else None
 
-        if not measurement:
-            return None
+    if version_obj.node_size and not measurement:
+        return (
+            "MISSING_MEASUREMENT_PAYLOAD",
+            (
+                f"Version '{version_obj.version}' for node_size='{version_obj.node_size}' is "
+                "attested but missing measurement payload"
+            ),
+        )
 
-        measured_node_size = measurement.get("node_size")
-        if measured_node_size and measured_node_size != target_node_size:
-            return (
-                f"Measurement node_size mismatch for '{name}@{version}': "
-                f"attested '{measured_node_size}', target agent '{target_node_size}'"
-            )
-
-        if measurement.get("measurement_type") == "agent_reference":
-            if not version_obj.mrtd:
-                return (
-                    f"Version '{version_obj.version}' was attested with measurement_type="
-                    "'agent_reference' but has no MRTD recorded"
-                )
-            if not measured_node_size:
-                return (
-                    f"Version '{version_obj.version}' uses measurement_type='agent_reference' "
-                    "but attestation.node_size is missing"
-                )
-            if target_agent.mrtd and version_obj.mrtd != target_agent.mrtd:
-                return (
-                    f"Measurement MRTD mismatch for '{name}@{version}': "
-                    f"version MRTD {version_obj.mrtd[:16]}..., "
-                    f"agent MRTD {target_agent.mrtd[:16]}..."
-                )
+    if not measurement:
         return None
 
-    def _version_error(version_obj: AppVersion) -> str | None:
-        if version_obj.status == "attested":
-            return None
-        if version_obj.status == "rejected":
-            return f"Version '{version_obj.version}' was rejected: {version_obj.rejection_reason}"
-        return f"Version '{version_obj.version}' is not attested (status: {version_obj.status})"
+    measured_node_size = measurement.get("node_size")
+    if measured_node_size and measured_node_size != target_node_size:
+        return (
+            "MEASUREMENT_NODE_SIZE_MISMATCH",
+            (
+                f"Measurement node_size mismatch for '{app_name}@{app_version}': "
+                f"attested '{measured_node_size}', target agent '{target_node_size}'"
+            ),
+        )
 
-    # 1. Validate app exists
-    found_app = app_store.get_by_name(name)
+    if measurement.get("measurement_type") == "agent_reference":
+        if not version_obj.mrtd:
+            return (
+                "MEASUREMENT_AGENT_REFERENCE_MISSING_MRTD",
+                (
+                    f"Version '{version_obj.version}' was attested with measurement_type="
+                    "'agent_reference' but has no MRTD recorded"
+                ),
+            )
+        if not measured_node_size:
+            return (
+                "MEASUREMENT_AGENT_REFERENCE_MISSING_NODE_SIZE",
+                (
+                    f"Version '{version_obj.version}' uses measurement_type='agent_reference' "
+                    "but attestation.node_size is missing"
+                ),
+            )
+        if target_agent.mrtd and version_obj.mrtd != target_agent.mrtd:
+            return (
+                "MEASUREMENT_MRTD_MISMATCH",
+                (
+                    f"Measurement MRTD mismatch for '{app_name}@{app_version}': "
+                    f"version MRTD {version_obj.mrtd[:16]}..., "
+                    f"agent MRTD {target_agent.mrtd[:16]}..."
+                ),
+            )
+    return None
+
+
+def _version_error(version_obj: AppVersion) -> tuple[str, str] | None:
+    if version_obj.status == "attested":
+        return None
+    if version_obj.status == "rejected":
+        return (
+            "VERSION_REJECTED",
+            f"Version '{version_obj.version}' was rejected: {version_obj.rejection_reason}",
+        )
+    return (
+        "VERSION_NOT_ATTESTED",
+        f"Version '{version_obj.version}' is not attested (status: {version_obj.status})",
+    )
+
+
+def _evaluate_deploy_request(
+    app_name: str, app_version: str, request: DeployFromVersionRequest
+) -> dict[str, object]:
+    issues: list[DeploymentPreflightIssue] = []
+    selected_agent: Agent | None = None
+    selected_version: AppVersion | None = None
+
+    def fail(
+        status_code: int, detail: str, *, code: str, agent: Agent | None = None
+    ) -> dict[str, object]:
+        issues.append(_deploy_issue(code, detail, agent=agent))
+        return {
+            "selected_agent": selected_agent,
+            "selected_version": selected_version,
+            "issues": issues,
+            "error_status": status_code,
+            "error_detail": detail,
+        }
+
+    found_app = app_store.get_by_name(app_name)
     if found_app is None:
-        raise HTTPException(status_code=404, detail=f"App '{name}' not found")
+        return fail(404, f"App '{app_name}' not found", code="APP_NOT_FOUND")
 
-    # 2. Check prepaid balance (if account_id provided)
+    allowed_datacenters = _normalize_datacenters(request.allowed_datacenters)
+    denied_datacenters = _normalize_datacenters(request.denied_datacenters)
+    if allowed_datacenters.intersection(denied_datacenters):
+        return fail(
+            400,
+            "Datacenter policy conflict: same datacenter appears in both allowed and denied lists",
+            code="DATACENTER_POLICY_CONFLICT",
+        )
+
     if request.account_id:
         balance = account_store.get_balance(request.account_id)
         hourly_cost = calculate_deployment_cost_per_hour(
@@ -2213,138 +2281,289 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
             request.machine_size,
         )
         if balance < hourly_cost:
-            raise HTTPException(
-                status_code=402,
-                detail=f"Insufficient funds: balance ${balance:.2f} < hourly cost ${hourly_cost:.2f}",
+            return fail(
+                402,
+                f"Insufficient funds: balance ${balance:.2f} < hourly cost ${hourly_cost:.2f}",
+                code="INSUFFICIENT_FUNDS",
             )
         logger.info(f"Prepaid check passed: balance=${balance:.2f}, hourly_cost=${hourly_cost:.2f}")
-
-    # 3. Select target agent (explicit assignment only allowed for upgrades)
-    selected_agent: Agent | None = None
-    selected_version: AppVersion | None = None
-    skipped_reasons: list[str] = []
 
     if request.agent_id:
         agent = agent_store.get(request.agent_id)
         if agent is None:
-            raise HTTPException(status_code=404, detail="Agent not found")
+            return fail(404, "Agent not found", code="AGENT_NOT_FOUND")
 
-        is_upgrade = agent.deployed_app == name and agent.status == "deployed"
+        agent_datacenter = (agent.datacenter or "").strip().lower()
+        if allowed_datacenters and agent_datacenter not in allowed_datacenters:
+            return fail(
+                400,
+                (
+                    f"Agent datacenter '{agent.datacenter or 'unknown'}' is not in allowed_datacenters"
+                ),
+                code="AGENT_DATACENTER_NOT_ALLOWED",
+                agent=agent,
+            )
+        if denied_datacenters and agent_datacenter in denied_datacenters:
+            return fail(
+                400,
+                f"Agent datacenter '{agent.datacenter}' is denied by deployment policy",
+                code="AGENT_DATACENTER_DENIED",
+                agent=agent,
+            )
+
+        is_upgrade = agent.deployed_app == app_name and agent.status == "deployed"
         if not is_upgrade:
-            raise HTTPException(
-                status_code=400,
-                detail=(
+            return fail(
+                400,
+                (
                     "Explicit agent assignment is only allowed for upgrades to the app currently "
                     "running on that agent"
                 ),
+                code="EXPLICIT_AGENT_NOT_ALLOWED",
+                agent=agent,
             )
-
         selected_agent = agent
     else:
         candidates = []
         for agent in agent_store.list():
+            agent_datacenter = (agent.datacenter or "").strip().lower()
             if not agent.verified:
+                issues.append(
+                    _deploy_issue("AGENT_NOT_VERIFIED", "Agent is not verified", agent=agent)
+                )
                 continue
             if not agent.hostname:
+                issues.append(
+                    _deploy_issue("AGENT_NO_HOSTNAME", "Agent has no hostname", agent=agent)
+                )
                 continue
             if agent.health_status != "healthy":
+                issues.append(_deploy_issue("AGENT_UNHEALTHY", "Agent is not healthy", agent=agent))
                 continue
             if agent.status not in ("undeployed", "deployed"):
+                issues.append(
+                    _deploy_issue(
+                        "AGENT_STATUS_NOT_DEPLOYABLE",
+                        f"Agent status '{agent.status}' is not deployable",
+                        agent=agent,
+                    )
+                )
                 continue
             if request.node_size and (agent.node_size or "") != request.node_size:
+                issues.append(
+                    _deploy_issue(
+                        "AGENT_NODE_SIZE_MISMATCH",
+                        (
+                            f"Agent node_size '{agent.node_size or ''}' does not match requested "
+                            f"'{request.node_size}'"
+                        ),
+                        agent=agent,
+                    )
+                )
+                continue
+            if allowed_datacenters and agent_datacenter not in allowed_datacenters:
+                issues.append(
+                    _deploy_issue(
+                        "AGENT_DATACENTER_NOT_ALLOWED",
+                        (
+                            f"Agent datacenter '{agent.datacenter or 'unknown'}' is not in "
+                            "allowed_datacenters"
+                        ),
+                        agent=agent,
+                    )
+                )
+                continue
+            if denied_datacenters and agent_datacenter in denied_datacenters:
+                issues.append(
+                    _deploy_issue(
+                        "AGENT_DATACENTER_DENIED",
+                        f"Agent datacenter '{agent.datacenter}' is denied by deployment policy",
+                        agent=agent,
+                    )
+                )
                 continue
             if not request.allow_measuring_enclave_fallback and (
                 agent.deployed_app or ""
             ).startswith("measuring-enclave"):
+                issues.append(
+                    _deploy_issue(
+                        "MEASURER_FALLBACK_DISABLED",
+                        "Agent is reserved for measuring-enclave and fallback is disabled",
+                        agent=agent,
+                    )
+                )
                 continue
             candidates.append(agent)
 
-        # Prefer undeployed agents to avoid replacing active workloads.
         candidates.sort(key=lambda a: 0 if a.status == "undeployed" else 1)
 
         for agent in candidates:
             candidate_node_size = agent.node_size or ""
-            version_obj = app_version_store.get_by_version(name, version, candidate_node_size)
+            version_obj = app_version_store.get_by_version(
+                app_name, app_version, candidate_node_size
+            )
             if version_obj is None:
-                skipped_reasons.append(
-                    f"agent {agent.agent_id}: no version variant for node_size='{candidate_node_size}'"
+                issues.append(
+                    _deploy_issue(
+                        "VERSION_VARIANT_NOT_FOUND",
+                        (
+                            f"No version variant for node_size='{candidate_node_size}' "
+                            f"on agent {agent.agent_id}"
+                        ),
+                        agent=agent,
+                    )
                 )
                 continue
+
             version_error = _version_error(version_obj)
             if version_error:
-                skipped_reasons.append(f"agent {agent.agent_id}: {version_error}")
+                code, message = version_error
+                issues.append(_deploy_issue(code, message, agent=agent))
                 continue
-            measurement_error = _measurement_error(version_obj, agent)
+
+            measurement_error = _measurement_error(app_name, app_version, version_obj, agent)
             if measurement_error:
-                skipped_reasons.append(f"agent {agent.agent_id}: {measurement_error}")
+                code, message = measurement_error
+                issues.append(_deploy_issue(code, message, agent=agent))
                 continue
+
             selected_agent = agent
             selected_version = version_obj
             break
 
         if selected_agent is None:
-            msg = "No eligible agents available for deployment"
-            if skipped_reasons:
-                msg += f". Last reason: {skipped_reasons[-1]}"
-            raise HTTPException(status_code=503, detail=msg)
+            summary = "No eligible agents available for deployment"
+            if issues:
+                summary += f". Last reason: {issues[-1].message}"
+            issues.append(_deploy_issue("NO_ELIGIBLE_AGENTS", summary))
+            return {
+                "selected_agent": None,
+                "selected_version": None,
+                "issues": issues,
+                "error_status": 503,
+                "error_detail": summary,
+            }
 
     assert selected_agent is not None
     agent_node_size = selected_agent.node_size or ""
     if request.node_size and request.node_size != agent_node_size:
-        raise HTTPException(
-            status_code=400,
-            detail=(
+        return fail(
+            400,
+            (
                 f"Requested node_size '{request.node_size}' does not match selected agent node_size "
                 f"'{agent_node_size}'"
             ),
+            code="REQUEST_NODE_SIZE_MISMATCH",
+            agent=selected_agent,
         )
 
     if not selected_agent.verified:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Agent not verified: "
-                f"{selected_agent.verification_error or 'attestation not completed'}"
-            ),
+        return fail(
+            403,
+            f"Agent not verified: {selected_agent.verification_error or 'attestation not completed'}",
+            code="AGENT_NOT_VERIFIED",
+            agent=selected_agent,
         )
 
     if not selected_agent.hostname:
-        raise HTTPException(
-            status_code=400,
-            detail="Agent does not have a tunnel hostname - cannot push deployment",
+        return fail(
+            400,
+            "Agent does not have a tunnel hostname - cannot push deployment",
+            code="AGENT_NO_HOSTNAME",
+            agent=selected_agent,
         )
 
     if selected_agent.status not in ("undeployed", "deployed"):
-        raise HTTPException(
-            status_code=400, detail=f"Agent is not available (status: {selected_agent.status})"
+        return fail(
+            400,
+            f"Agent is not available (status: {selected_agent.status})",
+            code="AGENT_STATUS_NOT_DEPLOYABLE",
+            agent=selected_agent,
         )
 
-    # 4. Resolve and validate version for selected agent node_size
     if selected_version is None:
-        selected_version = app_version_store.get_by_version(name, version, agent_node_size)
+        selected_version = app_version_store.get_by_version(app_name, app_version, agent_node_size)
     if selected_version is None:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                f"No attested version '{version}' for app '{name}' "
+        return fail(
+            404,
+            (
+                f"No attested version '{app_version}' for app '{app_name}' "
                 f"with node_size='{agent_node_size}'"
             ),
+            code="VERSION_VARIANT_NOT_FOUND",
+            agent=selected_agent,
         )
 
     version_error = _version_error(selected_version)
     if version_error:
-        raise HTTPException(status_code=400, detail=version_error)
+        code, message = version_error
+        return fail(400, message, code=code, agent=selected_agent)
 
-    measurement_error = _measurement_error(selected_version, selected_agent)
+    measurement_error = _measurement_error(app_name, app_version, selected_version, selected_agent)
     if measurement_error:
-        raise HTTPException(status_code=400, detail=measurement_error)
+        code, message = measurement_error
+        return fail(400, message, code=code, agent=selected_agent)
 
-    # 5. Build deployment config
+    return {
+        "selected_agent": selected_agent,
+        "selected_version": selected_version,
+        "issues": issues,
+        "error_status": None,
+        "error_detail": None,
+    }
+
+
+def _build_preflight_response(result: dict[str, object]) -> DeploymentPreflightResponse:
+    selected_agent = (
+        result["selected_agent"] if isinstance(result["selected_agent"], Agent) else None
+    )
+    return DeploymentPreflightResponse(
+        dry_run=True,
+        eligible=result["error_status"] is None,
+        selected_agent_id=selected_agent.agent_id if selected_agent else None,
+        selected_node_size=(selected_agent.node_size or None) if selected_agent else None,
+        selected_datacenter=(selected_agent.datacenter or None) if selected_agent else None,
+        issues=result["issues"],
+    )
+
+
+@app.post(
+    "/api/v1/apps/{name}/versions/{version}/deploy/preflight",
+    response_model=DeploymentPreflightResponse,
+)
+async def preflight_deploy_app_version(name: str, version: str, request: DeployFromVersionRequest):
+    """Dry-run deployment validation with structured placement/measurement issues."""
+    result = _evaluate_deploy_request(name, version, request)
+    return _build_preflight_response(result)
+
+
+@app.post(
+    "/api/v1/apps/{name}/versions/{version}/deploy",
+    response_model=DeploymentCreateResponse | DeploymentPreflightResponse,
+)
+async def deploy_app_version(name: str, version: str, request: DeployFromVersionRequest):
+    """Deploy a published app version to an agent.
+
+    Set `dry_run=true` to run preflight validation only.
+    """
+    result = _evaluate_deploy_request(name, version, request)
+    if request.dry_run:
+        return _build_preflight_response(result)
+
+    error_status = result["error_status"]
+    error_detail = result["error_detail"]
+    if error_status is not None:
+        raise HTTPException(status_code=error_status, detail=error_detail)
+
+    selected_agent = result["selected_agent"]
+    selected_version = result["selected_version"]
+    assert isinstance(selected_agent, Agent)
+    assert isinstance(selected_version, AppVersion)
+
     config = request.config or {}
     if "service_name" not in config:
         config["service_name"] = name
 
-    # 6. Create deployment record with billing fields
     deployment = Deployment(
         compose=selected_version.compose,
         config=config,
@@ -2359,14 +2578,12 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
     )
     deployment_id = deployment_store.create(deployment)
     logger.info(
-        f"Deployment created: {deployment_id} ({name}@{version} -> agent {selected_agent.agent_id})"
+        f"Deployment created: {deployment_id} ({name}@{version} -> {selected_agent.agent_id})"
     )
 
-    # Set GitHub owner on agent if provided
     if request.github_owner:
         agent_store.set_github_owner(selected_agent.agent_id, request.github_owner)
 
-    # 7. Update tunnel ingress if app version has custom ingress rules
     if selected_version.ingress and selected_agent.tunnel_id and cloudflare.is_configured():
         logger.info(f"Updating tunnel ingress for agent {selected_agent.agent_id}")
         await cloudflare.update_tunnel_ingress(
@@ -2375,7 +2592,6 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
             selected_version.ingress,
         )
 
-    # 8. Push deployment to agent
     try:
         agent_url = f"https://{selected_agent.hostname}/api/deploy"
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -2407,7 +2623,6 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
                 status_code=502,
                 detail=f"Agent rejected deployment: {error_detail}",
             )
-
     except httpx.RequestError as e:
         deployment_store.complete(deployment_id, status="failed", error=str(e))
         logger.error(f"Failed to reach agent: {e}")

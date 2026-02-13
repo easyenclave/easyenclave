@@ -1057,13 +1057,45 @@ def register_with_control_plane(
     write_status("registering")
     logger.info(f"Registering with control plane: {CONTROL_PLANE_URL}")
 
+    config = config or {}
+
+    def resolve_datacenter(cfg: dict) -> str:
+        explicit = str(cfg.get("datacenter", "")).strip()
+        if explicit:
+            return explicit
+
+        provider_raw = str(cfg.get("cloud_provider", "")).strip().lower()
+        az_raw = str(cfg.get("availability_zone") or cfg.get("zone") or "").strip().lower()
+        region_raw = str(cfg.get("region", "")).strip().lower()
+
+        provider = provider_raw
+        if provider_raw in ("google", "gcp"):
+            provider = "gcp"
+        elif provider_raw in ("azure", "az"):
+            provider = "azure"
+
+        # For Google/Azure, treat each AZ as a distinct deployable datacenter.
+        if provider in ("gcp", "azure") and az_raw:
+            return f"{provider}:{az_raw}"
+
+        if provider and az_raw:
+            return f"{provider}:{az_raw}"
+        if provider and region_raw:
+            return f"{provider}:{region_raw}"
+        return ""
+
+    datacenter = resolve_datacenter(config)
+    if datacenter:
+        logger.info(f"Using datacenter label: {datacenter}")
+
     response = requests.post(
         f"{CONTROL_PLANE_URL}/api/v1/agents/register",
         json={
             "attestation": attestation,
             "vm_name": vm_name,
             "version": VERSION,
-            "node_size": (config or {}).get("node_size", ""),
+            "node_size": config.get("node_size", ""),
+            "datacenter": datacenter,
         },
         timeout=30,
     )

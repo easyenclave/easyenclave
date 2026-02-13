@@ -545,3 +545,134 @@ class TestDeployMeasurementValidation:
         assert resp.status_code == 200
         assert resp.json()["deployment_id"]
         assert resp.json()["agent_id"] == agent.agent_id
+
+    def test_preflight_returns_structured_measurement_error(
+        self, client, admin_token, sample_app, sample_compose, verified_llm_agent
+    ):
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": verified_llm_agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "tiny",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy/preflight",
+            json={"agent_id": verified_llm_agent.agent_id},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["eligible"] is False
+        assert any(i["code"] == "MEASUREMENT_NODE_SIZE_MISMATCH" for i in data["issues"])
+
+    def test_preflight_datacenter_filter_selects_matching_agent(
+        self, client, admin_token, sample_app, sample_compose
+    ):
+        gcp_agent = Agent(
+            vm_name="test-llm-gcp",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-gcp.easyenclave.com",
+            status="undeployed",
+            health_status="healthy",
+            node_size="llm",
+            datacenter="gcp:us-central1-a",
+        )
+        azure_agent = Agent(
+            vm_name="test-llm-azure",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-azure.easyenclave.com",
+            status="undeployed",
+            health_status="healthy",
+            node_size="llm",
+            datacenter="azure:eastus2-1",
+        )
+        agent_store.register(gcp_agent)
+        agent_store.register(azure_agent)
+
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": gcp_agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy/preflight",
+            json={"node_size": "llm", "allowed_datacenters": ["azure:eastus2-1"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["eligible"] is True
+        assert data["selected_agent_id"] == azure_agent.agent_id
+        assert data["selected_datacenter"] == "azure:eastus2-1"
+
+    def test_deploy_dry_run_returns_preflight_payload(
+        self, client, admin_token, sample_app, sample_compose
+    ):
+        agent = Agent(
+            vm_name="test-llm-dry-run",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-dry-run.easyenclave.com",
+            status="undeployed",
+            health_status="healthy",
+            node_size="llm",
+            datacenter="gcp:us-central1-a",
+        )
+        agent_store.register(agent)
+
+        client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose, "node_size": "llm"},
+        )
+        self._manual_attest(
+            client,
+            admin_token,
+            sample_app,
+            {
+                "mrtd": agent.mrtd,
+                "attestation": {
+                    "measurement_type": "agent_reference",
+                    "node_size": "llm",
+                    "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+                },
+            },
+        )
+
+        resp = client.post(
+            f"/api/v1/apps/{sample_app}/versions/1.0.0/deploy",
+            json={"dry_run": True, "allowed_datacenters": ["gcp:us-central1-a"]},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["dry_run"] is True
+        assert data["eligible"] is True
+        assert data["selected_agent_id"] == agent.agent_id
