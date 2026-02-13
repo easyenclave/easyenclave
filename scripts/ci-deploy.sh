@@ -78,6 +78,33 @@ find_reference_agent_measurement() {
   return 1
 }
 
+load_json_map() {
+  local env_name="$1"
+  local trusted_key="$2"
+  local env_value loaded
+  local trusted_file="infra/output/reproducibility/trusted_values.json"
+
+  env_value="${!env_name:-}"
+  if [ -n "$env_value" ]; then
+    if echo "$env_value" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      echo "$env_value"
+      return 0
+    fi
+    echo "::warning::$env_name is not valid JSON object; falling back to $trusted_file"
+  fi
+
+  if [ -f "$trusted_file" ]; then
+    loaded="$(jq -c --arg key "$trusted_key" '.[$key] // {}' "$trusted_file" 2>/dev/null || echo '{}')"
+    if echo "$loaded" | jq -e 'type == "object"' >/dev/null 2>&1; then
+      echo "$loaded"
+      return 0
+    fi
+    echo "::warning::Could not parse '$trusted_key' from $trusted_file; continuing with empty map"
+  fi
+
+  echo "{}"
+}
+
 verify_app_version_variant() {
   local app_name="$1"
   local version="$2"
@@ -162,8 +189,18 @@ deploy_app() {
 
   # Manual attest (bootstrap) with node-size-specific measurement metadata when available.
   if [ -n "$node_size" ]; then
-    measured_profile_mrtd=$(echo "${TRUSTED_AGENT_MRTDS_BY_SIZE:-{}}" | jq -r --arg ns "$node_size" '.[$ns] // ""')
-    measured_profile_rtmrs=$(echo "${TRUSTED_AGENT_RTMRS_BY_SIZE:-{}}" | jq -c --arg ns "$node_size" '.[$ns] // null')
+    local mrtds_by_size_json rtmrs_by_size_json
+    mrtds_by_size_json="$(load_json_map TRUSTED_AGENT_MRTDS_BY_SIZE mrtds_by_size)"
+    rtmrs_by_size_json="$(load_json_map TRUSTED_AGENT_RTMRS_BY_SIZE rtmrs_by_size)"
+
+    if ! measured_profile_mrtd="$(echo "$mrtds_by_size_json" | jq -r --arg ns "$node_size" '.[$ns] // ""' 2>/dev/null)"; then
+      echo "::warning::Failed to read MRTD profile for node_size='$node_size'; ignoring CI measured profile map"
+      measured_profile_mrtd=""
+    fi
+    if ! measured_profile_rtmrs="$(echo "$rtmrs_by_size_json" | jq -c --arg ns "$node_size" '.[$ns] // null' 2>/dev/null)"; then
+      echo "::warning::Failed to read RTMR profile for node_size='$node_size'; ignoring CI measured profile map"
+      measured_profile_rtmrs="null"
+    fi
 
     if [ -n "$measured_profile_mrtd" ]; then
       measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
