@@ -40,11 +40,11 @@ on:
       azure_zone_label:
         description: "Azure zone label for datacenter metadata (e.g. eastus2-1)"
         required: false
-        default: "eastus2-1"
+        default: "eastus2-3"
       azure_vm_size:
         description: "Azure VM size"
         required: false
-        default: "Standard_DC2es_v6"
+        default: "Standard_DC2es_v5"
       verify_app_name:
         description: "Optional app name for deploy preflight checks"
         required: false
@@ -74,8 +74,8 @@ jobs:
       GCP_REGION: ${{ github.event.inputs.gcp_region || 'us-central1' }}
       GCP_MACHINE_TYPE: ${{ github.event.inputs.gcp_machine_type || 'c3-standard-4' }}
       AZURE_LOCATION: ${{ github.event.inputs.azure_location || 'eastus2' }}
-      AZURE_ZONE_LABEL: ${{ github.event.inputs.azure_zone_label || 'eastus2-1' }}
-      AZURE_VM_SIZE: ${{ github.event.inputs.azure_vm_size || 'Standard_DC2es_v6' }}
+      AZURE_ZONE_LABEL: ${{ github.event.inputs.azure_zone_label || 'eastus2-3' }}
+      AZURE_VM_SIZE: ${{ github.event.inputs.azure_vm_size || 'Standard_DC2es_v5' }}
       VERIFY_APP_NAME: ${{ github.event.inputs.verify_app_name || '' }}
       VERIFY_APP_VERSION: ${{ github.event.inputs.verify_app_version || '' }}
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -147,7 +147,7 @@ jobs:
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
       - name: Authenticate to Azure (credentials fallback)
-        if: (github.event.inputs.enable_azure != 'false') && env.AZURE_CLIENT_ID == '' && env.AZURE_CREDENTIALS != ''
+        if: (github.event.inputs.enable_azure != 'false') && (env.AZURE_CLIENT_ID == '' || env.AZURE_TENANT_ID == '' || env.AZURE_SUBSCRIPTION_ID == '') && env.AZURE_CREDENTIALS != ''
         uses: azure/login@v2
         with:
           creds: ${{ env.AZURE_CREDENTIALS }}
