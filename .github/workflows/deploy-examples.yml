@@ -107,8 +107,8 @@ jobs:
           EASYENCLAVE_URL: https://app.easyenclave.com
         run: python3 examples/private-llm/test.py
 
-  deploy-oram-contacts:
-    name: Deploy ORAM Contacts
+  deploy-noise-contacts:
+    name: Deploy Noise Contacts
     runs-on: ubuntu-latest
     needs: deploy-hello-tdx
     if: always() && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
@@ -120,17 +120,17 @@ jobs:
       - name: Register app
         uses: ./.github/actions/register-app
         with:
-          name: oram-contacts
-          description: "Privacy-preserving contact discovery with ORAM"
-          tags: "privacy,oram,contacts,example"
+          name: noise-contacts
+          description: "Contacts demo secured with Noise and attestation binding"
+          tags: "noise,attestation,contacts,example"
 
       - name: Deploy to EasyEnclave
         id: deploy
         uses: ./.github/actions/deploy
         with:
-          app_name: oram-contacts
-          compose_file: apps/oram-contacts/docker-compose.yml
-          service_name: oram-contacts
+          app_name: noise-contacts
+          compose_file: apps/noise-contacts/docker-compose.yml
+          service_name: noise-contacts
           health_endpoint: /health
           agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
@@ -143,10 +143,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ./sdk/ httpx
+          pip install ./sdk/ httpx noiseprotocol cryptography
 
       - name: Run integration tests
-        run: python3 examples/oram-contacts/test.py
+        run: python3 examples/noise-contacts/test.py
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: https://app.easyenclave.com
