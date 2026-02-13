@@ -13,6 +13,8 @@ All deployments go through the control plane API - this CLI only handles VM life
 import argparse
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -523,12 +525,96 @@ runcmd:
             name: VM name to delete
         """
         # First try graceful shutdown
-        self._virsh("shutdown", name)
+        self._virsh("shutdown", name, check=False)
         time.sleep(2)
 
         # Then force destroy
-        self._virsh("destroy", name)
-        self._virsh("undefine", name)
+        self._virsh("destroy", name, check=False)
+        # Some libvirt versions require explicit --nvram removal.
+        self._virsh("undefine", name, "--nvram", check=False)
+        self._virsh("undefine", name, check=False)
+        self.cleanup_orphaned_workdir_artifacts()
+
+    def _workdir_scoped_path(self, raw_path: str) -> Path | None:
+        """Return resolved path if it is within WORKDIR, else None."""
+        if not raw_path:
+            return None
+        try:
+            candidate = Path(raw_path).resolve()
+            workdir = self.WORKDIR.resolve()
+        except Exception:
+            return None
+        if candidate == workdir or workdir in candidate.parents:
+            return candidate
+        return None
+
+    def _collect_domain_workdir_artifacts(self, name: str) -> set[Path]:
+        """Collect WORKDIR paths referenced by a domain XML."""
+        result = self._virsh("dumpxml", name, text=True, check=False)
+        if result.returncode != 0 or not result.stdout:
+            return set()
+
+        refs: set[Path] = set()
+        for raw in re.findall(r"""(?:file|path)=['"]([^'"]+)['"]""", result.stdout):
+            scoped = self._workdir_scoped_path(raw)
+            if scoped is not None:
+                refs.add(scoped)
+        return refs
+
+    def _remove_path(self, path: Path) -> bool:
+        """Best-effort path removal."""
+        try:
+            if not path.exists():
+                return False
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception as e:
+            print(f"Warning: failed to remove {path}: {e}", file=sys.stderr)
+            return False
+
+    def cleanup_orphaned_workdir_artifacts(self) -> int:
+        """Delete tdvirsh artifacts in WORKDIR not referenced by active domains."""
+        if not self.WORKDIR.exists():
+            return 0
+
+        referenced: set[Path] = set()
+        for vm_name in self.vm_list():
+            referenced.update(self._collect_domain_workdir_artifacts(vm_name))
+
+        # If a cidata ISO is referenced, keep its matching cidata.<id> directory too.
+        referenced_cidata_dirs = {
+            self.WORKDIR / p.name[:-4]
+            for p in referenced
+            if p.name.startswith("cidata.") and p.name.endswith(".iso")
+        }
+
+        managed_prefixes = (
+            "overlay.",
+            "data.",
+            "cidata.",
+            "console.",
+            "ip.",
+            f"{self.DOMAIN_PREFIX}.",
+        )
+
+        removed = 0
+        for entry in self.WORKDIR.iterdir():
+            if not entry.name.startswith(managed_prefixes):
+                continue
+            scoped = self._workdir_scoped_path(str(entry))
+            if scoped is None:
+                continue
+            if scoped in referenced or scoped in referenced_cidata_dirs:
+                continue
+            if self._remove_path(scoped):
+                removed += 1
+
+        return removed
 
     def vm_list(self) -> list:
         """List all TDX VMs.
@@ -743,6 +829,9 @@ runcmd:
                 self._virsh("undefine", vm_name, check=False, timeout=20)
             except subprocess.TimeoutExpired:
                 print(f"Warning: timed out undefining {vm_name}", file=sys.stderr)
+            removed = self.cleanup_orphaned_workdir_artifacts()
+            if removed:
+                print(f"Cleaned up {removed} orphaned tdvirsh artifacts", file=sys.stderr)
 
         if measurements:
             return {
