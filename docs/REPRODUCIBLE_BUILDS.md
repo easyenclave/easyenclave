@@ -24,6 +24,10 @@ If any value differs, CI fails before deployment.
 
 CI always runs this gate in strict mode: both measurement mismatch and artifact mismatch fail.
 
+CI also publishes a determinism report:
+- Job summary table in GitHub Actions (artifact digests + measurements + durations)
+- Uploaded artifact bundle `reproducibility-report` with `report.json`, `summary.md`, and per-build comparison files
+
 ## CI entrypoint
 
 The gate is executed by:
@@ -48,6 +52,12 @@ From repo root:
 
 ```bash
 ./scripts/ci-reproducibility-check.sh
+```
+
+Local report output is written to:
+
+```bash
+infra/output/reproducibility/
 ```
 
 ## Notes

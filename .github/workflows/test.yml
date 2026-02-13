@@ -185,7 +185,43 @@ jobs:
       # ---- Build (runs in parallel with test + docker) ----
 
       - name: Reproducibility check (strict)
+        id: repro
         run: ./scripts/ci-reproducibility-check.sh
+
+      - name: Publish reproducibility summary
+        if: always()
+        run: |
+          SUMMARY_FILE="infra/output/reproducibility/summary.md"
+          if [ -f "$SUMMARY_FILE" ]; then
+            cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## Determinism Report"
+              echo ""
+              echo "- Status: **missing report**"
+              echo "- Reason: reproducibility script did not emit \`$SUMMARY_FILE\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload reproducibility artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducibility-report
+          if-no-files-found: warn
+          path: |
+            infra/output/reproducibility/report.json
+            infra/output/reproducibility/summary.md
+            infra/output/reproducibility/build1.sha256.txt
+            infra/output/reproducibility/build2.sha256.txt
+            infra/output/reproducibility/build1.sizes.tsv
+            infra/output/reproducibility/build2.sizes.tsv
+            infra/output/reproducibility/build1.measure.json
+            infra/output/reproducibility/build2.measure.json
+            infra/output/reproducibility/build1.timing.json
+            infra/output/reproducibility/build2.timing.json
+            infra/output/reproducibility/artifact.diff
+            infra/output/reproducibility/measurement.diff
 
       - name: Build and measure
         id: build
