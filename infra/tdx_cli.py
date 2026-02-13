@@ -26,7 +26,7 @@ CONTROL_PLANE_MODE = "control-plane"
 AGENT_MODE = "agent"
 
 # Node size presets: (memory_gib, vcpu_count, disk_gib)
-# disk_gib=0 means no data disk (tmpfs+zram only).
+# disk_gib=0 means no data disk (tmpfs-only fallback).
 NODE_SIZES = {
     "tiny": (4, 4, 0),
     "standard": (16, 16, 0),
@@ -260,7 +260,7 @@ runcmd:
             memory_gib: VM memory in GiB
             vcpu_count: Number of vCPUs
             verity: If True, use dm-verity image with direct kernel boot
-            disk_gib: Data disk size in GiB (0 = no disk, tmpfs+zram only)
+            disk_gib: Data disk size in GiB (0 = no disk, tmpfs-only fallback)
 
         Returns:
             Dict with vm_name, uuid, and info
@@ -278,13 +278,19 @@ runcmd:
             pass  # Directory owned by another user, proceed anyway
         rand_str = uuid.uuid4().hex[:15]
 
-        # Build launcher config
+        # Build launcher config.
+        # Keep measure-mode cmdline deterministic so runtime RTMRs are stable
+        # across repeated measurement boots.
         launcher_config = {
             "mode": mode,
-            "vm_id": rand_str,
             "node_size": size_name,
             **(config or {}),
         }
+        if "vm_id" not in launcher_config:
+            if mode == "measure":
+                launcher_config["vm_id"] = f"measure-{size_name or 'default'}"
+            else:
+                launcher_config["vm_id"] = rand_str
 
         # Create serial console log file with world-readable permissions
         # (libvirt will append to it, preserving permissions)
@@ -572,7 +578,7 @@ runcmd:
         """Dump last 500 lines of serial log for diagnostics."""
         print("\n=== Serial log (last 500 lines) ===", file=sys.stderr)
         if serial_log and Path(serial_log).exists():
-            lines = Path(serial_log).read_text().splitlines()
+            lines = Path(serial_log).read_text(errors="replace").splitlines()
             for line in lines[-500:]:
                 print(f"  {line}", file=sys.stderr)
         else:
@@ -583,7 +589,7 @@ runcmd:
         """Parse EASYENCLAVE_MEASUREMENTS=<json> from serial log as fallback."""
         if not Path(serial_log).exists():
             return None
-        for line in Path(serial_log).read_text().splitlines():
+        for line in Path(serial_log).read_text(errors="replace").splitlines():
             if "EASYENCLAVE_MEASUREMENTS=" in line:
                 try:
                     raw = line.split("EASYENCLAVE_MEASUREMENTS=", 1)[1].strip()
@@ -621,10 +627,19 @@ runcmd:
                 return None
             time.sleep(0.1)
 
+        last_full_scan = 0.0
         with open(path, errors="replace") as f:
             while time.time() < deadline:
                 line = f.readline()
                 if not line:
+                    # Fallback scan while tailing: some serial writes may not be
+                    # observed immediately via readline() under heavy console output.
+                    now = time.time()
+                    if now - last_full_scan >= 1.0:
+                        scanned = self._parse_measurements_from_serial(serial_log)
+                        if scanned and scanned.get("mrtd"):
+                            return scanned
+                        last_full_scan = now
                     time.sleep(0.1)
                     continue
 
@@ -710,10 +725,24 @@ runcmd:
                 )
 
         finally:
-            # Force-destroy immediately — no need to wait for graceful shutdown
+            # Best-effort cleanup with timeouts so CI never hangs on virsh.
             print(f"Destroying temporary VM: {vm_name}", file=sys.stderr)
-            self._virsh("destroy", vm_name)
-            self._virsh("undefine", vm_name)
+            try:
+                state = self._virsh("domstate", vm_name, text=True, check=False, timeout=10)
+                is_running = state.returncode == 0 and "running" in state.stdout.lower()
+            except Exception:
+                is_running = True
+
+            if is_running:
+                try:
+                    self._virsh("destroy", vm_name, check=False, timeout=20)
+                except subprocess.TimeoutExpired:
+                    print(f"Warning: timed out destroying {vm_name}", file=sys.stderr)
+
+            try:
+                self._virsh("undefine", vm_name, check=False, timeout=20)
+            except subprocess.TimeoutExpired:
+                print(f"Warning: timed out undefining {vm_name}", file=sys.stderr)
 
         if measurements:
             return {

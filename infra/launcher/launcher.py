@@ -309,6 +309,21 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         """Get system stats."""
         return collect_system_stats()
 
+    def _get_cached_measurements(self) -> dict:
+        """Get cached TDX measurements from the latest attestation."""
+        measurements = {}
+        attestation = _admin_state.get("attestation") or {}
+        if isinstance(attestation, dict):
+            tdx = attestation.get("tdx") or {}
+            if isinstance(tdx, dict):
+                raw = tdx.get("measurements") or {}
+                if isinstance(raw, dict):
+                    for key in ("mrtd", "rtmr0", "rtmr1", "rtmr2", "rtmr3"):
+                        value = raw.get(key)
+                        if value:
+                            measurements[key] = value
+        return {"measurements": measurements}
+
     def _proxy_to_workload(self, body=None):
         """Proxy request to workload on port 8080."""
         import http.client
@@ -419,6 +434,13 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(401, {"error": "Unauthorized"})
                 return
             self._send_json(200, self._get_stats())
+            return
+
+        if path == "/api/admin/measurements":
+            if not self._check_admin_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            self._send_json(200, self._get_cached_measurements())
             return
 
         # Proxy everything else to workload

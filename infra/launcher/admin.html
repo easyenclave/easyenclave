@@ -75,6 +75,13 @@
             </div>
 
             <div class="card">
+                <h2>TDX Measurements</h2>
+                <table id="measurementTable">
+                    <tr><td>Loading...</td><td></td></tr>
+                </table>
+            </div>
+
+            <div class="card">
                 <div class="flex">
                     <h2>Container Logs</h2>
                     <div>
@@ -175,8 +182,26 @@
                 }
 
                 loadStats();
+                loadMeasurements();
                 loadLogs();
             } catch(e) { console.error(e); }
+        }
+
+        async function loadMeasurements() {
+            const table = document.getElementById("measurementTable");
+            try {
+                const data = await apiFetch("/api/admin/measurements");
+                const m = (data && data.measurements) ? data.measurements : {};
+                const rows = [];
+                rows.push(`<tr><td>MRTD</td><td><code>${m.mrtd || "N/A"}</code></td></tr>`);
+                rows.push(`<tr><td>RTMR0</td><td><code>${m.rtmr0 || "N/A"}</code></td></tr>`);
+                rows.push(`<tr><td>RTMR1</td><td><code>${m.rtmr1 || "N/A"}</code></td></tr>`);
+                rows.push(`<tr><td>RTMR2</td><td><code>${m.rtmr2 || "N/A"}</code></td></tr>`);
+                rows.push(`<tr><td>RTMR3</td><td><code>${m.rtmr3 || "N/A"}</code></td></tr>`);
+                table.innerHTML = rows.join("");
+            } catch (e) {
+                table.innerHTML = `<tr><td>Error</td><td>${e.message}</td></tr>`;
+            }
         }
 
         async function loadStats() {

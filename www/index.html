@@ -401,9 +401,14 @@
                     <h3>Measuring Enclave</h3>
                     <p>A dedicated TDX enclave resolves Docker image tags to immutable SHA256 digests automatically, removing human judgment from the measurement loop.</p>
                 </div>
+                <div class="security-card">
+                    <span class="security-label">Simple CI policy</span>
+                    <h3>Two-Build Repro Check</h3>
+                    <p>Every push runs two clean builds. If TDX measurements drift or artifact hashes differ, deployment is blocked.</p>
+                </div>
             </div>
 
-            <p class="security-note">Admin access is secured with GitHub OAuth and CSRF-protected state tokens, alongside password authentication as fallback.</p>
+            <p class="security-note">Admin access is secured with GitHub OAuth and CSRF-protected state tokens, alongside password authentication as fallback. Reproducibility mode details: <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/REPRODUCIBLE_BUILDS.md" target="_blank">docs/REPRODUCIBLE_BUILDS.md</a>.</p>
         </div>
     </section>
 

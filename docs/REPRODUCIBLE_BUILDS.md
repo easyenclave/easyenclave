@@ -2,6 +2,14 @@
 
 This runbook documents how we verify reproducibility for the TDX dm-verity image artifacts.
 
+## Simple model
+
+We build twice so we can detect nondeterminism from the same commit.
+
+- Build #1 and Build #2 should produce the same outputs.
+- If they differ, the build pipeline is not deterministic.
+- Measurement drift is always treated as a deployment blocker.
+
 ## What is checked
 
 The CI reproducibility gate runs two builds and verifies:
@@ -10,13 +18,11 @@ The CI reproducibility gate runs two builds and verifies:
 2. `infra/image/output/easyenclave.initrd` SHA256 is identical
 3. `infra/image/output/easyenclave.root.raw` SHA256 is identical
 4. `infra/image/output/easyenclave.cmdline` SHA256 is identical
-5. Tiny-profile TDX measurements (`mrtd`, `rtmr0..rtmr3`) are identical
+5. Tiny-profile stable TDX measurement fields (`mrtd`, `rtmr0`, `rtmr1`, `rtmr2`) are identical
 
 If any value differs, CI fails before deployment.
 
-By default, CI uses `CI_REPRO_MODE=cached` (artifact reset, mkosi cache retained) to keep the check stable on self-hosted capacity.
-In cached mode, measurement drift is enforced (fail), while artifact hash drift is surfaced as a warning.
-For strict enforcement of both artifact and measurement equality, run `CI_REPRO_MODE=full`.
+CI always runs this gate in strict mode: both measurement mismatch and artifact mismatch fail.
 
 ## CI entrypoint
 
@@ -26,10 +32,10 @@ The gate is executed by:
 ./scripts/ci-reproducibility-check.sh
 ```
 
-To force full clean reproducibility locally:
+The same strict check runs locally with:
 
 ```bash
-CI_REPRO_MODE=full ./scripts/ci-reproducibility-check.sh
+./scripts/ci-reproducibility-check.sh
 ```
 
 ## Running locally

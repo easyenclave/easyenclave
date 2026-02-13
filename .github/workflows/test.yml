@@ -184,9 +184,7 @@ jobs:
 
       # ---- Build (runs in parallel with test + docker) ----
 
-      - name: Reproducibility check (cached)
-        env:
-          CI_REPRO_MODE: "cached"
+      - name: Reproducibility check (strict)
         run: ./scripts/ci-reproducibility-check.sh
 
       - name: Build and measure
@@ -197,7 +195,7 @@ jobs:
 
       # ---- Wait for test + docker jobs before deploying ----
 
-      - name: Wait for test and docker jobs
+      - name: Wait for dependency jobs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -213,7 +211,7 @@ jobs:
             fi
 
             if [ "$TEST" = "success" ] && [ "$DOCKER" = "success" ]; then
-              echo "test and docker jobs completed successfully"
+              echo "All dependency jobs completed successfully"
               break
             fi
 

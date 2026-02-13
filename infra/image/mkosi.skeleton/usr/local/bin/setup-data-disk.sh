@@ -4,13 +4,10 @@
 # Two modes:
 #   1. Data disk present (/dev/vdb): encrypt with ephemeral dm-crypt key,
 #      format ext4, mount at /data. The host sees only ciphertext.
-#   2. No data disk: fall back to zram swap + tmpfs (all in TDX-encrypted RAM).
+#   2. No data disk: fall back to tmpfs only (all in TDX-encrypted RAM).
 #
 # Runs as a oneshot systemd service before Docker and the launcher.
 set -ex
-
-# Get total RAM in KiB
-mem_kb=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 
 if [ -b /dev/vdb ]; then
     # ── Mode 1: encrypted data disk ──────────────────────────────────
@@ -34,19 +31,9 @@ if [ -b /dev/vdb ]; then
 
     # No zram needed — Docker storage lives on the data disk, not RAM.
 else
-    # ── Mode 2: zram + tmpfs (no data disk) ──────────────────────────
-    # zram = 4x RAM for proportional swap at every size.
-    zram_kb=$((mem_kb * 4))
-
-    modprobe zram num_devices=1
-    echo lz4 > /sys/block/zram0/comp_algorithm
-    echo "${zram_kb}K" > /sys/block/zram0/disksize
-    mkswap /dev/zram0
-    swapon -p 100 /dev/zram0
-
-    # Mount /data as tmpfs backed by RAM + zram
-    tmpfs_kb=$((mem_kb + zram_kb))
-    mount -t tmpfs -o "nosuid,nodev,size=${tmpfs_kb}k" tmpfs /data
+    # ── Mode 2: tmpfs only (no data disk) ─────────────────────────────
+    # Keep this deterministic for measurement runs.
+    mount -t tmpfs -o "nosuid,nodev" tmpfs /data
 fi
 
 mkdir -p /data/docker /data/containerd /data/workload /data/easyenclave

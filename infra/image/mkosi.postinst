@@ -33,7 +33,7 @@ apt-get install -y --no-install-recommends \
     docker-buildx-plugin docker-compose-plugin \
     cloudflared
 
-# Redirect containerd storage to /data/containerd (swap-backed tmpfs).
+# Redirect containerd storage to /data/containerd.
 # Must be written AFTER containerd.io installs its default config.
 mkdir -p /etc/containerd
 cat > /etc/containerd/config.toml <<'TOML'
