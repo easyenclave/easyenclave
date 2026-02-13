@@ -2211,6 +2211,49 @@ async def measurement_callback(request: MeasurementCallbackRequest):
         raise HTTPException(status_code=404, detail="Version not found")
 
     if request.status == "success":
+        mode = get_setting("operational.signature_verification_mode").strip().lower()
+        if mode not in {"strict", "warn", "disabled"}:
+            logger.warning(f"Invalid SIGNATURE_VERIFICATION_MODE '{mode}', defaulting to 'warn'")
+            mode = "warn"
+
+        if mode != "disabled":
+            failures: list[str] = []
+            measurement = request.measurement if isinstance(request.measurement, dict) else None
+            if measurement is None:
+                failures.append("measurement payload missing")
+            else:
+                resolved_images = measurement.get("resolved_images")
+                if not isinstance(resolved_images, dict) or not resolved_images:
+                    failures.append("resolved_images missing from measurement payload")
+                else:
+                    for service_name, image_entry in resolved_images.items():
+                        if not isinstance(image_entry, dict):
+                            failures.append(f"{service_name}: invalid image measurement payload")
+                            continue
+                        if image_entry.get("signature_verified") is True:
+                            continue
+                        reason = image_entry.get("signature_error") or "signature not verified"
+                        failures.append(f"{service_name}: {reason}")
+
+            if failures:
+                summary = "; ".join(failures[:5])
+                if len(failures) > 5:
+                    summary += f"; ... (+{len(failures) - 5} more)"
+                message = (
+                    "Image signature verification failed: "
+                    f"{summary} (mode={mode}, app={found_version.app_name}@{found_version.version})"
+                )
+                if mode == "strict":
+                    app_version_store.update_status(
+                        request.version_id,
+                        status="failed",
+                        attestation=request.measurement,
+                        rejection_reason=message,
+                    )
+                    logger.warning(message)
+                    return {"status": "ok"}
+                logger.warning(message)
+
         measured_mrtd = None
         if isinstance(request.measurement, dict):
             measured_mrtd = request.measurement.get("mrtd")

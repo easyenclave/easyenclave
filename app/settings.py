@@ -165,6 +165,14 @@ _reg(
     "operational",
 )
 _reg(
+    "operational.signature_verification_mode",
+    "SIGNATURE_VERIFICATION_MODE",
+    "warn",
+    False,
+    "Image signature verification enforcement mode: strict, warn, or disabled",
+    "operational",
+)
+_reg(
     "operational.agent_attestation_interval",
     "AGENT_ATTESTATION_INTERVAL",
     "3600",

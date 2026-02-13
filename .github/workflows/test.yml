@@ -52,11 +52,17 @@ jobs:
     runs-on: ubuntu-latest
 
     permissions:
+      id-token: write
+      contents: read
       packages: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Install cosign
+        if: github.event_name == 'push'
+        uses: sigstore/cosign-installer@v3
 
       - name: Build Docker image
         run: |
@@ -88,7 +94,10 @@ jobs:
           IMAGE="ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}"
           docker build -t "$IMAGE" apps/measuring-enclave/
           docker push "$IMAGE"
+          DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
+          cosign sign --yes "$DIGEST_REF"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST_REF" >> "$GITHUB_OUTPUT"
           echo "Pushed $IMAGE"
 
           # Ensure the package is publicly pullable (agents have no ghcr.io credentials)
@@ -108,7 +117,10 @@ jobs:
           docker build -t "$IMAGE" -t "$LATEST" apps/oram-contacts/
           docker push "$IMAGE"
           docker push "$LATEST"
+          DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
+          cosign sign --yes "$DIGEST_REF"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST_REF" >> "$GITHUB_OUTPUT"
 
           # Make package public (agents need access without GHCR credentials)
           PACKAGE_NAME="${{ github.event.repository.name }}%2Foram-contacts"
@@ -127,7 +139,10 @@ jobs:
           docker build -t "$IMAGE" -t "$LATEST" .
           docker push "$IMAGE"
           docker push "$LATEST"
+          DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
+          cosign sign --yes "$DIGEST_REF"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST_REF" >> "$GITHUB_OUTPUT"
 
           # Make package public (control plane VM needs access without GHCR credentials)
           PACKAGE_NAME="${{ github.event.repository.name }}%2Fcontrol-plane"

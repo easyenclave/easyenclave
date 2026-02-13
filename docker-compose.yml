@@ -21,6 +21,8 @@ services:
       - NONCE_ENFORCEMENT_MODE=${NONCE_ENFORCEMENT_MODE:-optional}
       - NONCE_TTL_SECONDS=${NONCE_TTL_SECONDS:-300}
       - NONCE_LENGTH=${NONCE_LENGTH:-32}
+      # Measurement signature enforcement
+      - SIGNATURE_VERIFICATION_MODE=${SIGNATURE_VERIFICATION_MODE:-warn}
       # Attestation refresh interval (seconds, 0 to disable)
       - AGENT_ATTESTATION_INTERVAL=${AGENT_ATTESTATION_INTERVAL:-3600}
       # Stale agent cleanup (hours without heartbeat before deletion)

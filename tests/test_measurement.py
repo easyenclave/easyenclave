@@ -158,6 +158,111 @@ class TestMeasurementCallback:
         assert ver.json()["mrtd"] == measurement["mrtd"]
         assert ver.json()["attestation"] == measurement
 
+    def test_callback_signature_strict_rejects_unverified_images(
+        self, client, sample_app, sample_compose
+    ):
+        from app.settings import set_setting
+
+        set_setting("operational.signature_verification_mode", "strict")
+
+        pub = client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose},
+        )
+        version_id = pub.json()["version_id"]
+
+        measurement = {
+            "compose_hash": "abc123",
+            "resolved_images": {
+                "web": {
+                    "original": "nginx:latest",
+                    "digest": "sha256:def456",
+                    "signature_verified": False,
+                    "signature_error": "no valid signature found",
+                }
+            },
+        }
+        resp = client.post(
+            "/api/v1/internal/measurement-callback",
+            json={
+                "version_id": version_id,
+                "status": "success",
+                "measurement": measurement,
+            },
+        )
+        assert resp.status_code == 200
+
+        ver = client.get(f"/api/v1/apps/{sample_app}/versions/1.0.0")
+        assert ver.json()["status"] == "failed"
+        assert "Image signature verification failed" in ver.json()["rejection_reason"]
+
+    def test_callback_signature_warn_allows_unverified_images(
+        self, client, sample_app, sample_compose
+    ):
+        from app.settings import set_setting
+
+        set_setting("operational.signature_verification_mode", "warn")
+
+        pub = client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose},
+        )
+        version_id = pub.json()["version_id"]
+
+        measurement = {
+            "compose_hash": "abc123",
+            "mrtd": "deadbeef" * 12,
+            "resolved_images": {
+                "web": {
+                    "original": "nginx:latest",
+                    "digest": "sha256:def456",
+                    "signature_verified": False,
+                    "signature_error": "no valid signature found",
+                }
+            },
+        }
+        resp = client.post(
+            "/api/v1/internal/measurement-callback",
+            json={
+                "version_id": version_id,
+                "status": "success",
+                "measurement": measurement,
+            },
+        )
+        assert resp.status_code == 200
+
+        ver = client.get(f"/api/v1/apps/{sample_app}/versions/1.0.0")
+        assert ver.json()["status"] == "attested"
+
+    def test_callback_signature_disabled_skips_checks(self, client, sample_app, sample_compose):
+        from app.settings import set_setting
+
+        set_setting("operational.signature_verification_mode", "disabled")
+
+        pub = client.post(
+            f"/api/v1/apps/{sample_app}/versions",
+            json={"version": "1.0.0", "compose": sample_compose},
+        )
+        version_id = pub.json()["version_id"]
+
+        measurement = {
+            "compose_hash": "abc123",
+            "mrtd": "deadbeef" * 12,
+            "resolved_images": {"web": {"original": "nginx:latest", "digest": "sha256:def456"}},
+        }
+        resp = client.post(
+            "/api/v1/internal/measurement-callback",
+            json={
+                "version_id": version_id,
+                "status": "success",
+                "measurement": measurement,
+            },
+        )
+        assert resp.status_code == 200
+
+        ver = client.get(f"/api/v1/apps/{sample_app}/versions/1.0.0")
+        assert ver.json()["status"] == "attested"
+
     def test_callback_failure(self, client, sample_app, sample_compose):
         """Failed measurement callback should set status to 'failed'."""
         pub = client.post(

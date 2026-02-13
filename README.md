@@ -268,6 +268,7 @@ Environment variables:
 | `ALLOWED_TCB_STATUSES` | Comma-separated allowed TCB statuses | `UpToDate` |
 | `NONCE_ENFORCEMENT_MODE` | Nonce challenge mode: `required`, `optional`, `disabled` | `required` |
 | `NONCE_TTL_SECONDS` | Nonce expiration time in seconds | `300` |
+| `SIGNATURE_VERIFICATION_MODE` | Measurement signature mode: `strict`, `warn`, `disabled` | `warn` |
 | `ADMIN_PASSWORD_HASH` | Bcrypt hash for admin password authentication | (none) |
 | `GITHUB_OAUTH_CLIENT_ID` | GitHub OAuth app client ID (optional) | (none) |
 | `GITHUB_OAUTH_CLIENT_SECRET` | GitHub OAuth app client secret (optional) | (none) |
