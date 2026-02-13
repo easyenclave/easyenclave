@@ -115,7 +115,17 @@ runs:
       run: |
         TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
         SHORT_SHA="${GITHUB_SHA:0:7}"
-        VERSION="${TIMESTAMP}-${SHORT_SHA}"
+        RUN_ID="${GITHUB_RUN_ID:-0}"
+        RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
+        PLACEMENT_HINT="${{ inputs.allowed_clouds }}"
+        if [ -z "$PLACEMENT_HINT" ]; then
+          PLACEMENT_HINT="${{ inputs.allowed_datacenters }}"
+        fi
+        if [ -z "$PLACEMENT_HINT" ]; then
+          PLACEMENT_HINT="${GITHUB_JOB:-deploy}"
+        fi
+        PLACEMENT_HINT=$(echo "$PLACEMENT_HINT" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//' | cut -c1-24)
+        VERSION="${TIMESTAMP}-${SHORT_SHA}-${RUN_ID}-${RUN_ATTEMPT}-${PLACEMENT_HINT}"
         echo "Generated version: $VERSION"
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
