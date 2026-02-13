@@ -1,7 +1,6 @@
 """Tests for nonce challenge and replay attack prevention."""
 
 import os
-import time
 
 import pytest
 
@@ -120,7 +119,7 @@ def test_verify_nonce_missing_challenge():
     assert "no nonce challenge" in error.lower()
 
 
-def test_verify_nonce_expired():
+def test_verify_nonce_expired(monkeypatch):
     """Test verification of expired nonce."""
     os.environ["NONCE_ENFORCEMENT_MODE"] = "required"
     os.environ["NONCE_TTL_SECONDS"] = "1"  # 1 second TTL
@@ -133,8 +132,9 @@ def test_verify_nonce_expired():
     vm_name = "test-vm"
     nonce = app.nonce.issue_challenge(vm_name)
 
-    # Wait for expiration
-    time.sleep(1.1)
+    # Fast-forward clock past TTL without sleeping.
+    now = app.nonce.time.time()
+    monkeypatch.setattr(app.nonce.time, "time", lambda: now + 2.0)
 
     # Verify with expired nonce
     verified, error = app.nonce.verify_nonce(vm_name, nonce)
@@ -221,7 +221,7 @@ def test_disabled_mode_always_allows():
     assert error is None
 
 
-def test_cleanup_expired_nonces():
+def test_cleanup_expired_nonces(monkeypatch):
     """Test cleanup of expired nonces."""
     os.environ["NONCE_TTL_SECONDS"] = "1"
     import importlib
@@ -237,8 +237,9 @@ def test_cleanup_expired_nonces():
 
     assert app.nonce.get_nonce_store_size() == 3
 
-    # Wait for expiration
-    time.sleep(1.1)
+    # Fast-forward clock past TTL without sleeping.
+    now = app.nonce.time.time()
+    monkeypatch.setattr(app.nonce.time, "time", lambda: now + 2.0)
 
     # Cleanup
     app.nonce.cleanup_expired_nonces()

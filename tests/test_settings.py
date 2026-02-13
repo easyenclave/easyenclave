@@ -168,11 +168,13 @@ def test_unknown_key_raises():
 
 def test_api_list_settings(client):
     """GET /api/v1/admin/settings returns all settings."""
+    from app.settings import SETTING_DEFS
+
     resp = client.get("/api/v1/admin/settings", headers=_admin_headers())
     assert resp.status_code == 200
     data = resp.json()
     assert "settings" in data
-    assert len(data["settings"]) == 22  # total settings defined
+    assert len(data["settings"]) == len(SETTING_DEFS)
     app.dependency_overrides.clear()
 
 
