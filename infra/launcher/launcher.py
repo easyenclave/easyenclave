@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -663,7 +664,11 @@ def collect_system_stats() -> dict:
 
 
 def _parse_cmdline_config() -> dict | None:
-    """Try to read config from kernel cmdline (easyenclave.config=<b64>).
+    """Try to read config from kernel cmdline.
+
+    Supports:
+    - easyenclave.config=<base64-json>
+    - easyenclave.configz=<base64-zlib-json>
 
     Returns:
         Parsed config dict, or None if not found/parseable.
@@ -673,17 +678,32 @@ def _parse_cmdline_config() -> dict | None:
     except Exception:
         return None
 
-    for param in cmdline.split():
-        if param.startswith("easyenclave.config="):
-            b64_value = param.split("=", 1)[1]
+    def _decode_b64(value: str) -> bytes:
+        padded = value + ("=" * ((4 - len(value) % 4) % 4))
+        try:
+            return base64.b64decode(padded)
+        except Exception:
+            return base64.urlsafe_b64decode(padded)
+
+    params = cmdline.split()
+
+    # Prefer compressed payload when both are present.
+    for key, compressed in (("easyenclave.configz=", True), ("easyenclave.config=", False)):
+        for param in params:
+            if not param.startswith(key):
+                continue
+            value = param.split("=", 1)[1]
             try:
-                config = json.loads(base64.b64decode(b64_value))
+                decoded = _decode_b64(value)
+                if compressed:
+                    decoded = zlib.decompress(decoded)
+                config = json.loads(decoded)
                 logger.info(
                     f"Loaded config from kernel cmdline: mode={config.get('mode', MODE_AGENT)}"
                 )
                 return config
             except Exception as e:
-                logger.warning(f"Failed to decode kernel cmdline config: {e}")
+                logger.warning(f"Failed to decode kernel cmdline config ({key[:-1]}): {e}")
     return None
 
 

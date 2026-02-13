@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import uuid
+import zlib
 from pathlib import Path
 
 # Control plane mode config
@@ -199,6 +200,26 @@ runcmd:
 
         return iso_path
 
+    def _encode_launcher_config_for_cmdline(self, launcher_config: dict) -> tuple[str, str]:
+        """Encode launcher config for kernel cmdline.
+
+        Returns:
+            Tuple of (param_name, encoded_value), where param_name is either:
+            - easyenclave.config  (plain base64 JSON)
+            - easyenclave.configz (zlib-compressed base64 JSON)
+        """
+        import base64 as _b64
+
+        # Compact JSON to keep cmdline payload as small as possible.
+        config_json = json.dumps(launcher_config, separators=(",", ":")).encode()
+        config_b64 = _b64.b64encode(config_json).decode()
+        configz_b64 = _b64.b64encode(zlib.compress(config_json, level=9)).decode()
+
+        # Prefer compressed payload when it is smaller.
+        if len(configz_b64) < len(config_b64):
+            return "easyenclave.configz", configz_b64
+        return "easyenclave.config", config_b64
+
     def _virsh(self, *args, **kwargs) -> subprocess.CompletedProcess:
         """Run virsh command with system connection.
 
@@ -282,18 +303,21 @@ runcmd:
         if verity:
             # dm-verity boot: direct kernel boot, config passed via cmdline
             artifacts = self._find_verity_image(image)
-
-            # Base64-encode config JSON and append to kernel cmdline
-            import base64 as _b64
-
-            config_b64 = _b64.b64encode(json.dumps(launcher_config).encode()).decode()
-            cmdline = f"{artifacts['cmdline']} easyenclave.config={config_b64}"
+            config_param, config_value = self._encode_launcher_config_for_cmdline(launcher_config)
+            cmdline = f"{artifacts['cmdline']} {config_param}={config_value}"
 
             # Large TDX VMs fail to allocate the default proportional swiotlb
             # bounce buffer (e.g. 1GB for 128G RAM).  Force a fixed 512MB buffer
             # which is small enough to allocate but sufficient for I/O.
             if memory_gib >= 64:
                 cmdline += " swiotlb=131072"
+
+            if len(cmdline) > 3072:
+                print(
+                    f"Warning: kernel cmdline is large ({len(cmdline)} bytes); "
+                    "firmware may truncate it.",
+                    file=sys.stderr,
+                )
 
             xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
             xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
@@ -442,6 +466,8 @@ runcmd:
             # Admin password hash for control plane dashboard
             "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH"),
         }
+        # Drop empty keys to minimize kernel cmdline payload size.
+        config = {k: v for k, v in config.items() if v not in (None, "")}
         result = self.vm_new(
             image=image,
             mode=CONTROL_PLANE_MODE,
