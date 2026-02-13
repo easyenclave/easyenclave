@@ -1073,15 +1073,19 @@ def register_with_control_plane(
             provider = "gcp"
         elif provider_raw in ("azure", "az"):
             provider = "azure"
+        elif provider_raw in ("baremetal", "bare-metal", "onprem", "on-prem", "self-hosted"):
+            provider = "baremetal"
 
-        # For Google/Azure, treat each AZ as a distinct deployable datacenter.
-        if provider in ("gcp", "azure") and az_raw:
+        # Treat AZ as datacenter for cloud providers and bare metal topology labels.
+        if provider in ("gcp", "azure", "baremetal") and az_raw:
             return f"{provider}:{az_raw}"
 
         if provider and az_raw:
             return f"{provider}:{az_raw}"
         if provider and region_raw:
             return f"{provider}:{region_raw}"
+        if provider == "baremetal":
+            return "baremetal:default"
         return ""
 
     datacenter = resolve_datacenter(config)

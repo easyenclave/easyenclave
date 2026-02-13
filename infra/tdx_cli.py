@@ -809,7 +809,7 @@ To start a new EasyEnclave network:
     new_parser.add_argument(
         "--cloud-provider",
         default="",
-        help="Cloud provider label for placement metadata (e.g., gcp, azure)",
+        help="Cloud provider label for placement metadata (e.g., gcp, azure, baremetal)",
     )
     new_parser.add_argument(
         "--availability-zone",
