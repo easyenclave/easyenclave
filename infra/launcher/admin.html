@@ -28,6 +28,7 @@
         .btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.9rem; }
         .btn-primary { background: #7c3aed; color: white; }
         .btn-primary:hover { background: #6d28d9; }
+        .btn:disabled { opacity: 0.6; cursor: not-allowed; }
         .hidden { display: none; }
         .login-box { max-width: 350px; margin: 100px auto; }
         .login-box input { width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #d1d5db; border-radius: 6px; }
@@ -75,7 +76,11 @@
             </div>
 
             <div class="card">
-                <h2>TDX Measurements</h2>
+                <div class="flex">
+                    <h2>TDX Measurements</h2>
+                    <button id="reattestBtn" class="btn btn-primary" onclick="reattestNow()">Re-attest now</button>
+                </div>
+                <div id="measurementMeta" style="font-size:0.85rem;color:#6b7280;margin-bottom:10px;">Loading...</div>
                 <table id="measurementTable">
                     <tr><td>Loading...</td><td></td></tr>
                 </table>
@@ -141,10 +146,20 @@
             refresh();
         }
 
-        async function apiFetch(url) {
-            const r = await fetch(url, {headers: {"Authorization": "Bearer " + token}});
+        async function apiFetch(url, options = {}) {
+            const headers = Object.assign({}, options.headers || {}, {"Authorization": "Bearer " + token});
+            const r = await fetch(url, Object.assign({}, options, {headers}));
             if (r.status === 401) { sessionStorage.removeItem("agentToken"); location.reload(); }
-            return r.json();
+            let data = {};
+            try {
+                data = await r.json();
+            } catch (_e) {
+                data = {};
+            }
+            if (!r.ok) {
+                throw new Error(data.error || data.detail || ("HTTP " + r.status));
+            }
+            return data;
         }
 
         function fmtBytes(b) {
@@ -156,6 +171,13 @@
         function fmtUptime(s) {
             const d = Math.floor(s/86400), h = Math.floor(s%86400/3600), m = Math.floor(s%3600/60);
             return d > 0 ? d+"d "+h+"h" : h > 0 ? h+"h "+m+"m" : m+"m";
+        }
+        function fmtAgo(seconds) {
+            if (seconds == null || seconds < 0) return "unknown";
+            if (seconds < 60) return seconds + "s ago";
+            if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+            if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
+            return Math.floor(seconds / 86400) + "d ago";
         }
         function statCard(label, value, detail) {
             return `<div style="background:#f3f4f6;padding:12px;border-radius:6px;"><div style="font-size:0.8rem;color:#6b7280;">${label}</div><div style="font-size:1.3rem;font-weight:600;">${value}</div>${detail ? '<div style="font-size:0.75rem;color:#9ca3af;">'+detail+'</div>' : ''}</div>`;
@@ -189,9 +211,14 @@
 
         async function loadMeasurements() {
             const table = document.getElementById("measurementTable");
+            const meta = document.getElementById("measurementMeta");
             try {
                 const data = await apiFetch("/api/admin/measurements");
                 const m = (data && data.measurements) ? data.measurements : {};
+                const source = data.source || "none";
+                const updatedAt = data.updated_at || "N/A";
+                const age = fmtAgo(data.age_seconds);
+                meta.innerHTML = `Source: <code>${source}</code> | Last update: <code>${updatedAt}</code> (${age}) | Refresh path: <code>${data.refresh_hint || "/api/health?attest=true"}</code>`;
                 const rows = [];
                 rows.push(`<tr><td>MRTD</td><td><code>${m.mrtd || "N/A"}</code></td></tr>`);
                 rows.push(`<tr><td>RTMR0</td><td><code>${m.rtmr0 || "N/A"}</code></td></tr>`);
@@ -200,7 +227,24 @@
                 rows.push(`<tr><td>RTMR3</td><td><code>${m.rtmr3 || "N/A"}</code></td></tr>`);
                 table.innerHTML = rows.join("");
             } catch (e) {
+                meta.textContent = "Failed to load measurement metadata";
                 table.innerHTML = `<tr><td>Error</td><td>${e.message}</td></tr>`;
+            }
+        }
+
+        async function reattestNow() {
+            const btn = document.getElementById("reattestBtn");
+            const original = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = "Re-attesting...";
+            try {
+                await apiFetch("/api/admin/reattest", {method: "POST"});
+                await refresh();
+            } catch (e) {
+                alert("Re-attestation failed: " + e.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = original;
             }
         }
 

@@ -142,6 +142,8 @@ _admin_state = {
     "status": "starting",
     "deployment_id": None,
     "attestation": None,
+    "attestation_source": None,
+    "attestation_updated_at": None,
     "logs": [],
     "max_logs": 1000,
 }
@@ -160,6 +162,13 @@ def _add_admin_log(level: str, message: str):
     # Keep only last max_logs entries
     if len(_admin_state["logs"]) > _admin_state["max_logs"]:
         _admin_state["logs"] = _admin_state["logs"][-_admin_state["max_logs"] :]
+
+
+def _cache_attestation(attestation: dict, source: str):
+    """Cache latest attestation for admin visibility."""
+    _admin_state["attestation"] = attestation
+    _admin_state["attestation_source"] = source
+    _admin_state["attestation_updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
 # Workload port for proxying
@@ -223,7 +232,11 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             return token in _admin_tokens
         return False
 
-    def _get_health(self, include_attestation: bool = False) -> dict:
+    def _get_health(
+        self,
+        include_attestation: bool = False,
+        attestation_source: str = "health_check",
+    ) -> dict:
         """Get health status, optionally with fresh attestation."""
         result = {
             "status": _admin_state["status"],
@@ -232,6 +245,8 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             "deployment_id": _admin_state["deployment_id"],
             "control_plane": CONTROL_PLANE_URL,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+            "attestation_source": _admin_state.get("attestation_source"),
+            "attestation_cached_at": _admin_state.get("attestation_updated_at"),
         }
 
         # Check container status
@@ -261,8 +276,14 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         # Generate fresh attestation if requested
         if include_attestation:
             try:
-                attestation = generate_initial_attestation(self.launcher_config)
+                attestation = generate_initial_attestation(
+                    self.launcher_config,
+                    update_status=False,
+                )
+                _cache_attestation(attestation, attestation_source)
                 result["attestation"] = attestation
+                result["attestation_source"] = _admin_state.get("attestation_source")
+                result["attestation_cached_at"] = _admin_state.get("attestation_updated_at")
             except Exception as e:
                 result["attestation_error"] = str(e)
                 logger.warning(f"Failed to generate attestation: {e}")
@@ -312,6 +333,8 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
     def _get_cached_measurements(self) -> dict:
         """Get cached TDX measurements from the latest attestation."""
         measurements = {}
+        updated_at = _admin_state.get("attestation_updated_at")
+        source = _admin_state.get("attestation_source")
         attestation = _admin_state.get("attestation") or {}
         if isinstance(attestation, dict):
             tdx = attestation.get("tdx") or {}
@@ -322,7 +345,24 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                         value = raw.get(key)
                         if value:
                             measurements[key] = value
-        return {"measurements": measurements}
+            if not updated_at:
+                updated_at = attestation.get("timestamp")
+
+        age_seconds = None
+        if updated_at:
+            try:
+                parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+                age_seconds = int((datetime.now(timezone.utc) - parsed).total_seconds())
+            except Exception:
+                age_seconds = None
+
+        return {
+            "measurements": measurements,
+            "source": source or "none",
+            "updated_at": updated_at,
+            "age_seconds": age_seconds,
+            "refresh_hint": "GET /api/health?attest=true or POST /api/admin/reattest",
+        }
 
     def _proxy_to_workload(self, body=None):
         """Proxy request to workload on port 8080."""
@@ -471,6 +511,37 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "Invalid request"})
             return
 
+        if path == "/api/admin/reattest":
+            if not self._check_admin_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            try:
+                health = self._get_health(
+                    include_attestation=True,
+                    attestation_source="admin_manual",
+                )
+                if "attestation_error" in health:
+                    self._send_json(
+                        500,
+                        {
+                            "status": "error",
+                            "error": health["attestation_error"],
+                            "measurements": self._get_cached_measurements(),
+                        },
+                    )
+                    return
+                self._send_json(
+                    200,
+                    {
+                        "status": "ok",
+                        "health": health,
+                        "measurements": self._get_cached_measurements(),
+                    },
+                )
+            except Exception as e:
+                self._send_json(500, {"status": "error", "error": str(e)})
+            return
+
         # Agent API endpoints requiring auth
         if path == "/api/deploy":
             if not self._check_api_auth():
@@ -544,7 +615,7 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             self._notify_deployment_complete(deployment_id, attestation, config)
 
             _admin_state["status"] = "deployed"
-            _admin_state["attestation"] = attestation
+            _cache_attestation(attestation, "deployment")
             logger.info(f"Deployment complete: {deployment_id}")
 
         except Exception as e:
@@ -568,6 +639,8 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             _admin_state["status"] = "undeployed"
             _admin_state["deployment_id"] = None
             _admin_state["attestation"] = None
+            _admin_state["attestation_source"] = None
+            _admin_state["attestation_updated_at"] = None
             logger.info("Workload undeployed")
         except Exception as e:
             logger.error(f"Undeploy failed: {e}")
@@ -959,7 +1032,11 @@ def parse_jwt_claims(jwt_token: str) -> dict:
         return {}
 
 
-def generate_initial_attestation(config: dict, vm_name: str = None) -> dict:
+def generate_initial_attestation(
+    config: dict,
+    vm_name: str = None,
+    update_status: bool = True,
+) -> dict:
     """Generate initial TDX attestation for registration.
 
     This function requires Intel Trust Authority verification. The agent will
@@ -973,6 +1050,7 @@ def generate_initial_attestation(config: dict, vm_name: str = None) -> dict:
     Args:
         config: Launcher config with intel_api_key and intel_api_url
         vm_name: VM name (required for nonce challenge)
+        update_status: Whether to set agent status to "attesting"
 
     Returns:
         Attestation dict with TDX quote and Intel TA token
@@ -980,7 +1058,8 @@ def generate_initial_attestation(config: dict, vm_name: str = None) -> dict:
     Raises:
         RuntimeError: If TDX quote generation or Intel TA verification fails
     """
-    write_status("attesting")
+    if update_status:
+        write_status("attesting")
     logger.info("Generating initial TDX attestation...")
 
     # Get Intel TA credentials from config or environment
@@ -1848,7 +1927,7 @@ def run_agent_mode(config: dict):
     # 1. Generate initial attestation (requires Intel TA - will crash if fails)
     # Pass vm_name for nonce challenge (replay attack prevention)
     attestation = generate_initial_attestation(config, vm_name=vm_name)
-    _admin_state["attestation"] = attestation
+    _cache_attestation(attestation, "startup_registration")
 
     # 2. Register with control plane (with retry)
     agent_id = None
