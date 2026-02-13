@@ -27,6 +27,7 @@ LAST_FAILED_COMMAND=""
 ROOTFS_DIGEST=""
 TRUSTED_MRTD=""
 TRUSTED_MRTDS=""
+TRUSTED_MRTDS_BY_SIZE=""
 TRUSTED_RTMRS=""
 TRUSTED_RTMRS_BY_SIZE=""
 
@@ -306,6 +307,9 @@ PY
     if [ -n "$TRUSTED_MRTDS" ]; then
       echo "mrtds=$TRUSTED_MRTDS" >> "$GITHUB_OUTPUT"
     fi
+    if [ -n "$TRUSTED_MRTDS_BY_SIZE" ]; then
+      echo "mrtds_by_size=$TRUSTED_MRTDS_BY_SIZE" >> "$GITHUB_OUTPUT"
+    fi
     if [ -n "$TRUSTED_RTMRS" ]; then
       echo "rtmrs=$TRUSTED_RTMRS" >> "$GITHUB_OUTPUT"
     fi
@@ -383,6 +387,11 @@ measure_all_sizes() {
   TRUSTED_MRTD="${mrtd_by_size[tiny]}"
   TRUSTED_RTMRS="${rtmrs_by_size[tiny]}"
   TRUSTED_MRTDS="$(printf '%s\n' "${mrtd_by_size[@]}" | awk 'NF' | sort -u | paste -sd, -)"
+  TRUSTED_MRTDS_BY_SIZE="$(jq -cn \
+    --arg tiny "${mrtd_by_size[tiny]}" \
+    --arg standard "${mrtd_by_size[standard]}" \
+    --arg llm "${mrtd_by_size[llm]}" \
+    '{tiny: $tiny, standard: $standard, llm: $llm}')"
   TRUSTED_RTMRS_BY_SIZE="$(jq -cn \
     --argjson tiny "${rtmrs_by_size[tiny]}" \
     --argjson standard "${rtmrs_by_size[standard]}" \
@@ -393,9 +402,10 @@ measure_all_sizes() {
     --arg digest "$ROOTFS_DIGEST" \
     --arg mrtd "$TRUSTED_MRTD" \
     --arg mrtds "$TRUSTED_MRTDS" \
+    --argjson mrtds_by_size "$TRUSTED_MRTDS_BY_SIZE" \
     --argjson rtmrs "$TRUSTED_RTMRS" \
     --argjson rtmrs_by_size "$TRUSTED_RTMRS_BY_SIZE" \
-    '{digest: $digest, mrtd: $mrtd, mrtds: $mrtds, rtmrs: $rtmrs, rtmrs_by_size: $rtmrs_by_size}' \
+    '{digest: $digest, mrtd: $mrtd, mrtds: $mrtds, mrtds_by_size: $mrtds_by_size, rtmrs: $rtmrs, rtmrs_by_size: $rtmrs_by_size}' \
     > "$TMP_DIR/trusted_values.json"
 
   echo "Trusted values digest: $ROOTFS_DIGEST"

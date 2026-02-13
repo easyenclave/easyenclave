@@ -255,6 +255,7 @@ jobs:
       - name: Deploy and bootstrap
         env:
           TRUSTED_AGENT_MRTDS: ${{ steps.repro.outputs.mrtds || steps.repro.outputs.mrtd }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.repro.outputs.mrtds_by_size }}
           TRUSTED_AGENT_RTMRS: ${{ steps.repro.outputs.rtmrs }}
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.repro.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}

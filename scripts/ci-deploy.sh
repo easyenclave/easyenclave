@@ -4,6 +4,7 @@
 # Required env vars:
 #   TRUSTED_AGENT_MRTDS  - from ci-reproducibility-check.sh
 #   TRUSTED_AGENT_RTMRS  - from ci-reproducibility-check.sh
+#   TRUSTED_AGENT_MRTDS_BY_SIZE - from ci-reproducibility-check.sh
 #   TRUSTED_AGENT_RTMRS_BY_SIZE - from ci-reproducibility-check.sh
 #   INTEL_API_KEY        - Intel Trust Authority key
 #   ITA_API_KEY          - alias (usually same as INTEL_API_KEY)
@@ -130,6 +131,7 @@ deploy_app() {
   local compose_b64 version publish_resp version_id
   local deployed=false http_code detail selected_agent
   local manual_attest_body="" reference_agent reference_agent_id reference_mrtd reference_rtmrs
+  local measured_profile_mrtd="" measured_profile_rtmrs="null"
   local attestation_detail
   local reference_measurement measured_at attest_qs="" max_attempts require_mrtd
 
@@ -160,43 +162,61 @@ deploy_app() {
 
   # Manual attest (bootstrap) with node-size-specific measurement metadata when available.
   if [ -n "$node_size" ]; then
-    echo "Capturing measurement reference from a verified '$node_size' agent..."
-    reference_agent=$(find_reference_agent_measurement "$node_size" 30 10) || {
-      echo "::error::Could not find verified '$node_size' agent with MRTD/RTMRs for $app_name"
-      exit 1
-    }
-    reference_agent_id=$(echo "$reference_agent" | jq -r '.agent_id')
-    reference_mrtd=$(echo "$reference_agent" | jq -r '.mrtd')
-    reference_rtmrs=$(echo "$reference_agent" | jq -c '.rtmrs')
+    measured_profile_mrtd=$(echo "${TRUSTED_AGENT_MRTDS_BY_SIZE:-{}}" | jq -r --arg ns "$node_size" '.[$ns] // ""')
+    measured_profile_rtmrs=$(echo "${TRUSTED_AGENT_RTMRS_BY_SIZE:-{}}" | jq -c --arg ns "$node_size" '.[$ns] // null')
 
-    if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ] || [ "$reference_rtmrs" = "null" ]; then
-      attestation_detail=$(curl -sf "$CP_URL/api/v1/agents/$reference_agent_id/attestation" 2>/dev/null || echo '{}')
+    if [ -n "$measured_profile_mrtd" ]; then
+      measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      reference_measurement=$(jq -cn \
+        --arg ns "$node_size" \
+        --arg mrtd "$measured_profile_mrtd" \
+        --arg measured_at "$measured_at" \
+        --argjson rtmrs "$measured_profile_rtmrs" \
+        '{bootstrap: true, measurement_type: "ci_measured_profile", node_size: $ns, mrtd: $mrtd, rtmrs: $rtmrs, measured_at: $measured_at}')
+      manual_attest_body=$(jq -cn \
+        --arg mrtd "$measured_profile_mrtd" \
+        --argjson attestation "$reference_measurement" \
+        '{mrtd: $mrtd, attestation: $attestation}')
+      echo "Using CI measured profile for $node_size bootstrap measurement"
+    else
+      echo "CI measured profile missing for '$node_size'; falling back to verified agent reference..."
+      reference_agent=$(find_reference_agent_measurement "$node_size" 30 10) || {
+        echo "::error::Could not find verified '$node_size' agent with MRTD/RTMRs for $app_name"
+        exit 1
+      }
+      reference_agent_id=$(echo "$reference_agent" | jq -r '.agent_id')
+      reference_mrtd=$(echo "$reference_agent" | jq -r '.mrtd')
+      reference_rtmrs=$(echo "$reference_agent" | jq -c '.rtmrs')
+
+      if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ] || [ "$reference_rtmrs" = "null" ]; then
+        attestation_detail=$(curl -sf "$CP_URL/api/v1/agents/$reference_agent_id/attestation" 2>/dev/null || echo '{}')
+        if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ]; then
+          reference_mrtd=$(echo "$attestation_detail" | jq -r '.mrtd // ""')
+        fi
+        if [ "$reference_rtmrs" = "null" ]; then
+          reference_rtmrs=$(echo "$attestation_detail" | jq -c '.rtmrs // null')
+        fi
+      fi
+
       if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ]; then
-        reference_mrtd=$(echo "$attestation_detail" | jq -r '.mrtd // ""')
+        echo "::error::Reference agent $reference_agent_id has no MRTD for node_size='$node_size'"
+        exit 1
       fi
-      if [ "$reference_rtmrs" = "null" ]; then
-        reference_rtmrs=$(echo "$attestation_detail" | jq -c '.rtmrs // null')
-      fi
-    fi
 
-    if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ]; then
-      echo "::error::Reference agent $reference_agent_id has no MRTD for node_size='$node_size'"
-      exit 1
+      measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      reference_measurement=$(jq -cn \
+        --arg ns "$node_size" \
+        --arg aid "$reference_agent_id" \
+        --arg mrtd "$reference_mrtd" \
+        --arg measured_at "$measured_at" \
+        --argjson rtmrs "${reference_rtmrs:-null}" \
+        '{bootstrap: true, measurement_type: "agent_reference", node_size: $ns, agent_id: $aid, mrtd: $mrtd, rtmrs: $rtmrs, measured_at: $measured_at}')
+      manual_attest_body=$(jq -cn \
+        --arg mrtd "$reference_mrtd" \
+        --argjson attestation "$reference_measurement" \
+        '{mrtd: $mrtd, attestation: $attestation}')
+      echo "Using reference agent $reference_agent_id for $node_size bootstrap measurement"
     fi
-
-    measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    reference_measurement=$(jq -cn \
-      --arg ns "$node_size" \
-      --arg aid "$reference_agent_id" \
-      --arg mrtd "$reference_mrtd" \
-      --arg measured_at "$measured_at" \
-      --argjson rtmrs "${reference_rtmrs:-null}" \
-      '{bootstrap: true, measurement_type: "agent_reference", node_size: $ns, agent_id: $aid, mrtd: $mrtd, rtmrs: $rtmrs, measured_at: $measured_at}')
-    manual_attest_body=$(jq -cn \
-      --arg mrtd "$reference_mrtd" \
-      --argjson attestation "$reference_measurement" \
-      '{mrtd: $mrtd, attestation: $attestation}')
-    echo "Using reference agent $reference_agent_id for $node_size bootstrap measurement"
     attest_qs="?node_size=$node_size"
   fi
 
