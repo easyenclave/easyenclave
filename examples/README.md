@@ -6,7 +6,6 @@ Example apps that run inside TDX enclaves via EasyEnclave. Each is a standard `d
 |---------|-------------|------|
 | [hello-tdx](hello-tdx/) | Minimal HTTP server — the smallest possible EasyEnclave app | health check via deploy action |
 | [private-llm](private-llm/) | Ollama LLM running privately inside a TDX enclave | [`test.py`](private-llm/test.py) — SDK smoke test (direct + proxy) |
-| [noise-contacts](noise-contacts/) | Real contacts demo over Noise with attestation-bound identity checks | [`test.py`](noise-contacts/test.py) — handshake + encrypted register/lookup |
 
 The workflow also verifies that deploying an **unregistered** app is rejected — proving the catalog is enforced, not optional.
 

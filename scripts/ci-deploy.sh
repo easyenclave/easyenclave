@@ -356,9 +356,6 @@ make_compose() {
     measuring-enclave*)
       printf 'services:\n  measuring-enclave:\n    image: %s\n    ports:\n      - "8080:8080"\n' "$image"
       ;;
-    oram-contacts)
-      printf 'services:\n  oram-contacts:\n    image: %s\n    ports:\n      - "8080:8080"\n    volumes:\n      - oram-data:/data\n    environment:\n      - ORAM_DB_PATH=/data/contacts.db\n      - ORAM_BUCKETS=1024\n      - ORAM_STASH_SIZE=100\nvolumes:\n  oram-data:\n' "$image"
-      ;;
     *)
       printf 'services:\n  %s:\n    image: %s\n    ports:\n      - "8080:8080"\n' "$app_name" "$image"
       ;;

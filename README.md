@@ -32,7 +32,7 @@ A confidential discovery service for TDX-attested applications. EasyEnclave enab
 - AMD SEV-SNP - 🔜 Coming soon
 - ARM CCA - 🔜 Planned
 
-**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for ORAM details, deployment guides, and additional Q&A, and [docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md) for reproducibility verification (two clean builds per check; any artifact or measurement drift fails).
+**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for security and deployment Q&A, and [docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md) for reproducibility verification (two clean builds per check; any artifact or measurement drift fails).
 
 ### What is Intel TDX?
 
@@ -384,17 +384,12 @@ EasyEnclave uses Intel TDX, which provides hardware-based protection:
 
 For maximum security, combine TDX with additional techniques:
 
-**1. ORAM (Oblivious RAM)** - Hides access patterns
-- See `apps/oram-contacts/` for working example
-- Protects which data was accessed even if TEE is compromised
-- Essential for privacy-critical applications (contact discovery, medical records)
-
-**2. Encrypted storage** - Data at rest protection
+**1. Encrypted storage** - Data at rest protection
 - Encrypt data with separate keys
 - Keys never leave TEE
 - Protects against physical storage attacks
 
-**3. MPC (Multi-Party Computation)** - Distribute trust
+**2. MPC (Multi-Party Computation)** - Distribute trust
 - No single party has complete data
 - Protects against insider threats
 - Useful for collaborative analytics
@@ -447,9 +442,9 @@ These features are enabled by default in `docker-compose.yml`. See `.env.example
 
 **Defense-in-depth approach:**
 - **Use TEEs** for cloud/OS protection
-- **Add ORAM** for access pattern protection
+- **Add encrypted storage** for data-at-rest protection
 - **Use MPC** for multi-party scenarios
-- **Use encryption** for data at rest
+- **Add protocol-level encryption** for data in transit
 
 ### When Should I Worry About Physical Attacks?
 
@@ -471,12 +466,10 @@ These features are enabled by default in `docker-compose.yml`. See `.env.example
 |--------------|---------------------|
 | **Basic** | TDX + attestation |
 | **Moderate** | TDX + attestation + encrypted storage |
-| **High** | TDX + ORAM + MPC + defense-in-depth |
+| **High** | TDX + encrypted storage + MPC + defense-in-depth |
 | **Maximum** | Air-gapped + HSMs + formal verification |
 
 **For most use cases:** TDX attestation is sufficient.
-
-**For privacy-critical apps:** Add ORAM (see `apps/oram-contacts/`).
 
 ## Examples
 
@@ -491,19 +484,11 @@ Run language models with privacy protection in TDX.
 - **Features:** Ollama in TDX, end-to-end encryption, SDK integration
 - **Live demo:** Runs in CI on every push
 
-### ORAM Contact Discovery
-Privacy-preserving contact discovery with Oblivious RAM.
-- **Path:** `apps/oram-contacts/` and `examples/oram-contacts/`
-- **Features:** ORAM + TDX, access pattern hiding, defense against physical attacks
-- **Use case:** Shows how to protect privacy even if TEE is compromised
-- **Docs:** Comprehensive README with security analysis and deployment guide
-
 ## Documentation
 
-- **[FAQ](docs/FAQ.md)** - ORAM details, deployment guides, and additional Q&A
+- **[FAQ](docs/FAQ.md)** - Security, deployment guides, and additional Q&A
 - **[GitHub OAuth Setup](docs/GITHUB_OAUTH.md)** - Admin authentication configuration
 - **[SDK Documentation](sdk/README.md)** - Python client library
-- **[ORAM Example](apps/oram-contacts/README.md)** - Privacy-preserving contact discovery
 
 ## Future Enhancements
 

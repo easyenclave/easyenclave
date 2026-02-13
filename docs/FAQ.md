@@ -8,7 +8,6 @@ Frequently asked questions about EasyEnclave, remote attestation, TEEs, and priv
 - [Remote Attestation](#remote-attestation)
 - [TEE Technologies](#tee-technologies)
 - [Security & Threats](#security--threats)
-- [ORAM & Privacy](#oram--privacy)
 - [Deployment](#deployment)
 
 ---
@@ -303,45 +302,9 @@ response = service.post("/api/endpoint", json={...})
 
 **Defense-in-depth approach:**
 - **Use TEEs** for cloud/OS protection
-- **Add ORAM** for access pattern protection
+- **Add encrypted storage** for data-at-rest protection
 - **Use MPC** for multi-party scenarios
-- **Use encryption** for data at rest
-
-### How does ORAM help with tee.fail attacks?
-
-**ORAM (Oblivious RAM)** protects access patterns even if TEE is compromised.
-
-**Scenario: Contact discovery**
-
-**Without ORAM (TDX only):**
-```
-Attacker with physical access:
-1. Extracts TDX encryption keys (voltage glitching)
-2. Dumps database
-3. Monitors database accesses
-4. Sees: "User X queried contacts A, B, C"
-❌ Privacy leaked!
-```
-
-**With ORAM (TDX + ORAM):**
-```
-Attacker with physical access:
-1. Extracts TDX encryption keys (voltage glitching)
-2. Dumps database → sees encrypted blocks (gibberish)
-3. Monitors database accesses → sees random bucket reads
-4. Cannot determine which contacts were queried
-✅ Access patterns protected!
-```
-
-**Why ORAM matters:**
-
-| Protection Level | Defends Against | Use When |
-|------------------|-----------------|----------|
-| **TDX alone** | Cloud provider, malicious OS | General applications |
-| **TDX + ORAM** | Physical attacks, side channels | High-security use cases |
-| **TDX + ORAM + MPC** | Insider threats, collusion | Maximum security |
-
-**See:** `apps/oram-contacts/` for a working example
+- **Add protocol-level encryption** for data in transit
 
 ### Should I worry about physical attacks?
 
@@ -363,147 +326,10 @@ Attacker with physical access:
 |--------------|---------------------|
 | **Basic** | TDX + attestation |
 | **Moderate** | TDX + attestation + encrypted storage |
-| **High** | TDX + ORAM + MPC + defense-in-depth |
+| **High** | TDX + encrypted storage + MPC + defense-in-depth |
 | **Maximum** | Air-gapped + HSMs + formal verification |
 
 **For most use cases:** TDX attestation is sufficient.
-
-**For privacy-critical apps:** Add ORAM (see `apps/oram-contacts/`).
-
----
-
-## ORAM & Privacy
-
-### What is ORAM?
-
-**Oblivious RAM (ORAM)** hides which data you access.
-
-**Traditional database:**
-```sql
-SELECT * FROM users WHERE id = 42;
--- Reads row 42 from disk
--- ❌ Attacker sees: "User accessed row 42"
-```
-
-**ORAM database:**
-```
-Read blocks [7, 12, 15, 23, 31, ...] (10 random blocks)
-Write blocks [3, 18, 29, 45, ...] (8 random blocks)
--- ✅ Attacker sees: "Random block accesses"
--- Cannot tell which user was queried
-```
-
-**Key property:** All queries look identical (same # of accesses).
-
-### How does ORAM work?
-
-**Cuckoo Hash ORAM (used in EasyEnclave example):**
-
-```
-Data Storage:
-┌──────────┬──────────┬──────────┐
-│ Bucket 0 │ Bucket 1 │ Bucket 2 │ ... (1024 buckets)
-├──────────┼──────────┼──────────┤
-│ Block A  │ Block E  │ Block C  │
-│ Block B  │ Block F  │ Block D  │
-│ Dummy    │ Dummy    │ Block G  │
-│ Dummy    │ Dummy    │ Dummy    │
-└──────────┴──────────┴──────────┘
-
-Position Map (in memory):
-Contact "Alice" → Bucket 7, Slot 2
-Contact "Bob"   → Bucket 15, Slot 1
-...
-```
-
-**Read operation:**
-1. Check position map → Contact is in bucket 7
-2. Read bucket 7 (4 blocks)
-3. Read alternative bucket 12 (4 blocks) - even if not there!
-4. Read stash (overflow storage)
-5. **Total: Always read ~10 blocks regardless of result**
-
-**Write operation:**
-1. Remove old block (if exists)
-2. Add to stash
-3. Evict from stash to random buckets (cuckoo hashing)
-4. **Total: Always write ~8 blocks**
-
-**Security: Attacker sees same pattern for all queries!**
-
-### What's the performance overhead of ORAM?
-
-**Typical overhead: 20-100x slower than regular database**
-
-| Operation | Traditional DB | ORAM | Overhead |
-|-----------|----------------|------|----------|
-| Single read | 0.1ms (1 page) | 2-10ms (10 pages) | 20-100x |
-| Batch read | 1ms (10 pages) | 50-100ms (100 pages) | 50x |
-| Write | 0.1ms | 5-15ms | 50-150x |
-
-**When is this acceptable?**
-- ✅ Infrequent queries (contact discovery)
-- ✅ High-value privacy (medical records)
-- ✅ Small datasets (<100K records)
-- ❌ High-throughput databases
-- ❌ Real-time analytics
-- ❌ Large-scale data warehouses
-
-**Example: Contact discovery**
-- User checks 10 contacts per day
-- 10ms per query = 100ms total
-- Privacy benefit >> 100ms overhead
-
-### When should I use ORAM?
-
-**Use ORAM when:**
-1. **Access patterns reveal sensitive info**
-   - Contact discovery (who you know)
-   - Medical records (which diseases queried)
-   - Search queries (what you're interested in)
-
-2. **Attacker has physical access**
-   - Nation-state adversaries
-   - Compromised hardware
-   - Side-channel attacks
-
-3. **Compliance requires it**
-   - GDPR (access pattern = personal data)
-   - HIPAA (medical query patterns)
-   - Zero-knowledge requirements
-
-**Don't use ORAM when:**
-- Access patterns aren't sensitive
-- Performance is critical
-- Dataset is too large (>1M records)
-- TEE protection is sufficient
-
-### How do I add ORAM to my app?
-
-**EasyEnclave provides a working example:** `apps/oram-contacts/`
-
-**Quick start:**
-```python
-from oram_store import ORAMContactStore
-
-# Initialize ORAM
-store = ORAMContactStore(
-    db_path="/data/contacts.db",
-    num_buckets=1024,  # Adjust for dataset size
-)
-
-# Register contact (oblivious write)
-store.register_contact(phone_hash, user_id)
-
-# Lookup contacts (oblivious read)
-results = store.lookup_contacts([phone_hash1, phone_hash2])
-# All queries access same # of buckets!
-```
-
-**See full example:**
-- Code: `apps/oram-contacts/oram_store.py`
-- Docs: `apps/oram-contacts/README.md`
-- Examples: `examples/oram-contacts/client.py`
 
 ---
 
@@ -545,7 +371,7 @@ curl -X POST https://app.easyenclave.com/api/v1/apps/myapp/versions/v1.0.0/deplo
   -d '{"agent_id": "agent-123"}'
 ```
 
-**See full guide:** `apps/oram-contacts/DEPLOYMENT.md`
+**See full guide:** main README deployment examples and `.github/workflows/deploy-examples.yml`.
 
 ### How does the measuring enclave work?
 
@@ -631,4 +457,4 @@ Found a bug or have a question? [Open an issue](https://github.com/easyenclave/e
 
 Want to contribute? See [CONTRIBUTING.md](../CONTRIBUTING.md).
 
-**Example apps welcome!** Check out `apps/oram-contacts/` for inspiration.
+**Example apps welcome!** Check out `examples/hello-tdx/` and `examples/private-llm/` for inspiration.
