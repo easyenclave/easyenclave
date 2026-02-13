@@ -152,7 +152,6 @@ def _build_launcher_config(
 
 
 def _cloud_init_user_data(*, launcher_url: str, launcher_config: dict[str, str]) -> str:
-    config_json = json.dumps(launcher_config, separators=(",", ":"))
     config_json_pretty = json.dumps(launcher_config, indent=2)
 
     # Keep this boot sequence explicit and linear for easier debugging in serial logs.
@@ -202,7 +201,7 @@ runcmd:
   - [bash, -lc, \"curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && (dpkg -i /tmp/cloudflared.deb || apt-get install -f -y) && rm -f /tmp/cloudflared.deb\"]
   - systemctl daemon-reload
   - systemctl enable --now tdx-launcher.service
-final_message: \"EasyEnclave launcher bootstrap complete (config={config_json})\"
+final_message: \"EasyEnclave launcher bootstrap complete\"
 """
 
 
