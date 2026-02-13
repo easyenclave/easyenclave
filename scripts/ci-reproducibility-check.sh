@@ -24,6 +24,11 @@ ARTIFACT_MATCH="unknown"
 MEASUREMENT_MATCH="unknown"
 FAIL_REASON=""
 LAST_FAILED_COMMAND=""
+ROOTFS_DIGEST=""
+TRUSTED_MRTD=""
+TRUSTED_MRTDS=""
+TRUSTED_RTMRS=""
+TRUSTED_RTMRS_BY_SIZE=""
 
 cleanup_stale_verity_domains() {
   if ! command -v virsh >/dev/null 2>&1; then
@@ -64,6 +69,9 @@ emit_report() {
   fi
   if [ -f "$TMP_DIR/measurement.diff" ]; then
     cp "$TMP_DIR/measurement.diff" "$REPORT_DIR/measurement.diff"
+  fi
+  if [ -f "$TMP_DIR/trusted_values.json" ]; then
+    cp "$TMP_DIR/trusted_values.json" "$REPORT_DIR/trusted_values.json"
   fi
 
   python3 - "$TMP_DIR" "$REPORT_DIR/report.json" "$REPORT_DIR/summary.md" "$exit_code" "$FAIL_REASON" "$LAST_FAILED_COMMAND" "$ARTIFACT_MATCH" "$MEASUREMENT_MATCH" <<'PY'
@@ -289,6 +297,21 @@ PY
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "report_json=$REPORT_DIR/report.json" >> "$GITHUB_OUTPUT"
     echo "report_summary=$REPORT_DIR/summary.md" >> "$GITHUB_OUTPUT"
+    if [ -n "$ROOTFS_DIGEST" ]; then
+      echo "digest=$ROOTFS_DIGEST" >> "$GITHUB_OUTPUT"
+    fi
+    if [ -n "$TRUSTED_MRTD" ]; then
+      echo "mrtd=$TRUSTED_MRTD" >> "$GITHUB_OUTPUT"
+    fi
+    if [ -n "$TRUSTED_MRTDS" ]; then
+      echo "mrtds=$TRUSTED_MRTDS" >> "$GITHUB_OUTPUT"
+    fi
+    if [ -n "$TRUSTED_RTMRS" ]; then
+      echo "rtmrs=$TRUSTED_RTMRS" >> "$GITHUB_OUTPUT"
+    fi
+    if [ -n "$TRUSTED_RTMRS_BY_SIZE" ]; then
+      echo "rtmrs_by_size=$TRUSTED_RTMRS_BY_SIZE" >> "$GITHUB_OUTPUT"
+    fi
   fi
 }
 
@@ -320,6 +343,62 @@ build_image() {
   local label="$1"
   echo "[$label] full clean build"
   (cd infra/image && nix develop --command bash -lc 'make clean && make build')
+}
+
+measure_all_sizes() {
+  echo "==> Measuring trusted values from current image (tiny/standard/llm)..."
+  local sizes=(tiny standard llm)
+  declare -A mrtd_by_size
+  declare -A rtmrs_by_size
+
+  for size in "${sizes[@]}"; do
+    echo "--- Measuring node_size=$size ---"
+    local measures
+    measures="$(python3 infra/tdx_cli.py vm measure --verity --json --timeout 180 --size "$size")"
+    if [ -z "$measures" ]; then
+      FAIL_REASON="missing_measurement:${size}"
+      echo "::error::Failed to capture measurements for node_size=$size"
+      exit 1
+    fi
+
+    local mrtd_size
+    local rtmrs_size
+    mrtd_size="$(echo "$measures" | jq -r '.mrtd')"
+    rtmrs_size="$(echo "$measures" | jq -c '{rtmr0,rtmr1,rtmr2,rtmr3}')"
+
+    if [ -z "$mrtd_size" ] || [ "$mrtd_size" = "null" ]; then
+      FAIL_REASON="missing_mrtd:${size}"
+      echo "::error::Failed to capture MRTD for node_size=$size"
+      exit 1
+    fi
+
+    mrtd_by_size["$size"]="$mrtd_size"
+    rtmrs_by_size["$size"]="$rtmrs_size"
+
+    echo "MRTD[$size]: ${mrtd_size:0:32}..."
+    echo "RTMRs[$size]: $rtmrs_size"
+  done
+
+  ROOTFS_DIGEST="$(sha256sum infra/image/output/easyenclave.root.raw | cut -d' ' -f1)"
+  TRUSTED_MRTD="${mrtd_by_size[tiny]}"
+  TRUSTED_RTMRS="${rtmrs_by_size[tiny]}"
+  TRUSTED_MRTDS="$(printf '%s\n' "${mrtd_by_size[@]}" | awk 'NF' | sort -u | paste -sd, -)"
+  TRUSTED_RTMRS_BY_SIZE="$(jq -cn \
+    --argjson tiny "${rtmrs_by_size[tiny]}" \
+    --argjson standard "${rtmrs_by_size[standard]}" \
+    --argjson llm "${rtmrs_by_size[llm]}" \
+    '{tiny: $tiny, standard: $standard, llm: $llm}')"
+
+  jq -cn \
+    --arg digest "$ROOTFS_DIGEST" \
+    --arg mrtd "$TRUSTED_MRTD" \
+    --arg mrtds "$TRUSTED_MRTDS" \
+    --argjson rtmrs "$TRUSTED_RTMRS" \
+    --argjson rtmrs_by_size "$TRUSTED_RTMRS_BY_SIZE" \
+    '{digest: $digest, mrtd: $mrtd, mrtds: $mrtds, rtmrs: $rtmrs, rtmrs_by_size: $rtmrs_by_size}' \
+    > "$TMP_DIR/trusted_values.json"
+
+  echo "Trusted values digest: $ROOTFS_DIGEST"
 }
 
 build_once() {
@@ -403,3 +482,4 @@ if [ "$ARTIFACT_MATCH" != "true" ] || [ "$MEASUREMENT_MATCH" != "true" ]; then
 fi
 
 echo "==> Reproducibility gate passed"
+measure_all_sizes

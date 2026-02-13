@@ -10,18 +10,12 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-SKIP_IMAGE_BUILD="${CI_SKIP_IMAGE_BUILD:-false}"
-
 # mkosi needs unprivileged user namespaces
 sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
 # ---------- Build ----------
-if [ "$SKIP_IMAGE_BUILD" = "true" ]; then
-  echo "==> Skipping image build (CI_SKIP_IMAGE_BUILD=true); using existing infra/image/output artifacts"
-else
-  echo "==> Building verity VM image (mkosi)..."
-  (cd infra/image && nix develop --command make build)
-fi
+echo "==> Building verity VM image (mkosi)..."
+(cd infra/image && nix develop --command make build)
 
 CMDLINE="infra/image/output/easyenclave.cmdline"
 ROOTFS="infra/image/output/easyenclave.root.raw"

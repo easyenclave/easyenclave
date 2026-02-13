@@ -2,8 +2,9 @@
 # Deploy control plane, launch agents, and bootstrap apps.
 #
 # Required env vars:
-#   TRUSTED_AGENT_MRTDS  - from ci-build-measure.sh
-#   TRUSTED_AGENT_RTMRS  - from ci-build-measure.sh
+#   TRUSTED_AGENT_MRTDS  - from ci-reproducibility-check.sh
+#   TRUSTED_AGENT_RTMRS  - from ci-reproducibility-check.sh
+#   TRUSTED_AGENT_RTMRS_BY_SIZE - from ci-reproducibility-check.sh
 #   INTEL_API_KEY        - Intel Trust Authority key
 #   ITA_API_KEY          - alias (usually same as INTEL_API_KEY)
 #   MEASURER_IMAGE       - ghcr.io image ref for measuring enclave

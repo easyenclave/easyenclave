@@ -62,5 +62,5 @@ infra/output/reproducibility/
 
 ## Notes
 
-- `scripts/ci-build-measure.sh` supports `CI_SKIP_IMAGE_BUILD=true` so deploy measurement can reuse already-validated artifacts from the gate.
+- `scripts/ci-reproducibility-check.sh` now emits deploy trust outputs (`mrtds`, `rtmrs`, `rtmrs_by_size`) directly after the reproducibility gate passes.
 - This gate proves short-horizon build reproducibility in one CI run. Snapshot pinning and longer-horizon reproducibility controls are tracked in the consolidated roadmap issue.

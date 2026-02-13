@@ -184,7 +184,7 @@ jobs:
 
       # ---- Build (runs in parallel with test + docker) ----
 
-      - name: Reproducibility check (strict)
+      - name: Reproducibility and trusted measurements (strict)
         id: repro
         run: ./scripts/ci-reproducibility-check.sh
 
@@ -222,12 +222,7 @@ jobs:
             infra/output/reproducibility/build2.timing.json
             infra/output/reproducibility/artifact.diff
             infra/output/reproducibility/measurement.diff
-
-      - name: Build and measure
-        id: build
-        env:
-          CI_SKIP_IMAGE_BUILD: "true"
-        run: ./scripts/ci-build-measure.sh
+            infra/output/reproducibility/trusted_values.json
 
       # ---- Wait for test + docker jobs before deploying ----
 
@@ -259,9 +254,9 @@ jobs:
 
       - name: Deploy and bootstrap
         env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.build.outputs.mrtds || steps.build.outputs.mrtd }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.build.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.build.outputs.rtmrs_by_size }}
+          TRUSTED_AGENT_MRTDS: ${{ steps.repro.outputs.mrtds || steps.repro.outputs.mrtd }}
+          TRUSTED_AGENT_RTMRS: ${{ steps.repro.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.repro.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
         run: ./scripts/ci-deploy.sh
