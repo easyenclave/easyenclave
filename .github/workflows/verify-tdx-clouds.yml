@@ -8,9 +8,9 @@ on:
         required: false
         default: "https://app.easyenclave.com"
       clouds:
-        description: "Comma-separated targets (e.g. baremetal,gcp,azure)"
+        description: "Comma-separated targets (e.g. baremetal,gcp)"
         required: false
-        default: "baremetal,gcp,azure"
+        default: "baremetal,gcp"
       node_size:
         description: "Required node size"
         required: false
@@ -31,10 +31,7 @@ on:
         description: "Datacenter label for GCP target (e.g. gcp:us-central1-a)"
         required: false
         default: ""
-      dc_azure:
-        description: "Datacenter label for Azure target (e.g. azure:eastus2-1)"
-        required: false
-        default: ""
+      # TODO(azure): re-enable Azure datacenter input once Azure confidential VM reliability is fixed.
       allow_measurer_fallback:
         description: "Allow measuring-enclave fallback during preflight"
         required: false
@@ -68,7 +65,6 @@ jobs:
           VERIFY_APP_VERSION: ${{ inputs.verify_app_version }}
           DC_BAREMETAL: ${{ inputs.dc_baremetal }}
           DC_GCP: ${{ inputs.dc_gcp }}
-          DC_AZURE: ${{ inputs.dc_azure }}
           ALLOW_MEASURER_FALLBACK: ${{ inputs.allow_measurer_fallback }}
           SKIP_MISSING_DATACENTER: ${{ inputs.skip_missing_datacenter }}
           FAIL_ON_UNSUPPORTED_CLOUDS: ${{ inputs.fail_on_unsupported_clouds }}

@@ -12,7 +12,7 @@
 set -euo pipefail
 
 CP_URL="${CP_URL:-https://app.easyenclave.com}"
-CLOUDS="${CLOUDS:-baremetal,gcp,azure}"
+CLOUDS="${CLOUDS:-baremetal,gcp}"
 NODE_SIZE="${NODE_SIZE:-standard}"
 VERIFY_APP_NAME="${VERIFY_APP_NAME:-}"
 VERIFY_APP_VERSION="${VERIFY_APP_VERSION:-}"
@@ -23,7 +23,6 @@ FAIL_ON_UNSUPPORTED_CLOUDS="${FAIL_ON_UNSUPPORTED_CLOUDS:-false}"
 
 DC_BAREMETAL="${DC_BAREMETAL:-baremetal:github-runner}"
 DC_GCP="${DC_GCP:-}"
-DC_AZURE="${DC_AZURE:-}"
 DC_AWS="${DC_AWS:-}"
 
 PASS_COUNT=0
@@ -62,7 +61,6 @@ datacenter_for_cloud() {
   case "$cloud" in
     baremetal) echo "$DC_BAREMETAL" ;;
     gcp|google) echo "$DC_GCP" ;;
-    azure) echo "$DC_AZURE" ;;
     aws) echo "$DC_AWS" ;;
     *) echo "" ;;
   esac
@@ -71,7 +69,7 @@ datacenter_for_cloud() {
 is_unsupported_cloud() {
   local cloud="$1"
   case "$cloud" in
-    aws) return 0 ;;
+    aws|azure) return 0 ;;
     *) return 1 ;;
   esac
 }
