@@ -378,6 +378,10 @@ class TDXManager:
         }
         # Drop empty keys to minimize kernel cmdline payload size.
         config = {k: v for k, v in config.items() if v not in (None, "")}
+        if "intel_api_key" not in config:
+            raise RuntimeError(
+                "INTEL_API_KEY is required to launch a control plane VM (launcher attestation)."
+            )
         result = self.vm_new(
             image=image,
             mode=CONTROL_PLANE_MODE,
