@@ -159,7 +159,7 @@ async function loadUserInfo() {
 
 function configureUIForRole() {
     // Admin-only tabs: settings, measurements, cloud/cloudflare, system, accounts
-    const adminOnlyTabs = ['settings', 'measurements', 'cloud', 'cloudflare', 'system', 'accounts'];
+    const adminOnlyTabs = ['settings', 'measurements', 'cloud', 'cloudflare', 'system', 'accounts', 'stripe'];
 
     if (!isAdmin) {
         // Hide admin-only tab buttons
@@ -234,6 +234,7 @@ function showAdminTab(tabName) {
     // Load data for tab
     if (tabName === 'agents') loadAgents();
     else if (tabName === 'accounts') loadAccounts();
+    else if (tabName === 'stripe') loadStripeAdmin();
     else if (tabName === 'measurements') loadMeasurements();
     else if (tabName === 'settings') loadSettings();
     else if (tabName === 'cloud') loadCloudResources();
@@ -246,6 +247,196 @@ function showAdminTab(tabName) {
     }
     else if (tabName === 'cloudflare') loadCloudflare();
     else if (tabName === 'system') loadSystem();
+}
+
+// ── Stripe admin tab ─────────────────────────────────────────────────────────
+
+function _renderStripeStatusCard(status) {
+    const mode = status.mode ? status.mode.toUpperCase() : 'UNKNOWN';
+    const available = status.stripe_available ? 'Yes' : 'No';
+    const enabled = status.stripe_enabled ? 'Yes' : 'No';
+    const key = status.secret_key_configured ? `Yes (${status.secret_key_source})` : `No (${status.secret_key_source})`;
+    const wh = status.webhook_secret_configured ? `Yes (${status.webhook_secret_source})` : `No (${status.webhook_secret_source})`;
+
+    const validation = status.validation || {};
+    let validationHtml = '';
+    if (validation.attempted) {
+        if (validation.ok) {
+            validationHtml = `<div style="margin-top:10px;color:var(--success);font-weight:600;">Key validation: OK</div>`;
+        } else {
+            validationHtml = `<div style="margin-top:10px;color:var(--danger);font-weight:600;">Key validation: FAILED</div>
+                              <div style="margin-top:6px;color:var(--muted);font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size:0.9rem;">
+                                  ${escapeHtml(validation.error || 'Unknown error')}
+                              </div>`;
+        }
+    }
+
+    return `
+        <div class="stats-grid" style="margin-top: 10px;">
+            <div class="stat-card">
+                <div class="stat-label">Mode</div>
+                <div class="stat-value">${mode}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Stripe SDK Available</div>
+                <div class="stat-value">${available}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Stripe Enabled</div>
+                <div class="stat-value">${enabled}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Secret Key</div>
+                <div class="stat-value">${key}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Webhook Secret</div>
+                <div class="stat-value">${wh}</div>
+            </div>
+        </div>
+        <div style="display:flex; gap:10px; margin-top: 14px; flex-wrap: wrap;">
+            <button class="btn-small btn-secondary" onclick="validateStripeKey()">Validate Key</button>
+            <button class="btn-small btn-secondary" onclick="showAdminTab('settings'); filterSettingsGroup('stripe');">Open In Settings</button>
+        </div>
+        ${validationHtml}
+    `;
+}
+
+function _renderStripeWebhookBlock(status) {
+    const webhookUrl = window.location.origin + (status.webhook_path || '/api/v1/webhooks/stripe');
+    return `
+        <div style="display:flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+            <div style="flex: 1; min-width: 260px;">
+                <div style="color: var(--muted); font-size: 0.9rem; margin-bottom: 6px;">Webhook URL</div>
+                <div style="font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace); padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); overflow-x: auto;">
+                    ${escapeHtml(webhookUrl)}
+                </div>
+                <div style="color: var(--muted); font-size: 0.9rem; margin-top: 8px;">
+                    In Stripe (Test mode): Developers → Webhooks → Add endpoint → event <code>payment_intent.succeeded</code>.
+                </div>
+            </div>
+            <div>
+                <button class="btn-small btn-primary" onclick="copyStripeWebhookUrl()">Copy URL</button>
+            </div>
+        </div>
+    `;
+}
+
+function _renderStripeSettings(settings) {
+    const map = {};
+    (settings || []).forEach(s => { map[s.key] = s; });
+    const secretKey = map['stripe.secret_key'];
+    const webhookSecret = map['stripe.webhook_secret'];
+
+    if (!secretKey || !webhookSecret) {
+        return `<div class="error">Stripe settings not found in settings registry.</div>`;
+    }
+
+    function row(s) {
+        const placeholder = s.is_secret && s.source === 'db' ? '(saved in DB)' : (s.default || '');
+        return `
+            <tr>
+                <td>
+                    <strong>${s.key}</strong>
+                    <div class="setting-desc">${escapeHtml(s.description || '')}</div>
+                    <div class="setting-env">Env: <code>${escapeHtml(s.env_var || '')}</code></div>
+                </td>
+                <td>
+                    <input
+                        class="setting-input"
+                        type="password"
+                        id="setting-${s.key}"
+                        value=""
+                        placeholder="${escapeHtml(placeholder)}"
+                        autocomplete="off"
+                    >
+                </td>
+                <td><span class="source-badge ${s.source}">${s.source}</span></td>
+                <td class="action-buttons">
+                    <button class="btn-small btn-primary" onclick="saveSetting('${s.key}')">Save</button>
+                    ${s.source === 'db' ? `<button class="btn-small btn-secondary" onclick="resetSetting('${s.key}')">Reset</button>` : ''}
+                </td>
+            </tr>
+        `;
+    }
+
+    return `
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Setting</th>
+                    <th>Value</th>
+                    <th>Source</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${row(secretKey)}
+                ${row(webhookSecret)}
+            </tbody>
+        </table>
+        <div style="margin-top: 10px; color: var(--muted); font-size: 0.9rem;">
+            Note: values are never shown after saving. If a value comes from <strong>env</strong>, edit your deployment env vars.
+        </div>
+    `;
+}
+
+async function loadStripeAdmin() {
+    const statusEl = document.getElementById('stripeAdminStatus');
+    const webhookEl = document.getElementById('stripeAdminWebhook');
+    const settingsEl = document.getElementById('stripeAdminSettings');
+
+    statusEl.innerHTML = '<div class="loading">Loading Stripe status...</div>';
+    webhookEl.innerHTML = '<div class="loading">Loading webhook info...</div>';
+    settingsEl.innerHTML = '<div class="loading">Loading Stripe settings...</div>';
+
+    try {
+        const [status, settings] = await Promise.all([
+            adminFetchJSON('/api/v1/admin/stripe/status'),
+            fetchJSON('/api/v1/admin/settings?group=stripe', {
+                headers: { 'Authorization': `Bearer ${adminToken}` }
+            }),
+        ]);
+
+        statusEl.innerHTML = _renderStripeStatusCard(status);
+        webhookEl.innerHTML = _renderStripeWebhookBlock(status);
+        settingsEl.innerHTML = _renderStripeSettings(settings.settings || []);
+    } catch (err) {
+        statusEl.innerHTML = `<div class="error">Error loading Stripe status: ${escapeHtml(err.message)}</div>`;
+        webhookEl.innerHTML = `<div class="error">Error loading webhook info: ${escapeHtml(err.message)}</div>`;
+        settingsEl.innerHTML = `<div class="error">Error loading Stripe settings: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+async function validateStripeKey() {
+    const statusEl = document.getElementById('stripeAdminStatus');
+    statusEl.innerHTML = '<div class="loading">Validating Stripe key...</div>';
+    try {
+        const status = await adminFetchJSON('/api/v1/admin/stripe/status?validate=true');
+        statusEl.innerHTML = _renderStripeStatusCard(status);
+    } catch (err) {
+        statusEl.innerHTML = `<div class="error">Validation failed: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+async function copyToClipboard(text) {
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (e) {
+        // Fallback for older browsers
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+    }
+    alert('Copied');
+}
+
+function copyStripeWebhookUrl() {
+    const url = window.location.origin + '/api/v1/webhooks/stripe';
+    copyToClipboard(url);
 }
 
 // API helper with auth

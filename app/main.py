@@ -118,6 +118,7 @@ from .settings import (
     delete_setting,
     get_setting,
     get_setting_int,
+    get_setting_source,
     list_settings,
     log_settings_sources,
     set_setting,
@@ -1747,6 +1748,59 @@ async def admin_reset_setting(
     deleted = delete_setting(key)
     logger.info(f"Setting reset: {key} (was_in_db={deleted})")
     return {"key": key, "status": "reset"}
+
+
+@app.get("/api/v1/admin/stripe/status")
+async def admin_stripe_status(
+    validate: bool = Query(False),
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Return basic Stripe integration status for the admin UI.
+
+    If validate=true, attempts a lightweight Stripe API call to confirm the key works.
+    """
+    from .billing import _ensure_stripe, _stripe_mod
+
+    secret_key = get_setting("stripe.secret_key")
+    webhook_secret = get_setting("stripe.webhook_secret")
+
+    mode = ""
+    if secret_key.startswith("sk_test_"):
+        mode = "test"
+    elif secret_key.startswith("sk_live_"):
+        mode = "live"
+
+    stripe_available = _stripe_mod is not None
+    stripe_enabled = _ensure_stripe()
+
+    validation = {"attempted": bool(validate), "ok": None, "error": None}
+    if validate:
+        if not stripe_enabled:
+            validation["ok"] = False
+            validation["error"] = (
+                "Stripe not enabled (missing STRIPE_SECRET_KEY or SDK unavailable)"
+            )
+        else:
+            try:
+                # A small, read-only call that works in test mode too.
+                _stripe_mod.Balance.retrieve()
+                validation["ok"] = True
+            except Exception as e:
+                # Return a safe summary; avoid leaking request details.
+                validation["ok"] = False
+                validation["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+
+    return {
+        "stripe_available": stripe_available,
+        "stripe_enabled": stripe_enabled,
+        "mode": mode,
+        "secret_key_configured": bool(secret_key),
+        "secret_key_source": get_setting_source("stripe.secret_key"),
+        "webhook_secret_configured": bool(webhook_secret),
+        "webhook_secret_source": get_setting_source("stripe.webhook_secret"),
+        "webhook_path": "/api/v1/webhooks/stripe",
+        "validation": validation,
+    }
 
 
 # ==============================================================================

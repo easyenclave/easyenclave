@@ -883,17 +883,18 @@
 
         <main class="container">
             <!-- Tabs -->
-            <div class="tabs">
-                <button class="tab active" onclick="showAdminTab('agents')">Agents</button>
-                <button class="tab" onclick="showAdminTab('apps')">Apps</button>
-                <button class="tab" onclick="showAdminTab('accounts')">Accounts</button>
-                <button class="tab" onclick="showAdminTab('measurements')">Measurements</button>
-                <button class="tab" onclick="showAdminTab('settings')">Settings</button>
-                <button class="tab" onclick="showAdminTab('cloud')">Clouds</button>
-                <button class="tab" onclick="showAdminTab('cloudflare')">Cloudflare</button>
-                <button class="tab" onclick="showAdminTab('logs')">Logs</button>
-                <button class="tab" onclick="showAdminTab('system')">System</button>
-            </div>
+	            <div class="tabs">
+	                <button class="tab active" onclick="showAdminTab('agents')">Agents</button>
+	                <button class="tab" onclick="showAdminTab('apps')">Apps</button>
+	                <button class="tab" onclick="showAdminTab('accounts')">Accounts</button>
+	                <button class="tab" onclick="showAdminTab('stripe')">Stripe</button>
+	                <button class="tab" onclick="showAdminTab('measurements')">Measurements</button>
+	                <button class="tab" onclick="showAdminTab('settings')">Settings</button>
+	                <button class="tab" onclick="showAdminTab('cloud')">Clouds</button>
+	                <button class="tab" onclick="showAdminTab('cloudflare')">Cloudflare</button>
+	                <button class="tab" onclick="showAdminTab('logs')">Logs</button>
+	                <button class="tab" onclick="showAdminTab('system')">System</button>
+	            </div>
 
             <!-- Agents Tab -->
             <section id="agents-admin-tab" class="tab-content">
@@ -917,12 +918,12 @@
                 </div>
             </section>
 
-            <!-- Accounts Tab -->
-            <section id="accounts-admin-tab" class="tab-content hidden">
-                <div class="section-header">
-                    <h2>Billing Accounts</h2>
-                    <button class="btn-primary refresh-btn" onclick="loadAccounts()">Refresh</button>
-                </div>
+	            <!-- Accounts Tab -->
+	            <section id="accounts-admin-tab" class="tab-content hidden">
+	                <div class="section-header">
+	                    <h2>Billing Accounts</h2>
+	                    <button class="btn-primary refresh-btn" onclick="loadAccounts()">Refresh</button>
+	                </div>
                 <div class="section-card">
                     <h3>Create Account</h3>
                     <div class="add-form">
@@ -934,10 +935,39 @@
                         <button class="btn-primary" onclick="createAccount()">Create</button>
                     </div>
                 </div>
-                <div id="accountsAdminList">
-                    <div class="loading">Loading accounts...</div>
-                </div>
-            </section>
+	                <div id="accountsAdminList">
+	                    <div class="loading">Loading accounts...</div>
+	                </div>
+	            </section>
+
+	            <!-- Stripe Tab -->
+	            <section id="stripe-admin-tab" class="tab-content hidden">
+	                <div class="section-header">
+	                    <h2>Stripe</h2>
+	                    <button class="btn-primary refresh-btn" onclick="loadStripeAdmin()">Refresh</button>
+	                </div>
+	                <div class="section-card">
+	                    <p style="color: var(--gray-600); margin-bottom: 10px;">
+	                        Configure billing in Stripe, then set <code>STRIPE_SECRET_KEY</code> and
+	                        <code>STRIPE_WEBHOOK_SECRET</code> (or save them in Settings).
+	                    </p>
+	                    <div id="stripeAdminStatus">
+	                        <div class="loading">Loading Stripe status...</div>
+	                    </div>
+	                </div>
+	                <div class="section-card">
+	                    <h3>Webhook Endpoint</h3>
+	                    <div id="stripeAdminWebhook">
+	                        <div class="loading">Loading webhook info...</div>
+	                    </div>
+	                </div>
+	                <div class="section-card">
+	                    <h3>Stripe Settings</h3>
+	                    <div id="stripeAdminSettings">
+	                        <div class="loading">Loading Stripe settings...</div>
+	                    </div>
+	                </div>
+	            </section>
 
             <!-- Measurements Tab -->
             <section id="measurements-admin-tab" class="tab-content hidden">
@@ -1177,6 +1207,6 @@
         </div>
     </div>
 
-    <script src="/static/admin.js?v=14"></script>
+    <script src="/static/admin.js?v=15"></script>
 </body>
 </html>
