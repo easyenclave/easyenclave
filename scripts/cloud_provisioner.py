@@ -848,7 +848,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--azure-resource-group", default=os.environ.get("AZURE_RESOURCE_GROUP", ""))
         p.add_argument("--azure-location", default=os.environ.get("AZURE_LOCATION", "eastus2"))
         p.add_argument("--azure-zone-label", default=os.environ.get("AZURE_ZONE_LABEL", "eastus2-3"))
-        p.add_argument("--azure-vm-size", default=os.environ.get("AZURE_VM_SIZE", "Standard_DC2es_v5"))
+        p.add_argument("--azure-vm-size", default=os.environ.get("AZURE_VM_SIZE", "Standard_DC2eds_v5"))
         p.add_argument("--azure-image", default=os.environ.get("AZURE_IMAGE", "Canonical:ubuntu-24_04-lts:server:latest"))
         p.add_argument("--azure-admin-username", default=os.environ.get("AZURE_ADMIN_USERNAME", "easyenclave"))
         p.add_argument("--azure-count", type=int, default=1)
