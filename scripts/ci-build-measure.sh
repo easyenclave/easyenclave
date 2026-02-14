@@ -40,7 +40,7 @@ declare -A RTMRS_BY_SIZE
 
 for SIZE in "${SIZES[@]}"; do
   echo "--- Measuring node_size=$SIZE ---"
-  MEASURES=$(python3 infra/tdx_cli.py vm measure --verity --json --timeout 180 --size "$SIZE")
+  MEASURES=$(python3 infra/tdx_cli.py vm measure --json --timeout 180 --size "$SIZE")
   if [ -z "$MEASURES" ]; then
     echo "::error::Failed to capture measurements for node_size=$SIZE"
     exit 1

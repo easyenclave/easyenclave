@@ -462,7 +462,7 @@ cp .env.example .env  # Add your control plane URL</code></pre>
                         <div class="setup-content">
                             <h4>Launch Your Agent</h4>
                             <pre><code># Build and launch a TDX agent VM
-python3 infra/tdx_cli.py vm launch --template agent --verity
+python3 infra/tdx_cli.py vm new --size tiny
 
 # Your agent will register automatically with the control plane</code></pre>
                         </div>

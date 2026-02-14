@@ -358,7 +358,7 @@ measure_all_sizes() {
   for size in "${sizes[@]}"; do
     echo "--- Measuring node_size=$size ---"
     local measures
-    measures="$(python3 infra/tdx_cli.py vm measure --verity --json --timeout 180 --size "$size")"
+    measures="$(python3 infra/tdx_cli.py vm measure --json --timeout 180 --size "$size")"
     if [ -z "$measures" ]; then
       FAIL_REASON="missing_measurement:${size}"
       echo "::error::Failed to capture measurements for node_size=$size"
@@ -460,7 +460,7 @@ build_once() {
 
   echo "[$label] measuring tiny profile..."
   local measures
-  measures="$(python3 infra/tdx_cli.py vm measure --verity --json --timeout 180 --size tiny)"
+  measures="$(python3 infra/tdx_cli.py vm measure --json --timeout 180 --size tiny)"
   echo "$measures" | jq -c '{mrtd, rtmr0, rtmr1, rtmr2}' > "$out_dir/measure.json"
   echo "[$label] measurements:"
   cat "$out_dir/measure.json"

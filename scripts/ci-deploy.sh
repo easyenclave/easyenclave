@@ -16,11 +16,8 @@
 #   NUM_STANDARD_AGENTS - number of standard agents to launch (default: 2)
 #   NUM_LLM_AGENTS     - number of LLM-sized agents to launch (default: 1)
 #   NUM_GCP_TINY_AGENTS - extra tiny agents labeled as gcp (default: 0)
-#   NUM_AZURE_TINY_AGENTS - extra tiny agents labeled as azure (default: 0)
 #   GCP_DATACENTER_AZ - availability zone label for gcp agents (default: us-central1-a)
-#   AZURE_DATACENTER_AZ - availability zone label for azure agents (default: eastus2-1)
 #   GCP_DATACENTER_REGION - optional region label for gcp agents (default: us-central1)
-#   AZURE_DATACENTER_REGION - optional region label for azure agents (default: eastus2)
 #   ADMIN_PASSWORD - admin password (auto-detected from CP logs if not set)
 #   AGENT_DATACENTER - explicit datacenter label override (e.g. baremetal:github-runner-a)
 #   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: baremetal)
@@ -35,15 +32,12 @@ NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-2}"
 NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-2}"
 NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-1}"
 NUM_GCP_TINY_AGENTS="${NUM_GCP_TINY_AGENTS:-0}"
-NUM_AZURE_TINY_AGENTS="${NUM_AZURE_TINY_AGENTS:-0}"
 AGENT_DATACENTER="${AGENT_DATACENTER:-}"
 AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
 AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
 GCP_DATACENTER_AZ="${GCP_DATACENTER_AZ:-us-central1-a}"
-AZURE_DATACENTER_AZ="${AZURE_DATACENTER_AZ:-eastus2-1}"
 GCP_DATACENTER_REGION="${GCP_DATACENTER_REGION:-us-central1}"
-AZURE_DATACENTER_REGION="${AZURE_DATACENTER_REGION:-eastus2}"
 
 # ===================================================================
 # Helpers
@@ -384,7 +378,7 @@ python3 infra/tdx_cli.py vm delete all || true
 # 2. Deploy control plane
 # ===================================================================
 echo "==> Deploying control plane..."
-python3 infra/tdx_cli.py control-plane new --verity --wait --port 8080
+python3 infra/tdx_cli.py control-plane new --wait --port 8080
 
 # ===================================================================
 # 3. Wait for Cloudflare tunnel
@@ -414,8 +408,8 @@ fi
 # ===================================================================
 # 4. Launch agents in parallel
 # ===================================================================
-TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS + NUM_GCP_TINY_AGENTS + NUM_AZURE_TINY_AGENTS))
-echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM, $NUM_GCP_TINY_AGENTS gcp-tiny, $NUM_AZURE_TINY_AGENTS azure-tiny)..."
+TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS + NUM_GCP_TINY_AGENTS))
+echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM, $NUM_GCP_TINY_AGENTS gcp-tiny)..."
 
 AGENT_LOCATION_ARGS=()
 if [ -n "$AGENT_DATACENTER" ]; then
@@ -433,21 +427,21 @@ else
 fi
 
 for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --verity --size tiny \
+  python3 infra/tdx_cli.py vm new --size tiny \
     "${AGENT_LOCATION_ARGS[@]}" \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
 done
 for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --verity --size standard \
+  python3 infra/tdx_cli.py vm new --size standard \
     "${AGENT_LOCATION_ARGS[@]}" \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
 done
 for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --verity --size llm \
+  python3 infra/tdx_cli.py vm new --size llm \
     "${AGENT_LOCATION_ARGS[@]}" \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
@@ -455,7 +449,7 @@ for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
 done
 
 for _i in $(seq 1 "$NUM_GCP_TINY_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --verity --size tiny \
+  python3 infra/tdx_cli.py vm new --size tiny \
     --cloud-provider gcp \
     --availability-zone "$GCP_DATACENTER_AZ" \
     --region "$GCP_DATACENTER_REGION" \
@@ -464,15 +458,7 @@ for _i in $(seq 1 "$NUM_GCP_TINY_AGENTS"); do
     --wait &
 done
 
-for _i in $(seq 1 "$NUM_AZURE_TINY_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --verity --size tiny \
-    --cloud-provider azure \
-    --availability-zone "$AZURE_DATACENTER_AZ" \
-    --region "$AZURE_DATACENTER_REGION" \
-    --easyenclave-url "$CP_URL" \
-    --intel-api-key "$INTEL_API_KEY" \
-    --wait &
-done
+# TODO(azure): re-enable Azure-labeled agent launch once Azure confidential VM reliability is fixed.
 wait
 echo "All $TOTAL_AGENTS agents launched"
 

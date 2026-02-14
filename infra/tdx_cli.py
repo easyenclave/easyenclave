@@ -87,120 +87,41 @@ class TDXManager:
                 return path
         return Path(__file__).parent
 
-    def _find_image(self, image_path: str | None = None) -> Path:
-        """Find TDX VM image. Returns an absolute path."""
-        search_paths = [
-            image_path,
-            os.environ.get("TDX_IMAGE_PATH"),
-            # Customized image with launcher (built by build_image.sh)
-            str(self.infra_dir / "output/tdx-runner.qcow2"),
-            str(self.workspace / "infra/output/tdx-runner.qcow2"),
-            # Legacy paths
-            str(self.infra_dir / "vm_images/output/tdx-runner.qcow2"),
-            str(self.workspace / "vm_images/output/tdx-runner.qcow2"),
-            "/var/lib/tdx/images/tdx-runner.qcow2",
-            # Base Canonical image (no launcher - fallback only)
-            str(Path.home() / "tdx/guest-tools/image/tdx-guest-ubuntu-24.04-generic.qcow2"),
-        ]
-        for p in search_paths:
-            if p and Path(p).exists():
-                # Return absolute path so qemu-img can find it regardless of cwd
-                return Path(p).resolve()
-        raise FileNotFoundError("TDX image not found. Set TDX_IMAGE_PATH or provide --image path.")
-
-    def _get_template(self, verity: bool = False) -> Path:
+    def _get_template(self) -> Path:
         """Get XML template path."""
-        name = "trust_domain_verity" if verity else "trust_domain"
-        return self.infra_dir / "vm_templates" / f"{name}.xml.template"
+        return self.infra_dir / "vm_templates" / "trust_domain_verity.xml.template"
 
     def _find_verity_image(self, image_path: str | None = None) -> dict:
-        """Find verity image artifacts (kernel, initrd, rootfs, cmdline).
-
-        Returns dict with paths to kernel, initrd, root, and cmdline content.
-        """
-        search_dirs = [
-            image_path,
-            os.environ.get("TDX_VERITY_IMAGE_DIR"),
-            str(self.infra_dir / "image/output"),
-            str(self.workspace / "infra/image/output"),
-        ]
-        for d in search_dirs:
-            if not d or not Path(d).is_dir():
-                continue
-            p = Path(d)
-            kernel = p / "easyenclave.vmlinuz"
-            initrd = p / "easyenclave.initrd"
-            root = p / "easyenclave.root.raw"
-            cmdline_file = p / "easyenclave.cmdline"
-            if kernel.exists() and initrd.exists() and root.exists() and cmdline_file.exists():
-                return {
-                    "kernel": kernel.resolve(),
-                    "initrd": initrd.resolve(),
-                    "root": root.resolve(),
-                    "cmdline": cmdline_file.read_text().strip(),
-                }
-        raise FileNotFoundError(
-            "Verity image artifacts not found. Build with: cd infra/image && make build\n"
-            "Or set TDX_VERITY_IMAGE_DIR to the directory containing the artifacts."
+        """Find verity image artifacts (kernel, initrd, rootfs, cmdline)."""
+        artifacts_dir = (
+            Path(image_path).resolve() if image_path else (self.infra_dir / "image" / "output")
         )
+        if not artifacts_dir.is_dir():
+            raise FileNotFoundError(
+                f"Verity artifacts directory not found: {artifacts_dir}\n"
+                "Build with: cd infra/image && nix develop --command make build"
+            )
 
-    def _create_cloud_init_iso(self, vm_id: str, config: dict, debug: bool = False) -> Path:
-        """Create NoCloud ISO with VM configuration.
+        files = {
+            "kernel": artifacts_dir / "easyenclave.vmlinuz",
+            "initrd": artifacts_dir / "easyenclave.initrd",
+            "root": artifacts_dir / "easyenclave.root.raw",
+            "cmdline_file": artifacts_dir / "easyenclave.cmdline",
+        }
+        missing = [str(path) for path in files.values() if not path.exists()]
+        if missing:
+            raise FileNotFoundError(
+                "Missing verity image artifacts:\n"
+                + "\n".join(f"  - {path}" for path in missing)
+                + "\nBuild with: cd infra/image && nix develop --command make build"
+            )
 
-        Args:
-            vm_id: Unique VM identifier
-            config: Configuration dict to pass to launcher
-            debug: If True, enable SSH and set password for debugging
-
-        Returns:
-            Path to cloud-init ISO
-        """
-        iso_dir = self.WORKDIR / f"cidata.{vm_id}"
-        iso_dir.mkdir(parents=True, exist_ok=True)
-
-        # user-data with cloud-config
-        user_data = f"""#cloud-config
-write_files:
-  - path: /etc/easyenclave/config.json
-    content: '{json.dumps(config)}'
-    owner: root:root
-    permissions: '0644'
-"""
-        if debug:
-            user_data += """
-password: tdx
-chpasswd:
-  expire: false
-ssh_pwauth: true
-runcmd:
-  - systemctl enable ssh
-  - systemctl start ssh
-"""
-        (iso_dir / "user-data").write_text(user_data)
-
-        # meta-data (required by NoCloud)
-        meta_data = f"instance-id: {vm_id}\nlocal-hostname: tdx-{vm_id[:8]}\n"
-        (iso_dir / "meta-data").write_text(meta_data)
-
-        # Create ISO with genisoimage
-        iso_path = self.WORKDIR / f"cidata.{vm_id}.iso"
-        subprocess.run(
-            [
-                "genisoimage",
-                "-output",
-                str(iso_path),
-                "-volid",
-                "cidata",
-                "-joliet",
-                "-rock",
-                str(iso_dir),
-            ],
-            check=True,
-            capture_output=True,
-        )
-        iso_path.chmod(0o644)
-
-        return iso_path
+        return {
+            "kernel": files["kernel"].resolve(),
+            "initrd": files["initrd"].resolve(),
+            "root": files["root"].resolve(),
+            "cmdline": files["cmdline_file"].read_text().strip(),
+        }
 
     def _encode_launcher_config_for_cmdline(self, launcher_config: dict) -> tuple[str, str]:
         """Encode launcher config for kernel cmdline.
@@ -244,7 +165,6 @@ runcmd:
         debug: bool = False,
         memory_gib: int = 16,
         vcpu_count: int = 32,
-        verity: bool = False,
         size_name: str = "",
         disk_gib: int = 0,
     ) -> dict:
@@ -255,19 +175,18 @@ runcmd:
         with the control plane and poll for deployments (if mode=agent).
 
         Args:
-            image: Path to TDX VM image (auto-detected if not provided)
+            image: Path to verity artifacts directory (auto-detected if not provided)
             mode: Launcher mode (control-plane or agent)
             config: Additional config to pass to launcher
             debug: If True, enable SSH and set password for debugging
             memory_gib: VM memory in GiB
             vcpu_count: Number of vCPUs
-            verity: If True, use dm-verity image with direct kernel boot
             disk_gib: Data disk size in GiB (0 = no disk, tmpfs-only fallback)
 
         Returns:
             Dict with vm_name, uuid, and info
         """
-        template = self._get_template(verity=verity)
+        template = self._get_template()
 
         if not template.exists():
             raise FileNotFoundError(f"XML template not found: {template}")
@@ -308,91 +227,58 @@ runcmd:
         xml_content = xml_content.replace("MEMORY_GIB", str(memory_gib))
         xml_content = xml_content.replace("VCPU_COUNT", str(vcpu_count))
 
-        if verity:
-            # dm-verity boot: direct kernel boot, config passed via cmdline
-            artifacts = self._find_verity_image(image)
-            config_param, config_value = self._encode_launcher_config_for_cmdline(launcher_config)
-            cmdline = f"{artifacts['cmdline']} {config_param}={config_value}"
+        # dm-verity boot: direct kernel boot, config passed via cmdline
+        artifacts = self._find_verity_image(image)
+        config_param, config_value = self._encode_launcher_config_for_cmdline(launcher_config)
+        cmdline = f"{artifacts['cmdline']} {config_param}={config_value}"
 
-            # Large TDX VMs fail to allocate the default proportional swiotlb
-            # bounce buffer (e.g. 1GB for 128G RAM).  Force a fixed 512MB buffer
-            # which is small enough to allocate but sufficient for I/O.
-            if memory_gib >= 64:
-                cmdline += " swiotlb=131072"
+        # Large TDX VMs fail to allocate the default proportional swiotlb
+        # bounce buffer (e.g. 1GB for 128G RAM).  Force a fixed 512MB buffer
+        # which is small enough to allocate but sufficient for I/O.
+        if memory_gib >= 64:
+            cmdline += " swiotlb=131072"
 
-            if len(cmdline) > 3072:
-                print(
-                    f"Warning: kernel cmdline is large ({len(cmdline)} bytes); "
-                    "firmware may truncate it.",
-                    file=sys.stderr,
-                )
+        if len(cmdline) > 3072:
+            print(
+                f"Warning: kernel cmdline is large ({len(cmdline)} bytes); "
+                "firmware may truncate it.",
+                file=sys.stderr,
+            )
 
-            xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
-            xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
-            xml_content = xml_content.replace("KERNEL_CMDLINE", cmdline)
-            xml_content = xml_content.replace("ROOT_IMG_PATH", str(artifacts["root"]))
+        xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
+        xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
+        xml_content = xml_content.replace("KERNEL_CMDLINE", cmdline)
+        xml_content = xml_content.replace("ROOT_IMG_PATH", str(artifacts["root"]))
 
-            if disk_gib > 0:
-                # Create writable data disk for Docker storage + workloads.
-                # The guest encrypts it with an ephemeral key (dm-crypt).
-                data_disk_path = self.WORKDIR / f"data.{rand_str}.qcow2"
-                subprocess.run(
-                    [
-                        "qemu-img",
-                        "create",
-                        "-f",
-                        "qcow2",
-                        str(data_disk_path),
-                        f"{disk_gib}G",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                data_disk_path.chmod(0o666)
-                xml_content = xml_content.replace("DATA_IMG_PATH", str(data_disk_path))
-            else:
-                # No data disk — strip the optional block from XML
-                import re as _re
-
-                xml_content = _re.sub(
-                    r"\s*<!-- DATA_DISK_START -->.*?<!-- DATA_DISK_END -->",
-                    "",
-                    xml_content,
-                    flags=_re.DOTALL,
-                )
-        else:
-            # Legacy boot: overlay qcow2 + cloud-init ISO
-            image_path = self._find_image(image)
-            overlay_path = self.WORKDIR / f"overlay.{rand_str}.qcow2"
-
+        if disk_gib > 0:
+            # Create writable data disk for Docker storage + workloads.
+            # The guest encrypts it with an ephemeral key (dm-crypt).
+            data_disk_path = self.WORKDIR / f"data.{rand_str}.qcow2"
             subprocess.run(
                 [
                     "qemu-img",
                     "create",
                     "-f",
                     "qcow2",
-                    "-F",
-                    "qcow2",
-                    "-b",
-                    str(image_path),
-                    str(overlay_path),
+                    str(data_disk_path),
+                    f"{disk_gib}G",
                 ],
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            overlay_path.chmod(0o666)
+            data_disk_path.chmod(0o666)
+            xml_content = xml_content.replace("DATA_IMG_PATH", str(data_disk_path))
+        else:
+            # No data disk — strip the optional block from XML
+            import re as _re
 
-            cloud_init_iso = self._create_cloud_init_iso(
-                rand_str,
-                launcher_config,
-                debug=debug,
+            xml_content = _re.sub(
+                r"\s*<!-- DATA_DISK_START -->.*?<!-- DATA_DISK_END -->",
+                "",
+                xml_content,
+                flags=_re.DOTALL,
             )
-
-            xml_content = xml_content.replace("BASE_IMG_PATH", str(image_path))
-            xml_content = xml_content.replace("OVERLAY_IMG_PATH", str(overlay_path))
-            xml_content = xml_content.replace("CLOUD_INIT_ISO", str(cloud_init_iso))
 
         xml_path = self.WORKDIR / f"{self.DOMAIN_PREFIX}.{rand_str}.xml"
         xml_path.write_text(xml_content)
@@ -417,7 +303,7 @@ runcmd:
             "name": vm_name,
             "uuid": vm_uuid,
             "mode": mode,
-            "verity": verity,
+            "verity": True,
             "serial_log": str(serial_log),
             "info": result.stdout,
         }
@@ -429,7 +315,6 @@ runcmd:
         debug: bool = False,
         memory_gib: int = 16,
         vcpu_count: int = 32,
-        verity: bool = False,
         disk_gib: int = 0,
     ) -> dict:
         """Launch a control plane in a TDX VM.
@@ -447,7 +332,7 @@ runcmd:
         - EASYENCLAVE_DOMAIN: Domain for hostnames (default: easyenclave.com)
 
         Args:
-            image: Path to TDX VM image (auto-detected if not provided)
+            image: Path to verity artifacts directory (auto-detected if not provided)
             port: Port for the control plane API (default 8080)
 
         Returns:
@@ -483,7 +368,6 @@ runcmd:
             debug=debug,
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
-            verity=verity,
             disk_gib=disk_gib,
         )
         result["control_plane_port"] = port
@@ -755,7 +639,6 @@ runcmd:
         timeout: int = 180,
         memory_gib: int = 16,
         vcpu_count: int = 32,
-        verity: bool = False,
         disk_gib: int = 0,
     ) -> dict:
         """Boot a temporary VM to capture MRTD and RTMRs, then destroy it.
@@ -764,7 +647,7 @@ runcmd:
         and returns as soon as measurements are printed. No shutdown wait needed.
 
         Args:
-            image: Path to TDX VM image (auto-detected if not provided)
+            image: Path to verity artifacts directory (auto-detected if not provided)
             timeout: Max seconds to wait for measurements (default 180)
 
         Returns:
@@ -783,7 +666,6 @@ runcmd:
             debug=False,
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
-            verity=verity,
             disk_gib=disk_gib,
         )
         vm_name = result["name"]
@@ -912,7 +794,9 @@ To start a new EasyEnclave network:
     cp_sub = cp_parser.add_subparsers(dest="cp_command", required=True)
 
     cp_new_parser = cp_sub.add_parser("new", help="Launch control plane in TDX VM")
-    cp_new_parser.add_argument("-i", "--image", help="Path to TDX image")
+    cp_new_parser.add_argument(
+        "-i", "--image", help="Path to verity artifacts directory (default: infra/image/output)"
+    )
     cp_new_parser.add_argument(
         "-p", "--port", type=int, default=8080, help="API port (default 8080)"
     )
@@ -922,9 +806,6 @@ To start a new EasyEnclave network:
     cp_new_parser.add_argument(
         "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
     )
-    cp_new_parser.add_argument(
-        "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
-    )
     _add_size_args(cp_new_parser)
 
     # VM commands
@@ -932,7 +813,9 @@ To start a new EasyEnclave network:
     vm_sub = vm_parser.add_subparsers(dest="vm_command", required=True)
 
     new_parser = vm_sub.add_parser("new", help="Create new TDX VM")
-    new_parser.add_argument("-i", "--image", help="Path to TDX image")
+    new_parser.add_argument(
+        "-i", "--image", help="Path to verity artifacts directory (default: infra/image/output)"
+    )
     new_parser.add_argument(
         "--easyenclave-url",
         default="https://app.easyenclave.com",
@@ -946,9 +829,6 @@ To start a new EasyEnclave network:
     new_parser.add_argument("--wait", action="store_true", help="Wait for agent to get IP")
     new_parser.add_argument(
         "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
-    )
-    new_parser.add_argument(
-        "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
     )
     new_parser.add_argument(
         "--cloud-provider",
@@ -991,12 +871,11 @@ To start a new EasyEnclave network:
     )
 
     measure_parser = vm_sub.add_parser("measure", help="Boot temp VM to capture measurements")
-    measure_parser.add_argument("-i", "--image", help="Path to TDX image")
     measure_parser.add_argument(
-        "--timeout", type=int, default=180, help="Timeout in seconds (default 180)"
+        "-i", "--image", help="Path to verity artifacts directory (default: infra/image/output)"
     )
     measure_parser.add_argument(
-        "--verity", action="store_true", help="Use dm-verity image (direct kernel boot)"
+        "--timeout", type=int, default=180, help="Timeout in seconds (default 180)"
     )
     measure_parser.add_argument(
         "--json", action="store_true", help="Output all measurements as JSON (MRTD + RTMRs)"
@@ -1018,7 +897,6 @@ To start a new EasyEnclave network:
                     debug=args.debug,
                     memory_gib=mem,
                     vcpu_count=vcpus,
-                    verity=args.verity,
                     disk_gib=disk,
                 )
 
@@ -1102,7 +980,6 @@ To start a new EasyEnclave network:
                     debug=args.debug,
                     memory_gib=mem,
                     vcpu_count=vcpus,
-                    verity=args.verity,
                     size_name=size_name,
                     disk_gib=disk,
                 )
@@ -1245,7 +1122,6 @@ To start a new EasyEnclave network:
                     args.timeout,
                     memory_gib=mem,
                     vcpu_count=vcpus,
-                    verity=args.verity,
                     disk_gib=disk,
                 )
                 if result.get("mrtd"):
