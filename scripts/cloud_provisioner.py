@@ -549,19 +549,34 @@ def _azure_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedReso
     if not args.azure_location:
         raise RuntimeError("--azure-location is required for Azure provisioning")
 
-    _run(
+    # Resource groups are global containers; resources can live in a different location.
+    # Create only when missing to avoid InvalidResourceGroupLocation on cross-region deploys.
+    group_show = _run(
         [
             "az",
             "group",
-            "create",
+            "show",
             "--name",
             args.azure_resource_group,
-            "--location",
-            args.azure_location,
             "--output",
             "none",
-        ]
+        ],
+        check=False,
     )
+    if group_show.returncode != 0:
+        _run(
+            [
+                "az",
+                "group",
+                "create",
+                "--name",
+                args.azure_resource_group,
+                "--location",
+                args.azure_location,
+                "--output",
+                "none",
+            ]
+        )
 
     resources: list[ManagedResource] = []
     zone_label = args.azure_zone_label
