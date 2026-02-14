@@ -109,6 +109,14 @@ services:
       - ITA_API_KEY=${{ITA_API_KEY:-}}
       - STRIPE_SECRET_KEY=${{STRIPE_SECRET_KEY:-}}
       - STRIPE_WEBHOOK_SECRET=${{STRIPE_WEBHOOK_SECRET:-}}
+      - GCP_PROJECT_ID=${{GCP_PROJECT_ID:-}}
+      - GCP_WORKLOAD_IDENTITY_PROVIDER=${{GCP_WORKLOAD_IDENTITY_PROVIDER:-}}
+      - GCP_SERVICE_ACCOUNT=${{GCP_SERVICE_ACCOUNT:-}}
+      - GCP_SERVICE_ACCOUNT_KEY=${{GCP_SERVICE_ACCOUNT_KEY:-}}
+      - AZURE_SUBSCRIPTION_ID=${{AZURE_SUBSCRIPTION_ID:-}}
+      - AZURE_TENANT_ID=${{AZURE_TENANT_ID:-}}
+      - AZURE_CLIENT_ID=${{AZURE_CLIENT_ID:-}}
+      - AZURE_CLIENT_SECRET=${{AZURE_CLIENT_SECRET:-}}
       - CLOUDFLARE_API_TOKEN=${{CLOUDFLARE_API_TOKEN:-}}
       - CLOUDFLARE_ACCOUNT_ID=${{CLOUDFLARE_ACCOUNT_ID:-}}
       - CLOUDFLARE_ZONE_ID=${{CLOUDFLARE_ZONE_ID:-}}
@@ -1802,6 +1810,22 @@ def run_control_plane_mode(config: dict):
         env["STRIPE_SECRET_KEY"] = config["stripe_secret_key"]
     if config.get("stripe_webhook_secret"):
         env["STRIPE_WEBHOOK_SECRET"] = config["stripe_webhook_secret"]
+    if config.get("gcp_project_id"):
+        env["GCP_PROJECT_ID"] = config["gcp_project_id"]
+    if config.get("gcp_workload_identity_provider"):
+        env["GCP_WORKLOAD_IDENTITY_PROVIDER"] = config["gcp_workload_identity_provider"]
+    if config.get("gcp_service_account"):
+        env["GCP_SERVICE_ACCOUNT"] = config["gcp_service_account"]
+    if config.get("gcp_service_account_key"):
+        env["GCP_SERVICE_ACCOUNT_KEY"] = config["gcp_service_account_key"]
+    if config.get("azure_subscription_id"):
+        env["AZURE_SUBSCRIPTION_ID"] = config["azure_subscription_id"]
+    if config.get("azure_tenant_id"):
+        env["AZURE_TENANT_ID"] = config["azure_tenant_id"]
+    if config.get("azure_client_id"):
+        env["AZURE_CLIENT_ID"] = config["azure_client_id"]
+    if config.get("azure_client_secret"):
+        env["AZURE_CLIENT_SECRET"] = config["azure_client_secret"]
     if config.get("trusted_agent_mrtds"):
         env["TRUSTED_AGENT_MRTDS"] = config["trusted_agent_mrtds"]
     if config.get("trusted_proxy_mrtds"):

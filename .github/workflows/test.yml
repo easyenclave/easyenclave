@@ -179,6 +179,16 @@ jobs:
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      # Cloud credentials (optional). Note: GitHub OIDC does not transfer into the TDX VM;
+      # if the control plane itself needs to call cloud APIs, provide key-based creds.
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
 
     steps:
       - name: Fix workspace permissions

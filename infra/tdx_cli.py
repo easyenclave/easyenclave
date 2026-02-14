@@ -351,6 +351,16 @@ class TDXManager:
             # Stripe (optional)
             "stripe_secret_key": os.environ.get("STRIPE_SECRET_KEY"),
             "stripe_webhook_secret": os.environ.get("STRIPE_WEBHOOK_SECRET"),
+            # GCP (optional)
+            "gcp_project_id": os.environ.get("GCP_PROJECT_ID"),
+            "gcp_workload_identity_provider": os.environ.get("GCP_WORKLOAD_IDENTITY_PROVIDER"),
+            "gcp_service_account": os.environ.get("GCP_SERVICE_ACCOUNT"),
+            "gcp_service_account_key": os.environ.get("GCP_SERVICE_ACCOUNT_KEY"),
+            # Azure (optional)
+            "azure_subscription_id": os.environ.get("AZURE_SUBSCRIPTION_ID"),
+            "azure_tenant_id": os.environ.get("AZURE_TENANT_ID"),
+            "azure_client_id": os.environ.get("AZURE_CLIENT_ID"),
+            "azure_client_secret": os.environ.get("AZURE_CLIENT_SECRET"),
             # Trusted MRTDs (comma-separated)
             "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS"),
             "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS"),
