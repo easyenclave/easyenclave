@@ -238,11 +238,28 @@ class TDXManager:
         if memory_gib >= 64:
             cmdline += " swiotlb=131072"
 
+        # TDX firmware/kernel cmdline has a hard size limit (commonly ~3072 bytes).
+        # Exceeding it will truncate easyenclave.config and can cause the VM to boot
+        # with no config (launcher defaults to agent mode), leading to confusing retry loops.
         if len(cmdline) > 3072:
-            print(
-                f"Warning: kernel cmdline is large ({len(cmdline)} bytes); "
-                "firmware may truncate it.",
-                file=sys.stderr,
+            sizes: list[tuple[str, int]] = []
+            for k, v in launcher_config.items():
+                if v is None:
+                    continue
+                try:
+                    if isinstance(v, str):
+                        sizes.append((k, len(v)))
+                    else:
+                        sizes.append((k, len(json.dumps(v, separators=(",", ":")))))
+                except Exception:
+                    sizes.append((k, -1))
+            sizes.sort(key=lambda kv: kv[1], reverse=True)
+            biggest = ", ".join(f"{k}={n}" for k, n in sizes[:6] if n >= 0) or "n/a"
+            raise RuntimeError(
+                f"Kernel cmdline too large ({len(cmdline)} bytes > 3072). "
+                "This will truncate easyenclave.config and break boot. "
+                f"Largest config entries: {biggest}. "
+                "Avoid passing large JSON blobs (e.g., service account keys) via cmdline."
             )
 
         xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
@@ -346,21 +363,6 @@ class TDXManager:
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
             "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
-            # Intel Trust Authority for verifying agent attestations
-            "intel_api_key": os.environ.get("INTEL_API_KEY"),
-            # Stripe (optional)
-            "stripe_secret_key": os.environ.get("STRIPE_SECRET_KEY"),
-            "stripe_webhook_secret": os.environ.get("STRIPE_WEBHOOK_SECRET"),
-            # GCP (optional)
-            "gcp_project_id": os.environ.get("GCP_PROJECT_ID"),
-            "gcp_workload_identity_provider": os.environ.get("GCP_WORKLOAD_IDENTITY_PROVIDER"),
-            "gcp_service_account": os.environ.get("GCP_SERVICE_ACCOUNT"),
-            "gcp_service_account_key": os.environ.get("GCP_SERVICE_ACCOUNT_KEY"),
-            # Azure (optional)
-            "azure_subscription_id": os.environ.get("AZURE_SUBSCRIPTION_ID"),
-            "azure_tenant_id": os.environ.get("AZURE_TENANT_ID"),
-            "azure_client_id": os.environ.get("AZURE_CLIENT_ID"),
-            "azure_client_secret": os.environ.get("AZURE_CLIENT_SECRET"),
             # Trusted MRTDs (comma-separated)
             "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS"),
             "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS"),
