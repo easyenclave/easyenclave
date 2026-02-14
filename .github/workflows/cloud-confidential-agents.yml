@@ -182,7 +182,8 @@ jobs:
               --all-managed \
               --gcp-project "$GCP_PROJECT_ID" \
               --gcp-zone "$GCP_ZONE" \
-              --gcp-region "$GCP_REGION"
+              --gcp-region "$GCP_REGION" \
+              || echo "::warning::GCP preflight cleanup failed; continuing"
           fi
 
           if [ "${{ github.event.inputs.enable_azure || 'true' }}" = "true" ]; then
@@ -191,7 +192,8 @@ jobs:
               --all-managed \
               --azure-resource-group "$AZURE_RESOURCE_GROUP" \
               --azure-location "$AZURE_LOCATION" \
-              --azure-zone-label "$AZURE_ZONE_LABEL"
+              --azure-zone-label "$AZURE_ZONE_LABEL" \
+              || echo "::warning::Azure preflight cleanup failed; continuing"
           fi
 
       - name: Provision GCP agent
