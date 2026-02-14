@@ -363,6 +363,8 @@ class TDXManager:
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
             "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
+            # Intel Trust Authority (required for launcher to generate its initial attestation)
+            "intel_api_key": os.environ.get("INTEL_API_KEY"),
             # Trusted MRTDs (comma-separated)
             "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS"),
             "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS"),
