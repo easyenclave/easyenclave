@@ -14,6 +14,7 @@ from .db_models import (
     AdminSession,
     Agent,
     App,
+    AppRevenueShare,
     AppVersion,
     Deployment,
     Service,
@@ -761,6 +762,42 @@ class AccountStore:
                 return True
             return False
 
+    def update_identity(
+        self,
+        account_id: str,
+        github_login: str | None = None,
+        github_org: str | None = None,
+        linked_at: datetime | None = None,
+    ) -> Account | None:
+        with get_db() as session:
+            account = session.get(Account, account_id)
+            if not account:
+                return None
+            account.github_login = github_login
+            account.github_org = github_org
+            account.linked_at = linked_at or datetime.now(timezone.utc)
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            return account
+
+    def update_api_credentials(
+        self,
+        account_id: str,
+        api_key_hash: str,
+        api_key_prefix: str,
+    ) -> Account | None:
+        with get_db() as session:
+            account = session.get(Account, account_id)
+            if not account:
+                return None
+            account.api_key_hash = api_key_hash
+            account.api_key_prefix = api_key_prefix
+            session.add(account)
+            session.commit()
+            session.refresh(account)
+            return account
+
     def get_balance(self, account_id: str) -> float:
         """Get current balance from the most recent transaction."""
         with get_db() as session:
@@ -775,6 +812,11 @@ class AccountStore:
         """Fast lookup of account by API key prefix."""
         with get_db() as session:
             return session.exec(select(Account).where(Account.api_key_prefix == prefix)).first()
+
+    def get_by_github_login(self, github_login: str) -> Account | None:
+        """Look up account by linked GitHub login."""
+        with get_db() as session:
+            return session.exec(select(Account).where(Account.github_login == github_login)).first()
 
     def clear(self) -> None:
         with get_db() as session:
@@ -818,6 +860,53 @@ class TransactionStore:
         with get_db() as session:
             for t in session.exec(select(Transaction)).all():
                 session.delete(t)
+
+
+class AppRevenueShareStore:
+    """Storage for app contributor revenue share rules."""
+
+    def create(self, share: AppRevenueShare) -> str:
+        with get_db() as session:
+            session.add(share)
+        return share.share_id
+
+    def get(self, share_id: str) -> AppRevenueShare | None:
+        with get_db() as session:
+            return session.get(AppRevenueShare, share_id)
+
+    def list_for_app(self, app_name: str) -> list[AppRevenueShare]:
+        with get_db() as session:
+            return list(
+                session.exec(
+                    select(AppRevenueShare)
+                    .where(AppRevenueShare.app_name == app_name)
+                    .order_by(AppRevenueShare.created_at.asc())
+                ).all()
+            )
+
+    def total_bps_for_app(self, app_name: str) -> int:
+        return sum(share.share_bps for share in self.list_for_app(app_name))
+
+    def delete(self, share_id: str) -> bool:
+        with get_db() as session:
+            share = session.get(AppRevenueShare, share_id)
+            if not share:
+                return False
+            session.delete(share)
+            return True
+
+    def clear_for_app(self, app_name: str) -> None:
+        with get_db() as session:
+            shares = session.exec(
+                select(AppRevenueShare).where(AppRevenueShare.app_name == app_name)
+            )
+            for share in shares:
+                session.delete(share)
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for share in session.exec(select(AppRevenueShare)).all():
+                session.delete(share)
 
 
 class AdminSessionStore:
@@ -880,6 +969,7 @@ app_store = AppStore()
 app_version_store = AppVersionStore()
 account_store = AccountStore()
 transaction_store = TransactionStore()
+app_revenue_share_store = AppRevenueShareStore()
 admin_session_store = AdminSessionStore()
 
 # Load trusted MRTDs and RTMRs from env vars at import time

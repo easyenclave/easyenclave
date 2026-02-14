@@ -60,6 +60,15 @@ def test_create_account_agent_type():
     assert resp.json()["account_type"] == "agent"
 
 
+def test_create_account_contributor_type():
+    resp = client.post(
+        "/api/v1/accounts",
+        json={"name": "contrib-1", "account_type": "contributor"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["account_type"] == "contributor"
+
+
 def test_create_account_invalid_type():
     resp = client.post(
         "/api/v1/accounts",
@@ -123,6 +132,35 @@ def test_get_account():
     assert resp.status_code == 200
     assert resp.json()["name"] == "getter"
     assert resp.json()["balance"] == 0.0
+
+
+def test_link_account_identity():
+    account_id, api_key = create_test_account("identity-owner", "contributor")
+    resp = client.post(
+        f"/api/v1/accounts/{account_id}/identity",
+        json={"github_login": "alice-dev", "github_org": "easyenclave"},
+        headers=auth_headers(api_key),
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["github_login"] == "alice-dev"
+    assert data["github_org"] == "easyenclave"
+
+
+def test_rotate_api_key_revokes_previous_key():
+    account_id, api_key = create_test_account("rotator", "deployer")
+    rotate_resp = client.post(
+        f"/api/v1/accounts/{account_id}/api-key/rotate",
+        headers=auth_headers(api_key),
+    )
+    assert rotate_resp.status_code == 200
+    new_key = rotate_resp.json()["api_key"]
+
+    old_access = client.get(f"/api/v1/accounts/{account_id}", headers=auth_headers(api_key))
+    assert old_access.status_code == 401
+
+    new_access = client.get(f"/api/v1/accounts/{account_id}", headers=auth_headers(new_key))
+    assert new_access.status_code == 200
 
 
 def test_get_account_not_found():
@@ -315,3 +353,33 @@ def test_rate_card():
     assert "cpu_per_vcpu_hr" in data["rates"]
     assert data["rates"]["cpu_per_vcpu_hr"] == 0.04
     assert data["rates"]["gpu_per_gpu_hr"] == 0.50
+
+
+def test_app_revenue_share_crud():
+    contributor_id, _ = create_test_account("contrib-share", "contributor")
+    app_resp = client.post("/api/v1/apps", json={"name": "contacts", "description": "Contacts app"})
+    assert app_resp.status_code == 200
+
+    app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+    try:
+        create_resp = client.post(
+            "/api/v1/apps/contacts/revenue-shares",
+            json={"account_id": contributor_id, "share_bps": 2500, "label": "core-dev"},
+            headers={"Authorization": "Bearer admin_token"},
+        )
+        assert create_resp.status_code == 200
+        share_id = create_resp.json()["share_id"]
+
+        list_resp = client.get("/api/v1/apps/contacts/revenue-shares")
+        assert list_resp.status_code == 200
+        body = list_resp.json()
+        assert body["total_bps"] == 2500
+        assert body["shares"][0]["account_id"] == contributor_id
+
+        delete_resp = client.delete(
+            f"/api/v1/apps/contacts/revenue-shares/{share_id}",
+            headers={"Authorization": "Bearer admin_token"},
+        )
+        assert delete_resp.status_code == 200
+    finally:
+        app.dependency_overrides.clear()

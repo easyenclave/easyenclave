@@ -47,11 +47,12 @@ from .billing import (
 )
 from .crud import build_filters, create_transaction, get_or_404
 from .database import init_db
-from .db_models import AdminSession
+from .db_models import AdminSession, AppRevenueShare
 from .ita import verify_attestation_token
 from .models import (
     Account,
     AccountCreateRequest,
+    AccountLinkIdentityRequest,
     AccountListResponse,
     AccountResponse,
     AdminLoginRequest,
@@ -67,9 +68,13 @@ from .models import (
     AgentRegistrationRequest,
     AgentRegistrationResponse,
     AgentStatusRequest,
+    ApiKeyRotateResponse,
     App,
     AppCreateRequest,
     AppListResponse,
+    AppRevenueShareCreateRequest,
+    AppRevenueShareListResponse,
+    AppRevenueShareResponse,
     AppVersion,
     AppVersionCreateRequest,
     AppVersionListResponse,
@@ -120,6 +125,7 @@ from .storage import (
     account_store,
     admin_session_store,
     agent_store,
+    app_revenue_share_store,
     app_store,
     app_version_store,
     deployment_store,
@@ -2071,8 +2077,11 @@ RATE_CARD: dict[str, float] = {
 @app.post("/api/v1/accounts")
 async def create_account(request: AccountCreateRequest):
     """Create a new billing account and return API key (only shown once)."""
-    if request.account_type not in ("deployer", "agent"):
-        raise HTTPException(status_code=400, detail="account_type must be 'deployer' or 'agent'")
+    if request.account_type not in ("deployer", "agent", "contributor"):
+        raise HTTPException(
+            status_code=400,
+            detail="account_type must be 'deployer', 'agent', or 'contributor'",
+        )
 
     if not request.name:
         raise HTTPException(status_code=400, detail="Account name is required")
@@ -2108,6 +2117,38 @@ async def create_account(request: AccountCreateRequest):
     }
 
 
+@app.post("/api/v1/accounts/{account_id}/identity", response_model=AccountResponse)
+async def link_account_identity(
+    account_id: str,
+    request: AccountLinkIdentityRequest,
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """Link an account to contributor identity metadata (GitHub login/org)."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot edit identity for other accounts")
+
+    account = get_or_404(account_store, account_id, "Account")
+    account = account_store.update_identity(
+        account_id=account_id,
+        github_login=(request.github_login or "").strip() or None,
+        github_org=(request.github_org or "").strip() or None,
+        linked_at=datetime.now(timezone.utc),
+    )
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return AccountResponse(
+        account_id=account.account_id,
+        name=account.name,
+        description=account.description,
+        account_type=account.account_type,
+        github_login=account.github_login,
+        github_org=account.github_org,
+        balance=account_store.get_balance(account.account_id),
+        created_at=account.created_at,
+    )
+
+
 @app.get("/api/v1/accounts", response_model=AccountListResponse)
 async def list_accounts(
     name: str | None = Query(None, description="Filter by name (partial match)"),
@@ -2122,6 +2163,8 @@ async def list_accounts(
             name=a.name,
             description=a.description,
             account_type=a.account_type,
+            github_login=a.github_login,
+            github_org=a.github_org,
             balance=account_store.get_balance(a.account_id),
             created_at=a.created_at,
         )
@@ -2145,8 +2188,38 @@ async def get_account(
         name=account.name,
         description=account.description,
         account_type=account.account_type,
+        github_login=account.github_login,
+        github_org=account.github_org,
         balance=account_store.get_balance(account.account_id),
         created_at=account.created_at,
+    )
+
+
+@app.post("/api/v1/accounts/{account_id}/api-key/rotate", response_model=ApiKeyRotateResponse)
+async def rotate_account_api_key(
+    account_id: str,
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """Rotate an account API key (account owner only)."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot rotate API key for other accounts")
+
+    get_or_404(account_store, account_id, "Account")
+
+    new_api_key = generate_api_key("live")
+    updated = account_store.update_api_credentials(
+        account_id=account_id,
+        api_key_hash=hash_api_key(new_api_key),
+        api_key_prefix=get_key_prefix(new_api_key),
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    return ApiKeyRotateResponse(
+        account_id=account_id,
+        api_key=new_api_key,
+        rotated_at=datetime.now(timezone.utc),
+        warning="Save this API key now. Previous key has been revoked.",
     )
 
 
@@ -2401,6 +2474,113 @@ async def delete_app(name: str):
 
     logger.info(f"App deleted: {name}")
     return {"status": "deleted", "name": name}
+
+
+@app.get("/api/v1/apps/{name}/revenue-shares", response_model=AppRevenueShareListResponse)
+async def list_app_revenue_shares(name: str):
+    """List contributor revenue-share rules for an app."""
+    found_app = app_store.get_by_name(name)
+    if found_app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    shares = app_revenue_share_store.list_for_app(name)
+    response_rows: list[AppRevenueShareResponse] = []
+    for share in shares:
+        account = account_store.get(share.account_id)
+        response_rows.append(
+            AppRevenueShareResponse(
+                share_id=share.share_id,
+                app_name=share.app_name,
+                account_id=share.account_id,
+                account_name=account.name if account else None,
+                github_login=account.github_login if account else None,
+                share_bps=share.share_bps,
+                share_percent=round(share.share_bps / 100.0, 4),
+                label=share.label,
+                created_at=share.created_at,
+            )
+        )
+
+    total_bps = sum(share.share_bps for share in shares)
+    return AppRevenueShareListResponse(
+        app_name=name,
+        total_bps=total_bps,
+        total_percent=round(total_bps / 100.0, 4),
+        shares=response_rows,
+    )
+
+
+@app.post(
+    "/api/v1/apps/{name}/revenue-shares",
+    response_model=AppRevenueShareResponse,
+)
+async def create_app_revenue_share(
+    name: str,
+    request: AppRevenueShareCreateRequest,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Create a contributor revenue-share rule for an app (admin only)."""
+    found_app = app_store.get_by_name(name)
+    if found_app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    account = account_store.get(request.account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if account.account_type not in ("contributor", "agent"):
+        raise HTTPException(
+            status_code=400,
+            detail="Revenue share account_type must be 'contributor' or 'agent'",
+        )
+
+    current_total_bps = app_revenue_share_store.total_bps_for_app(name)
+    if current_total_bps + request.share_bps > 10000:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Revenue share total exceeds 10000 bps: "
+                f"current={current_total_bps}, requested={request.share_bps}"
+            ),
+        )
+
+    created = AppRevenueShare(
+        app_name=name,
+        account_id=request.account_id,
+        share_bps=request.share_bps,
+        label=request.label,
+    )
+    app_revenue_share_store.create(created)
+
+    return AppRevenueShareResponse(
+        share_id=created.share_id,
+        app_name=created.app_name,
+        account_id=created.account_id,
+        account_name=account.name,
+        github_login=account.github_login,
+        share_bps=created.share_bps,
+        share_percent=round(created.share_bps / 100.0, 4),
+        label=created.label,
+        created_at=created.created_at,
+    )
+
+
+@app.delete("/api/v1/apps/{name}/revenue-shares/{share_id}")
+async def delete_app_revenue_share(
+    name: str,
+    share_id: str,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Delete a contributor revenue-share rule for an app (admin only)."""
+    found_app = app_store.get_by_name(name)
+    if found_app is None:
+        raise HTTPException(status_code=404, detail="App not found")
+
+    share = app_revenue_share_store.get(share_id)
+    if not share or share.app_name != name:
+        raise HTTPException(status_code=404, detail="Revenue share not found")
+
+    app_revenue_share_store.delete(share_id)
+    return {"status": "deleted", "share_id": share_id, "app_name": name}
 
 
 @app.post("/api/v1/apps/{name}/versions", response_model=AppVersionResponse)
@@ -3192,6 +3372,8 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
         agent_id=selected_agent.agent_id,
         status="pushing",
         account_id=request.account_id,
+        app_name=name,
+        app_version=version,
         sla_class=request.sla_class,
         machine_size=request.machine_size,
         cpu_vcpus=request.cpu_vcpus,
@@ -3221,6 +3403,8 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
                 agent_url,
                 json={
                     "deployment_id": deployment_id,
+                    "app_name": name,
+                    "datacenter": selected_agent.datacenter,
                     "compose": selected_version.compose,
                     "build_context": getattr(selected_version, "build_context", None),
                     "config": config,

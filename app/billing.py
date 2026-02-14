@@ -18,6 +18,8 @@ from app.settings import get_setting
 from app.storage import (
     account_store,
     agent_store,
+    app_revenue_share_store,
+    app_store,
     deployment_store,
     transaction_store,
 )
@@ -47,6 +49,13 @@ def _webhook_secret() -> str:
     return get_setting("stripe.webhook_secret")
 
 
+def _get_setting_or_default(key: str, default: str) -> str:
+    try:
+        return get_setting(key)
+    except Exception:
+        return default
+
+
 def create_transaction(
     account_id: str,
     amount: float,
@@ -68,6 +77,9 @@ def create_transaction(
     """
     from app.db_models import Transaction
 
+    if not account_store.get(account_id):
+        raise ValueError(f"Account not found: {account_id}")
+
     # Get current balance
     current_balance = account_store.get_balance(account_id)
     new_balance = current_balance + amount
@@ -83,6 +95,44 @@ def create_transaction(
     )
 
     return transaction_store.create(transaction)
+
+
+def _resolve_contributor_shares(app_name: str) -> list[tuple[str, int, str]]:
+    """Resolve contributor split rules as list of (account_id, share_bps, label)."""
+    if not app_name:
+        return []
+
+    explicit = app_revenue_share_store.list_for_app(app_name)
+    if explicit:
+        return [(entry.account_id, int(entry.share_bps), entry.label or "") for entry in explicit]
+
+    # Fallback: derive equal split from app maintainers with linked contributor accounts.
+    app = app_store.get_by_name(app_name)
+    if not app:
+        return []
+    maintainers = [m.strip() for m in (app.maintainers or []) if isinstance(m, str) and m.strip()]
+    if not maintainers:
+        return []
+
+    linked_accounts: list[str] = []
+    for login in maintainers:
+        account = account_store.get_by_github_login(login)
+        if not account:
+            continue
+        if account.account_type not in ("contributor", "agent"):
+            continue
+        linked_accounts.append(account.account_id)
+
+    if not linked_accounts:
+        return []
+
+    even_bps = 10000 // len(linked_accounts)
+    remainder = 10000 - (even_bps * len(linked_accounts))
+    resolved: list[tuple[str, int, str]] = []
+    for idx, account_id in enumerate(linked_accounts):
+        bps = even_bps + (1 if idx < remainder else 0)
+        resolved.append((account_id, bps, "maintainer-auto"))
+    return resolved
 
 
 async def charge_deployment(deployment_id: str, charge_time: datetime) -> bool:
@@ -154,6 +204,8 @@ async def charge_deployment(deployment_id: str, charge_time: datetime) -> bool:
 
     # Pay the agent (70/30 split)
     agent = agent_store.get(deployment.agent_id)
+    agent_share = 0.0
+    platform_share = charge_amount
     if agent and agent.account_id:
         agent_share, platform_share = split_revenue(charge_amount)
         try:
@@ -170,6 +222,65 @@ async def charge_deployment(deployment_id: str, charge_time: datetime) -> bool:
         except Exception as e:
             logger.error(f"Error paying agent {agent.agent_id}: {e}")
 
+    app_name = str(
+        deployment.app_name
+        or (deployment.config or {}).get("app_name")
+        or (deployment.config or {}).get("service_name")
+        or ""
+    ).strip()
+    contributor_pool_bps = int(_get_setting_or_default("billing.contributor_pool_bps", "5000"))
+    if contributor_pool_bps < 0:
+        contributor_pool_bps = 0
+    if contributor_pool_bps > 10000:
+        contributor_pool_bps = 10000
+
+    contributor_pool_amount = platform_share * (contributor_pool_bps / 10000.0)
+    contributor_distributed = 0.0
+    contributor_rules = _resolve_contributor_shares(app_name)
+    if contributor_pool_amount > 0 and contributor_rules:
+        total_rule_bps = sum(
+            max(0, int(rule_bps)) for _account_id, rule_bps, _label in contributor_rules
+        )
+        if total_rule_bps > 10000:
+            logger.warning(
+                f"Contributor split exceeds 10000 bps for app '{app_name}': {total_rule_bps}; skipping credits"
+            )
+        else:
+            for account_id, share_bps, label in contributor_rules:
+                share_amount = contributor_pool_amount * (max(0, share_bps) / 10000.0)
+                if share_amount <= 0:
+                    continue
+                try:
+                    create_transaction(
+                        account_id=account_id,
+                        amount=share_amount,
+                        tx_type="contributor_credit",
+                        description=(
+                            f"Contributor credit for {app_name or 'deployment'} "
+                            f"({hours:.2f}h, {label or 'configured'})"
+                        ),
+                        reference_id=deployment_id,
+                    )
+                    contributor_distributed += share_amount
+                except Exception as e:
+                    logger.error(
+                        f"Failed contributor payout for app='{app_name}' account={account_id}: {e}"
+                    )
+
+    platform_remainder = platform_share - contributor_distributed
+    platform_account_id = _get_setting_or_default("billing.platform_account_id", "").strip()
+    if platform_remainder > 0 and platform_account_id:
+        try:
+            create_transaction(
+                account_id=platform_account_id,
+                amount=platform_remainder,
+                tx_type="platform_revenue",
+                description=f"Platform revenue from deployment {deployment_id}",
+                reference_id=deployment_id,
+            )
+        except Exception as e:
+            logger.error(f"Failed platform revenue credit to {platform_account_id}: {e}")
+
     # Update deployment
     deployment_store.update(
         deployment_id,
@@ -181,7 +292,8 @@ async def charge_deployment(deployment_id: str, charge_time: datetime) -> bool:
 
     logger.info(
         f"Charged deployment {deployment_id}: ${charge_amount:.2f} "
-        f"({hours:.2f} hours @ ${hourly_cost:.2f}/hr)"
+        f"({hours:.2f} hours @ ${hourly_cost:.2f}/hr, "
+        f"agent_share=${agent_share:.2f}, contributor_distributed=${contributor_distributed:.2f})"
     )
 
     return True

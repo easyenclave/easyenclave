@@ -257,6 +257,24 @@ _reg(
     "auth",
 )
 
+# Billing
+_reg(
+    "billing.contributor_pool_bps",
+    "BILLING_CONTRIBUTOR_POOL_BPS",
+    "5000",
+    False,
+    "Share of platform split (in basis points) allocated to contributor credits",
+    "operational",
+)
+_reg(
+    "billing.platform_account_id",
+    "BILLING_PLATFORM_ACCOUNT_ID",
+    "",
+    False,
+    "Optional account_id credited with remaining platform revenue",
+    "operational",
+)
+
 
 # ── TTL cache ────────────────────────────────────────────────────────────────
 

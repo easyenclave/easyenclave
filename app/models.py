@@ -428,7 +428,14 @@ class AccountCreateRequest(BaseModel):
 
     name: str
     description: str = ""
-    account_type: str  # "deployer" | "agent"
+    account_type: str  # "deployer" | "agent" | "contributor"
+
+
+class AccountLinkIdentityRequest(BaseModel):
+    """Request to link an account with contributor identity metadata."""
+
+    github_login: str | None = None
+    github_org: str | None = None
 
 
 class AccountResponse(BaseModel):
@@ -438,6 +445,8 @@ class AccountResponse(BaseModel):
     name: str
     description: str
     account_type: str
+    github_login: str | None = None
+    github_org: str | None = None
     balance: float
     created_at: datetime
 
@@ -460,6 +469,15 @@ class CreatePaymentIntentRequest(BaseModel):
     """Request for creating a Stripe payment intent."""
 
     amount: float = Field(gt=0)
+
+
+class ApiKeyRotateResponse(BaseModel):
+    """Response after rotating an account API key."""
+
+    account_id: str
+    api_key: str
+    rotated_at: datetime
+    warning: str
 
 
 class AdminLoginRequest(BaseModel):
@@ -500,3 +518,34 @@ class RateCardResponse(BaseModel):
 
     rates: dict[str, float]
     currency: str = "USD"
+
+
+class AppRevenueShareCreateRequest(BaseModel):
+    """Request to add a contributor share rule for an app."""
+
+    account_id: str
+    share_bps: int = Field(ge=1, le=10000)
+    label: str = ""
+
+
+class AppRevenueShareResponse(BaseModel):
+    """Contributor share rule for an app."""
+
+    share_id: str
+    app_name: str
+    account_id: str
+    account_name: str | None = None
+    github_login: str | None = None
+    share_bps: int
+    share_percent: float
+    label: str
+    created_at: datetime
+
+
+class AppRevenueShareListResponse(BaseModel):
+    """List of contributor share rules for one app."""
+
+    app_name: str
+    total_bps: int
+    total_percent: float
+    shares: list[AppRevenueShareResponse]

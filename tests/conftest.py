@@ -50,6 +50,7 @@ def clear_all_stores():
         account_store,
         admin_session_store,
         agent_store,
+        app_revenue_share_store,
         app_store,
         app_version_store,
         deployment_store,
@@ -63,6 +64,7 @@ def clear_all_stores():
         deployment_store.clear()
         app_store.clear()
         app_version_store.clear()
+        app_revenue_share_store.clear()
         transaction_store.clear()
         account_store.clear()
         admin_session_store.clear()

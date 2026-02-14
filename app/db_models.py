@@ -114,6 +114,8 @@ class Deployment(SQLModel, table=True):
     completed_at: datetime | None = None
     # Billing fields
     account_id: str | None = Field(default=None, index=True)
+    app_name: str | None = Field(default=None, index=True)
+    app_version: str | None = None
     sla_class: str = Field(default="adhoc")  # adhoc|three_nines|four_nines|five_nines
     machine_size: str = Field(default="default")  # default|h100
     cpu_vcpus: float = Field(default=2.0)
@@ -166,7 +168,7 @@ class Account(SQLModel, table=True):
     account_id: str = Field(default_factory=generate_uuid, primary_key=True)
     name: str = Field(unique=True, index=True)
     description: str = Field(default="")
-    account_type: str = Field(index=True)  # "deployer" | "agent"
+    account_type: str = Field(index=True)  # "deployer" | "agent" | "contributor"
     created_at: datetime = Field(default_factory=utcnow)
     # API key authentication fields
     api_key_hash: str | None = None  # bcrypt hash
@@ -187,7 +189,9 @@ class Transaction(SQLModel, table=True):
     account_id: str = Field(index=True)
     amount: float
     balance_after: float
-    tx_type: str = Field(index=True)  # "deposit", "withdrawal", "charge", "earning"
+    tx_type: str = Field(
+        index=True
+    )  # "deposit", "withdrawal", "charge", "earning", "contributor_credit", "platform_revenue"
     description: str = Field(default="")
     reference_id: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
@@ -223,3 +227,16 @@ class AdminSession(SQLModel, table=True):
     github_avatar_url: str | None = None
     auth_method: str = Field(default="password")  # "password" | "github_oauth"
     github_orgs: list[str] | None = Field(default=None, sa_column=Column(JSON))
+
+
+class AppRevenueShare(SQLModel, table=True):
+    """Revenue share split for app contributors."""
+
+    __tablename__ = "app_revenue_shares"
+
+    share_id: str = Field(default_factory=generate_uuid, primary_key=True)
+    app_name: str = Field(index=True)
+    account_id: str = Field(index=True)
+    share_bps: int = Field(default=0)  # out of 10_000
+    label: str = Field(default="")
+    created_at: datetime = Field(default_factory=utcnow)

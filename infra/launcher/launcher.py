@@ -141,6 +141,8 @@ _admin_state = {
     "vm_name": None,
     "status": "starting",
     "deployment_id": None,
+    "deployed_app": None,
+    "datacenter": None,
     "attestation": None,
     "attestation_source": None,
     "attestation_updated_at": None,
@@ -243,6 +245,8 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             "agent_id": _admin_state["agent_id"],
             "vm_name": _admin_state["vm_name"],
             "deployment_id": _admin_state["deployment_id"],
+            "deployed_app": _admin_state.get("deployed_app"),
+            "datacenter": _admin_state.get("datacenter"),
             "control_plane": CONTROL_PLANE_URL,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "attestation_source": _admin_state.get("attestation_source"),
@@ -592,11 +596,22 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
     def _handle_deploy(self, deployment: dict):
         """Handle deployment (runs in background thread)."""
         deployment_id = deployment.get("deployment_id", "unknown")
+        deployment_config = deployment.get("config") or {}
+        deployed_app = str(
+            deployment.get("app_name")
+            or deployment_config.get("app_name")
+            or deployment_config.get("service_name")
+            or ""
+        ).strip()
+        deployment_datacenter = str(deployment.get("datacenter") or "").strip()
         config = deployment.get("config") or {}
 
         logger.info(f"Starting deployment: {deployment_id}")
         _admin_state["deployment_id"] = deployment_id
         _admin_state["status"] = "deploying"
+        _admin_state["deployed_app"] = None
+        if deployment_datacenter:
+            _admin_state["datacenter"] = deployment_datacenter
 
         try:
             # Setup workload from deployment config
@@ -615,12 +630,15 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             self._notify_deployment_complete(deployment_id, attestation, config)
 
             _admin_state["status"] = "deployed"
+            if deployed_app:
+                _admin_state["deployed_app"] = deployed_app
             _cache_attestation(attestation, "deployment")
             logger.info(f"Deployment complete: {deployment_id}")
 
         except Exception as e:
             logger.error(f"Deployment failed: {e}")
             _admin_state["status"] = "error"
+            _admin_state["deployed_app"] = None
             self._notify_deployment_failed(deployment_id, str(e))
 
     def _handle_undeploy(self):
@@ -638,6 +656,7 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                 )
             _admin_state["status"] = "undeployed"
             _admin_state["deployment_id"] = None
+            _admin_state["deployed_app"] = None
             _admin_state["attestation"] = None
             _admin_state["attestation_source"] = None
             _admin_state["attestation_updated_at"] = None
@@ -854,6 +873,38 @@ def get_vm_name() -> str:
     import uuid
 
     return f"tdx-agent-{uuid.uuid4().hex[:8]}"
+
+
+def resolve_datacenter_label(config: dict | None = None) -> str:
+    """Resolve normalized datacenter label from launcher config."""
+    cfg = config or {}
+    explicit = str(cfg.get("datacenter", "")).strip()
+    if explicit:
+        return explicit
+
+    provider_raw = str(cfg.get("cloud_provider", "")).strip().lower()
+    az_raw = str(cfg.get("availability_zone") or cfg.get("zone") or "").strip().lower()
+    region_raw = str(cfg.get("region", "")).strip().lower()
+
+    provider = provider_raw
+    if provider_raw in ("google", "gcp"):
+        provider = "gcp"
+    elif provider_raw in ("azure", "az"):
+        provider = "azure"
+    elif provider_raw in ("baremetal", "bare-metal", "onprem", "on-prem", "self-hosted"):
+        provider = "baremetal"
+
+    # Treat AZ as datacenter for cloud providers and bare metal topology labels.
+    if provider in ("gcp", "azure", "baremetal") and az_raw:
+        return f"{provider}:{az_raw}"
+
+    if provider and az_raw:
+        return f"{provider}:{az_raw}"
+    if provider and region_raw:
+        return f"{provider}:{region_raw}"
+    if provider == "baremetal":
+        return "baremetal:default"
+    return ""
 
 
 def write_status(status: str):
@@ -1178,37 +1229,9 @@ def register_with_control_plane(
     logger.info(f"Registering with control plane: {CONTROL_PLANE_URL}")
 
     config = config or {}
-
-    def resolve_datacenter(cfg: dict) -> str:
-        explicit = str(cfg.get("datacenter", "")).strip()
-        if explicit:
-            return explicit
-
-        provider_raw = str(cfg.get("cloud_provider", "")).strip().lower()
-        az_raw = str(cfg.get("availability_zone") or cfg.get("zone") or "").strip().lower()
-        region_raw = str(cfg.get("region", "")).strip().lower()
-
-        provider = provider_raw
-        if provider_raw in ("google", "gcp"):
-            provider = "gcp"
-        elif provider_raw in ("azure", "az"):
-            provider = "azure"
-        elif provider_raw in ("baremetal", "bare-metal", "onprem", "on-prem", "self-hosted"):
-            provider = "baremetal"
-
-        # Treat AZ as datacenter for cloud providers and bare metal topology labels.
-        if provider in ("gcp", "azure", "baremetal") and az_raw:
-            return f"{provider}:{az_raw}"
-
-        if provider and az_raw:
-            return f"{provider}:{az_raw}"
-        if provider and region_raw:
-            return f"{provider}:{region_raw}"
-        if provider == "baremetal":
-            return "baremetal:default"
-        return ""
-
-    datacenter = resolve_datacenter(config)
+    datacenter = resolve_datacenter_label(config)
+    if datacenter:
+        _admin_state["datacenter"] = datacenter
     if datacenter:
         logger.info(f"Using datacenter label: {datacenter}")
 
@@ -1922,6 +1945,7 @@ def run_agent_mode(config: dict):
     vm_name = get_vm_name()
     logger.info(f"VM name: {vm_name}")
     _admin_state["vm_name"] = vm_name
+    _admin_state["datacenter"] = resolve_datacenter_label(config) or None
 
     # 1. Generate initial attestation (requires Intel TA - will crash if fails)
     # Pass vm_name for nonce challenge (replay attack prevention)

@@ -74,6 +74,8 @@ def _migrate_add_columns():
         ("agents", "datacenter", "TEXT", "''"),
         ("agents", "deployed_app", "TEXT", "NULL"),
         ("app_versions", "node_size", "TEXT", "''"),
+        ("deployments", "app_name", "TEXT", "NULL"),
+        ("deployments", "app_version", "TEXT", "NULL"),
     ]
 
     for table, column, sql_type, default in migrations:
