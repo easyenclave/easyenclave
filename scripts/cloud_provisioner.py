@@ -707,7 +707,7 @@ def _azure_cleanup(args: argparse.Namespace, run_tag: str = "") -> dict[str, Any
     if not isinstance(tagged_resources, list):
         tagged_resources = []
 
-    extra_ids: list[str] = []
+    extra_resources: list[tuple[str, str]] = []
     for resource in tagged_resources:
         tags = resource.get("tags") or {}
         if tags.get("easyenclave") != "managed":
@@ -719,15 +719,34 @@ def _azure_cleanup(args: argparse.Namespace, run_tag: str = "") -> dict[str, Any
             continue
         resource_id = str(resource.get("id") or "")
         if resource_id:
-            extra_ids.append(resource_id)
+            extra_resources.append((resource_id, resource_type))
 
-    for resource_id in extra_ids:
+    delete_priority = {
+        "Microsoft.Network/networkInterfaces": 10,
+        "Microsoft.Compute/disks": 20,
+        "Microsoft.Network/publicIPAddresses": 30,
+        "Microsoft.Network/networkSecurityGroups": 40,
+        "Microsoft.Network/virtualNetworks/subnets": 50,
+        "Microsoft.Network/virtualNetworks": 60,
+    }
+    extra_resources.sort(key=lambda item: (delete_priority.get(item[1], 100), item[1], item[0]))
+
+    for resource_id, _resource_type in extra_resources:
         cmd = ["az", "resource", "delete", "--ids", resource_id]
-        try:
-            if not args.dry_run:
+        if args.dry_run:
+            continue
+        last_exc: Exception | None = None
+        for attempt in range(1, 4):
+            try:
                 _run(cmd)
-        except Exception as exc:
-            errors.append(f"resource {resource_id}: {exc}")
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 3:
+                    time.sleep(5)
+        if last_exc is not None:
+            errors.append(f"resource {resource_id}: {last_exc}")
 
     return {
         "provider": "azure",
@@ -849,7 +868,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--azure-location", default=os.environ.get("AZURE_LOCATION", "eastus2"))
         p.add_argument("--azure-zone-label", default=os.environ.get("AZURE_ZONE_LABEL", "eastus2-3"))
         p.add_argument("--azure-vm-size", default=os.environ.get("AZURE_VM_SIZE", "Standard_DC2eds_v5"))
-        p.add_argument("--azure-image", default=os.environ.get("AZURE_IMAGE", "Canonical:ubuntu-24_04-lts:server:latest"))
+        p.add_argument("--azure-image", default=os.environ.get("AZURE_IMAGE", "Canonical:ubuntu-24_04-lts:cvm:latest"))
         p.add_argument("--azure-admin-username", default=os.environ.get("AZURE_ADMIN_USERNAME", "easyenclave"))
         p.add_argument("--azure-count", type=int, default=1)
         p.add_argument("--azure-datacenter", default="")

@@ -45,6 +45,10 @@ on:
         description: "Azure VM size"
         required: false
         default: "Standard_DC2eds_v5"
+      azure_image:
+        description: "Azure image URN"
+        required: false
+        default: "Canonical:ubuntu-24_04-lts:cvm:latest"
       verify_app_name:
         description: "Optional app name for deploy preflight checks"
         required: false
@@ -76,6 +80,7 @@ jobs:
       AZURE_LOCATION: ${{ github.event.inputs.azure_location || 'eastus2' }}
       AZURE_ZONE_LABEL: ${{ github.event.inputs.azure_zone_label || 'eastus2-3' }}
       AZURE_VM_SIZE: ${{ github.event.inputs.azure_vm_size || 'Standard_DC2eds_v5' }}
+      AZURE_IMAGE: ${{ github.event.inputs.azure_image || 'Canonical:ubuntu-24_04-lts:cvm:latest' }}
       VERIFY_APP_NAME: ${{ github.event.inputs.verify_app_name || '' }}
       VERIFY_APP_VERSION: ${{ github.event.inputs.verify_app_version || '' }}
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -196,6 +201,7 @@ jobs:
             --azure-location "$AZURE_LOCATION" \
             --azure-zone-label "$AZURE_ZONE_LABEL" \
             --azure-vm-size "$AZURE_VM_SIZE" \
+            --azure-image "$AZURE_IMAGE" \
             --azure-count 1 \
             --wait-registration \
             --wait-seconds 2400
