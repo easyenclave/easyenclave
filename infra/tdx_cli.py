@@ -959,7 +959,14 @@ To start a new EasyEnclave network:
                             time.sleep(2)
                         else:
                             stop_tail.set()
-                            print("Warning: Control plane did not become ready", file=sys.stderr)
+                            print(
+                                "Error: Control plane did not become ready (health check timeout).",
+                                file=sys.stderr,
+                            )
+                            mgr._dump_network_info(result["name"])
+                            mgr._dump_serial_log(result.get("serial_log"))
+                            print(json.dumps(result, indent=2))
+                            sys.exit(1)
 
                         # Always print final result with IP
                         print(json.dumps(result, indent=2))
