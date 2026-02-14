@@ -1688,40 +1688,87 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
             tunnel_token = tunnel_data["token"]
             logger.info(f"Created tunnel: {tunnel_id}")
 
-            # Configure ingress
-            logger.info(f"Configuring ingress for {hostname}")
-            config_resp = requests.put(
-                f"{api_url}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
-                headers=headers,
-                json={
-                    "config": {
-                        "ingress": [
-                            {"hostname": hostname, "service": f"http://127.0.0.1:{port}"},
-                            {"service": "http_status:404"},
-                        ]
-                    }
-                },
-                timeout=30,
-            )
-            config_resp.raise_for_status()
+        # Always (re)configure ingress to point this tunnel at the local control plane port.
+        logger.info(f"Configuring ingress for {hostname}")
+        config_resp = requests.put(
+            f"{api_url}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
+            headers=headers,
+            json={
+                "config": {
+                    "ingress": [
+                        {"hostname": hostname, "service": f"http://127.0.0.1:{port}"},
+                        {"service": "http_status:404"},
+                    ]
+                }
+            },
+            timeout=30,
+        )
+        config_resp.raise_for_status()
 
-            # Create DNS record
-            logger.info(f"Creating DNS record for {hostname}")
-            dns_resp = requests.post(
-                f"{api_url}/zones/{zone_id}/dns_records",
+        # Ensure DNS record points at this tunnel. (Idempotent upsert.)
+        desired_content = f"{tunnel_id}.cfargotunnel.com"
+        logger.info(f"Upserting DNS record for {hostname} -> {desired_content}")
+        existing_dns = requests.get(
+            f"{api_url}/zones/{zone_id}/dns_records",
+            headers=headers,
+            params={"type": "CNAME", "name": hostname},
+            timeout=30,
+        )
+        existing_dns.raise_for_status()
+        records = existing_dns.json().get("result") or []
+        if records:
+            record_id = records[0]["id"]
+            update_resp = requests.put(
+                f"{api_url}/zones/{zone_id}/dns_records/{record_id}",
                 headers=headers,
                 json={
                     "type": "CNAME",
-                    "name": "app",
-                    "content": f"{tunnel_id}.cfargotunnel.com",
+                    "name": hostname,
+                    "content": desired_content,
                     "proxied": True,
                 },
                 timeout=30,
             )
-            # Ignore if DNS already exists
-            if dns_resp.status_code not in (200, 409):
-                if "already exists" not in dns_resp.text.lower():
-                    dns_resp.raise_for_status()
+            update_resp.raise_for_status()
+        else:
+            create_dns = requests.post(
+                f"{api_url}/zones/{zone_id}/dns_records",
+                headers=headers,
+                json={
+                    "type": "CNAME",
+                    "name": hostname,
+                    "content": desired_content,
+                    "proxied": True,
+                },
+                timeout=30,
+            )
+            # If it races, fall back to update.
+            if create_dns.status_code == 409:
+                existing_dns = requests.get(
+                    f"{api_url}/zones/{zone_id}/dns_records",
+                    headers=headers,
+                    params={"type": "CNAME", "name": hostname},
+                    timeout=30,
+                )
+                existing_dns.raise_for_status()
+                records = existing_dns.json().get("result") or []
+                if not records:
+                    create_dns.raise_for_status()
+                record_id = records[0]["id"]
+                update_resp = requests.put(
+                    f"{api_url}/zones/{zone_id}/dns_records/{record_id}",
+                    headers=headers,
+                    json={
+                        "type": "CNAME",
+                        "name": hostname,
+                        "content": desired_content,
+                        "proxied": True,
+                    },
+                    timeout=30,
+                )
+                update_resp.raise_for_status()
+            else:
+                create_dns.raise_for_status()
 
         # Start cloudflared
         logger.info("Starting cloudflared for control plane...")
