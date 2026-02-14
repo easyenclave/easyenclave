@@ -240,20 +240,20 @@ Example end-to-end test:
 
 ```bash
 # 1. Create account
-curl -X POST http://localhost:8000/api/v1/accounts \
+curl -X POST http://localhost:8080/api/v1/accounts \
   -H "Content-Type: application/json" \
   -d '{"name":"test-account","account_type":"deployer"}'
 # Save the api_key from response
 
 # 2. Create payment intent
-curl -X POST http://localhost:8000/api/v1/accounts/{id}/payment-intent \
+curl -X POST http://localhost:8080/api/v1/accounts/{id}/payment-intent \
   -H "Authorization: Bearer ee_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{"amount":100.0}'
 # Complete payment with Stripe.js on frontend
 
 # 3. Deploy with billing
-curl -X POST http://localhost:8000/api/v1/apps/hello-tdx/versions/v1/deploy \
+curl -X POST http://localhost:8080/api/v1/apps/hello-tdx/versions/v1/deploy \
   -H "Authorization: Bearer ee_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -267,7 +267,7 @@ curl -X POST http://localhost:8000/api/v1/apps/hello-tdx/versions/v1/deploy \
   }'
 
 # 4. Check transactions after 1 hour
-curl http://localhost:8000/api/v1/accounts/{id}/transactions \
+curl http://localhost:8080/api/v1/accounts/{id}/transactions \
   -H "Authorization: Bearer ee_live_xxx"
 # Should show charge transaction
 ```
@@ -278,8 +278,14 @@ curl http://localhost:8000/api/v1/accounts/{id}/transactions \
 2. Get API keys from Dashboard > Developers > API keys
 3. Set environment variables:
    ```bash
-   export STRIPE_SECRET_KEY=sk_live_xxx
-   export STRIPE_WEBHOOK_SECRET=whsec_xxx
+   export STRIPE_SECRET_KEY=sk_live_xxx   # or sk_test_xxx for test mode
+   export STRIPE_WEBHOOK_SECRET=whsec_xxx # from Stripe webhook configuration
+   ```
+   If you're using `docker-compose.yml`, add these to `.env` (do not commit the file) and restart:
+   ```bash
+   echo "STRIPE_SECRET_KEY=sk_test_xxx" >> .env
+   echo "STRIPE_WEBHOOK_SECRET=whsec_xxx" >> .env
+   docker compose up -d --build
    ```
 4. Configure webhook endpoint in Stripe Dashboard:
    - URL: `https://your-cp-domain/api/v1/webhooks/stripe`
