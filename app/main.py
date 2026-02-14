@@ -64,6 +64,7 @@ from .models import (
     AgentCapacityTargetResult,
     AgentChallengeResponse,
     AgentDeployedRequest,
+    AgentHeartbeatRequest,
     AgentListResponse,
     AgentRegistrationRequest,
     AgentRegistrationResponse,
@@ -290,19 +291,24 @@ async def background_agent_health_checker():
                     continue  # Skip agents without tunnels
 
                 try:
-                    # Determine if we need fresh attestation (skip if interval is 0)
-                    need_attestation = False
-                    attest_interval = get_setting_int(
-                        "operational.agent_attestation_interval", fallback=3600
+                    pull_enabled = (
+                        get_setting("operational.agent_attestation_pull_enabled").strip().lower()
+                        == "true"
                     )
-                    if attest_interval > 0:
-                        last_attest = _agent_last_attestation.get(agent.agent_id)
-                        need_attestation = (
-                            last_attest is None
-                            or (now - last_attest).total_seconds() > attest_interval
-                        )
 
-                    # Check health (with attestation if needed)
+                    # Default: agent pushes attestation/heartbeats; CP only does fast health pulls.
+                    need_attestation = False
+                    if pull_enabled:
+                        attest_interval = get_setting_int(
+                            "operational.agent_attestation_interval", fallback=3600
+                        )
+                        if attest_interval > 0:
+                            last_attest = _agent_last_attestation.get(agent.agent_id)
+                            need_attestation = (
+                                last_attest is None
+                                or (now - last_attest).total_seconds() > attest_interval
+                            )
+
                     status, attestation = await check_agent_health(
                         agent, include_attestation=need_attestation
                     )
@@ -1019,6 +1025,50 @@ async def update_agent_status(agent_id: str, request: AgentStatusRequest):
         )
 
     logger.info(f"Agent {agent_id} status: {request.status}")
+    return {"status": "ok"}
+
+
+@app.post("/api/v1/agents/{agent_id}/heartbeat")
+async def agent_heartbeat(agent_id: str, request: AgentHeartbeatRequest):
+    """Receive an agent-pushed heartbeat with fresh attestation.
+
+    This is the primary attestation refresh mechanism (agent-driven).
+    Control plane may still do health pulls separately.
+    """
+    agent = get_or_404(agent_store, agent_id, "Agent")
+
+    if (request.vm_name or "").strip() != (agent.vm_name or "").strip():
+        raise HTTPException(status_code=400, detail="vm_name does not match agent record")
+
+    intel_ta_token = (request.attestation.get("tdx") or {}).get("intel_ta_token")
+    if not intel_ta_token:
+        raise HTTPException(status_code=400, detail="attestation.tdx.intel_ta_token is required")
+
+    # Verify token and bind it to this agent's MRTD (prevents cross-agent spoofing).
+    ita_result = await verify_attestation_token(intel_ta_token)
+    if not ita_result.get("verified"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Intel TA verification failed: {ita_result.get('error', 'unknown')}",
+        )
+    details = ita_result.get("details") or {}
+    mrtd_from_claims = (details.get("tdx_mrtd") or "") or (
+        ((details.get("tdx") or {}).get("tdx_mrtd")) or ""
+    )
+    if mrtd_from_claims and agent.mrtd and mrtd_from_claims != agent.mrtd:
+        raise HTTPException(status_code=403, detail="MRTD does not match agent record")
+
+    # Store full attestation blob for chain/debugging, then run drift checks + update flags.
+    agent_store.update_attestation_blob(agent_id, request.attestation)
+    await refresh_agent_attestation(agent_id, request.attestation)
+
+    # Optional status update piggy-backed on heartbeat.
+    if request.status is not None:
+        deployment_id = request.deployment_id
+        agent_store.update_status(agent_id, request.status, deployment_id=deployment_id)
+    else:
+        agent_store.heartbeat(agent_id)
+
     return {"status": "ok"}
 
 

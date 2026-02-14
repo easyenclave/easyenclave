@@ -328,6 +328,17 @@ class AgentStore:
             session.add(agent)
             return True
 
+    def update_attestation_blob(self, agent_id: str, attestation: dict) -> bool:
+        """Store latest attestation JSON blob for debugging/attestation chain."""
+        with get_db() as session:
+            agent = session.get(Agent, agent_id)
+            if not agent:
+                return False
+            agent.attestation = attestation
+            agent.last_heartbeat = datetime.now(timezone.utc)
+            session.add(agent)
+            return True
+
     def clear_tunnel_info(self, agent_id: str) -> bool:
         """Clear tunnel fields after external tunnel deletion."""
         with get_db() as session:

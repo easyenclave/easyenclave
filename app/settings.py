@@ -181,6 +181,14 @@ _reg(
     "operational",
 )
 _reg(
+    "operational.agent_attestation_pull_enabled",
+    "AGENT_ATTESTATION_PULL_ENABLED",
+    "false",
+    False,
+    "If true, control plane will pull agent attestation via /api/health?attest=true (fallback mode)",
+    "operational",
+)
+_reg(
     "operational.agent_stale_hours",
     "AGENT_STALE_HOURS",
     "24",

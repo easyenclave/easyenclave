@@ -112,6 +112,15 @@ class AgentStatusRequest(BaseModel):
     error: str | None = None
 
 
+class AgentHeartbeatRequest(BaseModel):
+    """Agent heartbeat + fresh attestation push."""
+
+    vm_name: str
+    attestation: dict
+    status: str | None = None
+    deployment_id: str | None = None
+
+
 class AgentDeployedRequest(BaseModel):
     """Request for deployment completion."""
 

@@ -51,7 +51,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 CONTROL_PLANE_URL = os.environ.get("EASYENCLAVE_URL", "https://app.easyenclave.com")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
-ATTESTATION_INTERVAL = int(os.environ.get("ATTESTATION_INTERVAL", "300"))  # Re-attest every 5 min
+# Agent-driven attestation push cadence (control plane also does health pulls).
+ATTESTATION_INTERVAL = int(os.environ.get("ATTESTATION_INTERVAL", "3600"))  # default: 1 hour
 VERSION = "1.0.0"
 
 # Modes
@@ -150,6 +151,59 @@ _admin_state = {
     "max_logs": 1000,
 }
 _admin_tokens: set = set()
+
+
+def push_heartbeat_to_control_plane(
+    *,
+    agent_id: str,
+    vm_name: str,
+    attestation: dict,
+    status: str | None,
+    deployment_id: str | None,
+):
+    """Push a heartbeat + fresh attestation to the control plane."""
+    url = f"{CONTROL_PLANE_URL}/api/v1/agents/{agent_id}/heartbeat"
+    payload = {
+        "vm_name": vm_name,
+        "attestation": attestation,
+        "status": status,
+        "deployment_id": deployment_id,
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=30)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+        logger.info("Pushed agent heartbeat/attestation to control plane")
+    except Exception as exc:
+        logger.warning(f"Failed to push heartbeat to control plane: {exc}")
+
+
+def start_periodic_attestation_push(*, agent_id: str, vm_name: str, config: dict):
+    """Start background thread that periodically pushes fresh Intel TA attestation to the CP."""
+
+    def _loop():
+        # Initial delay so startup doesn't immediately double-hit Intel TA.
+        time.sleep(max(10, min(ATTESTATION_INTERVAL, 60)))
+        while True:
+            try:
+                attestation = generate_initial_attestation(
+                    config, vm_name=vm_name, update_status=False
+                )
+                _cache_attestation(attestation, "agent_periodic_push")
+                push_heartbeat_to_control_plane(
+                    agent_id=agent_id,
+                    vm_name=vm_name,
+                    attestation=attestation,
+                    status=_admin_state.get("status"),
+                    deployment_id=_admin_state.get("deployment_id"),
+                )
+            except Exception as exc:
+                logger.warning(f"Periodic attestation push failed: {exc}")
+            time.sleep(max(60, ATTESTATION_INTERVAL))
+
+    thread = threading.Thread(target=_loop, daemon=True)
+    thread.start()
+    return thread
 
 
 def _add_admin_log(level: str, message: str):
@@ -1997,7 +2051,11 @@ def run_agent_mode(config: dict):
     start_agent_api_server(config)
     logger.info("Agent ready - waiting for commands from control plane")
 
-    # 4. Monitor loop (just keep cloudflared running)
+    # 4. Agent-driven periodic attestation push (source of truth for attestation freshness).
+    # Control plane will still do frequent health pulls, but it no longer needs to pull attestation.
+    start_periodic_attestation_push(agent_id=agent_id, vm_name=vm_name, config=config)
+
+    # 5. Monitor loop (just keep cloudflared running)
     while True:
         try:
             # Check if cloudflared is still running
