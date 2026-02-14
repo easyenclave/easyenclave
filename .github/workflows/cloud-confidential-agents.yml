@@ -37,6 +37,10 @@ on:
         description: "Azure region"
         required: false
         default: "eastus2"
+      azure_resource_group:
+        description: "Azure resource group (override secret; should match selected region)"
+        required: false
+        default: ""
       azure_zone_label:
         description: "Azure zone label for datacenter metadata (e.g. eastus2-1)"
         required: false
@@ -95,7 +99,7 @@ jobs:
       AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
-      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      AZURE_RESOURCE_GROUP: ${{ github.event.inputs.azure_resource_group || secrets.AZURE_RESOURCE_GROUP }}
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
       CONTROL_ADMIN_TOKEN: ${{ secrets.CONTROL_ADMIN_TOKEN }}
