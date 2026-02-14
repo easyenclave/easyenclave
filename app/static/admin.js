@@ -957,8 +957,9 @@ async function loadAgents() {
                     <tr>
                         <th>VM Name</th>
                         <th>Status</th>
+                        <th>App</th>
                         <th>Size</th>
-                        <th>Location</th>
+                        <th>Datacenter</th>
                         <th>Health</th>
                         <th>Verified</th>
                         ${isAdmin ? '<th>Owner</th>' : ''}
@@ -971,6 +972,12 @@ async function loadAgents() {
                         <tr>
                             <td><strong>${agent.vm_name}</strong><br><code style="font-size: 0.7rem">${agent.agent_id.substring(0, 8)}...</code></td>
                             <td><span class="status-badge ${agent.status}">${agent.status}</span></td>
+                            <td>
+                                ${agent.deployed_app
+                                    ? `<div><code>${agent.deployed_app}</code></div>${agent.service_url ? `<div style="font-size:0.75rem"><a href="${agent.service_url}" target="_blank">service</a></div>` : ''}`
+                                    : '<span style="color:#666">none</span>'
+                                }
+                            </td>
                             <td>${agent.node_size ? `<span class="status-badge">${agent.node_size}</span>` : ''}</td>
                             <td>${renderAgentLocation(agent)}</td>
                             <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>

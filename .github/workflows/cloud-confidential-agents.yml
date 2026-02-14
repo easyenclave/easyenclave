@@ -43,11 +43,6 @@ on:
         required: false
         default: ""
 
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
-
 concurrency:
   group: cloud-confidential-agents-${{ github.ref }}
   cancel-in-progress: false

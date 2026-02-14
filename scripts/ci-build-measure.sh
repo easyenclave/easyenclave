@@ -31,12 +31,32 @@ fi
 DIGEST=$(sha256sum "$ROOTFS" | cut -d' ' -f1)
 echo "Rootfs digest: $DIGEST"
 
-# ---------- Measure ----------
-echo "==> Measuring MRTD and RTMRs from temp VMs (tiny/standard/llm)..."
+MEASURE_SIZES="${MEASURE_SIZES:-tiny}"
 
-SIZES=(tiny standard llm)
+# ---------- Measure ----------
+echo "==> Measuring MRTD and RTMRs from temp VMs (${MEASURE_SIZES})..."
+
+IFS=',' read -r -a SIZES <<<"$MEASURE_SIZES"
+if [ "${#SIZES[@]}" -eq 0 ]; then
+  echo "::error::MEASURE_SIZES is empty"
+  exit 1
+fi
+
+for s in "${SIZES[@]}"; do
+  case "$s" in
+    tiny|standard|llm) ;;
+    *)
+      echo "::error::Unsupported node_size in MEASURE_SIZES: '$s' (expected tiny,standard,llm)"
+      exit 1
+      ;;
+  esac
+done
+
 declare -A MRTD_BY_SIZE
 declare -A RTMRS_BY_SIZE
+
+MRTDS_BY_SIZE_JSON='{}'
+RTMRS_BY_SIZE_JSON='{}'
 
 for SIZE in "${SIZES[@]}"; do
   echo "--- Measuring node_size=$SIZE ---"
@@ -57,13 +77,20 @@ for SIZE in "${SIZES[@]}"; do
   MRTD_BY_SIZE["$SIZE"]="$MRTD_SIZE"
   RTMRS_BY_SIZE["$SIZE"]="$RTMRS_SIZE"
 
+  MRTDS_BY_SIZE_JSON=$(jq -cn --arg k "$SIZE" --arg v "$MRTD_SIZE" --argjson obj "$MRTDS_BY_SIZE_JSON" '$obj + {($k): $v}')
+  RTMRS_BY_SIZE_JSON=$(jq -cn --arg k "$SIZE" --argjson v "$RTMRS_SIZE" --argjson obj "$RTMRS_BY_SIZE_JSON" '$obj + {($k): $v}')
+
   echo "MRTD[$SIZE]: ${MRTD_SIZE:0:32}..."
   echo "RTMRs[$SIZE]: $RTMRS_SIZE"
 done
 
-# Backward-compat outputs: use tiny baseline as default
-MRTD="${MRTD_BY_SIZE[tiny]}"
-RTMRS="${RTMRS_BY_SIZE[tiny]}"
+# Backward-compat outputs: use tiny baseline as default when measured; otherwise first measured size.
+DEFAULT_SIZE="${SIZES[0]}"
+if [ -n "${MRTD_BY_SIZE[tiny]:-}" ]; then
+  DEFAULT_SIZE="tiny"
+fi
+MRTD="${MRTD_BY_SIZE[$DEFAULT_SIZE]}"
+RTMRS="${RTMRS_BY_SIZE[$DEFAULT_SIZE]}"
 
 # New outputs: full size-aware trust material
 MRTDS=$(printf '%s\n' "${MRTD_BY_SIZE[@]}" | awk 'NF' | sort -u | paste -sd, -)
@@ -71,18 +98,6 @@ if [ -z "$MRTDS" ]; then
   echo "::error::Failed to build TRUSTED_AGENT_MRTDS list"
   exit 1
 fi
-
-MRTDS_BY_SIZE_JSON=$(jq -cn \
-  --arg tiny "${MRTD_BY_SIZE[tiny]}" \
-  --arg standard "${MRTD_BY_SIZE[standard]}" \
-  --arg llm "${MRTD_BY_SIZE[llm]}" \
-  '{tiny: $tiny, standard: $standard, llm: $llm}')
-
-RTMRS_BY_SIZE_JSON=$(jq -cn \
-  --argjson tiny "${RTMRS_BY_SIZE[tiny]}" \
-  --argjson standard "${RTMRS_BY_SIZE[standard]}" \
-  --argjson llm "${RTMRS_BY_SIZE[llm]}" \
-  '{tiny: $tiny, standard: $standard, llm: $llm}')
 
 # ---------- Outputs ----------
 if [ -n "${GITHUB_OUTPUT:-}" ]; then

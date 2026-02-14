@@ -10,6 +10,12 @@ on:
     types: [completed]
     branches: [main]
   workflow_dispatch:
+    inputs:
+      enable_llm:
+        description: "Also deploy the Private LLM example (boots llm-sized agents; slow/expensive)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   test-unregistered-app-fails:
@@ -62,7 +68,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cloud: [gcp, azure]
+        # TODO(azure): re-enable Azure after confidential VM boot reliability is fixed.
+        cloud: [gcp]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,7 +90,7 @@ jobs:
   deploy-private-llm:
     name: Deploy Private LLM
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: github.event_name == 'workflow_dispatch' && inputs.enable_llm == true
     steps:
       - uses: actions/checkout@v4
         with:

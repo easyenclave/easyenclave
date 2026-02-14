@@ -28,9 +28,9 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 CP_URL="${CP_URL:-https://app.easyenclave.com}"
-NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-2}"
-NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-2}"
-NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-1}"
+NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-1}"
+NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-0}"
+NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-0}"
 NUM_GCP_TINY_AGENTS="${NUM_GCP_TINY_AGENTS:-0}"
 AGENT_DATACENTER="${AGENT_DATACENTER:-}"
 AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
@@ -179,7 +179,8 @@ deploy_app() {
 
   # Build compose and publish version
   compose_b64=$(echo "$image" | make_compose "$app_name" | base64 -w 0)
-  version="bootstrap-$(date -u +%Y%m%d-%H%M%S)"
+  # Avoid collisions across parallel CI steps and reruns.
+  version="bootstrap-$(date -u +%Y%m%d-%H%M%S-%N)"
 
   echo "Publishing $app_name version $version (node_size=$node_size)..."
   local publish_body="{\"version\": \"$version\", \"compose\": \"$compose_b64\""
@@ -443,6 +444,10 @@ fi
 # 4. Launch agents in parallel
 # ===================================================================
 TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS + NUM_GCP_TINY_AGENTS))
+if [ "$TOTAL_AGENTS" -le 0 ]; then
+  echo "::error::TOTAL_AGENTS is 0; set NUM_TINY_AGENTS (or other counts) to launch at least one agent"
+  exit 1
+fi
 echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM, $NUM_GCP_TINY_AGENTS gcp-tiny)..."
 
 AGENT_LOCATION_ARGS=()
@@ -542,18 +547,26 @@ deploy_app "measuring-enclave-tiny" \
   '{"service_name": "measuring-enclave-tiny"}' \
   tiny
 
-deploy_app "measuring-enclave-standard" \
-  "Measuring enclave for standard node attestation" \
-  "$MEASURER_IMAGE" \
-  "" \
-  '{"service_name": "measuring-enclave-standard"}' \
-  standard
+if [ "$NUM_STANDARD_AGENTS" -gt 0 ]; then
+  deploy_app "measuring-enclave-standard" \
+    "Measuring enclave for standard node attestation" \
+    "$MEASURER_IMAGE" \
+    "" \
+    '{"service_name": "measuring-enclave-standard"}' \
+    standard
+else
+  echo "Skipping standard measuring-enclave bootstrap (NUM_STANDARD_AGENTS=0)"
+fi
 
-deploy_app "measuring-enclave-llm" \
-  "Measuring enclave for llm node attestation" \
-  "$MEASURER_IMAGE" \
-  "" \
-  '{"service_name": "measuring-enclave-llm"}' \
-  llm
+if [ "$NUM_LLM_AGENTS" -gt 0 ]; then
+  deploy_app "measuring-enclave-llm" \
+    "Measuring enclave for llm node attestation" \
+    "$MEASURER_IMAGE" \
+    "" \
+    '{"service_name": "measuring-enclave-llm"}' \
+    llm
+else
+  echo "Skipping llm measuring-enclave bootstrap (NUM_LLM_AGENTS=0)"
+fi
 
 echo "==> Deploy complete!"
