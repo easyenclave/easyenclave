@@ -63,6 +63,10 @@ on:
     types: [completed]
     branches: [main]
 
+concurrency:
+  group: cloud-confidential-agents-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   provision-verify-cleanup:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
