@@ -15,7 +15,7 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
 # ---------- Build ----------
 echo "==> Building verity VM image (mkosi)..."
-(cd infra/image && nix develop --command make build)
+(cd infra/image && nix develop --command bash -lc 'make clean && make build')
 
 CMDLINE="infra/image/output/easyenclave.cmdline"
 ROOTFS="infra/image/output/easyenclave.root.raw"
@@ -72,6 +72,12 @@ if [ -z "$MRTDS" ]; then
   exit 1
 fi
 
+MRTDS_BY_SIZE_JSON=$(jq -cn \
+  --arg tiny "${MRTD_BY_SIZE[tiny]}" \
+  --arg standard "${MRTD_BY_SIZE[standard]}" \
+  --arg llm "${MRTD_BY_SIZE[llm]}" \
+  '{tiny: $tiny, standard: $standard, llm: $llm}')
+
 RTMRS_BY_SIZE_JSON=$(jq -cn \
   --argjson tiny "${RTMRS_BY_SIZE[tiny]}" \
   --argjson standard "${RTMRS_BY_SIZE[standard]}" \
@@ -84,6 +90,7 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "digest=$DIGEST"
     echo "mrtd=$MRTD"
     echo "mrtds=$MRTDS"
+    echo "mrtds_by_size=$MRTDS_BY_SIZE_JSON"
     echo "rtmrs=$RTMRS"
     echo "rtmrs_by_size=$RTMRS_BY_SIZE_JSON"
   } >> "$GITHUB_OUTPUT"

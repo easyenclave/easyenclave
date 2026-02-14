@@ -208,45 +208,9 @@ jobs:
 
       # ---- Build (runs in parallel with test + docker) ----
 
-      - name: Reproducibility and trusted measurements (strict)
-        id: repro
-        run: ./scripts/ci-reproducibility-check.sh
-
-      - name: Publish reproducibility summary
-        if: always()
-        run: |
-          SUMMARY_FILE="infra/output/reproducibility/summary.md"
-          if [ -f "$SUMMARY_FILE" ]; then
-            cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
-          else
-            {
-              echo "## Determinism Report"
-              echo ""
-              echo "- Status: **missing report**"
-              echo "- Reason: reproducibility script did not emit \`$SUMMARY_FILE\`"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload reproducibility artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reproducibility-report
-          if-no-files-found: warn
-          path: |
-            infra/output/reproducibility/report.json
-            infra/output/reproducibility/summary.md
-            infra/output/reproducibility/build1.sha256.txt
-            infra/output/reproducibility/build2.sha256.txt
-            infra/output/reproducibility/build1.sizes.tsv
-            infra/output/reproducibility/build2.sizes.tsv
-            infra/output/reproducibility/build1.measure.json
-            infra/output/reproducibility/build2.measure.json
-            infra/output/reproducibility/build1.timing.json
-            infra/output/reproducibility/build2.timing.json
-            infra/output/reproducibility/artifact.diff
-            infra/output/reproducibility/measurement.diff
-            infra/output/reproducibility/trusted_values.json
+      - name: Build and measure trusted values
+        id: measure
+        run: ./scripts/ci-build-measure.sh
 
       # ---- Wait for test + docker jobs before deploying ----
 
@@ -278,10 +242,10 @@ jobs:
 
       - name: Deploy and bootstrap
         env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.repro.outputs.mrtds || steps.repro.outputs.mrtd }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.repro.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.repro.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.repro.outputs.rtmrs_by_size }}
+          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds || steps.measure.outputs.mrtd }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           NUM_GCP_TINY_AGENTS: "1"
