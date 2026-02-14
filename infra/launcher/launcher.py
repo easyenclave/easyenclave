@@ -806,18 +806,12 @@ def get_launcher_config() -> dict:
     """Read config from the first available source.
 
     Search order:
-      1. Kernel cmdline easyenclave.config=<b64> (verity image)
-      2. EASYENCLAVE_CONFIG env var
-      3. /etc/easyenclave/config.json (legacy image — cloud-init)
+      1. EASYENCLAVE_CONFIG env path / /etc/easyenclave/config.json
+      2. Kernel cmdline easyenclave.config=<b64> (verity image fallback)
 
     Returns:
         Config dict with mode and other settings
     """
-    # Highest priority: kernel cmdline (verity images)
-    config = _parse_cmdline_config()
-    if config is not None:
-        return config
-
     # File-based config paths
     for config_path in CONFIG_PATHS:
         if config_path.exists() and config_path.is_file():
@@ -829,6 +823,11 @@ def get_launcher_config() -> dict:
                 return config
             except Exception as e:
                 logger.warning(f"Could not read config from {config_path}: {e}")
+
+    # Fallback: kernel cmdline (verity images)
+    config = _parse_cmdline_config()
+    if config is not None:
+        return config
 
     # Default to agent mode
     logger.warning("No config file found, defaulting to agent mode")
