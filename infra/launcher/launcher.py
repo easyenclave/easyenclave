@@ -107,6 +107,8 @@ services:
     environment:
       - ITA_API_URL=${{ITA_API_URL:-https://api.trustauthority.intel.com/appraisal/v2}}
       - ITA_API_KEY=${{ITA_API_KEY:-}}
+      - STRIPE_SECRET_KEY=${{STRIPE_SECRET_KEY:-}}
+      - STRIPE_WEBHOOK_SECRET=${{STRIPE_WEBHOOK_SECRET:-}}
       - CLOUDFLARE_API_TOKEN=${{CLOUDFLARE_API_TOKEN:-}}
       - CLOUDFLARE_ACCOUNT_ID=${{CLOUDFLARE_ACCOUNT_ID:-}}
       - CLOUDFLARE_ZONE_ID=${{CLOUDFLARE_ZONE_ID:-}}
@@ -1796,6 +1798,10 @@ def run_control_plane_mode(config: dict):
         env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
     if config.get("intel_api_key"):
         env["ITA_API_KEY"] = config["intel_api_key"]
+    if config.get("stripe_secret_key"):
+        env["STRIPE_SECRET_KEY"] = config["stripe_secret_key"]
+    if config.get("stripe_webhook_secret"):
+        env["STRIPE_WEBHOOK_SECRET"] = config["stripe_webhook_secret"]
     if config.get("trusted_agent_mrtds"):
         env["TRUSTED_AGENT_MRTDS"] = config["trusted_agent_mrtds"]
     if config.get("trusted_proxy_mrtds"):

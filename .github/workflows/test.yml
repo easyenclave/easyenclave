@@ -177,6 +177,8 @@ jobs:
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
     steps:
       - name: Fix workspace permissions

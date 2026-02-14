@@ -348,6 +348,9 @@ class TDXManager:
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
             # Intel Trust Authority for verifying agent attestations
             "intel_api_key": os.environ.get("INTEL_API_KEY"),
+            # Stripe (optional)
+            "stripe_secret_key": os.environ.get("STRIPE_SECRET_KEY"),
+            "stripe_webhook_secret": os.environ.get("STRIPE_WEBHOOK_SECRET"),
             # Trusted MRTDs (comma-separated)
             "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS"),
             "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS"),
