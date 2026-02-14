@@ -65,7 +65,7 @@ on:
 
 concurrency:
   group: cloud-confidential-agents-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   provision-verify-cleanup:
@@ -168,6 +168,27 @@ jobs:
         uses: azure/login@v2
         with:
           creds: ${{ env.AZURE_CREDENTIALS }}
+
+      - name: Cleanup stale managed cloud resources (preflight)
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.enable_gcp || 'true' }}" = "true" ]; then
+            python3 scripts/cloud_provisioner.py cleanup \
+              --provider gcp \
+              --all-managed \
+              --gcp-project "$GCP_PROJECT_ID" \
+              --gcp-zone "$GCP_ZONE" \
+              --gcp-region "$GCP_REGION"
+          fi
+
+          if [ "${{ github.event.inputs.enable_azure || 'true' }}" = "true" ]; then
+            python3 scripts/cloud_provisioner.py cleanup \
+              --provider azure \
+              --all-managed \
+              --azure-resource-group "$AZURE_RESOURCE_GROUP" \
+              --azure-location "$AZURE_LOCATION" \
+              --azure-zone-label "$AZURE_ZONE_LABEL"
+          fi
 
       - name: Provision GCP agent
         if: github.event.inputs.enable_gcp != 'false'

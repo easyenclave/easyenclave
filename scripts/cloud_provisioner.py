@@ -471,6 +471,78 @@ def _azure_apply_tags(resource_ids: list[str], tags: dict[str, str]) -> None:
         _run(["az", "tag", "update", "--resource-id", resource_id, "--operation", "merge", "--tags", *tags_arg.split()])
 
 
+def _azure_power_state(args: argparse.Namespace, vm_name: str) -> str:
+    result = _run(
+        [
+            "az",
+            "vm",
+            "show",
+            "--resource-group",
+            args.azure_resource_group,
+            "--name",
+            vm_name,
+            "--show-details",
+            "--query",
+            "powerState",
+            "--output",
+            "tsv",
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        return ""
+    return (result.stdout or "").strip()
+
+
+def _azure_ensure_vm_running(args: argparse.Namespace, vm_name: str) -> None:
+    deadline = time.time() + max(60, int(args.azure_boot_timeout_seconds))
+    poll_seconds = max(5, int(args.azure_boot_poll_seconds))
+    stable_seconds = max(0, int(args.azure_running_stable_seconds))
+    max_start_attempts = max(0, int(args.azure_max_start_attempts))
+
+    start_attempts = 0
+    last_state = ""
+    running_since: float | None = None
+
+    while time.time() < deadline:
+        state = _azure_power_state(args, vm_name)
+        if state:
+            last_state = state
+        normalized = state.strip().lower()
+
+        if normalized == "vm running":
+            if running_since is None:
+                running_since = time.time()
+            if time.time() - running_since >= stable_seconds:
+                return
+        else:
+            running_since = None
+            if normalized in {"vm stopped", "vm deallocated", "vm stopping", "vm deallocating"}:
+                if start_attempts < max_start_attempts:
+                    start_attempts += 1
+                    _run(
+                        [
+                            "az",
+                            "vm",
+                            "start",
+                            "--resource-group",
+                            args.azure_resource_group,
+                            "--name",
+                            vm_name,
+                            "--no-wait",
+                        ],
+                        check=False,
+                    )
+
+        time.sleep(poll_seconds)
+
+    raise RuntimeError(
+        "Azure VM did not remain in running state after provisioning: "
+        f"name={vm_name}, last_power_state='{last_state or 'unknown'}', "
+        f"start_attempts={start_attempts}, timeout_seconds={int(args.azure_boot_timeout_seconds)}"
+    )
+
+
 def _azure_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedResource]:
     if not args.azure_resource_group:
         raise RuntimeError("--azure-resource-group is required for Azure provisioning")
@@ -558,10 +630,16 @@ def _azure_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedReso
                 "true",
                 "--os-disk-security-encryption-type",
                 "VMGuestStateOnly",
+                "--os-disk-delete-option",
+                "Delete",
+                "--nic-delete-option",
+                "Delete",
                 "--public-ip-sku",
                 "Standard",
                 "--nsg-rule",
                 "None",
+                "--output",
+                "none",
                 "--tags",
             ]
             cmd.extend([f"{k}={v}" for k, v in tags.items()])
@@ -581,6 +659,8 @@ def _azure_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedReso
         except Exception:
             # Continue even if tagging related resources fails.
             pass
+
+        _azure_ensure_vm_running(args, name)
 
         resources.append(
             ManagedResource(
@@ -846,6 +926,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", "manual"))
         p.add_argument("--name-prefix", default="easyenclave-agent")
         p.add_argument("--dry-run", action="store_true")
+        p.add_argument("--all-managed", action="store_true")
 
         p.add_argument("--cp-url", default="https://app.easyenclave.com")
         p.add_argument("--cp-admin-token", default=os.environ.get("CP_ADMIN_TOKEN", ""))
@@ -872,6 +953,10 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--azure-admin-username", default=os.environ.get("AZURE_ADMIN_USERNAME", "easyenclave"))
         p.add_argument("--azure-count", type=int, default=1)
         p.add_argument("--azure-datacenter", default="")
+        p.add_argument("--azure-boot-timeout-seconds", type=int, default=420)
+        p.add_argument("--azure-boot-poll-seconds", type=int, default=15)
+        p.add_argument("--azure-running-stable-seconds", type=int, default=90)
+        p.add_argument("--azure-max-start-attempts", type=int, default=2)
 
     provision = sub.add_parser("provision", help="Provision managed confidential VMs")
     add_common(provision)
@@ -907,6 +992,7 @@ def main() -> int:
     args = parser.parse_args()
 
     run_tag = _sanitize_label_value(str(args.run_id), max_len=30)
+    run_filter = "" if args.all_managed else run_tag
     args.launcher_url = _resolve_launcher_url(args)
 
     if args.command == "provision" and not args.intel_api_key:
@@ -950,9 +1036,9 @@ def main() -> int:
     if args.command == "inventory":
         for provider in providers:
             if provider == "gcp":
-                inventory_items.extend(_gcp_inventory(args, run_tag=run_tag))
+                inventory_items.extend(_gcp_inventory(args, run_tag=run_filter))
             elif provider == "azure":
-                inventory_items.extend(_azure_inventory(args, run_tag=run_tag))
+                inventory_items.extend(_azure_inventory(args, run_tag=run_filter))
 
         payload = {
             "detail": "cloud-provisioner inventory",
@@ -965,9 +1051,9 @@ def main() -> int:
         cleanup_results = []
         for provider in providers:
             if provider == "gcp":
-                cleanup_results.append(_gcp_cleanup(args, run_tag=run_tag))
+                cleanup_results.append(_gcp_cleanup(args, run_tag=run_filter))
             elif provider == "azure":
-                cleanup_results.append(_azure_cleanup(args, run_tag=run_tag))
+                cleanup_results.append(_azure_cleanup(args, run_tag=run_filter))
 
         deleted = sum(int(item.get("deleted_count") or 0) for item in cleanup_results)
         candidates = sum(int(item.get("candidate_count") or 0) for item in cleanup_results)
@@ -977,7 +1063,7 @@ def main() -> int:
 
         payload = {
             "detail": "cloud-provisioner cleanup",
-            "run_id": run_tag,
+            "run_id": run_filter or "all-managed",
             "candidate_count": candidates,
             "deleted_count": deleted,
             "errors": errors,
