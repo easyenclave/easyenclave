@@ -270,6 +270,21 @@ class Attempt:
     zone: str
 
 
+def _zone_supports_machine_type(*, project: str, zone: str, machine_type: str) -> bool:
+    cmd = [
+        *_gcloud_base_args(project),
+        "compute",
+        "machine-types",
+        "describe",
+        machine_type,
+        "--zone",
+        zone,
+        "--format=value(name)",
+    ]
+    p = _run(cmd, capture=True, check=False)
+    return p.returncode == 0 and (p.stdout or "").strip() == machine_type
+
+
 def _create_instance(
     *,
     project: str,
@@ -279,6 +294,9 @@ def _create_instance(
     image_project: str,
     image_family: str,
     startup_script_path: str,
+    provisioning_model: str,
+    request_valid_for_duration: str,
+    max_run_duration: str,
 ) -> None:
     cmd = [
         *_gcloud_base_args(project),
@@ -286,12 +304,18 @@ def _create_instance(
         "instances",
         "create",
         name,
-        "--provisioning-model=SPOT",
+        f"--provisioning-model={provisioning_model}",
         "--confidential-compute-type=TDX",
         "--machine-type=a3-highgpu-1g",
         "--maintenance-policy=TERMINATE",
         "--zone",
         attempt.zone,
+        # For FLEX_START, this controls how long GCE will keep the request pending.
+        # It's ignored for other provisioning models.
+        f"--request-valid-for-duration={request_valid_for_duration}",
+        # Ensure the VM auto-terminates even if our runner dies (belt + suspenders).
+        f"--max-run-duration={max_run_duration}",
+        "--instance-termination-action=DELETE",
         "--boot-disk-size",
         boot_disk_size,
         "--boot-disk-type",
@@ -371,6 +395,22 @@ def main() -> int:
         required=True,
         help="Comma-separated zones to try (only a3-highgpu-1g supported for confidential GPU)",
     )
+    ap.add_argument(
+        "--provisioning-model",
+        default="FLEX_START",
+        choices=["FLEX_START", "SPOT"],
+        help="Provisioning model to use. Confidential GPU supports FLEX_START or SPOT.",
+    )
+    ap.add_argument(
+        "--request-valid-for-duration",
+        default="30m",
+        help="Only applies to FLEX_START. How long to wait for capacity before failing.",
+    )
+    ap.add_argument(
+        "--max-run-duration",
+        default="4h",
+        help="Auto-terminate the VM after this duration (best-effort safety net).",
+    )
     ap.add_argument("--boot-disk-size", default="200GB")
     ap.add_argument("--image-project", default="ubuntu-os-cloud")
     # Keep to a very stable public image family; 24.04 naming differs across arches.
@@ -401,9 +441,16 @@ def main() -> int:
     last_err: str | None = None
     try:
         for idx, attempt in enumerate(attempts, start=1):
+            if not _zone_supports_machine_type(project=args.project, zone=attempt.zone, machine_type="a3-highgpu-1g"):
+                print(
+                    f"[attempt {idx}/{len(attempts)}] skipping zone={attempt.zone}: "
+                    "machine type a3-highgpu-1g not available in this zone",
+                    file=sys.stderr,
+                )
+                continue
             print(
                 f"[attempt {idx}/{len(attempts)}] creating {name} "
-                f"zone={attempt.zone} machine_type=a3-highgpu-1g confidential=TDX provisioning=SPOT",
+                f"zone={attempt.zone} machine_type=a3-highgpu-1g confidential=TDX provisioning={args.provisioning_model}",
                 file=sys.stderr,
             )
             try:
@@ -415,6 +462,9 @@ def main() -> int:
                     image_project=args.image_project,
                     image_family=args.image_family,
                     startup_script_path=startup_script_path,
+                    provisioning_model=args.provisioning_model,
+                    request_valid_for_duration=args.request_valid_for_duration,
+                    max_run_duration=args.max_run_duration,
                 )
                 _require_tdx(project=args.project, name=name, zone=attempt.zone)
                 created_zone = attempt.zone
