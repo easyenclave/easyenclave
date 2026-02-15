@@ -73,6 +73,8 @@ async def verify_attestation_token(token: str) -> dict:
         # - exp (expiration) claim
         # - iat (issued at) claim
         # Intel TA may use various algorithms - allow all common secure ones
+        # Allow modest clock skew. We have seen Intel TA tokens rejected as
+        # "not yet valid (iat)" when VM clocks lag by a small amount.
         claims = jwt.decode(
             token,
             signing_key.key,
@@ -93,6 +95,7 @@ async def verify_attestation_token(token: str) -> dict:
                 "verify_iat": True,
                 "require": ["exp", "iat"],
             },
+            leeway=120,
             # Note: We don't verify issuer strictly because Intel TA may use
             # different issuer values. The signature verification is sufficient.
             # issuer=ITA_ISSUER,
