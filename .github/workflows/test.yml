@@ -240,6 +240,43 @@ jobs:
             sleep 15
           done
 
+      - name: Resolve image digests (avoid GHCR tag flakiness)
+        run: |
+          set -euo pipefail
+
+          resolve_digest_ref() {
+            local image_tag="$1"
+            local attempts=30
+            local delay=5
+
+            # Prefer auth to avoid anonymous rate limits, but images are public either way.
+            echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
+
+            for attempt in $(seq 1 "$attempts"); do
+              if docker pull "$image_tag" >/dev/null 2>&1; then
+                docker inspect --format='{{index .RepoDigests 0}}' "$image_tag"
+                return 0
+              fi
+              echo "Waiting for $image_tag to be pullable... ($attempt/$attempts)"
+              sleep "$delay"
+            done
+
+            echo "::error::Failed to pull $image_tag after $attempts attempts"
+            return 1
+          }
+
+          CONTROL_PLANE_TAG="ghcr.io/${GITHUB_REPOSITORY}/control-plane:${GITHUB_SHA}"
+          MEASURER_TAG="ghcr.io/${GITHUB_REPOSITORY}/measuring-enclave:${GITHUB_SHA}"
+
+          CONTROL_PLANE_IMAGE="$(resolve_digest_ref "$CONTROL_PLANE_TAG")"
+          MEASURER_IMAGE="$(resolve_digest_ref "$MEASURER_TAG")"
+
+          echo "Resolved control plane: $CONTROL_PLANE_TAG -> $CONTROL_PLANE_IMAGE"
+          echo "Resolved measurer: $MEASURER_TAG -> $MEASURER_IMAGE"
+
+          echo "CONTROL_PLANE_IMAGE=$CONTROL_PLANE_IMAGE" >> "$GITHUB_ENV"
+          echo "MEASURER_IMAGE=$MEASURER_IMAGE" >> "$GITHUB_ENV"
+
       # ---- Deploy ----
 
       - name: Deploy and bootstrap
@@ -248,8 +285,6 @@ jobs:
           TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
           TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
-          CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
-          MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           NUM_TINY_AGENTS: "1"
           NUM_STANDARD_AGENTS: "0"
           NUM_LLM_AGENTS: "0"

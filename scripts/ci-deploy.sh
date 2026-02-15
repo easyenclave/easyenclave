@@ -351,6 +351,31 @@ deploy_app() {
     sleep 5
   done
   echo "::error::$app_name not healthy after 5 minutes"
+  echo ""
+  echo "=== Debug: services?name=$app_name ==="
+  curl -sf "$CP_URL/api/v1/services?name=$app_name" 2>/dev/null | jq . || true
+  echo ""
+  echo "=== Debug: deployments (most recent 5 for app=$app_name) ==="
+  curl -sf "$CP_URL/api/v1/deployments" 2>/dev/null | jq -r --arg app "$app_name" '
+    (.deployments // [])
+    | map(select(.app_name == $app))
+    | sort_by(.created_at)
+    | reverse
+    | .[0:5]
+  ' || true
+  echo ""
+  echo "=== Debug: agents summary ==="
+  curl -sf "$CP_URL/api/v1/agents" 2>/dev/null | jq -r '
+    [.agents[] | {agent_id, status, health_status, verified, node_size, datacenter, hostname, deployed_app, current_deployment_id}]
+  ' || true
+  echo ""
+  echo "=== Debug: agent VM serial logs (last 120 lines each) ==="
+  for log in /var/tmp/tdvirsh/console.*.log; do
+    [ -f "$log" ] || continue
+    echo ""
+    echo "--- $log ---"
+    tail -120 "$log" || true
+  done
   exit 1
 }
 
