@@ -1047,6 +1047,20 @@
                         <div class="loading">Loading agent inventory...</div>
                     </div>
                 </div>
+                <div class="section-card">
+                    <h3>Reconciliation (Control Plane vs Cloud)</h3>
+                    <p style="color: var(--gray-600); margin: 10px 0;">
+                        The control plane database is the source of truth for scheduling and shows agents that have registered.
+                        External cloud inventory is queried separately (via the provisioner inventory webhook).
+                        This view highlights mismatches (stale agents, or cloud VMs with no registered agent).
+                    </p>
+                    <div id="cloudReconcileSummary" class="stats-grid">
+                        <div class="loading">Loading reconciliation...</div>
+                    </div>
+                    <div id="cloudReconcileTable">
+                        <div class="loading">Loading reconciliation details...</div>
+                    </div>
+                </div>
 	                <div class="section-card">
 	                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
 	                        <h3 style="margin:0;">External Azure/GCP Inventory</h3>

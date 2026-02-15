@@ -519,6 +519,8 @@ async function loadCloudResources() {
     const summaryCards = document.getElementById('cloudSummaryCards');
     const summaryTable = document.getElementById('cloudSummaryTable');
     const agentTable = document.getElementById('cloudAgentTable');
+    const reconcileSummary = document.getElementById('cloudReconcileSummary');
+    const reconcileTable = document.getElementById('cloudReconcileTable');
     const externalStatus = document.getElementById('cloudExternalStatus');
     const externalSummary = document.getElementById('cloudExternalSummary');
     const externalTable = document.getElementById('cloudExternalTable');
@@ -526,6 +528,8 @@ async function loadCloudResources() {
     summaryCards.innerHTML = '<div class="loading">Loading cloud summary...</div>';
     summaryTable.innerHTML = '<div class="loading">Loading cloud rollups...</div>';
     agentTable.innerHTML = '<div class="loading">Loading agent inventory...</div>';
+    if (reconcileSummary) reconcileSummary.innerHTML = '<div class="loading">Loading reconciliation...</div>';
+    if (reconcileTable) reconcileTable.innerHTML = '<div class="loading">Loading reconciliation details...</div>';
     if (externalStatus) externalStatus.textContent = 'Loading external inventory status...';
     if (externalSummary) externalSummary.innerHTML = '<div class="loading">Loading external cloud summary...</div>';
     if (externalTable) externalTable.innerHTML = '<div class="loading">Loading external cloud resources...</div>';
@@ -652,6 +656,20 @@ async function loadCloudResources() {
         externalSummary.innerHTML = '<div class="error">Error loading external inventory</div>';
         externalTable.innerHTML = '<div class="error">Unable to load external cloud resources</div>';
     }
+
+    if (reconcileSummary && reconcileTable) {
+        if (internalResult.status === 'fulfilled' && externalResult.status === 'fulfilled') {
+            renderCloudReconciliation(internalResult.value, externalResult.value);
+        } else if (internalResult.status !== 'fulfilled') {
+            const msg = `<div class="error">Unable to reconcile: failed to load control plane agent inventory.</div>`;
+            reconcileSummary.innerHTML = msg;
+            reconcileTable.innerHTML = msg;
+        } else {
+            const msg = `<div class="error">Unable to reconcile: failed to load external cloud inventory.</div>`;
+            reconcileSummary.innerHTML = msg;
+            reconcileTable.innerHTML = msg;
+        }
+    }
 }
 
 function renderExternalCloudResources(data) {
@@ -763,6 +781,221 @@ function renderExternalCloudResources(data) {
             </tbody>
         </table>
     `;
+}
+
+function renderCloudReconciliation(internalData, externalData) {
+    const summaryEl = document.getElementById('cloudReconcileSummary');
+    const tableEl = document.getElementById('cloudReconcileTable');
+    if (!summaryEl || !tableEl) return;
+
+    const agents = Array.isArray(internalData?.agents) ? internalData.agents : [];
+    const externalConfigured = !!externalData?.configured;
+    const resources = externalConfigured && Array.isArray(externalData?.resources) ? externalData.resources : [];
+
+    if (!externalConfigured) {
+        summaryEl.innerHTML = `
+            <div class="stat-card">
+                <span class="stat-value">${agents.length}</span>
+                <span class="stat-label">CP Agents</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value">N/A</span>
+                <span class="stat-label">External Inventory</span>
+            </div>
+        `;
+        tableEl.innerHTML = `
+            <div class="empty">
+                External inventory is not configured, so the control plane cannot compare its agent registry against GCP/Azure.
+                Set <code>AGENT_PROVISIONER_INVENTORY_URL</code> to enable reconciliation.
+            </div>
+        `;
+        return;
+    }
+
+    const norm = (v) => String(v || '').trim().toLowerCase();
+    const vmResources = resources.filter(r => (r.resource_type || '').toLowerCase().includes('vm') || (r.resource_type || '').toLowerCase().includes('instance'));
+
+    const supportedClouds = new Set(vmResources.map(r => normalizeCloudName(r.cloud || r.provider || 'unknown')).filter(Boolean));
+    const eligibleAgents = agents.filter(a => supportedClouds.has(normalizeCloudName(a.cloud || '')) || supportedClouds.has(normalizeCloudName(_extractCloudFromDatacenter(a.datacenter || ''))));
+
+    const resByVm = new Map();
+    const resByAgentId = new Map();
+    for (const r of vmResources) {
+        const vmKey = norm(r.linked_vm_name || r.name);
+        if (vmKey) {
+            if (!resByVm.has(vmKey)) resByVm.set(vmKey, []);
+            resByVm.get(vmKey).push(r);
+        }
+        const aid = norm(r.linked_agent_id);
+        if (aid) {
+            if (!resByAgentId.has(aid)) resByAgentId.set(aid, []);
+            resByAgentId.get(aid).push(r);
+        }
+    }
+
+    const missingAgents = [];
+    const matchedAgents = [];
+    for (const a of eligibleAgents) {
+        const agentVm = norm(a.vm_name);
+        const agentId = norm(a.agent_id);
+        const matches = []
+            .concat(resByAgentId.get(agentId) || [])
+            .concat(resByVm.get(agentVm) || []);
+        const uniq = new Map(matches.map(m => [m.resource_id, m]));
+        const dedup = Array.from(uniq.values());
+        if (dedup.length > 0) matchedAgents.push({ agent: a, resources: dedup });
+        else missingAgents.push(a);
+    }
+
+    const orphanVms = vmResources.filter(r => !r.linked_agent_id);
+
+    summaryEl.innerHTML = `
+        <div class="stat-card">
+            <span class="stat-value">${eligibleAgents.length}</span>
+            <span class="stat-label">CP Agents (In External Clouds)</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value">${vmResources.length}</span>
+            <span class="stat-label">Cloud VMs</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value">${matchedAgents.length}</span>
+            <span class="stat-label">Matched</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value" style="color:${missingAgents.length ? '#dc2626' : 'inherit'}">${missingAgents.length}</span>
+            <span class="stat-label">Agents Missing In Cloud</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-value" style="color:${orphanVms.length ? '#dc2626' : 'inherit'}">${orphanVms.length}</span>
+            <span class="stat-label">Cloud VMs Missing In CP</span>
+        </div>
+    `;
+
+    const missingRows = missingAgents.slice(0, 200).map(a => `
+        <tr class="row-orphaned">
+            <td><strong>${escapeHtml(a.vm_name || 'unknown')}</strong><br><code style="font-size:0.7rem">${escapeHtml((a.agent_id || '').substring(0, 8))}...</code></td>
+            <td>${escapeHtml(a.cloud || 'unknown')}</td>
+            <td>${renderAgentLocation(a)}</td>
+            <td>${a.node_size ? `<span class="status-badge">${escapeHtml(a.node_size)}</span>` : 'N/A'}</td>
+            <td><span class="status-badge ${escapeHtml(a.status || 'unknown')}">${escapeHtml(a.status || 'unknown')}</span></td>
+            <td><span class="health-dot ${escapeHtml(a.health_status || 'unknown')}"></span> ${escapeHtml(a.health_status || 'unknown')}</td>
+            <td>${a.verified ? '<span class="verified-badge">Yes</span>' : '<span class="unverified-badge">No</span>'}</td>
+            <td>${a.deployed_app ? `<code>${escapeHtml(a.deployed_app)}</code>` : '<span style="color:#666">none</span>'}</td>
+            <td><button class="btn-small btn-danger" onclick="deleteAgent('${escapeHtml(a.agent_id)}')">Delete Agent</button></td>
+        </tr>
+    `).join('');
+
+    const orphanRows = orphanVms.slice(0, 200).map(r => {
+        const cloud = normalizeCloudName(r.cloud || r.provider || 'unknown') || 'unknown';
+        const loc = [
+            (r.datacenter || '').trim() ? `<code>${escapeHtml(r.datacenter)}</code>` : '',
+            (r.region || '').trim() ? `region: ${escapeHtml(r.region)}` : '',
+            (r.availability_zone || '').trim() ? `az: ${escapeHtml(r.availability_zone)}` : '',
+        ].filter(Boolean).join('<br>') || 'N/A';
+        return `
+            <tr class="row-orphaned">
+                <td><strong>${escapeHtml(cloud)}</strong></td>
+                <td><strong>${escapeHtml((r.name || '').trim() || 'N/A')}</strong><br><code style="font-size:0.7rem">${escapeHtml(r.resource_id || 'N/A')}</code></td>
+                <td>${loc}</td>
+                <td>${escapeHtml((r.status || '').trim() || 'unknown')}</td>
+                <td>
+                    <button class="btn-small btn-secondary" onclick="externalCloudCleanupResources(['${escapeHtml(r.resource_id)}'], true)">Dry Run</button>
+                    <button class="btn-small btn-danger" onclick="externalCloudCleanupResources(['${escapeHtml(r.resource_id)}'], false)">Delete</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    tableEl.innerHTML = `
+        <div class="section-card" style="padding:0;border:none;box-shadow:none;">
+            <h4 style="margin: 0 0 10px 0;">Agents In Control Plane Missing In Cloud Inventory</h4>
+            <div style="color:var(--gray-600);margin: 0 0 10px 0;">
+                Note: external inventory typically includes only provisioner-managed resources. A missing match may mean the VM was deleted,
+                or it exists but is not visible to the inventory webhook.
+            </div>
+            ${missingAgents.length === 0 ? '<div class="empty">No mismatches found.</div>' : `
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Agent</th>
+                            <th>Cloud</th>
+                            <th>Location</th>
+                            <th>Size</th>
+                            <th>Status</th>
+                            <th>Health</th>
+                            <th>Verified</th>
+                            <th>App</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>${missingRows}</tbody>
+                </table>
+            `}
+        </div>
+        <div style="height:12px"></div>
+        <div class="section-card" style="padding:0;border:none;box-shadow:none;">
+            <h4 style="margin: 0 0 10px 0;">Cloud VMs Missing In Control Plane (No Registered Agent)</h4>
+            ${orphanVms.length === 0 ? '<div class="empty">No mismatches found.</div>' : `
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Cloud</th>
+                            <th>VM</th>
+                            <th>Location</th>
+                            <th>Status</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>${orphanRows}</tbody>
+                </table>
+            `}
+        </div>
+        ${(missingAgents.length > 200 || orphanVms.length > 200) ? '<div style="color:var(--gray-600);margin-top:10px;">Showing first 200 rows per section.</div>' : ''}
+    `;
+}
+
+function _extractCloudFromDatacenter(dcRaw) {
+    const parsed = parseDatacenterLabel(dcRaw || '');
+    return parsed.cloud || '';
+}
+
+async function externalCloudCleanupResources(resourceIds, dryRun) {
+    const ids = Array.isArray(resourceIds) ? resourceIds.filter(Boolean) : [];
+    if (ids.length === 0) return;
+
+    const modeLabel = dryRun ? 'dry run' : 'deletion';
+    const confirmMsg = dryRun
+        ? `Dry run delete ${ids.length} external cloud resource(s)?`
+        : `Delete ${ids.length} external cloud resource(s)?`;
+    if (!confirm(confirmMsg)) return;
+    if (!dryRun && !confirm('This will attempt to delete the cloud resource(s) via the provisioner cleanup webhook. Continue?')) return;
+
+    try {
+        const result = await adminFetchJSON('/api/v1/admin/cloud/resources/cleanup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                dry_run: dryRun,
+                only_orphaned: false,
+                providers: [],
+                resource_ids: ids,
+                reason: `admin-cloud-resource-${dryRun ? 'dry-run' : 'cleanup'}`,
+            }),
+        });
+
+        if (!result.configured) {
+            alert(`External cleanup is not configured: ${result.detail || 'set AGENT_PROVISIONER_CLEANUP_URL'}`);
+            return;
+        }
+
+        const statusText = result.dispatched ? 'dispatched' : 'failed';
+        const details = result.detail ? `\nDetail: ${result.detail}` : '';
+        alert(`External cleanup ${statusText} (${modeLabel}).\nRequested resources: ${result.requested_count || 0}${details}`);
+        await loadCloudResources();
+    } catch (error) {
+        alert('Error dispatching external cleanup: ' + error.message);
+    }
 }
 
 async function externalCloudCleanup(dryRun) {
