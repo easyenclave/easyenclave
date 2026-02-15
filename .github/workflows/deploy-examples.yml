@@ -148,7 +148,9 @@ jobs:
 
           echo "gcp_should_run=false" >> "$GITHUB_OUTPUT"
           echo "::warning::No healthy verified GCP agents available; GCP deploy example will be skipped."
-          echo "::warning::This workflow does not launch GCP agents. Use the 'Cloud Confidential Agents' workflow to provision a GCP agent, then re-run Deploy Examples."
+          echo "::warning::This workflow does not launch GCP agents."
+          echo "::warning::To make this pass, you need (1) a running GCP agent that registers with the control plane and (2) its MRTD included in the control plane trust list."
+          echo "::warning::The control plane trust list is env-var based (TRUSTED_AGENT_MRTDS). In CI you can append extra baselines via the secret TRUSTED_AGENT_MRTDS_EXTRA."
 
           if [ "$REQUIRE_GCP" = "true" ] || [ "$REQUIRE_GCP_CI" = "true" ]; then
             echo "::error::require_gcp is enabled, but no eligible GCP agents exist."

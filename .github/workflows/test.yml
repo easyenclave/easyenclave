@@ -243,7 +243,9 @@ jobs:
 
       - name: Deploy and bootstrap
         env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds || steps.measure.outputs.mrtd }}
+          # Optional extra baselines (e.g. cloud images) can be added via secrets without re-measuring in CI.
+          # Format: comma-separated 96-hex MRTD hashes.
+          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds || steps.measure.outputs.mrtd }}${{ secrets.TRUSTED_AGENT_MRTDS_EXTRA != '' && format(',{0}', secrets.TRUSTED_AGENT_MRTDS_EXTRA) || '' }}
           TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
           TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
