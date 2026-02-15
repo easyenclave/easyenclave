@@ -61,15 +61,10 @@ jobs:
           description: "Hello TDX - Example app demonstrating TDX attestation"
 
   deploy-hello-tdx-clouds:
-    name: Deploy Hello TDX (${{ matrix.cloud }})
+    name: Deploy Hello TDX (default)
     runs-on: ubuntu-latest
     needs: register-hello-tdx
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    strategy:
-      fail-fast: false
-      matrix:
-        # TODO(azure): re-enable Azure after confidential VM boot reliability is fixed.
-        cloud: [gcp]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,7 +80,44 @@ jobs:
           agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
           node_size: tiny
-          allowed_clouds: ${{ matrix.cloud }}
+
+  deploy-hello-tdx-gcp:
+    name: Deploy Hello TDX (gcp)
+    runs-on: ubuntu-latest
+    needs: register-hello-tdx
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Preflight - require at least one healthy verified GCP agent
+        id: preflight
+        shell: bash
+        env:
+          CP_URL: https://app.easyenclave.com
+        run: |
+          set -euo pipefail
+          agents=$(curl -sf "$CP_URL/api/v1/agents" || echo '{"agents":[]}')
+          count=$(echo "$agents" | jq '[.agents[] | select(.verified == true and (.health_status // "" | ascii_downcase) == "healthy" and ((.datacenter // "") | startswith("gcp:") or (.datacenter // "") == "gcp" or (.cloud_provider // "" | ascii_downcase) == "gcp"))] | length')
+          echo "gcp_eligible_agents=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -le 0 ]; then
+            echo "::notice::No healthy verified GCP agents registered yet; skipping GCP deploy example."
+            exit 0
+          fi
+
+      - name: Deploy to EasyEnclave (GCP)
+        if: steps.preflight.outputs.gcp_eligible_agents != '0'
+        uses: ./.github/actions/deploy
+        with:
+          app_name: hello-tdx
+          compose_file: examples/hello-tdx/docker-compose.yml
+          service_name: hello-tdx
+          health_endpoint: /
+          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+          github_owner: ${{ github.repository_owner }}
+          node_size: tiny
+          allowed_clouds: gcp
 
   deploy-private-llm:
     name: Deploy Private LLM
