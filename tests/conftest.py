@@ -56,6 +56,7 @@ def clear_all_stores():
         deployment_store,
         store,
         transaction_store,
+        trusted_mrtd_store,
     )
 
     def _clear():
@@ -68,6 +69,7 @@ def clear_all_stores():
         transaction_store.clear()
         account_store.clear()
         admin_session_store.clear()
+        trusted_mrtd_store.clear()
         clear_settings()
         invalidate_cache()
 

@@ -52,6 +52,7 @@ class AgentVerificationResult:
     mrtd_type: str  # "agent" or "proxy"
     tcb_status: str
     rtmrs: dict[str, str] | None = None
+    trusted: bool = True
 
 
 @dataclass
@@ -206,6 +207,63 @@ async def verify_agent_registration(
         mrtd_type=mrtd_type,
         tcb_status=tcb_status,
         rtmrs=agent_rtmrs,
+        trusted=True,
+    )
+
+
+async def verify_agent_attestation_only(
+    attestation: dict, node_size: str = ""
+) -> AgentVerificationResult:
+    """Verify Intel TA token + extract measurements, but do NOT require trusted MRTD.
+
+    Used to record untrusted baselines so the control plane owner can later
+    add them to the trusted list without rebooting the CP.
+    """
+    intel_ta_token = extract_intel_ta_token(attestation)
+    if not intel_ta_token:
+        raise AttestationError(
+            detail="Registration requires Intel Trust Authority token",
+            status_code=400,
+        )
+
+    try:
+        ita_result = await verify_attestation_token(intel_ta_token)
+        if not ita_result["verified"]:
+            raise AttestationError(
+                detail=f"Intel TA verification failed: {ita_result.get('error', 'unknown')}",
+            )
+    except AttestationError:
+        raise
+    except Exception as e:
+        raise AttestationError(detail=f"Intel TA verification error: {e}") from e
+
+    ita_claims = ita_result.get("details", {})
+    mrtd = extract_mrtd_from_claims(ita_claims)
+    if not mrtd:
+        raise AttestationError(detail="Intel TA token does not contain MRTD claim")
+
+    tcb_status = ita_claims.get("attester_tcb_status", "Unknown")
+    mode = _tcb_enforcement_mode()
+    allowed = _allowed_tcb_statuses()
+    if mode != "disabled" and tcb_status not in allowed:
+        error_msg = f"TCB status '{tcb_status}' not in allowed list: {', '.join(allowed)}"
+        if mode == "strict":
+            raise AttestationError(detail=error_msg, status_code=403)
+        logger.warning(
+            f"Agent registration proceeding with TCB warning: {error_msg} (MRTD: {mrtd[:16]}...)"
+        )
+
+    agent_rtmrs = extract_rtmrs(attestation)
+    mrtd_type = get_trusted_mrtd(mrtd) or ""
+    trusted = bool(mrtd_type)
+
+    return AgentVerificationResult(
+        mrtd=mrtd,
+        intel_ta_token=intel_ta_token,
+        mrtd_type=mrtd_type,
+        tcb_status=tcb_status,
+        rtmrs=agent_rtmrs,
+        trusted=trusted,
     )
 
 

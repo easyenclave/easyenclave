@@ -75,6 +75,8 @@ jobs:
       GCP_ZONE: ${{ github.event.inputs.gcp_zone || 'us-central1-a' }}
       GCP_REGION: ${{ github.event.inputs.gcp_region || 'us-central1' }}
       GCP_MACHINE_TYPE: ${{ github.event.inputs.gcp_machine_type || 'c3-standard-4' }}
+      # Default boot disk size for managed cloud agents. Keep this small to avoid runaway storage costs.
+      GCP_BOOT_DISK_SIZE: ${{ vars.GCP_BOOT_DISK_SIZE || '30GB' }}
       WAIT_SECONDS: ${{ github.event.inputs.wait_seconds || '900' }}
       VERIFY_APP_NAME: ${{ github.event.inputs.verify_app_name || '' }}
       VERIFY_APP_VERSION: ${{ github.event.inputs.verify_app_version || '' }}

@@ -23,6 +23,7 @@ from .attestation import (
     extract_rtmrs,
     generate_tdx_quote,
     refresh_agent_attestation,
+    verify_agent_attestation_only,
     verify_agent_registration,
 )
 from .auth import (
@@ -598,9 +599,6 @@ async def lifespan(app: FastAPI):
     # Validate environment configuration
     validate_environment()
 
-    # Load trusted MRTDs from environment
-    load_trusted_mrtds()
-
     # Configure logging level after uvicorn initialization
     logging.getLogger().setLevel(logging.INFO)
     logger.info("Logging configured - INFO level enabled")
@@ -608,6 +606,9 @@ async def lifespan(app: FastAPI):
     # Initialize database
     init_db()
     logger.info("Database initialized")
+
+    # Load trusted MRTDs (env vars + DB entries)
+    load_trusted_mrtds()
 
     # Log effective settings sources
     log_settings_sources()
@@ -881,7 +882,10 @@ async def register_agent(request: AgentRegistrationRequest):
 
     # Check if agent with this vm_name already exists
     existing = agent_store.get_by_vm_name(request.vm_name)
-    if existing and existing.status != "attestation_failed":
+    # Only treat verified agents as "fully registered" for early-return.
+    # Unverified agents must keep retrying registration so they can become verified
+    # after an admin adds their MRTD baseline.
+    if existing and existing.verified and existing.status != "attestation_failed":
         # Update heartbeat and return existing agent
         # Note: We don't return tunnel_token on re-registration for security
         agent_store.heartbeat(existing.agent_id)
@@ -901,6 +905,37 @@ async def register_agent(request: AgentRegistrationRequest):
             request.attestation, node_size=request.node_size
         )
     except AttestationError as e:
+        # Special-case: if the agent MRTD is simply not trusted yet, record the baseline
+        # so CI/admin can add it and the agent can keep retrying registration.
+        if "MRTD not in trusted list" in (e.detail or ""):
+            try:
+                untrusted = await verify_agent_attestation_only(
+                    request.attestation, node_size=request.node_size
+                )
+                rtmrs = extract_rtmrs(request.attestation)
+                agent_kwargs = {
+                    "vm_name": request.vm_name,
+                    "attestation": request.attestation,
+                    "mrtd": untrusted.mrtd,
+                    "rtmrs": rtmrs,
+                    "intel_ta_token": untrusted.intel_ta_token,
+                    "version": request.version,
+                    "node_size": request.node_size,
+                    "datacenter": request.datacenter,
+                    "status": "unverified",
+                    "verified": False,
+                    "verification_error": e.detail,
+                    "tcb_status": untrusted.tcb_status,
+                    "tcb_verified_at": datetime.now(timezone.utc),
+                }
+                if existing:
+                    agent_kwargs["agent_id"] = existing.agent_id
+                agent_store.register(Agent(**agent_kwargs))
+                logger.warning(
+                    f"Recorded untrusted agent baseline: vm={request.vm_name} mrtd={untrusted.mrtd[:16]}..."
+                )
+            except Exception as record_exc:
+                logger.warning(f"Failed to record untrusted agent baseline: {record_exc}")
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     mrtd = verification.mrtd
     intel_ta_token = verification.intel_ta_token
@@ -1687,23 +1722,89 @@ async def get_deployment(deployment_id: str):
 
 
 # ==============================================================================
-# Trusted MRTD API - Read-only, loaded from environment variables
+# Trusted MRTD API - Read-only view of effective trust (env vars + DB)
 # ==============================================================================
 
 
 @app.get("/api/v1/trusted-mrtds")
 async def get_trusted_mrtds():
-    """List all trusted MRTDs (loaded from environment variables).
+    """List all trusted MRTDs (effective trust list).
 
-    Trusted MRTDs are configured via TRUSTED_AGENT_MRTDS and TRUSTED_PROXY_MRTDS
-    environment variables (comma-separated). To change the trusted list, update
-    env vars and redeploy.
+    Trusted MRTDs can be bootstrapped via environment variables
+    (TRUSTED_AGENT_MRTDS / TRUSTED_PROXY_MRTDS, comma-separated) and can also be
+    extended at runtime via the admin-only DB-backed API.
     """
     mrtds = list_trusted_mrtds()
     return {
         "trusted_mrtds": [{"mrtd": k, "type": v} for k, v in mrtds.items()],
         "total": len(mrtds),
     }
+
+
+@app.get("/api/v1/admin/trusted-mrtds")
+async def list_trusted_mrtds_admin(session: AdminSession = Depends(verify_admin_token)):
+    """Admin-only view of DB-backed trusted MRTDs."""
+    if not is_admin_session(session):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    from .storage import trusted_mrtd_store
+
+    rows = trusted_mrtd_store.list()
+    return {
+        "trusted_mrtds": [
+            {
+                "mrtd": r.mrtd,
+                "type": r.mrtd_type,
+                "note": r.note,
+                "added_at": r.added_at.isoformat() if r.added_at else None,
+            }
+            for r in rows
+        ],
+        "total": len(rows),
+    }
+
+
+@app.post("/api/v1/admin/trusted-mrtds")
+async def add_trusted_mrtd_admin(
+    request: dict,
+    session: AdminSession = Depends(verify_admin_token),
+):
+    """Admin-only: add a trusted MRTD baseline without rebooting the control plane.
+
+    Body:
+      - mrtd: 96-hex string
+      - type: agent|proxy (default: agent)
+      - note: optional free-form note
+    """
+    if not is_admin_session(session):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    mrtd = str(request.get("mrtd") or "").strip()
+    mrtd_type = str(request.get("type") or "agent").strip()
+    note = str(request.get("note") or "").strip()
+    if not mrtd:
+        raise HTTPException(status_code=400, detail="mrtd is required")
+    from .storage import trusted_mrtd_store
+
+    try:
+        obj = trusted_mrtd_store.upsert(mrtd, mrtd_type=mrtd_type, note=note)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"mrtd": obj.mrtd, "type": obj.mrtd_type, "note": obj.note}
+
+
+@app.delete("/api/v1/admin/trusted-mrtds/{mrtd}")
+async def delete_trusted_mrtd_admin(
+    mrtd: str,
+    session: AdminSession = Depends(verify_admin_token),
+):
+    """Admin-only: remove a trusted MRTD baseline."""
+    if not is_admin_session(session):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    from .storage import trusted_mrtd_store
+
+    ok = trusted_mrtd_store.delete(mrtd)
+    if not ok:
+        raise HTTPException(status_code=404, detail="MRTD not found")
+    return {"status": "deleted", "mrtd": mrtd}
 
 
 # ==============================================================================

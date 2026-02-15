@@ -86,6 +86,28 @@ def _cp_get_json(*, cp_url: str, path: str, cp_admin_token: str = "", timeout_se
     return json.loads(raw)
 
 
+def _cp_post_json(
+    *,
+    cp_url: str,
+    path: str,
+    body: dict[str, Any],
+    cp_admin_token: str = "",
+    timeout_seconds: int = 30,
+) -> Any:
+    url = f"{cp_url.rstrip('/')}{path}"
+    data = json.dumps(body).encode("utf-8")
+    headers = {
+        **_cp_headers(cp_admin_token),
+        "Content-Type": "application/json",
+    }
+    req = urllib.request.Request(url, headers=headers, data=data, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+        raw = resp.read().decode()
+    if not raw.strip():
+        return {}
+    return json.loads(raw)
+
+
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
     detail = f"HTTP {exc.code}"
     try:
@@ -919,6 +941,7 @@ def _wait_for_registration(
     attempts = 0
     last_counts: dict[str, int] = dict.fromkeys(datacenter_targets, 0)
     last_error = ""
+    attempted_trust: set[str] = set()
 
     while time.time() < deadline:
         attempts += 1
@@ -954,21 +977,38 @@ def _wait_for_registration(
             agents = []
 
         counts: dict[str, int] = dict.fromkeys(datacenter_targets, 0)
+        # If the control plane recorded an untrusted baseline (verified=false) we can
+        # auto-trust it (admin-token permitting) so the agent can re-register as verified.
+        untrusted_candidates: list[tuple[str, str]] = []
         for agent in agents:
             if not isinstance(agent, dict):
                 continue
-            if not bool(agent.get("verified")):
-                continue
             status = str(agent.get("status") or "").strip().lower()
-            if status not in {"undeployed", "deployed", "deploying"}:
-                continue
-            if str(agent.get("health_status") or "").strip().lower() != "healthy":
-                continue
-            if not str(agent.get("hostname") or "").strip():
-                continue
             dc = str(agent.get("datacenter") or "").strip().lower()
-            if dc in counts:
+            if dc not in counts:
+                continue
+
+            if bool(agent.get("verified")):
+                if status not in {"undeployed", "deployed", "deploying"}:
+                    continue
+                if str(agent.get("health_status") or "").strip().lower() != "healthy":
+                    continue
+                if not str(agent.get("hostname") or "").strip():
+                    continue
                 counts[dc] += 1
+                continue
+
+            # Unverified: capture MRDT for admin trust step.
+            mrtd = str(agent.get("mrtd") or "").strip().lower()
+            attestation_valid = bool(agent.get("attestation_valid", True))
+            if (
+                status in {"unverified", "attestation_failed"}
+                and attestation_valid
+                and mrtd
+                and mrtd not in attempted_trust
+                and re.fullmatch(r"[0-9a-f]{96}", mrtd)
+            ):
+                untrusted_candidates.append((dc, mrtd))
 
         last_counts = counts
         if all(counts[dc] >= required for dc, required in datacenter_targets.items()):
@@ -977,6 +1017,53 @@ def _wait_for_registration(
                 "attempts": attempts,
                 "counts": counts,
             }
+
+        if untrusted_candidates:
+            if not cp_admin_token.strip():
+                dc, mrtd = untrusted_candidates[0]
+                return {
+                    "ready": False,
+                    "attempts": attempts,
+                    "counts": last_counts,
+                    "error": (
+                        "Found untrusted agent baseline that needs approval in the control plane "
+                        f"(datacenter={dc} mrtd={mrtd[:16]}...). "
+                        "Set --cp-admin-token (or CP_ADMIN_TOKEN) so CI can add it."
+                    ),
+                }
+
+            for dc, mrtd in untrusted_candidates:
+                try:
+                    _cp_post_json(
+                        cp_url=cp_url,
+                        path="/api/v1/admin/trusted-mrtds",
+                        cp_admin_token=cp_admin_token,
+                        body={
+                            "mrtd": mrtd,
+                            "type": "agent",
+                            "note": f"auto-trusted by cloud_provisioner for {dc} at {_utc_now()}",
+                        },
+                        timeout_seconds=30,
+                    )
+                    attempted_trust.add(mrtd)
+                    last_error = (
+                        f"Added trusted MRTD baseline for datacenter={dc} mrtd={mrtd[:16]}..."
+                    )
+                except urllib.error.HTTPError as exc:
+                    err = _http_error_detail(exc)
+                    if exc.code == 404:
+                        return {
+                            "ready": False,
+                            "attempts": attempts,
+                            "counts": last_counts,
+                            "error": (
+                                "Control plane does not support DB-backed trusted MRTDs yet "
+                                f"({err}). Deploy the updated control plane and retry."
+                            ),
+                        }
+                    last_error = f"Failed to add trusted MRTD baseline ({err})"
+                except Exception as exc:
+                    last_error = f"Failed to add trusted MRTD baseline ({exc})"
 
         time.sleep(poll_seconds)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 from sqlmodel import select
@@ -19,6 +20,7 @@ from .db_models import (
     Deployment,
     Service,
     Transaction,
+    TrustedMrtd,
 )
 
 logger = logging.getLogger(__name__)
@@ -499,14 +501,30 @@ class DeploymentStore:
 
 
 # ==============================================================================
-# Trusted MRTD lookup (env-var-only, no DB)
+# Trusted MRTD lookup (env vars + DB)
 # ==============================================================================
 
 _trusted_mrtds: dict[str, str] = {}  # mrtd_hash -> type ("agent" or "proxy")
+_MRTD_RE = re.compile(r"^[0-9a-f]{96}$")
+
+
+def _normalize_mrtd(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _validate_mrtd(mrtd: str) -> None:
+    if not mrtd:
+        raise ValueError("mrtd is required")
+    if not _MRTD_RE.fullmatch(mrtd):
+        raise ValueError("mrtd must be a 96-character hex string")
 
 
 def load_trusted_mrtds():
-    """Load trusted MRTDs from environment variables."""
+    """Load trusted MRTDs from environment variables and DB.
+
+    Env vars remain supported for bootstrapping, but DB entries allow adding
+    new baselines without restarting the control plane.
+    """
     global _trusted_mrtds
     _trusted_mrtds = {}
     for env_var, mrtd_type in [
@@ -518,9 +536,21 @@ def load_trusted_mrtds():
     ]:
         val = os.environ.get(env_var, "")
         for mrtd in val.split(","):
-            mrtd = mrtd.strip()
+            mrtd = _normalize_mrtd(mrtd)
             if mrtd:
                 _trusted_mrtds[mrtd] = mrtd_type
+
+    # DB-backed entries (override/augment env var list).
+    try:
+        with get_db() as session:
+            rows = list(session.exec(select(TrustedMrtd)).all())
+        for row in rows:
+            mrtd = _normalize_mrtd(row.mrtd or "")
+            mrtd_type = (row.mrtd_type or "").strip() or "agent"
+            if mrtd:
+                _trusted_mrtds[mrtd] = mrtd_type
+    except Exception as e:
+        logger.warning(f"Failed to load trusted MRTDs from DB: {e}")
     if _trusted_mrtds:
         for mrtd_hash, mrtd_type in _trusted_mrtds.items():
             logger.info(f"Loaded trusted {mrtd_type} MRTD: {mrtd_hash[:16]}...")
@@ -528,12 +558,59 @@ def load_trusted_mrtds():
 
 def get_trusted_mrtd(mrtd: str) -> str | None:
     """Return type if trusted, None if not."""
-    return _trusted_mrtds.get(mrtd)
+    return _trusted_mrtds.get(_normalize_mrtd(mrtd))
 
 
 def list_trusted_mrtds() -> dict[str, str]:
     """Return all trusted MRTDs as {mrtd_hash: type}."""
     return dict(_trusted_mrtds)
+
+
+class TrustedMrtdStore:
+    """DB-backed trusted MRTD baselines."""
+
+    def list(self) -> list[TrustedMrtd]:
+        with get_db() as session:
+            return list(session.exec(select(TrustedMrtd).order_by(TrustedMrtd.added_at)).all())
+
+    def upsert(self, mrtd: str, mrtd_type: str = "agent", note: str = "") -> TrustedMrtd:
+        mrtd = _normalize_mrtd(mrtd)
+        _validate_mrtd(mrtd)
+        mrtd_type = (mrtd_type or "agent").strip().lower()
+        if mrtd_type not in {"agent", "proxy"}:
+            raise ValueError("mrtd_type must be 'agent' or 'proxy'")
+        with get_db() as session:
+            existing = session.get(TrustedMrtd, mrtd)
+            if existing:
+                existing.mrtd_type = mrtd_type
+                if note:
+                    existing.note = note
+                session.add(existing)
+                obj = existing
+            else:
+                obj = TrustedMrtd(mrtd=mrtd, mrtd_type=mrtd_type, note=note)
+                session.add(obj)
+        # Refresh in-memory cache for fast-path checks.
+        load_trusted_mrtds()
+        return obj
+
+    def delete(self, mrtd: str) -> bool:
+        mrtd = _normalize_mrtd(mrtd)
+        if not mrtd:
+            return False
+        with get_db() as session:
+            obj = session.get(TrustedMrtd, mrtd)
+            if not obj:
+                return False
+            session.delete(obj)
+        load_trusted_mrtds()
+        return True
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for row in session.exec(select(TrustedMrtd)).all():
+                session.delete(row)
+        load_trusted_mrtds()
 
 
 # ==============================================================================
@@ -982,6 +1059,7 @@ account_store = AccountStore()
 transaction_store = TransactionStore()
 app_revenue_share_store = AppRevenueShareStore()
 admin_session_store = AdminSessionStore()
+trusted_mrtd_store = TrustedMrtdStore()
 
 # Load trusted MRTDs and RTMRs from env vars at import time
 load_trusted_mrtds()

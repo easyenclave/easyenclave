@@ -16,11 +16,6 @@ on:
         required: false
         type: boolean
         default: false
-      require_gcp:
-        description: "Fail the workflow if no verified GCP agents are available (instead of skipping)"
-        required: false
-        type: boolean
-        default: false
 
 jobs:
   test-unregistered-app-fails:
@@ -90,7 +85,7 @@ jobs:
     name: Deploy Hello TDX (gcp)
     runs-on: ubuntu-latest
     needs: [register-hello-tdx, preflight-gcp]
-    if: (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && needs.preflight-gcp.outputs.gcp_should_run == 'true'
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -111,21 +106,30 @@ jobs:
   preflight-gcp:
     name: Preflight - GCP capacity
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    env:
+      GCP_WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
     outputs:
-      gcp_eligible_agents: ${{ steps.preflight.outputs.gcp_eligible_agents }}
-      gcp_should_run: ${{ steps.preflight.outputs.gcp_should_run }}
+      gcp_eligible_agents: ${{ steps.final.outputs.gcp_eligible_agents }}
+      gcp_provisioned: ${{ steps.final.outputs.gcp_provisioned }}
     steps:
-      - name: Check for healthy verified GCP agents
-        id: preflight
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Precheck - healthy verified GCP agents
+        id: precheck
         shell: bash
         env:
           CP_URL: https://app.easyenclave.com
-          REQUIRE_GCP: ${{ github.event_name == 'workflow_dispatch' && inputs.require_gcp || 'false' }}
-          REQUIRE_GCP_CI: ${{ vars.CI_REQUIRE_GCP || 'false' }}
         run: |
           set -euo pipefail
-          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
           count="$(
             echo "${agents:-}" | jq '
               [.agents[]
@@ -141,21 +145,127 @@ jobs:
           echo "gcp_eligible_agents=$count" >> "$GITHUB_OUTPUT"
 
           if [ "$count" -gt 0 ]; then
-            echo "gcp_should_run=true" >> "$GITHUB_OUTPUT"
             echo "Found $count eligible GCP agents."
+            echo "need_provision=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "gcp_should_run=false" >> "$GITHUB_OUTPUT"
-          echo "::warning::No healthy verified GCP agents available; GCP deploy example will be skipped."
-          echo "::warning::This workflow does not launch GCP agents."
-          echo "::warning::To make this pass, you need (1) a running GCP agent that registers with the control plane and (2) its MRTD included in the control plane trust list."
-          echo "::warning::The control plane trust list is env-var based (TRUSTED_AGENT_MRTDS). In CI you can append extra baselines via the secret TRUSTED_AGENT_MRTDS_EXTRA."
+          echo "need_provision=true" >> "$GITHUB_OUTPUT"
+          echo "::warning::No healthy verified GCP agents available; provisioning one now."
+          exit 0
 
-          if [ "$REQUIRE_GCP" = "true" ] || [ "$REQUIRE_GCP_CI" = "true" ]; then
-            echo "::error::require_gcp is enabled, but no eligible GCP agents exist."
+      - name: Validate GCP secrets (only if provisioning)
+        if: steps.precheck.outputs.need_provision == 'true'
+        shell: bash
+        env:
+          INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${INTEL_API_KEY:-}" ]; then
+            echo "::error::Missing INTEL_API_KEY secret (needed for agent registration)"
             exit 1
           fi
+          if [ -z "${CP_ADMIN_TOKEN:-}" ]; then
+            echo "::error::Missing CP_ADMIN_TOKEN secret (needed to auto-trust new GCP MRTD baselines)"
+            exit 1
+          fi
+          if [ -z "${GCP_PROJECT_ID:-}" ]; then
+            echo "::error::Missing GCP_PROJECT_ID secret"
+            exit 1
+          fi
+          if [ -n "${GCP_WIF_PROVIDER:-}" ] && [ -n "${GCP_WIF_SERVICE_ACCOUNT:-}" ]; then
+            echo "GCP auth mode: OIDC"
+          elif [ -n "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+            echo "::warning::GCP OIDC not configured; using service-account-key fallback"
+          else
+            echo "::error::GCP auth is not configured (missing OIDC inputs and service-account key)"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud (OIDC)
+        if: steps.precheck.outputs.need_provision == 'true' && env.GCP_WIF_PROVIDER != '' && env.GCP_WIF_SERVICE_ACCOUNT != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (service account key fallback)
+        if: steps.precheck.outputs.need_provision == 'true' && env.GCP_WIF_PROVIDER == '' && env.GCP_SERVICE_ACCOUNT_KEY != ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Setup gcloud
+        if: steps.precheck.outputs.need_provision == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Provision GCP agent (tiny) and auto-trust MRTD baseline
+        if: steps.precheck.outputs.need_provision == 'true'
+        shell: bash
+        env:
+          CP_URL: https://app.easyenclave.com
+          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}
+          GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+          GCP_MACHINE_TYPE: ${{ vars.GCP_MACHINE_TYPE || 'c3-standard-4' }}
+          GCP_BOOT_DISK_SIZE: ${{ vars.GCP_BOOT_DISK_SIZE || '30GB' }}
+        run: |
+          set -euo pipefail
+          RUN_TAG="deploy-examples-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          LAUNCHER_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/infra/launcher/launcher.py"
+
+          python3 scripts/cloud_provisioner.py provision \
+            --provider gcp \
+            --run-id "$RUN_TAG" \
+            --cp-url "$CP_URL" \
+            --cp-admin-token "$CP_ADMIN_TOKEN" \
+            --intel-api-key "$INTEL_API_KEY" \
+            --node-size tiny \
+            --launcher-url "$LAUNCHER_URL" \
+            --gcp-project "$GCP_PROJECT_ID" \
+            --gcp-zone "$GCP_ZONE" \
+            --gcp-region "$GCP_REGION" \
+            --gcp-machine-type "$GCP_MACHINE_TYPE" \
+            --gcp-count 1 \
+            --wait-registration \
+            --wait-seconds 900
+
+      - name: Final check - healthy verified GCP agents
+        id: final
+        shell: bash
+        env:
+          CP_URL: https://app.easyenclave.com
+        run: |
+          set -euo pipefail
+          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
+          count="$(
+            echo "${agents:-}" | jq '
+              [.agents[]
+                | (.datacenter // "" | ascii_downcase) as $dc
+                | select(.verified == true
+                  and (.health_status // "" | ascii_downcase) == "healthy"
+                  and (.status // "" | ascii_downcase) == "undeployed"
+                  and ($dc | startswith("gcp:") or $dc == "gcp"))
+              ] | length
+            ' 2>/dev/null || echo 0
+          )"
+
+          echo "gcp_eligible_agents=$count" >> "$GITHUB_OUTPUT"
+          echo "gcp_provisioned=${{ steps.precheck.outputs.need_provision == 'true' }}" >> "$GITHUB_OUTPUT"
+
+          if [ "$count" -le 0 ]; then
+            echo "::error::No eligible verified GCP agents available after provisioning attempt."
+            echo "::error::This should only happen if GCP provisioning failed or the control plane cannot verify/trust the agent."
+            exit 1
+          fi
+          echo "Found $count eligible verified GCP agents."
 
   deploy-private-llm:
     name: Deploy Private LLM

@@ -240,3 +240,18 @@ class AppRevenueShare(SQLModel, table=True):
     share_bps: int = Field(default=0)  # out of 10_000
     label: str = Field(default="")
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class TrustedMrtd(SQLModel, table=True):
+    """DB-backed trusted MRTD baseline entry.
+
+    This supplements the env-var trust list so the control plane owner can
+    add new baselines (e.g. new datacenters) without rebooting the CP.
+    """
+
+    __tablename__ = "trusted_mrtds"
+
+    mrtd: str = Field(primary_key=True)  # 96-hex string
+    mrtd_type: str = Field(default="agent", index=True)  # "agent" | "proxy"
+    note: str = Field(default="")
+    added_at: datetime = Field(default_factory=utcnow)
