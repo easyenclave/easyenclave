@@ -251,7 +251,8 @@ jobs:
           CP_ADMIN_TOKEN: ${{ steps.cp_admin.outputs.cp_admin_token }}
           INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}
+          # Comma-separated list supported (the provisioner will try each zone until one works).
+          GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a,us-east1-b' }}
           GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
           GCP_MACHINE_TYPE: ${{ vars.GCP_MACHINE_TYPE || 'c3-standard-4' }}
           GCP_BOOT_DISK_SIZE: ${{ vars.GCP_BOOT_DISK_SIZE || '30GB' }}
@@ -282,7 +283,7 @@ jobs:
         shell: bash
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}
+          GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a,us-east1-b' }}
           GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
         run: |
           set -euo pipefail
