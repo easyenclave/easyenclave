@@ -44,6 +44,10 @@ on:
         description: "GCP machine type"
         required: false
         default: "c3-standard-4"
+      wait_seconds:
+        description: "Seconds to wait for agent registration before failing (diagnostics will be printed)"
+        required: false
+        default: "900"
       verify_app_name:
         description: "Optional app name for deploy preflight checks"
         required: false
@@ -71,6 +75,7 @@ jobs:
       GCP_ZONE: ${{ github.event.inputs.gcp_zone || 'us-central1-a' }}
       GCP_REGION: ${{ github.event.inputs.gcp_region || 'us-central1' }}
       GCP_MACHINE_TYPE: ${{ github.event.inputs.gcp_machine_type || 'c3-standard-4' }}
+      WAIT_SECONDS: ${{ github.event.inputs.wait_seconds || '900' }}
       VERIFY_APP_NAME: ${{ github.event.inputs.verify_app_name || '' }}
       VERIFY_APP_VERSION: ${{ github.event.inputs.verify_app_version || '' }}
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -171,7 +176,7 @@ jobs:
             --gcp-machine-type "$GCP_MACHINE_TYPE" \
             --gcp-count 1 \
             --wait-registration \
-            --wait-seconds 2400
+            --wait-seconds "$WAIT_SECONDS"
 
       - name: Verify cloud readiness
         run: |
