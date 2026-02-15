@@ -141,6 +141,7 @@ def _verify_signature(image: str, digest: str) -> dict:
 async def _do_measurement(req: MeasurementRequest):
     """Perform the measurement and POST results to the callback URL."""
     try:
+        logger.info(f"Measurement start: version_id={req.version_id}")
         # 1. Decode compose
         compose_bytes = base64.b64decode(req.compose)
         compose_dict = yaml.safe_load(compose_bytes)
@@ -191,6 +192,7 @@ async def _do_measurement(req: MeasurementRequest):
 
         # 5. POST result to callback
         await _post_callback(req, status="success", measurement=measurement)
+        logger.info(f"Measurement success: version_id={req.version_id}")
 
     except Exception as e:
         logger.error(f"Measurement failed for {req.version_id}: {e}")
@@ -213,17 +215,34 @@ async def _post_callback(
     if error is not None:
         payload["error"] = error
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(req.callback_url, json=payload)
-            resp.raise_for_status()
-            logger.info(f"Callback posted for {req.version_id}: {status}")
-    except Exception as e:
-        logger.error(f"Failed to post callback for {req.version_id}: {e}")
+    # Callback is critical; retry a few times so versions don't get stuck "attesting".
+    last_exc: Exception | None = None
+    for attempt in range(1, 6):
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(req.callback_url, json=payload)
+                resp.raise_for_status()
+                logger.info(f"Callback posted for {req.version_id}: {status}")
+                return
+        except Exception as e:
+            last_exc = e
+            logger.warning(f"Callback attempt {attempt}/5 failed for {req.version_id}: {e}")
+            if attempt < 5:
+                await asyncio.sleep(min(2**attempt, 20))
+
+    logger.error(f"Failed to post callback for {req.version_id} after retries: {last_exc}")
 
 
 @app.post("/api/measure")
 async def measure(req: MeasurementRequest):
     """Accept a measurement request and process it asynchronously."""
-    asyncio.create_task(_do_measurement(req))
+    # Hard timeout so control-plane versions don't stay "attesting" forever.
+    async def _runner() -> None:
+        try:
+            await asyncio.wait_for(_do_measurement(req), timeout=300)
+        except asyncio.TimeoutError:
+            logger.error(f"Measurement timed out for {req.version_id}")
+            await _post_callback(req, status="failed", error="measurement timed out")
+
+    asyncio.create_task(_runner())
     return {"status": "accepted", "version_id": req.version_id}
