@@ -185,10 +185,6 @@ jobs:
       GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
       GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
 
     steps:
       - name: Fix workspace permissions
@@ -208,12 +204,11 @@ jobs:
 
       # ---- Build (runs in parallel with test + docker) ----
 
-      - name: Build and measure trusted values
-        id: measure
-        env:
-          # Keep the shared control plane ready for tiny + llm agents/apps.
-          MEASURE_SIZES: tiny,llm
-        run: ./scripts/ci-build-measure.sh
+      - name: Build verity image
+        run: |
+          # mkosi needs unprivileged user namespaces
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          (cd infra/image && nix develop --command bash -lc 'make clean && make build')
 
       # ---- Wait for test + docker jobs before deploying ----
 
@@ -245,15 +240,11 @@ jobs:
 
       - name: Deploy and bootstrap
         env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds || steps.measure.outputs.mrtd }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           NUM_TINY_AGENTS: "1"
           NUM_STANDARD_AGENTS: "0"
-          # One llm agent is used to host measuring-enclave-llm; keep another free for app deploys.
-          NUM_LLM_AGENTS: "2"
-          # TODO(azure): re-enable Azure agent launch once Azure confidential VM reliability is fixed.
+          # LLM-sized agents are booted only in workflow_dispatch jobs (deploy-examples enable_llm),
+          # not in the default push pipeline.
+          NUM_LLM_AGENTS: "0"
         run: ./scripts/ci-deploy.sh
