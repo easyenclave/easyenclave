@@ -285,6 +285,69 @@ class ExternalCloudCleanupResponse(BaseModel):
 
 
 # =============================================================================
+# Admin: Unified Cleanup
+# =============================================================================
+
+
+class CloudflareCleanupRequest(BaseModel):
+    """Request to cleanup Cloudflare resources."""
+
+    dry_run: bool = False
+
+
+class CloudflareCleanupResponse(BaseModel):
+    """Response for Cloudflare orphan cleanup."""
+
+    dry_run: bool = False
+    tunnels_deleted: int = 0
+    dns_deleted: int = 0
+    tunnels_candidates: int = 0
+    dns_candidates: int = 0
+    tunnels_failed: int = 0
+    dns_failed: int = 0
+
+
+class UnifiedOrphanCleanupRequest(BaseModel):
+    """Run orphan cleanup across multiple systems (Cloudflare + external provisioner)."""
+
+    dry_run: bool = True
+    cloudflare: bool = True
+    external_cloud: bool = True
+    reason: str = "admin-unified-orphan-cleanup"
+
+
+class UnifiedOrphanCleanupResponse(BaseModel):
+    """Response for unified orphan cleanup."""
+
+    dry_run: bool
+    cloudflare_configured: bool
+    external_cloud_configured: bool
+    cloudflare: CloudflareCleanupResponse | None = None
+    external_cloud: ExternalCloudCleanupResponse | None = None
+    detail: str | None = None
+
+
+class AdminAgentCleanupRequest(BaseModel):
+    """Delete an agent and also attempt to delete linked external cloud resources."""
+
+    dry_run: bool = True
+    reason: str = "admin-agent-cleanup"
+
+
+class AdminAgentCleanupResponse(BaseModel):
+    """Response for admin agent cleanup."""
+
+    dry_run: bool
+    agent_id: str
+    vm_name: str | None = None
+    cloudflare_deleted: bool = False
+    agent_deleted: bool = False
+    external_cloud: ExternalCloudCleanupResponse | None = None
+    external_candidates: int = 0
+    detail: str | None = None
+
+
+# =============================================================================
 # Deployment API
 # =============================================================================
 

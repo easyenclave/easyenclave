@@ -797,6 +797,46 @@ async function externalCloudCleanup(dryRun) {
     }
 }
 
+async function unifiedOrphanCleanup(dryRun) {
+    const modeLabel = dryRun ? 'dry run' : 'deletion';
+    if (!confirm(`Run unified orphan cleanup (${modeLabel}) for Cloudflare + external cloud resources?`)) return;
+    if (!dryRun && !confirm('This will delete orphaned Cloudflare agent tunnels/DNS and orphaned Azure/GCP resources. Continue?')) return;
+
+    try {
+        const result = await adminFetchJSON('/api/v1/admin/cleanup/orphans', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                dry_run: dryRun,
+                cloudflare: true,
+                external_cloud: true,
+                reason: `admin-unified-orphans-${dryRun ? 'dry-run' : 'cleanup'}`,
+            }),
+        });
+
+        const cf = result.cloudflare || {};
+        const ext = result.external_cloud || {};
+        const parts = [];
+        if (result.cloudflare_configured) {
+            parts.push(`Cloudflare: tunnels ${cf.tunnels_deleted || 0}/${cf.tunnels_candidates || 0}, DNS ${cf.dns_deleted || 0}/${cf.dns_candidates || 0}${cf.dry_run ? ' (dry run)' : ''}`);
+        } else {
+            parts.push('Cloudflare: not configured');
+        }
+        if (result.external_cloud_configured) {
+            parts.push(`External cloud: requested ${ext.requested_count || 0} (${ext.dispatched ? 'dispatched' : 'not dispatched'})${ext.dry_run ? ' (dry run)' : ''}`);
+        } else {
+            parts.push('External cloud: not configured');
+        }
+
+        const detail = result.detail ? `\nDetail: ${result.detail}` : '';
+        alert(`Unified orphan cleanup complete (${modeLabel}).\n${parts.join('\n')}${detail}`);
+
+        await Promise.allSettled([loadCloudResources(), loadCloudflare()]);
+    } catch (error) {
+        alert('Error running unified cleanup: ' + error.message);
+    }
+}
+
 // Apps management
 async function loadApps() {
     const container = document.getElementById('appsAdminList');
@@ -1019,14 +1059,28 @@ async function loadAgents() {
 
 async function deleteAgent(agentId) {
     if (!confirm('Delete this agent? This will remove the tunnel and all agent data.')) return;
+    const alsoDeleteExternal = confirm(
+        'Also attempt to delete linked external cloud resources (VM/disks/IP) via the provisioner cleanup webhook?'
+    );
 
     try {
-        const response = await adminFetch(`/api/v1/agents/${agentId}`, { method: 'DELETE' });
-        if (response.ok) {
-            loadAgents();
-        } else {
-            alert('Failed to delete agent');
+        if (alsoDeleteExternal) {
+            const result = await adminFetchJSON(`/api/v1/admin/agents/${agentId}/cleanup`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ dry_run: false, reason: 'admin-agent-delete' }),
+            });
+            const ext = result.external_cloud;
+            const extMsg = ext ? `\nExternal cleanup: requested ${ext.requested_count || 0} (${ext.dispatched ? 'dispatched' : 'not dispatched'})` : '';
+            const detail = result.detail ? `\nDetail: ${result.detail}` : '';
+            alert(`Agent deletion complete.${extMsg}${detail}`);
+            await Promise.allSettled([loadAgents(), loadCloudResources(), loadCloudflare()]);
+            return;
         }
+
+        const response = await adminFetch(`/api/v1/agents/${agentId}`, { method: 'DELETE' });
+        if (response.ok) loadAgents();
+        else alert('Failed to delete agent');
     } catch (error) {
         alert('Error: ' + error.message);
     }

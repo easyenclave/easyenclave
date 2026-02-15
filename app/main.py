@@ -56,6 +56,8 @@ from .models import (
     AccountLinkIdentityRequest,
     AccountListResponse,
     AccountResponse,
+    AdminAgentCleanupRequest,
+    AdminAgentCleanupResponse,
     AdminLoginRequest,
     AdminLoginResponse,
     Agent,
@@ -81,6 +83,8 @@ from .models import (
     AppVersionCreateRequest,
     AppVersionListResponse,
     AppVersionResponse,
+    CloudflareCleanupRequest,
+    CloudflareCleanupResponse,
     CloudResourceAgent,
     CloudResourceCloudSummary,
     CloudResourceInventoryResponse,
@@ -106,6 +110,8 @@ from .models import (
     SetAgentOwnerRequest,
     TransactionListResponse,
     TransactionResponse,
+    UnifiedOrphanCleanupRequest,
+    UnifiedOrphanCleanupResponse,
     VerificationResponse,
 )
 from .pricing import calculate_deployment_cost_per_hour
@@ -2089,10 +2095,15 @@ async def cloudflare_delete_dns(record_id: str, _admin: bool = Depends(verify_ad
 
 
 @app.post("/api/v1/admin/cloudflare/cleanup")
-async def cloudflare_cleanup(_admin: bool = Depends(verify_admin_token)):
+async def cloudflare_cleanup(
+    request: CloudflareCleanupRequest | None = None,
+    _admin: bool = Depends(verify_admin_token),
+) -> CloudflareCleanupResponse:
     """Bulk delete all orphaned tunnels and DNS records."""
     if not cloudflare.is_configured():
         raise HTTPException(status_code=400, detail="Cloudflare not configured")
+
+    dry_run = bool(request and request.dry_run)
 
     # Get current tunnels and agents
     tunnels = await cloudflare.list_tunnels()
@@ -2111,36 +2122,47 @@ async def cloudflare_cleanup(_admin: bool = Depends(verify_admin_token)):
         and not _is_protected_tunnel_name(tunnel.get("name"))
     ]
 
-    tunnel_results = await _cloudflare_delete_many(
-        ids=orphan_tunnel_ids,
-        delete_fn=cloudflare.delete_tunnel,
-        concurrency=8,
-    )
-    tunnels_deleted = tunnel_results["deleted"]
-    tunnels_failed = tunnel_results["failed"]
-
-    # Get DNS records and infer remaining tunnels from deletion results.
-    # This avoids another list_tunnels() call during large cleanups.
+    # DNS candidates are:
+    # - tunnel CNAMEs whose linked tunnel no longer exists
+    # - plus any tunnel CNAMEs that will become orphaned because we're deleting the tunnel
     records = await cloudflare.list_dns_records()
-    initial_tunnel_ids = {tunnel.get("tunnel_id") for tunnel in tunnels if tunnel.get("tunnel_id")}
-    remaining_ids = initial_tunnel_ids - set(tunnel_results["deleted_ids"])
-
-    orphan_dns_record_ids = []
+    tunnel_ids = {tunnel.get("tunnel_id") for tunnel in tunnels if tunnel.get("tunnel_id")}
+    orphan_dns_record_ids: list[str] = []
     for record in records:
         content = (record.get("content") or "").strip()
         if not content.endswith(".cfargotunnel.com"):
             continue
         linked_id = content.replace(".cfargotunnel.com", "")
-        if linked_id not in remaining_ids and record.get("record_id"):
-            orphan_dns_record_ids.append(record["record_id"])
+        if linked_id in orphan_tunnel_ids or linked_id not in tunnel_ids:
+            if record.get("record_id"):
+                orphan_dns_record_ids.append(record["record_id"])
+
+    if dry_run:
+        return CloudflareCleanupResponse(
+            dry_run=True,
+            tunnels_deleted=0,
+            dns_deleted=0,
+            tunnels_candidates=len(orphan_tunnel_ids),
+            dns_candidates=len(orphan_dns_record_ids),
+            tunnels_failed=0,
+            dns_failed=0,
+        )
+
+    tunnel_results = await _cloudflare_delete_many(
+        ids=orphan_tunnel_ids,
+        delete_fn=cloudflare.delete_tunnel,
+        concurrency=8,
+    )
+    tunnels_deleted = int(tunnel_results["deleted"])
+    tunnels_failed = int(tunnel_results["failed"])
 
     dns_results = await _cloudflare_delete_many(
         ids=orphan_dns_record_ids,
         delete_fn=cloudflare.delete_dns_record_by_id,
         concurrency=8,
     )
-    dns_deleted = dns_results["deleted"]
-    dns_failed = dns_results["failed"]
+    dns_deleted = int(dns_results["deleted"])
+    dns_failed = int(dns_results["failed"])
 
     logger.info(
         "Cloudflare cleanup complete: "
@@ -2148,14 +2170,192 @@ async def cloudflare_cleanup(_admin: bool = Depends(verify_admin_token)):
         f"dns_deleted={dns_deleted}/{len(orphan_dns_record_ids)} "
         f"tunnels_failed={tunnels_failed} dns_failed={dns_failed}"
     )
-    return {
-        "tunnels_deleted": tunnels_deleted,
-        "dns_deleted": dns_deleted,
-        "tunnels_candidates": len(orphan_tunnel_ids),
-        "dns_candidates": len(orphan_dns_record_ids),
-        "tunnels_failed": tunnels_failed,
-        "dns_failed": dns_failed,
-    }
+    return CloudflareCleanupResponse(
+        dry_run=False,
+        tunnels_deleted=tunnels_deleted,
+        dns_deleted=dns_deleted,
+        tunnels_candidates=len(orphan_tunnel_ids),
+        dns_candidates=len(orphan_dns_record_ids),
+        tunnels_failed=tunnels_failed,
+        dns_failed=dns_failed,
+    )
+
+
+@app.post("/api/v1/admin/cleanup/orphans", response_model=UnifiedOrphanCleanupResponse)
+async def unified_orphan_cleanup(
+    request: UnifiedOrphanCleanupRequest,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Unified orphan cleanup across Cloudflare + external provisioner inventory."""
+    detail_parts: list[str] = []
+
+    cf_configured = cloudflare.is_configured()
+    cf_result: CloudflareCleanupResponse | None = None
+    if request.cloudflare:
+        if not cf_configured:
+            detail_parts.append("Cloudflare is not configured.")
+        else:
+            try:
+                cf_result = await cloudflare_cleanup(
+                    CloudflareCleanupRequest(dry_run=request.dry_run),
+                    _admin=True,
+                )
+            except Exception as exc:
+                detail_parts.append(f"Cloudflare cleanup failed: {exc}")
+
+    ext_result: ExternalCloudCleanupResponse | None = None
+    ext_configured = bool(get_setting("provisioner.cleanup_url").strip())
+    if request.external_cloud:
+        if not ext_configured:
+            detail_parts.append("External cloud cleanup webhook is not configured.")
+        else:
+            try:
+                (
+                    configured,
+                    dispatched,
+                    status_code,
+                    ext_detail,
+                    payload,
+                ) = await dispatch_external_cleanup(
+                    ExternalCloudCleanupRequest(
+                        dry_run=request.dry_run,
+                        only_orphaned=True,
+                        providers=[],
+                        resource_ids=[],
+                        reason=request.reason,
+                    ).model_dump()
+                )
+                ext_result = ExternalCloudCleanupResponse(
+                    configured=configured,
+                    dispatched=dispatched,
+                    dry_run=request.dry_run,
+                    requested_count=_extract_cleanup_requested_count(payload),
+                    status_code=status_code,
+                    detail=ext_detail
+                    or (payload.get("detail") if isinstance(payload.get("detail"), str) else None),
+                )
+                ext_configured = configured
+            except Exception as exc:
+                detail_parts.append(f"External cloud cleanup failed: {exc}")
+
+    detail = " ".join([p for p in detail_parts if p]).strip() or None
+    return UnifiedOrphanCleanupResponse(
+        dry_run=request.dry_run,
+        cloudflare_configured=cf_configured,
+        external_cloud_configured=ext_configured,
+        cloudflare=cf_result,
+        external_cloud=ext_result,
+        detail=detail,
+    )
+
+
+@app.post("/api/v1/admin/agents/{agent_id}/cleanup", response_model=AdminAgentCleanupResponse)
+async def admin_agent_cleanup(
+    agent_id: str,
+    request: AdminAgentCleanupRequest,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Delete an agent and attempt to delete linked external cloud resources as well."""
+    agent = get_or_404(agent_store, agent_id, "Agent")
+    dry_run = bool(request.dry_run)
+
+    # External cloud candidates (requires inventory webhook).
+    external_candidates: list[str] = []
+    external_response: ExternalCloudCleanupResponse | None = None
+    detail_parts: list[str] = []
+
+    configured, _status_code, inv_detail, payload = await fetch_external_inventory()
+    if not configured:
+        # Not configured isn't fatal for agent deletion.
+        detail_parts.append("External inventory not configured; skipping linked VM cleanup.")
+    elif inv_detail:
+        detail_parts.append(f"External inventory error; skipping linked VM cleanup: {inv_detail}")
+    else:
+        # Reuse existing normalization logic by calling the admin inventory endpoint function.
+        inventory = await list_external_cloud_resources(_admin=True)
+        vm_name_norm = (agent.vm_name or "").strip().lower()
+        for r in inventory.resources:
+            if r.linked_agent_id == agent_id:
+                external_candidates.append(r.resource_id)
+                continue
+            if vm_name_norm and (r.linked_vm_name or "").strip().lower() == vm_name_norm:
+                external_candidates.append(r.resource_id)
+
+        external_candidates = sorted({c for c in external_candidates if c})
+
+        if external_candidates:
+            if dry_run:
+                external_response = ExternalCloudCleanupResponse(
+                    configured=bool(get_setting("provisioner.cleanup_url").strip()),
+                    dispatched=False,
+                    dry_run=True,
+                    requested_count=len(external_candidates),
+                    status_code=None,
+                    detail="dry run",
+                )
+            else:
+                ext_cfg = bool(get_setting("provisioner.cleanup_url").strip())
+                if not ext_cfg:
+                    detail_parts.append(
+                        "External cleanup webhook not configured; skipping linked VM deletion."
+                    )
+                else:
+                    (
+                        configured2,
+                        dispatched,
+                        status_code,
+                        ext_detail,
+                        payload2,
+                    ) = await dispatch_external_cleanup(
+                        ExternalCloudCleanupRequest(
+                            dry_run=False,
+                            only_orphaned=False,
+                            providers=[],
+                            resource_ids=external_candidates,
+                            reason=request.reason,
+                        ).model_dump()
+                    )
+                    external_response = ExternalCloudCleanupResponse(
+                        configured=configured2,
+                        dispatched=dispatched,
+                        dry_run=False,
+                        requested_count=_extract_cleanup_requested_count(payload2)
+                        or len(external_candidates),
+                        status_code=status_code,
+                        detail=ext_detail
+                        or (
+                            payload2.get("detail")
+                            if isinstance(payload2.get("detail"), str)
+                            else None
+                        ),
+                    )
+
+    cloudflare_deleted = False
+    agent_deleted = False
+    if not dry_run:
+        # Cloudflare tunnel + DNS cleanup (best-effort).
+        if agent.tunnel_id and cloudflare.is_configured():
+            try:
+                await cloudflare.delete_tunnel(agent.tunnel_id)
+                if agent.hostname:
+                    await cloudflare.delete_dns_record(agent.hostname)
+                cloudflare_deleted = True
+            except Exception as exc:
+                detail_parts.append(f"Cloudflare cleanup failed for agent: {exc}")
+
+        agent_deleted = bool(agent_store.delete(agent.agent_id))
+
+    detail = " ".join([p for p in detail_parts if p]).strip() or None
+    return AdminAgentCleanupResponse(
+        dry_run=dry_run,
+        agent_id=agent.agent_id,
+        vm_name=agent.vm_name,
+        cloudflare_deleted=cloudflare_deleted,
+        agent_deleted=agent_deleted,
+        external_cloud=external_response,
+        external_candidates=len(external_candidates),
+        detail=detail,
+    )
 
 
 # ==============================================================================

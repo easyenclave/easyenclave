@@ -1053,10 +1053,15 @@
 	                        <div>
 	                            <button id="externalCloudDryRunBtn" class="btn-small btn-secondary" onclick="externalCloudCleanup(true)">Dry Run Cleanup</button>
 	                            <button id="externalCloudCleanupBtn" class="btn-small btn-danger" onclick="externalCloudCleanup(false)">Delete Orphaned Resources</button>
+	                            <button id="unifiedOrphanDryRunBtn" class="btn-small btn-secondary" onclick="unifiedOrphanCleanup(true)">Dry Run All Orphans</button>
+	                            <button id="unifiedOrphanCleanupBtn" class="btn-small btn-danger" onclick="unifiedOrphanCleanup(false)">Delete All Orphans</button>
 	                        </div>
 	                    </div>
                     <p style="color: var(--gray-600); margin: 10px 0;">
                         Live inventory from provisioner webhook (`AGENT_PROVISIONER_INVENTORY_URL`) cross-linked with registered agents.
+                    </p>
+                    <p style="color: var(--gray-600); margin: 10px 0;">
+                        "All orphans" runs both: external cloud orphan cleanup and Cloudflare orphan cleanup (agent tunnels + DNS).
                     </p>
                     <div id="cloudExternalStatus" style="margin-bottom:10px;color:var(--gray-600);">Loading external inventory status...</div>
                     <div id="cloudExternalSummary" class="stats-grid">
