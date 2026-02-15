@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Provision an ephemeral GCP GPU VM and run an LLM coding smoke test.
+"""Provision an ephemeral GCP *confidential* GPU VM and run an LLM coding smoke test.
 
 This is intentionally NOT integrated with EasyEnclave attestation yet.
 It is a manual, triggerable workflow helper to validate we can reliably:
-  - boot a GPU machine type
+  - boot a confidential GPU machine type (Intel TDX + NVIDIA Confidential Computing)
   - run an OpenAI-compatible model server (vLLM)
   - execute a simple coding prompt and validate output
   - clean up all resources
@@ -67,6 +67,8 @@ def _gcloud_base_args(project: str) -> list[str]:
 def _build_startup_script(*, model: str, max_tokens: int) -> str:
     # Note: we keep output very explicit and tee to /dev/ttyS0 to ensure it shows
     # up in get-serial-port-output.
+    # Important: this is an f-string. Any literal `{` / `}` in bash snippets must
+    # be doubled (`{{` / `}}`) to avoid Python formatting errors.
     return textwrap.dedent(
         f"""\
         #!/usr/bin/env bash
@@ -84,18 +86,89 @@ def _build_startup_script(*, model: str, max_tokens: int) -> str:
         log "startup: begin"
         log "model: {model}"
 
-        # Basic packages. DLVM images normally have python3 and GPU drivers already.
+        STAGE_DIR="/var/lib/easyenclave"
+        STAGE_FILE="${{STAGE_DIR}}/gpu_smoke_stage"
+        mkdir -p "${{STAGE_DIR}}"
+
+        # Basic packages.
         export DEBIAN_FRONTEND=noninteractive
         if command -v apt-get >/dev/null 2>&1; then
           apt-get update -y || true
-          apt-get install -y jq curl ca-certificates python3 python3-venv gnupg || true
+          apt-get install -y jq curl ca-certificates python3 python3-venv gnupg build-essential pkg-config linux-headers-$(uname -r) || true
         fi
 
-        if ! command -v nvidia-smi >/dev/null 2>&1; then
-          fail "nvidia-smi not found (GPU driver missing). Use a Deep Learning VM image family."
+        # Stage 1: install drivers + configure confidential GPU mode, then reboot.
+        if [ ! -f "${{STAGE_FILE}}" ]; then
+          log "stage1: installing NVIDIA driver and configuring confidential GPU mode"
+          if ! command -v apt-get >/dev/null 2>&1; then
+            fail "apt-get not available; unsupported OS image"
+          fi
+
+          apt-get install -y ubuntu-drivers-common || true
+          if apt-cache show nvidia-driver-575-open >/dev/null 2>&1; then
+            log "installing nvidia-driver-575-open"
+            apt-get install -y nvidia-driver-575-open || fail "failed to install nvidia-driver-575-open"
+          else
+            pkg="$(apt-cache search '^nvidia-driver-[0-9]+-open$' | awk '{{print $1}}' | sort -V | tail -n 1)"
+            if [ -z "${{pkg:-}}" ]; then
+              fail "no nvidia-driver-*-open package found (need open driver; recommended nvidia-driver-575-open)"
+            fi
+            log "installing ${pkg}"
+            apt-get install -y "$pkg" || fail "failed to install $pkg"
+          fi
+
+          # Docker (needed for vLLM)
+          apt-get install -y docker.io || true
+          systemctl enable --now docker || true
+
+          # NVIDIA container toolkit (required for --gpus all)
+          log "installing nvidia-container-toolkit (best-effort)"
+          curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg || true
+          curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+            | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null || true
+          apt-get update -y || true
+          apt-get install -y nvidia-container-toolkit || true
+          nvidia-ctk runtime configure --runtime=docker || true
+          systemctl restart docker || true
+
+          # LKCA config for secure GPU-driver SPDM link (GCP Confidential GPU guide).
+          echo "install nvidia /sbin/modprobe ecdsa_generic; /sbin/modprobe ecdh; /sbin/modprobe --ignore-install nvidia" | tee /etc/modprobe.d/nvidia-lkca.conf >/dev/null || true
+          update-initramfs -u || true
+
+          # Ensure nvidia-persistenced runs with uvm-persistence-mode.
+          if [ -f /usr/lib/systemd/system/nvidia-persistenced.service ]; then
+            sed -i "s/no-persistence-mode/uvm-persistence-mode/g" /usr/lib/systemd/system/nvidia-persistenced.service || true
+            systemctl daemon-reload || true
+          fi
+
+          echo "2" > "${{STAGE_FILE}}"
+          log "stage1: rebooting to apply driver + LKCA + persistence config"
+          reboot
+          exit 0
         fi
-        log "nvidia-smi OK"
-        nvidia-smi | head -n 20 | tee /dev/ttyS0 || true
+
+        log "stage2: verifying GPU confidential mode"
+        if ! command -v nvidia-smi >/dev/null 2>&1; then
+          fail "nvidia-smi not found after reboot (driver install failed?)"
+        fi
+        nvidia-smi | head -n 40 | tee /dev/ttyS0 || true
+
+        # Verify persistence mode has uvm flag enabled.
+        if ! ps aux | grep nvidia-persistenced | grep -v grep | grep -q -- --uvm-persistence-mode; then
+          fail "nvidia-persistenced not running with --uvm-persistence-mode"
+        fi
+
+        # Verify confidential computing mode.
+        if ! nvidia-smi conf-compute -f 2>/dev/null | tee /dev/ttyS0 | grep -qi 'CC status: *ON'; then
+          fail "GPU CC mode not ON (nvidia-smi conf-compute -f)"
+        fi
+
+        # Ensure GPU ready state after reboot.
+        nvidia-smi conf-compute -srs 1 | tee /dev/ttyS0 || true
+        if ! nvidia-smi conf-compute -grs 2>/dev/null | tee /dev/ttyS0 | grep -qi 'ready'; then
+          fail "GPU CC ready state not ready (nvidia-smi conf-compute -grs)"
+        fi
 
         # Docker
         if ! command -v docker >/dev/null 2>&1; then
@@ -109,7 +182,6 @@ def _build_startup_script(*, model: str, max_tokens: int) -> str:
         systemctl enable --now docker || true
 
         # NVIDIA container runtime is required for --gpus all.
-        # DLVM usually includes it; check quickly.
         if ! docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'; then
           log "nvidia runtime not detected; attempting to install nvidia-container-toolkit"
           if command -v apt-get >/dev/null 2>&1; then
@@ -196,9 +268,6 @@ def _build_startup_script(*, model: str, max_tokens: int) -> str:
 @dataclass
 class Attempt:
     zone: str
-    machine_type: str
-    accelerator_type: str
-    accelerator_count: int
 
 
 def _create_instance(
@@ -217,17 +286,16 @@ def _create_instance(
         "instances",
         "create",
         name,
+        "--provisioning-model=SPOT",
+        "--confidential-compute-type=TDX",
+        "--machine-type=a3-highgpu-1g",
+        "--maintenance-policy=TERMINATE",
         "--zone",
         attempt.zone,
-        "--machine-type",
-        attempt.machine_type,
         "--boot-disk-size",
         boot_disk_size,
         "--boot-disk-type",
         "pd-ssd",
-        "--maintenance-policy",
-        "TERMINATE",
-        "--restart-on-failure",
         "--image-project",
         image_project,
         "--image-family",
@@ -236,8 +304,6 @@ def _create_instance(
         "serial-port-enable=1",
         "--metadata-from-file",
         f"startup-script={startup_script_path}",
-        "--accelerator",
-        f"type={attempt.accelerator_type},count={attempt.accelerator_count}",
         # Keep public IP for package/model download simplicity.
         "--tags",
         "easyenclave-gpu-smoke",
@@ -245,6 +311,23 @@ def _create_instance(
         "https://www.googleapis.com/auth/cloud-platform",
     ]
     _run(cmd, capture=True, check=True)
+
+def _require_tdx(*, project: str, name: str, zone: str) -> None:
+    # Avoid “looks like it worked” situations: assert the instance is actually TDX.
+    cmd = [
+        *_gcloud_base_args(project),
+        "compute",
+        "instances",
+        "describe",
+        name,
+        "--zone",
+        zone,
+        "--format=value(confidentialInstanceConfig.confidentialInstanceType)",
+    ]
+    p = _run(cmd, capture=True, check=True)
+    v = (p.stdout or "").strip()
+    if v != "TDX":
+        raise RuntimeError(f"Instance is not TDX (confidentialInstanceType={v!r})")
 
 
 def _delete_instance(*, project: str, name: str, zone: str) -> None:
@@ -286,18 +369,11 @@ def main() -> int:
     ap.add_argument(
         "--zones",
         required=True,
-        help="Comma-separated zones to try (e.g. us-central1-a,us-central1-b)",
+        help="Comma-separated zones to try (only a3-highgpu-1g supported for confidential GPU)",
     )
-    ap.add_argument(
-        "--machine-types",
-        required=True,
-        help="Comma-separated machine types to try (e.g. g2-standard-12,a2-highgpu-1g)",
-    )
-    ap.add_argument("--accelerator-type", required=True, help="e.g. nvidia-l4, nvidia-tesla-a100")
-    ap.add_argument("--accelerator-count", type=int, default=1)
     ap.add_argument("--boot-disk-size", default="200GB")
-    ap.add_argument("--image-project", default="deeplearning-platform-release")
-    ap.add_argument("--image-family", default="common-cu121")
+    ap.add_argument("--image-project", default="ubuntu-os-cloud")
+    ap.add_argument("--image-family", default="ubuntu-2404-lts")
     ap.add_argument("--model", default="Qwen/Qwen2.5-Coder-7B-Instruct")
     ap.add_argument("--max-tokens", type=int, default=256)
     ap.add_argument("--timeout-seconds", type=int, default=3600)
@@ -307,9 +383,8 @@ def main() -> int:
     args = ap.parse_args()
 
     zones = _split_csv(args.zones)
-    machine_types = _split_csv(args.machine_types)
-    if not zones or not machine_types:
-        print("zones and machine-types must be non-empty", file=sys.stderr)
+    if not zones:
+        print("zones must be non-empty", file=sys.stderr)
         return 2
 
     name = f"{args.name_prefix}-{args.run_id}-{_rand_suffix()}"
@@ -319,17 +394,7 @@ def main() -> int:
         f.write(startup_script)
     os.chmod(startup_script_path, 0o755)
 
-    attempts: list[Attempt] = []
-    for z in zones:
-        for mt in machine_types:
-            attempts.append(
-                Attempt(
-                    zone=z,
-                    machine_type=mt,
-                    accelerator_type=args.accelerator_type,
-                    accelerator_count=args.accelerator_count,
-                )
-            )
+    attempts: list[Attempt] = [Attempt(zone=z) for z in zones]
 
     created_zone: str | None = None
     last_err: str | None = None
@@ -337,8 +402,7 @@ def main() -> int:
         for idx, attempt in enumerate(attempts, start=1):
             print(
                 f"[attempt {idx}/{len(attempts)}] creating {name} "
-                f"zone={attempt.zone} machine_type={attempt.machine_type} "
-                f"accel={attempt.accelerator_type}x{attempt.accelerator_count}",
+                f"zone={attempt.zone} machine_type=a3-highgpu-1g confidential=TDX provisioning=SPOT",
                 file=sys.stderr,
             )
             try:
@@ -351,6 +415,7 @@ def main() -> int:
                     image_family=args.image_family,
                     startup_script_path=startup_script_path,
                 )
+                _require_tdx(project=args.project, name=name, zone=attempt.zone)
                 created_zone = attempt.zone
                 break
             except Exception as e:  # noqa: BLE001 - surface the failure text

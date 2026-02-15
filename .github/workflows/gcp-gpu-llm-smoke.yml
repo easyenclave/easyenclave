@@ -1,4 +1,4 @@
-name: GCP GPU LLM Smoke Test
+name: GCP Confidential GPU LLM Smoke Test
 
 on:
   workflow_dispatch:
@@ -6,23 +6,11 @@ on:
       zones:
         description: "Comma-separated zones to try"
         required: false
-        default: "us-central1-a,us-central1-b,us-central1-c"
-      machine_types:
-        description: "Comma-separated machine types to try"
-        required: false
-        default: "g2-standard-12,a2-highgpu-1g"
-      accelerator_type:
-        description: "GPU accelerator type (e.g. nvidia-l4, nvidia-tesla-a100)"
-        required: false
-        default: "nvidia-l4"
-      accelerator_count:
-        description: "GPU count"
-        required: false
-        default: "1"
+        default: "us-central1-a,us-east5-a,europe-west4-c"
       model:
         description: "HuggingFace model id for vLLM"
         required: false
-        default: "Qwen/Qwen2.5-Coder-7B-Instruct"
+        default: "Qwen/Qwen2.5-Coder-32B-Instruct"
       timeout_seconds:
         description: "Overall timeout waiting for model + test"
         required: false
@@ -32,13 +20,13 @@ on:
         required: false
         default: "200GB"
       image_project:
-        description: "GCP image project (DLVM recommended)"
+        description: "GCP image project"
         required: false
-        default: "deeplearning-platform-release"
+        default: "ubuntu-os-cloud"
       image_family:
-        description: "GCP image family (DLVM recommended)"
+        description: "GCP image family"
         required: false
-        default: "common-cu121"
+        default: "ubuntu-2404-lts"
 
 concurrency:
   group: gcp-gpu-llm-smoke-${{ github.ref }}
@@ -105,9 +93,6 @@ jobs:
           python3 scripts/gcp_gpu_smoke.py \
             --project "${GCP_PROJECT_ID}" \
             --zones "${{ inputs.zones }}" \
-            --machine-types "${{ inputs.machine_types }}" \
-            --accelerator-type "${{ inputs.accelerator_type }}" \
-            --accelerator-count "${{ inputs.accelerator_count }}" \
             --model "${{ inputs.model }}" \
             --timeout-seconds "${{ inputs.timeout_seconds }}" \
             --boot-disk-size "${{ inputs.boot_disk_size }}" \
