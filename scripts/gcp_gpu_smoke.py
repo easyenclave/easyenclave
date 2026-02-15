@@ -373,7 +373,8 @@ def main() -> int:
     )
     ap.add_argument("--boot-disk-size", default="200GB")
     ap.add_argument("--image-project", default="ubuntu-os-cloud")
-    ap.add_argument("--image-family", default="ubuntu-2404-lts")
+    # Keep to a very stable public image family; 24.04 naming differs across arches.
+    ap.add_argument("--image-family", default="ubuntu-2204-lts")
     ap.add_argument("--model", default="Qwen/Qwen2.5-Coder-7B-Instruct")
     ap.add_argument("--max-tokens", type=int, default=256)
     ap.add_argument("--timeout-seconds", type=int, default=3600)

@@ -26,7 +26,7 @@ on:
       image_family:
         description: "GCP image family"
         required: false
-        default: "ubuntu-2404-lts"
+        default: "ubuntu-2204-lts"
 
 concurrency:
   group: gcp-gpu-llm-smoke-${{ github.ref }}
