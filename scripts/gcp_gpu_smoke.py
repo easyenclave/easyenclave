@@ -232,7 +232,7 @@ def _build_startup_script(*, model: str, max_tokens: int) -> str:
         if ! python3 - <<'PY'; then
           rc="$?"
           docker logs --tail 200 vllm | tee /dev/ttyS0 || true
-          fail "coding prompt validation failed rc=${rc}"
+          fail "coding prompt validation failed rc=$rc"
         fi
         import json, sys, urllib.request
 
