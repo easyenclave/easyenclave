@@ -1,0 +1,116 @@
+name: GCP GPU LLM Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      zones:
+        description: "Comma-separated zones to try"
+        required: false
+        default: "us-central1-a,us-central1-b,us-central1-c"
+      machine_types:
+        description: "Comma-separated machine types to try"
+        required: false
+        default: "g2-standard-12,a2-highgpu-1g"
+      accelerator_type:
+        description: "GPU accelerator type (e.g. nvidia-l4, nvidia-tesla-a100)"
+        required: false
+        default: "nvidia-l4"
+      accelerator_count:
+        description: "GPU count"
+        required: false
+        default: "1"
+      model:
+        description: "HuggingFace model id for vLLM"
+        required: false
+        default: "Qwen/Qwen2.5-Coder-7B-Instruct"
+      timeout_seconds:
+        description: "Overall timeout waiting for model + test"
+        required: false
+        default: "3600"
+      boot_disk_size:
+        description: "Boot disk size (model downloads can be large)"
+        required: false
+        default: "200GB"
+      image_project:
+        description: "GCP image project (DLVM recommended)"
+        required: false
+        default: "deeplearning-platform-release"
+      image_family:
+        description: "GCP image family (DLVM recommended)"
+        required: false
+        default: "common-cu121"
+
+concurrency:
+  group: gcp-gpu-llm-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate GCP auth inputs
+        run: |
+          set -euo pipefail
+          if [ -z "${GCP_PROJECT_ID:-}" ]; then
+            echo "::error::Missing GCP_PROJECT_ID secret"
+            exit 1
+          fi
+          if [ -n "${GCP_WIF_PROVIDER:-}" ] && [ -n "${GCP_WIF_SERVICE_ACCOUNT:-}" ]; then
+            echo "GCP auth mode: OIDC"
+          elif [ -n "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+            echo "::warning::GCP OIDC not configured; using service-account-key fallback"
+          else
+            echo "::error::GCP auth is not configured (missing OIDC inputs and service-account key)"
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud (OIDC)
+        if: env.GCP_WIF_PROVIDER != '' && env.GCP_WIF_SERVICE_ACCOUNT != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.GCP_WIF_PROVIDER }}
+          service_account: ${{ env.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: Authenticate to Google Cloud (service account key fallback)
+        if: env.GCP_WIF_PROVIDER == '' && env.GCP_SERVICE_ACCOUNT_KEY != ''
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Show gcloud context
+        run: |
+          gcloud --version
+          gcloud config list
+
+      - name: Run GPU LLM smoke test (ephemeral VM)
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -euo pipefail
+          python3 scripts/gcp_gpu_smoke.py \
+            --project "${GCP_PROJECT_ID}" \
+            --zones "${{ inputs.zones }}" \
+            --machine-types "${{ inputs.machine_types }}" \
+            --accelerator-type "${{ inputs.accelerator_type }}" \
+            --accelerator-count "${{ inputs.accelerator_count }}" \
+            --model "${{ inputs.model }}" \
+            --timeout-seconds "${{ inputs.timeout_seconds }}" \
+            --boot-disk-size "${{ inputs.boot_disk_size }}" \
+            --image-project "${{ inputs.image_project }}" \
+            --image-family "${{ inputs.image_family }}" \
+            --cleanup

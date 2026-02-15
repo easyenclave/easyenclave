@@ -12,9 +12,8 @@ import time
 
 import httpx
 import httpx as _httpx
-from openai import OpenAI
-
 from easyenclave import EasyEnclaveClient
+from openai import OpenAI
 
 MODEL = "smollm2:135m"
 CHAT_PATH = "/v1/chat/completions"
