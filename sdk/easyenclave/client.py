@@ -10,6 +10,12 @@ import httpx
 
 from .verify import VerificationResult, verify_quote_local
 
+DEFAULT_HEADERS = {
+    # Avoid Cloudflare bot detection heuristics that sometimes block default
+    # Python client user agents on the public tunnels/proxy.
+    "user-agent": "EasyEnclave-SDK/0.1",
+}
+
 
 class EasyEnclaveError(Exception):
     """Base exception for EasyEnclave client errors."""
@@ -63,7 +69,7 @@ class ServiceClient:
         self.base_url = f"{proxy_url.rstrip('/')}/proxy/{service_name}"
         self.service_name = service_name
         self.timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.Client(timeout=timeout, headers=DEFAULT_HEADERS)
 
     def get(self, path: str, **kwargs) -> httpx.Response:
         """Send GET request to service.
@@ -163,7 +169,7 @@ class EasyEnclaveClient:
         """
         self.cp_url = control_plane_url.rstrip("/")
         self.timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.Client(timeout=timeout, headers=DEFAULT_HEADERS)
         self.verification_result: VerificationResult | None = None
 
         # Single call to /health gets status + attestation + proxy_url

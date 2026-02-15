@@ -38,7 +38,7 @@ def test_direct(service_url: str) -> bool:
     deadline = time.monotonic() + TIMEOUT
 
     print(f"[direct] POST {url}")
-    with httpx.Client(timeout=60) as client:
+    with httpx.Client(timeout=60, headers={"user-agent": "EasyEnclave-Test/1.0"}) as client:
         while True:
             try:
                 resp = client.post(url, json=CHAT_BODY)
