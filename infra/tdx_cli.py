@@ -27,12 +27,30 @@ from pathlib import Path
 CONTROL_PLANE_MODE = "control-plane"
 AGENT_MODE = "agent"
 
+
 # Node size presets: (memory_gib, vcpu_count, disk_gib)
 # disk_gib=0 means no data disk (tmpfs-only fallback).
+#
+# NOTE: Keep defaults conservative for CI to avoid runaway storage usage on the
+# self-hosted runner. Production can override via env vars.
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as err:
+        raise ValueError(f"Invalid int for {name}={raw!r}") from err
+
+
 NODE_SIZES = {
     "tiny": (4, 4, 0),
     "standard": (16, 16, 0),
-    "llm": (128, 16, 500),
+    "llm": (
+        _env_int("EASYENCLAVE_LLM_MEM_GIB", 128),
+        _env_int("EASYENCLAVE_LLM_VCPUS", 16),
+        _env_int("EASYENCLAVE_LLM_DISK_GIB", 80),
+    ),
 }
 # Network-level default; override with EASYENCLAVE_DEFAULT_SIZE env var.
 # Early-stage networks run tiny; prod can set "standard" for more headroom.

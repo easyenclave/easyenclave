@@ -109,8 +109,10 @@ jobs:
 
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMAGE="ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}"
-          docker build -t "$IMAGE" apps/measuring-enclave/
+          LATEST="ghcr.io/${{ github.repository }}/measuring-enclave:latest"
+          docker build -t "$IMAGE" -t "$LATEST" apps/measuring-enclave/
           retry_push "$IMAGE"
+          retry_push "$LATEST"
           DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
           cosign sign --yes "$DIGEST_REF"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"

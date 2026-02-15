@@ -32,6 +32,7 @@ AGENT_DATACENTER="${AGENT_DATACENTER:-}"
 AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
 AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
+ALLOW_AGENT_REFERENCE_BOOTSTRAP="${ALLOW_AGENT_REFERENCE_BOOTSTRAP:-false}"
 
 # ===================================================================
 # Helpers
@@ -103,6 +104,19 @@ load_json_map() {
   fi
 
   echo "{}"
+}
+
+require_ci_measured_profile() {
+  local node_size="$1"
+  local mrtds_by_size_json mrtd
+
+  mrtds_by_size_json="$(load_json_map TRUSTED_AGENT_MRTDS_BY_SIZE mrtds_by_size)"
+  mrtd="$(echo "$mrtds_by_size_json" | jq -r --arg ns "$node_size" '.[$ns] // ""' 2>/dev/null || echo "")"
+  if [ -z "$mrtd" ] || [ "$mrtd" = "null" ]; then
+    echo "::error::Missing CI-measured baseline for node_size='$node_size' (TRUSTED_AGENT_MRTDS_BY_SIZE['$node_size'])."
+    echo "::error::Fix: run ./scripts/ci-build-measure.sh with MEASURE_SIZES including '$node_size' and pass its mrtds_by_size output into this job."
+    exit 1
+  fi
 }
 
 verify_app_version_variant() {
@@ -217,7 +231,14 @@ deploy_app() {
         '{mrtd: $mrtd, attestation: $attestation}')
       echo "Using CI measured profile for $node_size bootstrap measurement"
     else
-      echo "CI measured profile missing for '$node_size'; falling back to verified agent reference..."
+      if [ "$ALLOW_AGENT_REFERENCE_BOOTSTRAP" != "true" ]; then
+        echo "::error::Missing CI-measured baseline for node_size='$node_size' (needed to bootstrap $app_name)."
+        echo "::error::Fix: ensure ./scripts/ci-build-measure.sh ran with MEASURE_SIZES including '$node_size' and that TRUSTED_AGENT_MRTDS_BY_SIZE/TRUSTED_AGENT_RTMRS_BY_SIZE are passed into this job."
+        echo "::error::If you intentionally want to bootstrap from a live agent's attestation (less deterministic), set ALLOW_AGENT_REFERENCE_BOOTSTRAP=true."
+        exit 1
+      fi
+
+      echo "::warning::CI measured profile missing for '$node_size'; bootstrapping from a verified agent reference (ALLOW_AGENT_REFERENCE_BOOTSTRAP=true)"
       reference_agent=$(find_reference_agent_measurement "$node_size" 30 10) || {
         echo "::error::Could not find verified '$node_size' agent with MRTD/RTMRs for $app_name"
         exit 1
@@ -388,6 +409,17 @@ make_compose() {
       ;;
   esac
 }
+
+# ===================================================================
+# 0. Validate required size-aware trust material to avoid slow retry loops
+# ===================================================================
+require_ci_measured_profile "tiny"
+if [ "$NUM_STANDARD_AGENTS" -gt 0 ]; then
+  require_ci_measured_profile "standard"
+fi
+if [ "$NUM_LLM_AGENTS" -gt 0 ]; then
+  require_ci_measured_profile "llm"
+fi
 
 # ===================================================================
 # 1. Delete all existing VMs

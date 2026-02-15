@@ -1,0 +1,190 @@
+# Bootstrap Shared LLM (baremetal)
+#
+# Purpose: Ensure the shared control plane has an llm measurer and a working private-llm deployment.
+# This workflow runs on the self-hosted TDX runner and can optionally clean up the VMs it created.
+
+name: Bootstrap Shared LLM (baremetal)
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Control plane URL"
+        required: false
+        default: "https://app.easyenclave.com"
+      deploy_private_llm:
+        description: "Deploy and smoke-test the private-llm example after bootstrapping the measurer"
+        required: false
+        type: boolean
+        default: true
+      keep_new_vms:
+        description: "Keep any newly-created VMs (capacity) instead of deleting them at the end"
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: bootstrap-shared-llm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, tdx]
+    permissions:
+      contents: read
+
+    env:
+      CP_URL: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+      AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+      # Use :latest so the shared CP can be bootstrapped without needing the exact SHA image.
+      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          if [ -z "${INTEL_API_KEY:-}" ]; then
+            echo "::error::Missing INTEL_API_KEY secret"
+            exit 1
+          fi
+          if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
+            echo "::error::Missing CP_ADMIN_PASSWORD secret"
+            exit 1
+          fi
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build and measure trusted values (llm)
+        id: measure
+        env:
+          MEASURE_SIZES: llm
+        run: ./scripts/ci-build-measure.sh
+
+      - name: Ensure at least 2 verified undeployed llm agents exist
+        id: ensure_agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          created=()
+
+          count_eligible() {
+            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+              [.agents[]
+                | select(.verified == true)
+                | select((.health_status // "" | ascii_downcase) == "healthy")
+                | select((.status // "" | ascii_downcase) == "undeployed")
+                | select((.node_size // "" | ascii_downcase) == "llm")
+              ] | length'
+          }
+
+          eligible="$(count_eligible || echo 0)"
+          echo "Eligible llm agents (verified+healthy+undeployed): $eligible"
+
+          while [ "${eligible:-0}" -lt 2 ]; do
+            echo "Booting a new llm agent VM (need 2 total)..."
+            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --easyenclave-url "${CP_URL}" --intel-api-key "${INTEL_API_KEY}" --wait)"
+            name="$(echo "$vm_json" | jq -r '.name // empty')"
+            if [ -n "$name" ]; then
+              created+=("$name")
+            fi
+
+            # Give the agent time to register and pass verification.
+            for _ in {1..60}; do
+              eligible="$(count_eligible || echo 0)"
+              if [ "${eligible:-0}" -ge 2 ]; then
+                break
+              fi
+              sleep 5
+            done
+
+            eligible="$(count_eligible || echo 0)"
+            echo "Eligible llm agents now: $eligible"
+          done
+
+          printf '%s\n' "${created[@]:-}" > /tmp/new_llm_vms.txt || true
+          echo "created_vms=$(paste -sd, /tmp/new_llm_vms.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Bootstrap measuring-enclave-llm on shared control plane
+        env:
+          ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
+          NODE_SIZE: llm
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
+          CP_URL="${CP_URL}" \
+          ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+          NODE_SIZE="${NODE_SIZE}" \
+          MEASURER_IMAGE="${MEASURER_IMAGE}" \
+          TRUSTED_AGENT_MRTDS_BY_SIZE="${TRUSTED_AGENT_MRTDS_BY_SIZE}" \
+          TRUSTED_AGENT_RTMRS_BY_SIZE="${TRUSTED_AGENT_RTMRS_BY_SIZE}" \
+          ./scripts/bootstrap_shared_measuring_enclave.sh
+
+      - name: Register private-llm app
+        if: github.event.inputs.deploy_private_llm == 'true'
+        uses: ./.github/actions/register-app
+        with:
+          name: private-llm
+          description: "Private LLM - Ollama running in a TDX enclave"
+
+      - name: Deploy private-llm (llm)
+        if: github.event.inputs.deploy_private_llm == 'true'
+        id: deploy
+        uses: ./.github/actions/deploy-example
+        with:
+          app_name: private-llm
+          compose_file: examples/private-llm/docker-compose.yml
+          service_name: private-llm
+          health_endpoint: /
+          control_plane_url: ${{ env.CP_URL }}
+          agent_admin_password: ${{ env.AGENT_ADMIN_PASSWORD }}
+          github_owner: ${{ github.repository_owner }}
+          node_size: llm
+          allowed_clouds: baremetal
+
+      - name: Set up Python
+        if: github.event.inputs.deploy_private_llm == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install SDK and OpenAI client
+        if: github.event.inputs.deploy_private_llm == 'true'
+        run: pip install ./sdk/ openai
+
+      - name: Smoke test LLM query (direct + proxy)
+        if: github.event.inputs.deploy_private_llm == 'true'
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
+          EASYENCLAVE_URL: ${{ env.CP_URL }}
+        run: python3 examples/private-llm/test.py
+
+      - name: Cleanup newly-created VMs (optional)
+        if: always() && github.event.inputs.keep_new_vms != 'true'
+        run: |
+          set -euo pipefail
+          if [ ! -s /tmp/new_llm_vms.txt ]; then
+            echo "No new VMs were created; nothing to clean up."
+            exit 0
+          fi
+
+          # Best-effort: also delete agent registration when possible.
+          ADMIN_TOKEN="$(
+            curl -sf "${CP_URL}/admin/login" \
+              -H "Content-Type: application/json" \
+              -d "{\"password\": \"${CP_ADMIN_PASSWORD}\"}" \
+            | jq -r '.token'
+          )" || ADMIN_TOKEN=""
+
+          while IFS= read -r vm; do
+            [ -n "$vm" ] || continue
+            echo "Deleting VM: $vm"
+            python3 infra/tdx_cli.py vm delete "$vm" --easyenclave-url "${CP_URL}" --admin-token "${ADMIN_TOKEN}" || true
+          done < /tmp/new_llm_vms.txt

@@ -115,9 +115,12 @@ runs:
         rm -f "$tmp"
 
         # Idempotency: if the version already exists, fetch the existing record and continue.
+        #
+        # Some deployments return HTTP 409 Conflict, others may return 400 with a structured
+        # `detail` message. Treat both as an idempotent "already exists" case.
         if [ "$http_code" -ge 400 ]; then
           detail="$(echo "$RESPONSE" | jq -r '.detail // empty' 2>/dev/null || true)"
-          if [ "$http_code" = "409" ] && echo "$detail" | grep -qi "already exists"; then
+          if echo "$detail" | grep -qi "already exists"; then
             echo "::notice::Version already exists for ${{ inputs.app_name }}@$VERSION; reusing it"
             qs=""
             if [ -n "${{ inputs.node_size }}" ]; then
