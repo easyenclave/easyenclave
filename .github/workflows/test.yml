@@ -263,10 +263,10 @@ jobs:
               url="https://${registry}/v2/${name}/manifests/${tag}"
 
               headers="$(curl -sS -I -H "Accept: ${accept}" "${url}" | tr -d '\r' || true)"
-              if echo "$headers" | rg -qi '^docker-content-digest:'; then
-                digest="$(echo "$headers" | rg -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
+              if echo "$headers" | grep -qi '^docker-content-digest:'; then
+                digest="$(echo "$headers" | grep -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
               else
-                www="$(echo "$headers" | rg -i '^www-authenticate:' | head -n1 || true)"
+                www="$(echo "$headers" | grep -i '^www-authenticate:' | head -n1 || true)"
                 realm="$(echo "$www" | sed -n 's/.*realm="\\([^"]*\\)".*/\\1/p')"
                 service="$(echo "$www" | sed -n 's/.*service="\\([^"]*\\)".*/\\1/p')"
                 scope="$(echo "$www" | sed -n 's/.*scope="\\([^"]*\\)".*/\\1/p')"
@@ -277,7 +277,7 @@ jobs:
                 fi
                 if [ -n "$token" ]; then
                   headers="$(curl -sS -I -H "Accept: ${accept}" -H "Authorization: Bearer ${token}" "${url}" | tr -d '\r' || true)"
-                  digest="$(echo "$headers" | rg -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
+                  digest="$(echo "$headers" | grep -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
                 else
                   digest=""
                 fi
