@@ -102,6 +102,7 @@ jobs:
           count="$(
             echo "${agents:-}" | jq '[.agents[] | select(.verified == true
               and (.health_status // "" | ascii_downcase) == "healthy"
+              and (.status // "" | ascii_downcase) == "undeployed"
               and ((.datacenter // "") | startswith("gcp:") or (.datacenter // "") == "gcp"))
             ] | length' 2>/dev/null || echo 0
           )"
