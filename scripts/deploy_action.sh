@@ -54,6 +54,57 @@ measurer_service_name() {
   fi
 }
 
+print_measurer_logs() {
+  local measurer_name services_json endpoint_url endpoint_host agent_id
+  measurer_name="$(measurer_service_name)"
+
+  services_json="$(curl -sS -H 'Accept: application/json' \
+    --connect-timeout 5 --max-time 20 \
+    "${CONTROL_PLANE_URL}/api/v1/services?name=${measurer_name}&include_down=true" || true)"
+
+  if ! echo "$services_json" | is_json; then
+    echo "::warning::Non-JSON response from services endpoint; cannot fetch measurer logs."
+    return 0
+  fi
+
+  endpoint_url="$(
+    echo "$services_json" | jq -r --arg n "$measurer_name" '
+      [.services[]? | select(.name == $n) | (.endpoints | to_entries[]?.value)] | first // empty
+    ' 2>/dev/null || true
+  )"
+
+  if [ -z "$endpoint_url" ]; then
+    echo "::warning::No endpoint found for measurer '${measurer_name}'; cannot fetch logs."
+    return 0
+  fi
+
+  endpoint_host="${endpoint_url#https://}"
+  endpoint_host="${endpoint_host#http://}"
+  endpoint_host="${endpoint_host%%/*}"
+
+  agent_id="$(
+    curl -sS -H 'Accept: application/json' --connect-timeout 5 --max-time 20 \
+      "${CONTROL_PLANE_URL}/api/v1/agents" \
+    | jq -r --arg hn "$endpoint_host" '
+      [.agents[]? | select(.hostname == $hn) | .agent_id] | first // empty
+    ' 2>/dev/null || true
+  )"
+
+  if [ -z "$agent_id" ]; then
+    echo "::warning::Could not map measurer endpoint host '$endpoint_host' to an agent; cannot fetch logs."
+    return 0
+  fi
+
+  echo ""
+  echo "=== Measurer Logs (agent ${agent_id}) ==="
+  curl -sS -H 'Accept: application/json' --connect-timeout 5 --max-time 20 \
+    "${CONTROL_PLANE_URL}/api/v1/agents/${agent_id}/logs?since=30m" \
+    | jq -r '.logs[]? | "[\(.container)] \(.line)"' \
+    | tail -n 200 || true
+  echo "=== End Measurer Logs ==="
+  echo ""
+}
+
 print_measurer_diagnostics() {
   local measurer_name services_json
   measurer_name="$(measurer_service_name)"
@@ -64,7 +115,7 @@ print_measurer_diagnostics() {
 
   services_json="$(curl -sS -H 'Accept: application/json' \
     --connect-timeout 5 --max-time 20 \
-    "${CONTROL_PLANE_URL}/api/v1/services?name=measuring-enclave&include_down=true" || true)"
+    "${CONTROL_PLANE_URL}/api/v1/services?name=${measurer_name}&include_down=true" || true)"
 
   if ! echo "$services_json" | is_json; then
     echo "::warning::Non-JSON response from services endpoint (cannot inspect measurer status)."
@@ -272,6 +323,7 @@ wait_attested() {
       if [ "$version_status" = "attesting" ] && [ "$i" -eq 24 ]; then
         echo "::warning::Version still attesting after 2 minutes; dumping diagnostics."
         print_measurer_diagnostics
+        print_measurer_logs
         echo "Version JSON:"
         echo "$version_json" | jq .
       fi
@@ -281,6 +333,7 @@ wait_attested() {
     if [ "$version_status" != "attested" ]; then
       echo "::error::Timed out waiting for measurement (status: $version_status)"
       print_measurer_diagnostics
+      print_measurer_logs
       exit 1
     fi
   fi

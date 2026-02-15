@@ -23,7 +23,9 @@ from pydantic import BaseModel
 
 from registry import resolve_digest
 
-logging.basicConfig(level=logging.INFO)
+# Uvicorn config can pre-install handlers before importing this module, which
+# makes basicConfig a no-op. `force=True` ensures our logs are emitted.
+logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Measuring Enclave")
@@ -159,8 +161,9 @@ async def _do_measurement(req: MeasurementRequest):
                 if not image:
                     continue  # Service uses build context, no image to resolve
                 try:
-                    digest = await resolve_digest(image, client)
-                    signature_info = _verify_signature(image, digest)
+                    digest = await asyncio.wait_for(resolve_digest(image, client), timeout=60)
+                    # `cosign verify` is blocking; run it off the event loop so timeouts work.
+                    signature_info = await asyncio.to_thread(_verify_signature, image, digest)
                     if signature_mode == "strict" and signature_info.get("signature_verified") is not True:
                         err = signature_info.get("signature_error") or "signature verification failed"
                         logger.error(f"Signature verification failed for {image}: {err}")
@@ -179,7 +182,7 @@ async def _do_measurement(req: MeasurementRequest):
                         "signature_error": signature_info.get("signature_error"),
                     }
                 except Exception as e:
-                    logger.error(f"Failed to resolve {image}: {e}")
+                    logger.exception(f"Failed to resolve/verify {image}")
                     # Report failure for this specific image
                     await _post_callback(req, status="failed", error=f"Failed to resolve image '{image}': {e}")
                     return
@@ -195,7 +198,7 @@ async def _do_measurement(req: MeasurementRequest):
         logger.info(f"Measurement success: version_id={req.version_id}")
 
     except Exception as e:
-        logger.error(f"Measurement failed for {req.version_id}: {e}")
+        logger.exception(f"Measurement failed for {req.version_id}")
         await _post_callback(req, status="failed", error=str(e))
 
 
