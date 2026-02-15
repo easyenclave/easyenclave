@@ -122,6 +122,46 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+      - name: Get control-plane admin token (for baseline trust)
+        id: cp_admin
+        shell: bash
+        env:
+          CP_URL: https://app.easyenclave.com
+          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          if [ -n "${CP_ADMIN_TOKEN:-}" ]; then
+            echo "Using CP_ADMIN_TOKEN from secrets"
+            echo "cp_admin_token=$CP_ADMIN_TOKEN" >> "$GITHUB_OUTPUT"
+            echo "CP_ADMIN_TOKEN=$CP_ADMIN_TOKEN" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          pw="${CP_ADMIN_PASSWORD:-}"
+          if [ -z "$pw" ]; then
+            # Backward compat: CI control plane sometimes exposes an auto-generated password.
+            pw="$(curl -sSf "$CP_URL/auth/methods" | jq -r '.generated_password // empty' || true)"
+          fi
+
+          if [ -z "$pw" ]; then
+            echo "::warning::No CP admin password available (missing secrets.CP_ADMIN_PASSWORD and CP did not expose generated_password)."
+            echo "::warning::GCP provisioning can still create a VM, but it likely cannot be trusted/verified automatically."
+            exit 0
+          fi
+
+          resp="$(curl -sSf -X POST "$CP_URL/admin/login" -H "Content-Type: application/json" -d "{\"password\":\"$pw\"}")"
+          token="$(echo "$resp" | jq -r '.token // empty')"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "::warning::Failed to obtain CP admin token via password login."
+            echo "$resp" | jq . || true
+            exit 0
+          fi
+
+          echo "cp_admin_token=$token" >> "$GITHUB_OUTPUT"
+          echo "CP_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
+
       - name: Precheck - healthy verified GCP agents
         id: precheck
         shell: bash
@@ -159,7 +199,7 @@ jobs:
         shell: bash
         env:
           INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
-          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_TOKEN: ${{ steps.cp_admin.outputs.cp_admin_token }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           GCP_WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
@@ -208,7 +248,7 @@ jobs:
         shell: bash
         env:
           CP_URL: https://app.easyenclave.com
-          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_TOKEN: ${{ steps.cp_admin.outputs.cp_admin_token }}
           INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}
@@ -218,6 +258,7 @@ jobs:
         run: |
           set -euo pipefail
           RUN_TAG="deploy-examples-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "RUN_TAG=$RUN_TAG" >> "$GITHUB_ENV"
           LAUNCHER_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/infra/launcher/launcher.py"
 
           python3 scripts/cloud_provisioner.py provision \
@@ -235,6 +276,23 @@ jobs:
             --gcp-count 1 \
             --wait-registration \
             --wait-seconds 900
+
+      - name: Cleanup failed provision (GCP)
+        if: failure() && steps.precheck.outputs.need_provision == 'true' && env.RUN_TAG != ''
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_ZONE: ${{ vars.GCP_ZONE || 'us-central1-a' }}
+          GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+        run: |
+          set -euo pipefail
+          echo "::warning::Provisioning failed; cleaning up managed GCP resources for run-tag=$RUN_TAG"
+          python3 scripts/cloud_provisioner.py cleanup \
+            --provider gcp \
+            --run-id "$RUN_TAG" \
+            --gcp-project "$GCP_PROJECT_ID" \
+            --gcp-zone "$GCP_ZONE" \
+            --gcp-region "$GCP_REGION" || true
 
       - name: Final check - healthy verified GCP agents
         id: final

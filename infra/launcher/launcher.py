@@ -789,7 +789,32 @@ def start_agent_api_server(config: dict) -> http.server.HTTPServer:
     return server
 
 
-ADMIN_HTML = (Path(__file__).parent / "admin.html").read_text()
+_DEFAULT_ADMIN_HTML = """<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>EasyEnclave Agent</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 2rem; }
+      code, pre { background: #f6f8fa; padding: 0.2rem 0.4rem; border-radius: 4px; }
+      .note { color: #555; }
+    </style>
+  </head>
+  <body>
+    <h1>EasyEnclave Agent</h1>
+    <p class="note">Admin UI asset (<code>admin.html</code>) is missing on this node. The agent API is still running.</p>
+    <p>Try: <code>GET /api/health</code>, <code>GET /api/status</code>, <code>POST /api/deploy</code></p>
+  </body>
+</html>
+"""
+
+try:
+    ADMIN_HTML = (Path(__file__).parent / "admin.html").read_text()
+except FileNotFoundError:
+    # Cloud-init installs only launcher.py by default; keep agent running without UI assets.
+    logger.warning("launcher admin.html not found; using built-in minimal admin UI")
+    ADMIN_HTML = _DEFAULT_ADMIN_HTML
 
 
 def collect_system_stats() -> dict:
