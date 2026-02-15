@@ -1079,6 +1079,10 @@
                 </div>
                 <div id="cfContent" class="hidden">
                     <div id="cfSummary" class="stats-grid"></div>
+                    <p style="color: var(--gray-600); margin: 10px 0;">
+                        Bulk cleanup only targets orphaned <code>agent-*</code> tunnels and their DNS records.
+                        The control plane tunnel (<code>easyenclave-control-plane</code>, <code>app.&lt;domain&gt;</code>) is protected.
+                    </p>
                     <div id="cfCleanupBar" class="hidden" style="margin-bottom: 15px;">
                         <button class="btn-small btn-danger" onclick="cloudflareCleanup(this)">Cleanup All Orphaned Resources</button>
                     </div>

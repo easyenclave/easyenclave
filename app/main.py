@@ -1931,6 +1931,19 @@ async def admin_stripe_status(
 # Admin: Cloudflare Management
 # ==============================================================================
 
+CLOUDFLARE_AGENT_TUNNEL_PREFIX = "agent-"
+# Created by infra/launcher/launcher.py for the control plane itself.
+# Never treat this as "orphaned" and never delete it via bulk cleanup.
+CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME = "easyenclave-control-plane"
+
+
+def _is_agent_tunnel_name(name: str | None) -> bool:
+    return bool(name) and name.startswith(CLOUDFLARE_AGENT_TUNNEL_PREFIX)
+
+
+def _is_protected_tunnel_name(name: str | None) -> bool:
+    return name == CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME
+
 
 @app.get("/api/v1/admin/cloudflare/status")
 async def cloudflare_status(_admin: bool = Depends(verify_admin_token)):
@@ -1938,6 +1951,7 @@ async def cloudflare_status(_admin: bool = Depends(verify_admin_token)):
     return {
         "configured": cloudflare.is_configured(),
         "domain": cloudflare.get_domain(),
+        "protected_tunnel_names": [CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME],
     }
 
 
@@ -1960,7 +1974,11 @@ async def cloudflare_tunnels(_admin: bool = Depends(verify_admin_token)):
     orphaned_count = 0
     for t in tunnels:
         agent = tunnel_to_agent.get(t["tunnel_id"])
-        is_orphaned = agent is None
+        name = t.get("name")
+        protected = _is_protected_tunnel_name(name)
+        # Only agent-* tunnels can be considered "orphaned". Other tunnels (e.g. the control plane)
+        # are outside the agent inventory and should never be deleted by bulk orphan cleanup.
+        is_orphaned = (agent is None) and (not protected) and _is_agent_tunnel_name(name)
         if is_orphaned:
             orphaned_count += 1
         enriched.append(
@@ -1970,6 +1988,10 @@ async def cloudflare_tunnels(_admin: bool = Depends(verify_admin_token)):
                 "agent_vm_name": agent.vm_name if agent else None,
                 "agent_status": agent.status if agent else None,
                 "orphaned": is_orphaned,
+                "protected": protected,
+                "owner": "agent"
+                if _is_agent_tunnel_name(name)
+                else ("control-plane" if protected else "unmanaged"),
             }
         )
 
@@ -2030,6 +2052,21 @@ async def cloudflare_delete_tunnel(tunnel_id: str, _admin: bool = Depends(verify
     if not cloudflare.is_configured():
         raise HTTPException(status_code=400, detail="Cloudflare not configured")
 
+    # Safety: don't allow deleting the control plane tunnel via this endpoint.
+    try:
+        tunnels = await cloudflare.list_tunnels()
+        match = next((t for t in tunnels if t.get("tunnel_id") == tunnel_id), None)
+        if match and _is_protected_tunnel_name(match.get("name")):
+            raise HTTPException(
+                status_code=400,
+                detail="Refusing to delete the protected control plane tunnel.",
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # If we can't resolve the tunnel name, continue with deletion (admin explicit action).
+        logger.warning(f"Cloudflare delete tunnel precheck failed: {e}")
+
     deleted = await cloudflare.delete_tunnel(tunnel_id)
 
     # Clear tunnel info from any agent that references this tunnel
@@ -2068,7 +2105,10 @@ async def cloudflare_cleanup(_admin: bool = Depends(verify_admin_token)):
     orphan_tunnel_ids = [
         tunnel["tunnel_id"]
         for tunnel in tunnels
-        if tunnel.get("tunnel_id") and tunnel["tunnel_id"] not in tunnel_to_agent
+        if tunnel.get("tunnel_id")
+        and tunnel["tunnel_id"] not in tunnel_to_agent
+        and _is_agent_tunnel_name(tunnel.get("name"))
+        and not _is_protected_tunnel_name(tunnel.get("name"))
     ]
 
     tunnel_results = await _cloudflare_delete_many(

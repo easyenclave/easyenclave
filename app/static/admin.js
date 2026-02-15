@@ -1790,10 +1790,19 @@ function renderTunnelsTable(tunnels) {
                         <td>${t.connection_count}</td>
                         <td>${t.agent_vm_name
                             ? `<strong>${t.agent_vm_name}</strong><br><span class="status-badge ${t.agent_status}">${t.agent_status}</span>`
-                            : '<span class="orphan-badge">Orphaned</span>'
+                            : t.protected
+                                ? `<span class="linked-badge">Protected</span><br><span style="color: var(--gray-600);">Control plane</span>`
+                                : t.orphaned
+                                    ? '<span class="orphan-badge">Orphaned</span>'
+                                    : '<span style="color: var(--gray-600);">Unmanaged</span>'
                         }</td>
                         <td>${t.created_at ? new Date(t.created_at).toLocaleDateString() : 'N/A'}</td>
-                        <td><button class="btn-small btn-danger" onclick="deleteTunnel('${t.tunnel_id}', '${t.name}')">Delete</button></td>
+                        <td>
+                            ${t.protected
+                                ? '<button class="btn-small btn-secondary" disabled title="Protected system tunnel">Protected</button>'
+                                : `<button class="btn-small btn-danger" onclick="deleteTunnel('${t.tunnel_id}', '${t.name}')">Delete</button>`
+                            }
+                        </td>
                     </tr>
                 `).join('')}
             </tbody>

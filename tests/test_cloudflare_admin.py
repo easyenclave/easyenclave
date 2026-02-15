@@ -41,6 +41,7 @@ class TestCloudflareStatus:
         data = resp.json()
         assert data["configured"] is True
         assert data["domain"] == "example.com"
+        assert "easyenclave-control-plane" in data["protected_tunnel_names"]
 
     def test_status_not_configured(self, client):
         with patch("app.main.cloudflare.is_configured", return_value=False):
@@ -113,6 +114,32 @@ class TestCloudflareTunnels:
         assert data["orphaned_count"] == 1
         assert data["tunnels"][0]["orphaned"] is True
         assert data["tunnels"][0]["agent_id"] is None
+        assert data["tunnels"][0]["owner"] == "agent"
+
+    def test_control_plane_tunnel_is_protected_not_orphaned(self, client):
+        tunnels = [
+            {
+                "tunnel_id": "tun-cp",
+                "name": "easyenclave-control-plane",
+                "status": "active",
+                "has_connections": True,
+                "connection_count": 1,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+
+        with patch("app.main.cloudflare.is_configured", return_value=True):
+            with patch(
+                "app.main.cloudflare.list_tunnels", new_callable=AsyncMock, return_value=tunnels
+            ):
+                resp = client.get("/api/v1/admin/cloudflare/tunnels", headers=AUTH)
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["orphaned_count"] == 0
+        assert data["tunnels"][0]["protected"] is True
+        assert data["tunnels"][0]["orphaned"] is False
+        assert data["tunnels"][0]["owner"] == "control-plane"
 
     def test_not_configured_returns_400(self, client):
         with patch("app.main.cloudflare.is_configured", return_value=False):
@@ -198,10 +225,11 @@ class TestCloudflareDelete:
         agent_id = agent.agent_id
 
         with patch("app.main.cloudflare.is_configured", return_value=True):
-            with patch(
-                "app.main.cloudflare.delete_tunnel", new_callable=AsyncMock, return_value=True
-            ):
-                resp = client.delete("/api/v1/admin/cloudflare/tunnels/tun-del", headers=AUTH)
+            with patch("app.main.cloudflare.list_tunnels", new_callable=AsyncMock, return_value=[]):
+                with patch(
+                    "app.main.cloudflare.delete_tunnel", new_callable=AsyncMock, return_value=True
+                ):
+                    resp = client.delete("/api/v1/admin/cloudflare/tunnels/tun-del", headers=AUTH)
 
         assert resp.status_code == 200
         assert resp.json()["deleted"] is True
@@ -238,6 +266,14 @@ class TestCloudflareCleanup:
             {
                 "tunnel_id": "tun-keep",
                 "name": "agent-keep",
+                "status": "active",
+                "has_connections": True,
+                "connection_count": 1,
+                "created_at": None,
+            },
+            {
+                "tunnel_id": "tun-cp",
+                "name": "easyenclave-control-plane",
                 "status": "active",
                 "has_connections": True,
                 "connection_count": 1,
