@@ -48,6 +48,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Compose command detection.
+# Some images/environments have the v2 plugin (`docker compose`) while others only ship v1 (`docker-compose`).
+_COMPOSE_BASE_CMD: list[str] | None = None
+
+
+def _compose_base_cmd() -> list[str]:
+    global _COMPOSE_BASE_CMD
+    if _COMPOSE_BASE_CMD is not None:
+        return _COMPOSE_BASE_CMD
+
+    candidates: list[list[str]] = [
+        ["docker", "compose"],
+        ["docker-compose"],
+    ]
+    for base in candidates:
+        try:
+            # `version` should be fast and safe.
+            probe = subprocess.run(
+                base + ["version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if probe.returncode == 0:
+                _COMPOSE_BASE_CMD = base
+                logger.info(f"Using compose command: {' '.join(base)}")
+                return _COMPOSE_BASE_CMD
+        except FileNotFoundError:
+            continue
+        except Exception:
+            # If probing fails for a transient reason, keep trying other candidates.
+            continue
+
+    # Default to `docker compose` and let callers surface a useful error.
+    _COMPOSE_BASE_CMD = ["docker", "compose"]
+    logger.warning("Could not probe docker compose; defaulting to 'docker compose'")
+    return _COMPOSE_BASE_CMD
+
+
 # Configuration
 CONTROL_PLANE_URL = os.environ.get("EASYENCLAVE_URL", "https://app.easyenclave.com")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
@@ -713,8 +752,8 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         try:
             if WORKLOAD_DIR.exists():
                 subprocess.run(
-                    ["docker", "compose", "down"],
-                    cwd=WORKLOAD_DIR,
+                    _compose_base_cmd() + ["down"],
+                    cwd=str(WORKLOAD_DIR),
                     capture_output=True,
                     timeout=60,
                 )
@@ -1389,7 +1428,7 @@ def setup_workload_from_deployment(deployment: dict):
     if WORKLOAD_DIR.exists() and (WORKLOAD_DIR / "docker-compose.yml").exists():
         try:
             subprocess.run(
-                ["docker", "compose", "down", "--remove-orphans"],
+                _compose_base_cmd() + ["down", "--remove-orphans"],
                 cwd=str(WORKLOAD_DIR),
                 capture_output=True,
                 timeout=60,
@@ -1431,19 +1470,18 @@ def run_compose(config: dict):
 
     compose_args = config.get("compose_up_args", "--build -d").split()
     compose_file = str(WORKLOAD_DIR / "docker-compose.yml")
-    cmd = [
-        "docker",
-        "compose",
-        "-f",
-        compose_file,
-        "up",
-    ] + compose_args
+    cmd = _compose_base_cmd() + ["-f", compose_file, "up"] + compose_args
     logger.info(f"Running: {' '.join(cmd)}")
 
     result = subprocess.run(cmd, cwd=str(WORKLOAD_DIR), capture_output=True, text=True)
 
     if result.returncode != 0:
-        raise RuntimeError(f"Docker compose failed: {result.stderr}")
+        extra = ""
+        if result.stdout.strip():
+            extra += f"\nstdout:\n{result.stdout.strip()}"
+        if result.stderr.strip():
+            extra += f"\nstderr:\n{result.stderr.strip()}"
+        raise RuntimeError(f"Docker compose failed (cmd={' '.join(cmd)}):{extra or ' (no output)'}")
 
     logger.info("Docker compose completed")
 
@@ -1614,8 +1652,8 @@ def stream_container_logs(cwd: Path, stop_event: threading.Event) -> None:
     """
     try:
         proc = subprocess.Popen(
-            ["docker", "compose", "logs", "-f", "--tail", "100"],
-            cwd=cwd,
+            _compose_base_cmd() + ["logs", "-f", "--tail", "100"],
+            cwd=str(cwd),
             stdout=sys.stdout,
             stderr=sys.stderr,
         )
@@ -1625,8 +1663,8 @@ def stream_container_logs(cwd: Path, stop_event: threading.Event) -> None:
                 time.sleep(1)
                 if not stop_event.is_set():
                     proc = subprocess.Popen(
-                        ["docker", "compose", "logs", "-f", "--tail", "10"],
-                        cwd=cwd,
+                        _compose_base_cmd() + ["logs", "-f", "--tail", "10"],
+                        cwd=str(cwd),
                         stdout=sys.stdout,
                         stderr=sys.stderr,
                     )
@@ -1837,8 +1875,8 @@ def run_control_plane_mode(config: dict):
     logger.info(f"Pulling control plane image: {image}")
     for attempt in range(3):
         result = subprocess.run(
-            ["docker", "compose", "pull"],
-            cwd=CONTROL_PLANE_DIR,
+            _compose_base_cmd() + ["pull"],
+            cwd=str(CONTROL_PLANE_DIR),
             capture_output=True,
             text=True,
         )
@@ -1913,15 +1951,15 @@ def run_control_plane_mode(config: dict):
 
     # Stop any existing containers
     subprocess.run(
-        ["docker", "compose", "down"],
-        cwd=CONTROL_PLANE_DIR,
+        _compose_base_cmd() + ["down"],
+        cwd=str(CONTROL_PLANE_DIR),
         capture_output=True,
     )
 
     # Start the control plane
     result = subprocess.run(
-        ["docker", "compose", "up", "-d"],
-        cwd=CONTROL_PLANE_DIR,
+        _compose_base_cmd() + ["up", "-d"],
+        cwd=str(CONTROL_PLANE_DIR),
         env=env,
     )
 
@@ -1988,16 +2026,16 @@ def run_control_plane_mode(config: dict):
         try:
             # Check if containers are running
             result = subprocess.run(
-                ["docker", "compose", "ps", "-q"],
-                cwd=CONTROL_PLANE_DIR,
+                _compose_base_cmd() + ["ps", "-q"],
+                cwd=str(CONTROL_PLANE_DIR),
                 capture_output=True,
                 text=True,
             )
             if not result.stdout.strip():
                 logger.warning("Control plane container stopped, restarting...")
                 subprocess.run(
-                    ["docker", "compose", "up", "-d"],
-                    cwd=CONTROL_PLANE_DIR,
+                    _compose_base_cmd() + ["up", "-d"],
+                    cwd=str(CONTROL_PLANE_DIR),
                     capture_output=True,
                 )
 

@@ -236,6 +236,8 @@ runcmd:
   - [bash, -lc, \"curl -fsSL '{launcher_url}' -o /opt/launcher/launcher.py\"]
   - chmod +x /opt/launcher/launcher.py
   - systemctl enable --now docker
+  # Best-effort install of docker-compose v1 for environments where the v2 plugin is missing/broken.
+  - [bash, -lc, \"apt-get install -y docker-compose || true\"]
   # cloudflared is optional for agent registration; failures here should not block launcher startup.
   - [bash, -lc, \"curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && (dpkg -i /tmp/cloudflared.deb || apt-get install -f -y) && rm -f /tmp/cloudflared.deb || true\"]
   - systemctl daemon-reload
