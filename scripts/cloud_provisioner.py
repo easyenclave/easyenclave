@@ -287,118 +287,147 @@ def _gcp_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedResour
     if not zone_candidates:
         raise RuntimeError("--gcp-zone is required for GCP provisioning")
 
+    machine_type_candidates = _split_csv(args.gcp_machine_type) or [args.gcp_machine_type]
+    machine_type_candidates = [mt.strip() for mt in machine_type_candidates if mt.strip()]
+    if not machine_type_candidates:
+        raise RuntimeError("--gcp-machine-type is required for GCP provisioning")
+
     resources: list[ManagedResource] = []
     for idx in range(args.gcp_count):
         name = _sanitize_name(
             f"{args.name_prefix}-gcp-{args.node_size}-{run_tag}-{idx + 1}-{_rand_suffix()}"
         )
         last_error: str | None = None
+        attempt_errors: list[str] = []
         chosen_zone = ""
         chosen_region = ""
         chosen_datacenter = ""
+        chosen_machine_type = ""
 
         for zone in zone_candidates:
-            region = args.gcp_region.strip() if args.gcp_region else ""
-            if not region or len(zone_candidates) > 1:
-                region = _region_from_zone(zone)
+            for machine_type in machine_type_candidates:
+                region = args.gcp_region.strip() if args.gcp_region else ""
+                if not region or len(zone_candidates) > 1:
+                    region = _region_from_zone(zone)
 
-            datacenter = _build_datacenter(
-                provider="gcp",
-                zone=zone,
-                region=region,
-                explicit=args.gcp_datacenter,
-            )
-            launcher_config = _build_launcher_config(
-                cp_url=args.cp_url,
-                intel_api_key=args.intel_api_key,
-                node_size=args.node_size,
-                provider="gcp",
-                zone=zone,
-                region=region,
-                datacenter=datacenter,
-            )
-            cloud_init = _cloud_init_user_data(
-                launcher_url=args.launcher_url,
-                launcher_config=launcher_config,
-            )
-
-            labels = {
-                "easyenclave": "managed",
-                "ee-run": run_tag,
-                "ee-cloud": "gcp",
-                "ee-node": _sanitize_label_value(args.node_size),
-                "ee-dc": _sanitize_label_value(datacenter),
-            }
-            labels_arg = ",".join(f"{k}={v}" for k, v in labels.items())
-
-            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-                f.write(cloud_init)
-                user_data_path = f.name
-
-            try:
-                cmd = [
-                    "gcloud",
-                    "compute",
-                    "instances",
-                    "create",
-                    name,
-                    "--project",
-                    args.gcp_project,
-                    "--zone",
-                    zone,
-                    "--machine-type",
-                    args.gcp_machine_type,
-                    "--provisioning-model",
-                    "STANDARD",
-                    "--confidential-compute-type",
-                    "TDX",
-                    "--maintenance-policy",
-                    "TERMINATE",
-                    "--image-project",
-                    args.gcp_image_project,
-                    "--image-family",
-                    args.gcp_image_family,
-                    "--boot-disk-size",
-                    args.gcp_boot_disk_size,
-                    "--boot-disk-type",
-                    args.gcp_boot_disk_type,
-                    "--metadata-from-file",
-                    f"user-data={user_data_path}",
-                    "--labels",
-                    labels_arg,
-                    "--quiet",
-                ]
-                _run(cmd)
-                chosen_zone = zone
-                chosen_region = region
-                chosen_datacenter = datacenter
-                break
-            except Exception as exc:
-                last_error = str(exc)
-                # Retry on quota / capacity errors by trying another zone/region.
-                retryable = bool(
-                    re.search(r"\bquota\b", last_error, re.IGNORECASE)
-                    or re.search(r"\bexceeded\b", last_error, re.IGNORECASE)
-                    or re.search(r"not\s+available", last_error, re.IGNORECASE)
-                    or re.search(
-                        r"does\s+not\s+have\s+enough\s+resources", last_error, re.IGNORECASE
-                    )
-                    or re.search(r"is\s+not\s+supported", last_error, re.IGNORECASE)
-                    or re.search(r"configuration_availability", last_error, re.IGNORECASE)
-                    or re.search(r"zone_resource_pool_exhausted", last_error, re.IGNORECASE)
-                    or re.search(r"resource\s+pool\s+exhausted", last_error, re.IGNORECASE)
-                    or re.search(r"was\s+not\s+found", last_error, re.IGNORECASE)
+                datacenter = _build_datacenter(
+                    provider="gcp",
+                    zone=zone,
+                    region=region,
+                    explicit=args.gcp_datacenter,
                 )
-                if not retryable or zone == zone_candidates[-1]:
-                    raise
-            finally:
+                launcher_config = _build_launcher_config(
+                    cp_url=args.cp_url,
+                    intel_api_key=args.intel_api_key,
+                    node_size=args.node_size,
+                    provider="gcp",
+                    zone=zone,
+                    region=region,
+                    datacenter=datacenter,
+                )
+                cloud_init = _cloud_init_user_data(
+                    launcher_url=args.launcher_url,
+                    launcher_config=launcher_config,
+                )
+
+                labels = {
+                    "easyenclave": "managed",
+                    "ee-run": run_tag,
+                    "ee-cloud": "gcp",
+                    "ee-node": _sanitize_label_value(args.node_size),
+                    "ee-dc": _sanitize_label_value(datacenter),
+                }
+                labels_arg = ",".join(f"{k}={v}" for k, v in labels.items())
+
+                with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+                    f.write(cloud_init)
+                    user_data_path = f.name
+
                 try:
-                    Path(user_data_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
+                    print(
+                        f"[gcp] provisioning name={name} zone={zone} machine_type={machine_type}",
+                        file=sys.stderr,
+                    )
+                    cmd = [
+                        "gcloud",
+                        "compute",
+                        "instances",
+                        "create",
+                        name,
+                        "--project",
+                        args.gcp_project,
+                        "--zone",
+                        zone,
+                        "--machine-type",
+                        machine_type,
+                        "--provisioning-model",
+                        "STANDARD",
+                        "--confidential-compute-type",
+                        "TDX",
+                        "--maintenance-policy",
+                        "TERMINATE",
+                        "--image-project",
+                        args.gcp_image_project,
+                        "--image-family",
+                        args.gcp_image_family,
+                        "--boot-disk-size",
+                        args.gcp_boot_disk_size,
+                        "--boot-disk-type",
+                        args.gcp_boot_disk_type,
+                        "--metadata-from-file",
+                        f"user-data={user_data_path}",
+                        "--labels",
+                        labels_arg,
+                        "--quiet",
+                    ]
+                    _run(cmd)
+                    chosen_zone = zone
+                    chosen_region = region
+                    chosen_datacenter = datacenter
+                    chosen_machine_type = machine_type
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+                    summarized = re.sub(r"\s+", " ", last_error).strip()
+                    attempt_errors.append(f"{zone}/{machine_type}: {summarized[:220]}")
+                    # Retry on quota / capacity errors by trying another zone/region.
+                    retryable = bool(
+                        re.search(r"\bquota\b", last_error, re.IGNORECASE)
+                        or re.search(r"\bexceeded\b", last_error, re.IGNORECASE)
+                        or re.search(r"not\s+available", last_error, re.IGNORECASE)
+                        or re.search(
+                            r"does\s+not\s+have\s+enough\s+resources",
+                            last_error,
+                            re.IGNORECASE,
+                        )
+                        or re.search(r"is\s+not\s+supported", last_error, re.IGNORECASE)
+                        or re.search(r"configuration_availability", last_error, re.IGNORECASE)
+                        or re.search(r"zone_resource_pool_exhausted", last_error, re.IGNORECASE)
+                        or re.search(r"resource\s+pool\s+exhausted", last_error, re.IGNORECASE)
+                        or re.search(r"was\s+not\s+found", last_error, re.IGNORECASE)
+                    )
+                    if not retryable:
+                        raise
+                finally:
+                    try:
+                        Path(user_data_path).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            if chosen_zone:
+                break
 
         if not chosen_zone:
-            raise RuntimeError(last_error or "GCP provisioning failed (unknown error)")
+            attempts_summary = "\n".join(f"  - {line}" for line in attempt_errors[:30])
+            more = ""
+            if len(attempt_errors) > 30:
+                more = f"\n  - ... ({len(attempt_errors) - 30} more attempts)"
+            raise RuntimeError(
+                (last_error or "GCP provisioning failed (unknown error)")
+                + "\nTried:\n"
+                + attempts_summary
+                + more
+            )
 
         resource = ManagedResource(
             provider="gcp",
@@ -411,6 +440,8 @@ def _gcp_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedResour
             datacenter=chosen_datacenter,
             labels=labels,
         )
+        if chosen_machine_type:
+            resource.labels["ee-machine"] = _sanitize_label_value(chosen_machine_type)
         resources.append(resource)
 
     return resources
