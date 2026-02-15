@@ -498,13 +498,20 @@ def validate_environment():
     # Admin authentication — auto-generate password if not configured
     global _generated_admin_password
     if not os.environ.get("ADMIN_PASSWORD_HASH"):
-        import secrets as _secrets
+        # Dev convenience: allow setting a plaintext password (hashed on startup).
+        # Avoid using this in production; prefer ADMIN_PASSWORD_HASH.
+        plaintext_pw = (os.environ.get("ADMIN_PASSWORD") or "").strip()
+        if plaintext_pw:
+            os.environ["ADMIN_PASSWORD_HASH"] = hash_password(plaintext_pw)
+            logger.warning("ADMIN_PASSWORD_HASH not set — using hashed ADMIN_PASSWORD from env")
+        else:
+            import secrets as _secrets
 
-        generated_pw = _secrets.token_urlsafe(16)
-        pw_hash = hash_password(generated_pw)
-        os.environ["ADMIN_PASSWORD_HASH"] = pw_hash
-        _generated_admin_password = generated_pw
-        logger.warning("ADMIN_PASSWORD_HASH not set — auto-generated password")
+            generated_pw = _secrets.token_urlsafe(16)
+            pw_hash = hash_password(generated_pw)
+            os.environ["ADMIN_PASSWORD_HASH"] = pw_hash
+            _generated_admin_password = generated_pw
+            logger.warning("ADMIN_PASSWORD_HASH not set — auto-generated password")
 
     # GitHub OAuth (optional but if one is set, all should be set)
     gh_id = get_setting("github_oauth.client_id")
