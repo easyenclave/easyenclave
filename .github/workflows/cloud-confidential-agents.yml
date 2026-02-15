@@ -168,7 +168,7 @@ jobs:
             --provider gcp \
             --run-id "$RUN_TAG" \
             --cp-url "$CP_URL" \
-            --cp-admin-token "$CP_ADMIN_TOKEN" \
+            --cp-admin-token="$CP_ADMIN_TOKEN" \
             --intel-api-key "$INTEL_API_KEY" \
             --node-size "$NODE_SIZE" \
             --launcher-url "$LAUNCHER_URL" \
