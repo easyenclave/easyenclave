@@ -18,7 +18,7 @@ import subprocess
 
 import httpx
 import yaml
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from registry import resolve_digest
@@ -29,6 +29,8 @@ logging.basicConfig(level=logging.INFO, force=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Measuring Enclave")
+_queue: asyncio.Queue[MeasurementRequest] | None = None
+_workers_started = False
 
 
 class MeasurementRequest(BaseModel):
@@ -238,14 +240,53 @@ async def _post_callback(
 
 @app.post("/api/measure")
 async def measure(req: MeasurementRequest):
-    """Accept a measurement request and process it asynchronously."""
-    # Hard timeout so control-plane versions don't stay "attesting" forever.
-    async def _runner() -> None:
+    """Accept a measurement request and enqueue it for background processing."""
+    global _queue
+    if _queue is None:
+        # Should not happen; startup hook initializes the queue.
+        _queue = asyncio.Queue(maxsize=100)
+
+    try:
+        _queue.put_nowait(req)
+    except asyncio.QueueFull:
+        raise HTTPException(status_code=503, detail="measurement queue is full")
+
+    logger.info(f"Enqueued measurement: version_id={req.version_id}")
+    print(f"[measurer] enqueued version_id={req.version_id}", flush=True)
+    return {"status": "accepted", "version_id": req.version_id}
+
+
+async def _worker_loop(worker_id: int) -> None:
+    assert _queue is not None
+    while True:
+        req = await _queue.get()
         try:
+            # Hard timeout so control-plane versions don't stay "attesting" forever.
             await asyncio.wait_for(_do_measurement(req), timeout=300)
         except asyncio.TimeoutError:
             logger.error(f"Measurement timed out for {req.version_id}")
             await _post_callback(req, status="failed", error="measurement timed out")
+        except Exception as exc:
+            logger.exception(f"Worker {worker_id} crashed while measuring {req.version_id}")
+            try:
+                await _post_callback(req, status="failed", error=str(exc))
+            except Exception:
+                logger.exception(f"Worker {worker_id} failed posting callback for {req.version_id}")
+        finally:
+            _queue.task_done()
 
-    asyncio.create_task(_runner())
-    return {"status": "accepted", "version_id": req.version_id}
+
+@app.on_event("startup")
+async def _startup() -> None:
+    global _queue, _workers_started
+    if _queue is None:
+        _queue = asyncio.Queue(maxsize=100)
+    if _workers_started:
+        return
+    _workers_started = True
+    workers = int(os.getenv("MEASURER_WORKERS", "2") or "2")
+    workers = max(1, min(workers, 8))
+    for wid in range(workers):
+        asyncio.create_task(_worker_loop(wid))
+    logger.info(f"Measurer started: workers={workers} queue_maxsize={_queue.maxsize}")
+    print(f"[measurer] started workers={workers} queue_maxsize={_queue.maxsize}", flush=True)
