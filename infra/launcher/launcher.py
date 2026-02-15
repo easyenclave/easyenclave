@@ -1473,13 +1473,43 @@ def run_compose(config: dict):
     cmd = _compose_base_cmd() + ["-f", compose_file, "up"] + compose_args
     logger.info(f"Running: {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, cwd=str(WORKLOAD_DIR), capture_output=True, text=True)
+    def _is_transient_compose_failure(output: str) -> bool:
+        text = (output or "").lower()
+        transient_markers = [
+            "i/o timeout",
+            "tls handshake timeout",
+            "temporary failure in name resolution",
+            "connection reset by peer",
+            "connection timed out",
+            "failed to do request",
+            "net/http: request canceled",
+            "context deadline exceeded",
+        ]
+        return any(m in text for m in transient_markers)
 
-    if result.returncode != 0:
+    last_result: subprocess.CompletedProcess | None = None
+    for attempt in range(3):
+        result = subprocess.run(cmd, cwd=str(WORKLOAD_DIR), capture_output=True, text=True)
+        last_result = result
+        if result.returncode == 0:
+            break
+
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        if _is_transient_compose_failure(output) and attempt < 2:
+            sleep_s = 10 * (attempt + 1)
+            logger.warning(
+                f"Docker compose failed with a transient network error (attempt {attempt + 1}/3); retrying in {sleep_s}s"
+            )
+            time.sleep(sleep_s)
+            continue
+        break
+
+    if last_result is None or last_result.returncode != 0:
+        result = last_result
         extra = ""
-        if result.stdout.strip():
+        if result and result.stdout and result.stdout.strip():
             extra += f"\nstdout:\n{result.stdout.strip()}"
-        if result.stderr.strip():
+        if result and result.stderr and result.stderr.strip():
             extra += f"\nstderr:\n{result.stderr.strip()}"
         raise RuntimeError(f"Docker compose failed (cmd={' '.join(cmd)}):{extra or ' (no output)'}")
 
