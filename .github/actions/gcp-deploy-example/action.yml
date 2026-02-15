@@ -1,0 +1,136 @@
+name: GCP Deploy Example
+description: Ensure GCP capacity then deploy an example app restricted to GCP agents
+
+inputs:
+  app_name:
+    description: App name (must be pre-registered in the app catalog)
+    required: true
+  compose_file:
+    description: Path to docker-compose.yml file
+    required: true
+  service_name:
+    description: Service name for deployment
+    required: true
+  health_endpoint:
+    description: Health check endpoint path
+    required: false
+    default: "/health"
+  control_plane_url:
+    description: EasyEnclave control plane URL
+    required: false
+    default: "https://app.easyenclave.com"
+  agent_admin_password:
+    description: Agent admin panel password (will be set during deployment)
+    required: false
+    default: ""
+  github_owner:
+    description: GitHub user or org to set as the agent owner (for owner-scoped access)
+    required: false
+    default: ""
+  node_size:
+    description: Required agent node_size (e.g. tiny). Empty = any.
+    required: false
+    default: "tiny"
+
+  # Preflight inputs (provision if needed).
+  cp_admin_token:
+    description: Control plane admin token (optional, enables baseline auto-trust)
+    required: false
+    default: ""
+  cp_admin_password:
+    description: Control plane admin password (optional fallback)
+    required: false
+    default: ""
+  intel_api_key:
+    description: Intel TA API key (required if provisioning)
+    required: false
+    default: ""
+  gcp_project_id:
+    description: GCP project ID
+    required: true
+  gcp_wif_provider:
+    description: GCP workload identity provider (OIDC)
+    required: false
+    default: ""
+  gcp_wif_service_account:
+    description: GCP service account email for OIDC
+    required: false
+    default: ""
+  gcp_service_account_key:
+    description: JSON service account key (fallback auth)
+    required: false
+    default: ""
+  gcp_zone:
+    description: Comma-separated zones to try
+    required: false
+    default: "us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b"
+  gcp_region:
+    description: Region for resource grouping
+    required: false
+    default: "us-central1"
+  gcp_machine_type:
+    description: Comma-separated machine types to try
+    required: false
+    default: "c3-standard-2,c3-standard-4"
+  gcp_boot_disk_size:
+    description: Boot disk size (e.g. 30GB)
+    required: false
+    default: "30GB"
+  wait_seconds:
+    description: Seconds to wait for agent registration
+    required: false
+    default: "900"
+
+outputs:
+  deployment_id:
+    description: The deployment ID
+    value: ${{ steps.deploy.outputs.deployment_id }}
+  agent_id:
+    description: The agent ID used for deployment
+    value: ${{ steps.deploy.outputs.agent_id }}
+  service_url:
+    description: The deployed service URL
+    value: ${{ steps.deploy.outputs.service_url }}
+  version:
+    description: The published app version
+    value: ${{ steps.deploy.outputs.version }}
+  gcp_eligible_agents:
+    description: Count of eligible verified healthy GCP agents after preflight
+    value: ${{ steps.preflight.outputs.gcp_eligible_agents }}
+  gcp_provisioned:
+    description: Whether the action attempted provisioning (true/false)
+    value: ${{ steps.preflight.outputs.gcp_provisioned }}
+
+runs:
+  using: composite
+  steps:
+    - id: preflight
+      uses: ./.github/actions/preflight-gcp
+      with:
+        control_plane_url: ${{ inputs.control_plane_url }}
+        node_size: ${{ inputs.node_size }}
+        wait_seconds: ${{ inputs.wait_seconds }}
+        cp_admin_token: ${{ inputs.cp_admin_token }}
+        cp_admin_password: ${{ inputs.cp_admin_password }}
+        intel_api_key: ${{ inputs.intel_api_key }}
+        gcp_project_id: ${{ inputs.gcp_project_id }}
+        gcp_wif_provider: ${{ inputs.gcp_wif_provider }}
+        gcp_wif_service_account: ${{ inputs.gcp_wif_service_account }}
+        gcp_service_account_key: ${{ inputs.gcp_service_account_key }}
+        gcp_zone: ${{ inputs.gcp_zone }}
+        gcp_region: ${{ inputs.gcp_region }}
+        gcp_machine_type: ${{ inputs.gcp_machine_type }}
+        gcp_boot_disk_size: ${{ inputs.gcp_boot_disk_size }}
+
+    - id: deploy
+      uses: ./.github/actions/deploy-example
+      with:
+        app_name: ${{ inputs.app_name }}
+        compose_file: ${{ inputs.compose_file }}
+        service_name: ${{ inputs.service_name }}
+        health_endpoint: ${{ inputs.health_endpoint }}
+        control_plane_url: ${{ inputs.control_plane_url }}
+        agent_admin_password: ${{ inputs.agent_admin_password }}
+        github_owner: ${{ inputs.github_owner }}
+        node_size: ${{ inputs.node_size }}
+        allowed_clouds: gcp

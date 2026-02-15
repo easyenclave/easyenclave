@@ -1434,8 +1434,6 @@ def run_compose(config: dict):
     cmd = [
         "docker",
         "compose",
-        "--project-directory",
-        str(WORKLOAD_DIR),
         "-f",
         compose_file,
         "up",
