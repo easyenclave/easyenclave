@@ -7,6 +7,18 @@ on:
         description: "Comma-separated zones to try"
         required: false
         default: "us-central1-a,us-east5-a,europe-west4-c"
+      provisioning_model:
+        description: "Provisioning model (FLEX_START recommended for stockouts)"
+        required: false
+        default: "FLEX_START"
+      request_valid_for_duration:
+        description: "FLEX_START only: how long to wait for capacity"
+        required: false
+        default: "45m"
+      max_run_duration:
+        description: "Safety net: auto-terminate VM after this duration"
+        required: false
+        default: "4h"
       model:
         description: "HuggingFace model id for vLLM"
         required: false
@@ -93,6 +105,9 @@ jobs:
           python3 scripts/gcp_gpu_smoke.py \
             --project "${GCP_PROJECT_ID}" \
             --zones "${{ inputs.zones }}" \
+            --provisioning-model "${{ inputs.provisioning_model }}" \
+            --request-valid-for-duration "${{ inputs.request_valid_for_duration }}" \
+            --max-run-duration "${{ inputs.max_run_duration }}" \
             --model "${{ inputs.model }}" \
             --timeout-seconds "${{ inputs.timeout_seconds }}" \
             --boot-disk-size "${{ inputs.boot_disk_size }}" \
