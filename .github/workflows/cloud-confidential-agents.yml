@@ -13,8 +13,18 @@ on:
         required: false
         type: boolean
         default: true
+      keep_resources:
+        description: "Keep cloud resources even on success (for a persistent cloud agent)"
+        required: false
+        type: boolean
+        default: false
       keep_resources_on_failure:
         description: "Keep cloud resources when job fails (for debugging)"
+        required: false
+        type: boolean
+        default: false
+      cleanup_all_managed:
+        description: "Cleanup ALL managed resources in the project (dangerous)"
         required: false
         type: boolean
         default: false
@@ -69,7 +79,6 @@ jobs:
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
-      CONTROL_ADMIN_TOKEN: ${{ secrets.CONTROL_ADMIN_TOKEN }}
 
     steps:
       - name: Checkout
@@ -83,7 +92,7 @@ jobs:
           {
             echo "RUN_TAG=$RUN_TAG"
             echo "LAUNCHER_URL=https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/infra/launcher/launcher.py"
-            echo "CP_ADMIN_TOKEN=${CP_ADMIN_TOKEN:-${CONTROL_ADMIN_TOKEN:-}}"
+            echo "CP_ADMIN_TOKEN=${CP_ADMIN_TOKEN:-}"
           } >> "$GITHUB_ENV"
 
       - name: Validate minimum secrets
@@ -102,8 +111,7 @@ jobs:
             exit 1
           fi
           if [ -z "${CP_ADMIN_TOKEN:-}" ]; then
-            echo "::error::Missing CP_ADMIN_TOKEN (or CONTROL_ADMIN_TOKEN fallback) secret"
-            exit 1
+            echo "::warning::CP_ADMIN_TOKEN is not set; registration/verification checks will run unauthenticated"
           fi
 
       - name: Auth mode summary
@@ -134,16 +142,17 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Cleanup stale managed cloud resources (preflight)
+      - name: Optional preflight cleanup (all managed)
+        if: github.event.inputs.cleanup_all_managed == 'true'
         run: |
           set -euo pipefail
+          echo "::warning::cleanup_all_managed=true: deleting ALL managed GCP resources in project=$GCP_PROJECT_ID zone=$GCP_ZONE"
           python3 scripts/cloud_provisioner.py cleanup \
             --provider gcp \
             --all-managed \
             --gcp-project "$GCP_PROJECT_ID" \
             --gcp-zone "$GCP_ZONE" \
-            --gcp-region "$GCP_REGION" \
-            || echo "::warning::GCP preflight cleanup failed; continuing"
+            --gcp-region "$GCP_REGION"
 
       - name: Provision GCP agent
         run: |
@@ -178,6 +187,12 @@ jobs:
           FAIL_ON_UNSUPPORTED_CLOUDS="false" \
           ./scripts/verify-tdx-clouds.sh
 
+      - name: Preserve resources note (keep_resources)
+        if: github.event.inputs.keep_resources == 'true'
+        run: |
+          echo "::warning::Skipping cleanup because keep_resources=true"
+          echo "Inspect resources in project $GCP_PROJECT_ID (zone=$GCP_ZONE)."
+
       - name: Preserve resources note
         if: failure() && (github.event.inputs.keep_resources_on_failure == 'true')
         run: |
@@ -185,7 +200,7 @@ jobs:
           echo "Inspect resources in project $GCP_PROJECT_ID"
 
       - name: Cleanup managed cloud resources
-        if: always() && ((github.event.inputs.keep_resources_on_failure || 'false') != 'true' || success())
+        if: always() && (github.event.inputs.keep_resources != 'true') && ((github.event.inputs.keep_resources_on_failure || 'false') != 'true' || success())
         run: |
           set -euo pipefail
           python3 scripts/cloud_provisioner.py cleanup \

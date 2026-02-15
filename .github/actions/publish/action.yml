@@ -104,15 +104,35 @@ runs:
           + (if $source_tag != "" then {source_tag: $source_tag} else {} end)
           + (if $node_size != "" then {node_size: $node_size} else {} end)')
 
-        # Publish the version
-        RESPONSE=$(curl -s -X POST "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions" \
-          -H "Content-Type: application/json" \
-          -d "$REQUEST")
+        tmp="$(mktemp)"
+        http_code="$(
+          curl -sS -o "$tmp" -w "%{http_code}" \
+            -X POST "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions" \
+            -H "Content-Type: application/json" \
+            -d "$REQUEST"
+        )"
+        RESPONSE="$(cat "$tmp")"
+        rm -f "$tmp"
 
-        # Check for HTTP error
-        if echo "$RESPONSE" | jq -e '.detail' > /dev/null 2>&1; then
-          echo "Error: $(echo "$RESPONSE" | jq -r '.detail')"
-          exit 1
+        # Idempotency: if the version already exists, fetch the existing record and continue.
+        if [ "$http_code" -ge 400 ]; then
+          detail="$(echo "$RESPONSE" | jq -r '.detail // empty' 2>/dev/null || true)"
+          if [ "$http_code" = "409" ] && echo "$detail" | grep -qi "already exists"; then
+            echo "::notice::Version already exists for ${{ inputs.app_name }}@$VERSION; reusing it"
+            qs=""
+            if [ -n "${{ inputs.node_size }}" ]; then
+              qs="?node_size=${{ inputs.node_size }}"
+            fi
+            RESPONSE="$(curl -sS "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/$VERSION${qs}")"
+          else
+            if [ -n "$detail" ]; then
+              echo "Error: $detail"
+            else
+              echo "Error: publish failed (HTTP $http_code)"
+              echo "$RESPONSE"
+            fi
+            exit 1
+          fi
         fi
 
         # Extract outputs

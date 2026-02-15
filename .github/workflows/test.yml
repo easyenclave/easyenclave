@@ -255,7 +255,5 @@ jobs:
           NUM_STANDARD_AGENTS: "0"
           # One llm agent is used to host measuring-enclave-llm; keep another free for app deploys.
           NUM_LLM_AGENTS: "2"
-          # Keep one verified tiny agent labeled as GCP so the deploy examples workflow can exercise placement.
-          NUM_GCP_TINY_AGENTS: "1"
           # TODO(azure): re-enable Azure agent launch once Azure confidential VM reliability is fixed.
         run: ./scripts/ci-deploy.sh

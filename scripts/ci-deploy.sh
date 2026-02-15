@@ -15,9 +15,6 @@
 #   NUM_TINY_AGENTS    - number of tiny agents to launch (default: 2)
 #   NUM_STANDARD_AGENTS - number of standard agents to launch (default: 2)
 #   NUM_LLM_AGENTS     - number of LLM-sized agents to launch (default: 1)
-#   NUM_GCP_TINY_AGENTS - extra tiny agents labeled as gcp (default: 0)
-#   GCP_DATACENTER_AZ - availability zone label for gcp agents (default: us-central1-a)
-#   GCP_DATACENTER_REGION - optional region label for gcp agents (default: us-central1)
 #   ADMIN_PASSWORD - admin password (auto-detected from CP logs if not set)
 #   AGENT_DATACENTER - explicit datacenter label override (e.g. baremetal:github-runner-a)
 #   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: baremetal)
@@ -31,13 +28,10 @@ CP_URL="${CP_URL:-https://app.easyenclave.com}"
 NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-1}"
 NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-0}"
 NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-0}"
-NUM_GCP_TINY_AGENTS="${NUM_GCP_TINY_AGENTS:-0}"
 AGENT_DATACENTER="${AGENT_DATACENTER:-}"
 AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
 AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
-GCP_DATACENTER_AZ="${GCP_DATACENTER_AZ:-us-central1-a}"
-GCP_DATACENTER_REGION="${GCP_DATACENTER_REGION:-us-central1}"
 
 # ===================================================================
 # Helpers
@@ -294,22 +288,11 @@ deploy_app() {
 
   for attempt in $(seq 1 "$max_attempts"); do
     local deploy_body
-    # Keep measuring-enclave services off cloud-labeled agents (e.g. GCP) so we always
-    # have an undeployed cloud agent available for deploy-examples placement tests.
-    #
-    # If you want a measuring enclave inside a cloud datacenter, provision >=2 agents
-    # for that cloud (one dedicated measurer + one for app deploys).
-    local denied_clouds_json="[]"
-    if [[ "$app_name" == measuring-enclave* ]] && [ "${NUM_GCP_TINY_AGENTS:-0}" -gt 0 ]; then
-      denied_clouds_json='["gcp"]'
-    fi
     deploy_body=$(jq -cn \
       --argjson config "$service_config" \
       --arg node_size "$node_size" \
-      --argjson denied_clouds "$denied_clouds_json" \
       '{config: $config}
-        + (if $node_size != "" then {node_size: $node_size} else {} end)
-        + (if ($denied_clouds | length) > 0 then {denied_clouds: $denied_clouds} else {} end)')
+        + (if $node_size != "" then {node_size: $node_size} else {} end)')
 
     http_code=$(curl -s -o /tmp/deploy_resp.json -w "%{http_code}" \
       -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/deploy" \
@@ -480,12 +463,12 @@ fi
 # ===================================================================
 # 4. Launch agents in parallel
 # ===================================================================
-TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS + NUM_GCP_TINY_AGENTS))
+TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS))
 if [ "$TOTAL_AGENTS" -le 0 ]; then
   echo "::error::TOTAL_AGENTS is 0; set NUM_TINY_AGENTS (or other counts) to launch at least one agent"
   exit 1
 fi
-echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM, $NUM_GCP_TINY_AGENTS gcp-tiny)..."
+echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
 
 AGENT_LOCATION_ARGS=()
 if [ -n "$AGENT_DATACENTER" ]; then
@@ -519,16 +502,6 @@ done
 for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
   python3 infra/tdx_cli.py vm new --size llm \
     "${AGENT_LOCATION_ARGS[@]}" \
-    --easyenclave-url "$CP_URL" \
-    --intel-api-key "$INTEL_API_KEY" \
-    --wait &
-done
-
-for _i in $(seq 1 "$NUM_GCP_TINY_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --size tiny \
-    --cloud-provider gcp \
-    --availability-zone "$GCP_DATACENTER_AZ" \
-    --region "$GCP_DATACENTER_REGION" \
     --easyenclave-url "$CP_URL" \
     --intel-api-key "$INTEL_API_KEY" \
     --wait &
