@@ -71,7 +71,15 @@ def _compose_base_cmd() -> list[str]:
                 text=True,
                 timeout=10,
             )
-            if probe.returncode == 0:
+            out = ((probe.stdout or "") + "\n" + (probe.stderr or "")).strip().lower()
+            # Guard against misconfigured compose plugin wrappers that end up running `docker version`
+            # (which would still exit 0 but is not a functional compose implementation).
+            looks_like_compose = "compose" in out and (
+                "docker compose" in out or "docker-compose" in out or "compose version" in out
+            )
+            looks_like_docker_version = "docker version" in out and "compose" not in out
+
+            if probe.returncode == 0 and looks_like_compose and not looks_like_docker_version:
                 _COMPOSE_BASE_CMD = base
                 logger.info(f"Using compose command: {' '.join(base)}")
                 return _COMPOSE_BASE_CMD
