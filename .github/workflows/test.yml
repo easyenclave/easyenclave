@@ -249,14 +249,45 @@ jobs:
             local attempts=30
             local delay=5
 
-            # Prefer auth to avoid anonymous rate limits, but images are public either way.
-            echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
-
             for attempt in $(seq 1 "$attempts"); do
-              if docker pull "$image_tag" >/dev/null 2>&1; then
-                docker inspect --format='{{index .RepoDigests 0}}' "$image_tag"
+              # Resolve tag -> digest using OCI Distribution API (no docker required on runner).
+              #
+              # GHCR typically requires a Bearer token even for public images, so we implement
+              # the standard WWW-Authenticate challenge flow and then read Docker-Content-Digest.
+              local registry name tag accept url headers www realm service scope token digest
+              registry="ghcr.io"
+              name="${image_tag#ghcr.io/}"
+              tag="${name##*:}"
+              name="${name%:*}"
+              accept="application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json"
+              url="https://${registry}/v2/${name}/manifests/${tag}"
+
+              headers="$(curl -sS -I -H "Accept: ${accept}" "${url}" | tr -d '\r' || true)"
+              if echo "$headers" | rg -qi '^docker-content-digest:'; then
+                digest="$(echo "$headers" | rg -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
+              else
+                www="$(echo "$headers" | rg -i '^www-authenticate:' | head -n1 || true)"
+                realm="$(echo "$www" | sed -n 's/.*realm="\\([^"]*\\)".*/\\1/p')"
+                service="$(echo "$www" | sed -n 's/.*service="\\([^"]*\\)".*/\\1/p')"
+                scope="$(echo "$www" | sed -n 's/.*scope="\\([^"]*\\)".*/\\1/p')"
+                if [ -n "$realm" ]; then
+                  token="$(curl -sSf "${realm}?service=${service}&scope=${scope}" | jq -r '.token // .access_token // empty' || true)"
+                else
+                  token=""
+                fi
+                if [ -n "$token" ]; then
+                  headers="$(curl -sS -I -H "Accept: ${accept}" -H "Authorization: Bearer ${token}" "${url}" | tr -d '\r' || true)"
+                  digest="$(echo "$headers" | rg -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
+                else
+                  digest=""
+                fi
+              fi
+
+              if [ -n "${digest:-}" ]; then
+                echo "ghcr.io/${name}@${digest}"
                 return 0
               fi
+
               echo "Waiting for $image_tag to be pullable... ($attempt/$attempts)"
               sleep "$delay"
             done
