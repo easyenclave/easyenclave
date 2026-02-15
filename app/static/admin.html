@@ -1047,14 +1047,14 @@
                         <div class="loading">Loading agent inventory...</div>
                     </div>
                 </div>
-                <div class="section-card">
-                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
-                        <h3 style="margin:0;">External Azure/GCP Inventory</h3>
-                        <div>
-                            <button class="btn-small btn-secondary" onclick="externalCloudCleanup(true)">Dry Run Cleanup</button>
-                            <button class="btn-small btn-danger" onclick="externalCloudCleanup(false)">Delete Orphaned Resources</button>
-                        </div>
-                    </div>
+	                <div class="section-card">
+	                    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+	                        <h3 style="margin:0;">External Azure/GCP Inventory</h3>
+	                        <div>
+	                            <button id="externalCloudDryRunBtn" class="btn-small btn-secondary" onclick="externalCloudCleanup(true)">Dry Run Cleanup</button>
+	                            <button id="externalCloudCleanupBtn" class="btn-small btn-danger" onclick="externalCloudCleanup(false)">Delete Orphaned Resources</button>
+	                        </div>
+	                    </div>
                     <p style="color: var(--gray-600); margin: 10px 0;">
                         Live inventory from provisioner webhook (`AGENT_PROVISIONER_INVENTORY_URL`) cross-linked with registered agents.
                     </p>

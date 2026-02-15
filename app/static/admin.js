@@ -658,14 +658,32 @@ function renderExternalCloudResources(data) {
     const statusEl = document.getElementById('cloudExternalStatus');
     const summaryEl = document.getElementById('cloudExternalSummary');
     const tableEl = document.getElementById('cloudExternalTable');
+    const dryRunBtn = document.getElementById('externalCloudDryRunBtn');
+    const cleanupBtn = document.getElementById('externalCloudCleanupBtn');
     if (!statusEl || !summaryEl || !tableEl) return;
 
     if (!data.configured) {
-        statusEl.innerHTML = '<span style="color:#b45309;">External inventory is not configured. Set <code>AGENT_PROVISIONER_INVENTORY_URL</code>.</span>';
-        summaryEl.innerHTML = '<div class="empty">External inventory webhook is not configured.</div>';
+        if (dryRunBtn) dryRunBtn.disabled = true;
+        if (cleanupBtn) cleanupBtn.disabled = true;
+        statusEl.innerHTML = `
+            <span style="color:#b45309;">
+                External inventory is not configured.
+                This control plane cannot query Azure/GCP directly without a provisioner service.
+                Set <code>AGENT_PROVISIONER_INVENTORY_URL</code> (and cleanup URL/token) to enable it.
+            </span>
+        `;
+        summaryEl.innerHTML = `
+            <div class="empty">
+                External inventory webhook is not configured. Use GitHub Actions (Cloud Confidential Agents) for now to
+                provision and clean up managed cloud resources.
+            </div>
+        `;
         tableEl.innerHTML = '<div class="empty">No external resources loaded.</div>';
         return;
     }
+
+    if (dryRunBtn) dryRunBtn.disabled = false;
+    if (cleanupBtn) cleanupBtn.disabled = false;
 
     const resources = Array.isArray(data.resources) ? data.resources : [];
     const generatedAt = data.generated_at ? new Date(data.generated_at).toLocaleString() : 'N/A';
