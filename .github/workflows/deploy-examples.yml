@@ -9,13 +9,7 @@ on:
     workflows: [CI]
     types: [completed]
     branches: [main]
-  workflow_dispatch:
-    inputs:
-      enable_llm:
-        description: "Also deploy the Private LLM example (boots llm-sized agents; slow/expensive)"
-        required: false
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 jobs:
   test-unregistered-app-fails:
@@ -119,7 +113,7 @@ jobs:
   deploy-private-llm:
     name: Deploy Private LLM
     runs-on: ubuntu-latest
-    if: (github.event_name == 'workflow_dispatch' && inputs.enable_llm == true) || (github.event_name == 'workflow_run' && vars.CI_ENABLE_LLM == 'true')
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -138,7 +132,7 @@ jobs:
           )"
           if [ "$healthy_measurer" -le 0 ]; then
             echo "::error::No healthy 'measuring-enclave-llm' service is registered. The control plane must be bootstrapped with llm measurements and an llm measurer agent."
-            echo "::error::If you want this in CI, set repo variable CI_ENABLE_LLM=true so the CI job measures llm and boots llm agents."
+            echo "::error::Fix: run the 'Bootstrap Shared LLM (baremetal)' workflow to create llm agents and bootstrap measuring-enclave-llm on the shared control plane."
             exit 1
           fi
 
@@ -152,7 +146,7 @@ jobs:
           )"
           if [ "$eligible" -le 0 ]; then
             echo "::error::No healthy verified undeployed llm agents are available."
-            echo "::error::If you want this in CI, set repo variable CI_ENABLE_LLM=true (boots 2 llm agents)."
+            echo "::error::Fix: run the 'Bootstrap Shared LLM (baremetal)' workflow to provision at least one llm agent."
             exit 1
           fi
 

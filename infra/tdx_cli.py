@@ -698,6 +698,8 @@ class TDXManager:
         }
 
         print("Booting temporary VM to capture measurements...", file=sys.stderr)
+        # Measurements do not depend on a writable data disk; avoid allocating one,
+        # especially for large presets (e.g. llm).
         result = self.vm_new(
             image=image,
             mode="measure",
@@ -705,7 +707,7 @@ class TDXManager:
             debug=False,
             memory_gib=memory_gib,
             vcpu_count=vcpu_count,
-            disk_gib=disk_gib,
+            disk_gib=0,
         )
         vm_name = result["name"]
         serial_log = result.get("serial_log")

@@ -209,10 +209,7 @@ jobs:
       - name: Build and measure trusted values (tiny)
         id: measure
         env:
-          # Keep push CI minimal by default.
-          # To enable LLM end-to-end (more boots): set repo variable CI_ENABLE_LLM=true
-          # which expands measurement coverage and boots llm agents below.
-          MEASURE_SIZES: ${{ vars.CI_ENABLE_LLM == 'true' && 'tiny,llm' || 'tiny' }}
+          MEASURE_SIZES: tiny,llm
         run: ./scripts/ci-build-measure.sh
 
       # ---- Wait for test + docker jobs before deploying ----
@@ -256,6 +253,5 @@ jobs:
           # Need one tiny agent reserved for measuring-enclave + at least one tiny agent for deployments.
           NUM_TINY_AGENTS: "2"
           NUM_STANDARD_AGENTS: "0"
-          # Default: no llm agents. Enable by setting CI_ENABLE_LLM=true.
-          NUM_LLM_AGENTS: ${{ vars.CI_ENABLE_LLM == 'true' && '2' || '0' }}
+          NUM_LLM_AGENTS: "2"
         run: ./scripts/ci-deploy.sh
