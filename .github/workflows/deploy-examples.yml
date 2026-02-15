@@ -171,8 +171,7 @@ jobs:
             exit 1
           fi
           if [ -z "${CP_ADMIN_TOKEN:-}" ]; then
-            echo "::error::Missing CP_ADMIN_TOKEN secret (needed to auto-trust new GCP MRTD baselines)"
-            exit 1
+            echo "::warning::CP_ADMIN_TOKEN is not set; provisioning may succeed but the agent may remain unverified until an admin trusts its MRTD baseline."
           fi
           if [ -z "${GCP_PROJECT_ID:-}" ]; then
             echo "::error::Missing GCP_PROJECT_ID secret"
