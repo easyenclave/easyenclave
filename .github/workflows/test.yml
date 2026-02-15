@@ -207,8 +207,10 @@ jobs:
       - name: Build and measure trusted values (tiny)
         id: measure
         env:
-          # Keep push CI minimal: only update trust material for tiny.
-          MEASURE_SIZES: tiny
+          # Keep push CI minimal by default.
+          # To enable LLM end-to-end (more boots): set repo variable CI_ENABLE_LLM=true
+          # which expands measurement coverage and boots llm agents below.
+          MEASURE_SIZES: ${{ vars.CI_ENABLE_LLM == 'true' && 'tiny,llm' || 'tiny' }}
         run: ./scripts/ci-build-measure.sh
 
       # ---- Wait for test + docker jobs before deploying ----
@@ -249,7 +251,6 @@ jobs:
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           NUM_TINY_AGENTS: "1"
           NUM_STANDARD_AGENTS: "0"
-          # LLM-sized agents are booted only in workflow_dispatch jobs (deploy-examples enable_llm),
-          # not in the default push pipeline.
-          NUM_LLM_AGENTS: "0"
+          # Default: no llm agents. Enable by setting CI_ENABLE_LLM=true.
+          NUM_LLM_AGENTS: ${{ vars.CI_ENABLE_LLM == 'true' && '2' || '0' }}
         run: ./scripts/ci-deploy.sh

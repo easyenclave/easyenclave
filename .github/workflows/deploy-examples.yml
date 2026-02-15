@@ -16,6 +16,11 @@ on:
         required: false
         type: boolean
         default: false
+      require_gcp:
+        description: "Fail the workflow if no verified GCP agents are available (instead of skipping)"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   test-unregistered-app-fails:
@@ -84,36 +89,14 @@ jobs:
   deploy-hello-tdx-gcp:
     name: Deploy Hello TDX (gcp)
     runs-on: ubuntu-latest
-    needs: register-hello-tdx
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: [register-hello-tdx, preflight-gcp]
+    if: (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && needs.preflight-gcp.outputs.gcp_should_run == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Preflight - require at least one healthy verified GCP agent
-        id: preflight
-        shell: bash
-        env:
-          CP_URL: https://app.easyenclave.com
-        run: |
-          set -euo pipefail
-          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
-          count="$(
-            echo "${agents:-}" | jq '[.agents[] | select(.verified == true
-              and (.health_status // "" | ascii_downcase) == "healthy"
-              and (.status // "" | ascii_downcase) == "undeployed"
-              and ((.datacenter // "") | startswith("gcp:") or (.datacenter // "") == "gcp"))
-            ] | length' 2>/dev/null || echo 0
-          )"
-          echo "gcp_eligible_agents=$count" >> "$GITHUB_OUTPUT"
-          if [ "$count" -le 0 ]; then
-            echo "::notice::No healthy verified GCP agents registered yet; skipping GCP deploy example."
-            exit 0
-          fi
-
       - name: Deploy to EasyEnclave (GCP)
-        if: steps.preflight.outputs.gcp_eligible_agents != '0'
         uses: ./.github/actions/deploy
         with:
           app_name: hello-tdx
@@ -125,14 +108,92 @@ jobs:
           node_size: tiny
           allowed_clouds: gcp
 
+  preflight-gcp:
+    name: Preflight - GCP capacity
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    outputs:
+      gcp_eligible_agents: ${{ steps.preflight.outputs.gcp_eligible_agents }}
+      gcp_should_run: ${{ steps.preflight.outputs.gcp_should_run }}
+    steps:
+      - name: Check for healthy verified GCP agents
+        id: preflight
+        shell: bash
+        env:
+          CP_URL: https://app.easyenclave.com
+          REQUIRE_GCP: ${{ github.event_name == 'workflow_dispatch' && inputs.require_gcp || 'false' }}
+          REQUIRE_GCP_CI: ${{ vars.CI_REQUIRE_GCP || 'false' }}
+        run: |
+          set -euo pipefail
+          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+          count="$(
+            echo "${agents:-}" | jq '
+              [.agents[]
+                | (.datacenter // "" | ascii_downcase) as $dc
+                | select(.verified == true
+                  and (.health_status // "" | ascii_downcase) == "healthy"
+                  and (.status // "" | ascii_downcase) == "undeployed"
+                  and ($dc | startswith("gcp:") or $dc == "gcp"))
+              ] | length
+            ' 2>/dev/null || echo 0
+          )"
+
+          echo "gcp_eligible_agents=$count" >> "$GITHUB_OUTPUT"
+
+          if [ "$count" -gt 0 ]; then
+            echo "gcp_should_run=true" >> "$GITHUB_OUTPUT"
+            echo "Found $count eligible GCP agents."
+            exit 0
+          fi
+
+          echo "gcp_should_run=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::No healthy verified GCP agents available; GCP deploy example will be skipped."
+          echo "::warning::This workflow does not launch GCP agents. Use the 'Cloud Confidential Agents' workflow to provision a GCP agent, then re-run Deploy Examples."
+
+          if [ "$REQUIRE_GCP" = "true" ] || [ "$REQUIRE_GCP_CI" = "true" ]; then
+            echo "::error::require_gcp is enabled, but no eligible GCP agents exist."
+            exit 1
+          fi
+
   deploy-private-llm:
     name: Deploy Private LLM
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && inputs.enable_llm == true
+    if: (github.event_name == 'workflow_dispatch' && inputs.enable_llm == true) || (github.event_name == 'workflow_run' && vars.CI_ENABLE_LLM == 'true')
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Preflight - require llm measurer + eligible llm agent
+        shell: bash
+        env:
+          CP_URL: https://app.easyenclave.com
+        run: |
+          set -euo pipefail
+          echo "Checking for healthy measuring-enclave-llm service..."
+          services="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/services?name=measuring-enclave-llm&include_down=true" || true)"
+          healthy_measurer="$(
+            echo "${services:-}" | jq '[.services[]? | select(.name == "measuring-enclave-llm" and (.health_status // "" | ascii_downcase) == "healthy")] | length' 2>/dev/null || echo 0
+          )"
+          if [ "$healthy_measurer" -le 0 ]; then
+            echo "::error::No healthy 'measuring-enclave-llm' service is registered. The control plane must be bootstrapped with llm measurements and an llm measurer agent."
+            echo "::error::If you want this in CI, set repo variable CI_ENABLE_LLM=true so the CI job measures llm and boots llm agents."
+            exit 1
+          fi
+
+          echo "Checking for at least one healthy verified undeployed llm agent..."
+          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+          eligible="$(
+            echo "${agents:-}" | jq '[.agents[] | select(.verified == true
+              and (.health_status // "" | ascii_downcase) == "healthy"
+              and (.status // "" | ascii_downcase) == "undeployed"
+              and (.node_size // "" | ascii_downcase) == "llm")] | length' 2>/dev/null || echo 0
+          )"
+          if [ "$eligible" -le 0 ]; then
+            echo "::error::No healthy verified undeployed llm agents are available."
+            echo "::error::If you want this in CI, set repo variable CI_ENABLE_LLM=true (boots 2 llm agents)."
+            exit 1
+          fi
 
       - name: Register app
         uses: ./.github/actions/register-app
