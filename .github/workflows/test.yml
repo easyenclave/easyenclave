@@ -204,11 +204,12 @@ jobs:
 
       # ---- Build (runs in parallel with test + docker) ----
 
-      - name: Build verity image
-        run: |
-          # mkosi needs unprivileged user namespaces
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          (cd infra/image && nix develop --command bash -lc 'make clean && make build')
+      - name: Build and measure trusted values (tiny)
+        id: measure
+        env:
+          # Keep push CI minimal: only update trust material for tiny.
+          MEASURE_SIZES: tiny
+        run: ./scripts/ci-build-measure.sh
 
       # ---- Wait for test + docker jobs before deploying ----
 
@@ -240,6 +241,10 @@ jobs:
 
       - name: Deploy and bootstrap
         env:
+          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds || steps.measure.outputs.mrtd }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           NUM_TINY_AGENTS: "1"
