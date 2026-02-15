@@ -433,6 +433,20 @@ async def send_measurement_request(measure_url: str, version: AppVersion, callba
             },
         )
         resp.raise_for_status()
+        # Guardrail: ensure we're actually talking to the measurer, not a stale/misrouted endpoint.
+        # If we mark the version as "attesting" without a real measurer ack, it can get stuck forever.
+        try:
+            payload = resp.json()
+        except Exception as err:
+            body_preview = (resp.text or "")[:200]
+            raise RuntimeError(
+                f"Measurer returned non-JSON response (HTTP {resp.status_code}): {body_preview}"
+            ) from err
+        status = (payload.get("status") if isinstance(payload, dict) else None) or ""
+        if str(status).strip().lower() != "accepted":
+            raise RuntimeError(
+                f"Unexpected measurer response (expected status=accepted): {(resp.text or '')[:200]}"
+            )
         logger.info(f"Sent measurement request for {version.app_name}@{version.version}")
 
 
@@ -461,15 +475,17 @@ async def background_measurement_processor():
                     else:
                         measurer_name = "measuring-enclave"
 
-                    measurer = store.get_by_name(measurer_name)
-                    if not measurer or measurer.health_status != "healthy":
+                    try:
+                        # Prefer the proxy routing logic (deployed agents + service_name config).
+                        # The standalone service registry can be stale/misrouted for per-agent tunnels.
+                        url = await proxy.get_service_url(measurer_name)
+                    except HTTPException:
                         logger.debug(
-                            f"No healthy measurer '{measurer_name}' for node_size='{node_size}', "
+                            f"No routable measurer '{measurer_name}' for node_size='{node_size}', "
                             f"skipping {len(versions)} pending version(s)"
                         )
                         continue
 
-                    url = list(measurer.endpoints.values())[0]
                     measure_url = url.rstrip("/") + "/api/measure"
 
                     for version in versions:

@@ -251,7 +251,8 @@ jobs:
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
-          NUM_TINY_AGENTS: "1"
+          # Need one tiny agent reserved for measuring-enclave + at least one tiny agent for deployments.
+          NUM_TINY_AGENTS: "2"
           NUM_STANDARD_AGENTS: "0"
           # Default: no llm agents. Enable by setting CI_ENABLE_LLM=true.
           NUM_LLM_AGENTS: ${{ vars.CI_ENABLE_LLM == 'true' && '2' || '0' }}

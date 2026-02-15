@@ -209,6 +209,7 @@ list_filtered_agents() {
       | {
           agent_id: ($agent.agent_id // ""),
           status: ($agent.status // ""),
+          deployed_app: ($agent.deployed_app // ""),
           datacenter: $dc,
           cloud: $cloud,
           node_size: ($agent.node_size // "")
@@ -226,9 +227,11 @@ ensure_undeployed_candidate() {
     return 0
   fi
 
-  deployed_agent="$(echo "$candidates" | jq -r '[.[] | select(.status == "deployed") | .agent_id] | first // empty')"
+  # Never reset a measuring-enclave agent as a side effect of a deployment.
+  # That destroys the measurer service and can leave versions stuck "attesting".
+  deployed_agent="$(echo "$candidates" | jq -r '[.[] | select(.status == "deployed" and (.deployed_app | tostring | test("^measuring-enclave") | not)) | .agent_id] | first // empty')"
   if [ -z "$deployed_agent" ]; then
-    echo "::warning::No matching healthy verified agents found for current placement filters yet"
+    echo "::warning::No undeployed non-measurer candidate agents found for current placement filters yet"
     return 0
   fi
 
