@@ -157,7 +157,11 @@ def _build_startup_script(*, model: str, max_tokens: int) -> str:
         done
 
         log "running coding prompt..."
-        python3 - <<'PY' || exit 1
+        if ! python3 - <<'PY'; then
+          rc="$?"
+          docker logs --tail 200 vllm | tee /dev/ttyS0 || true
+          fail "coding prompt validation failed rc=${rc}"
+        fi
         import json, sys, urllib.request
 
         url = "http://127.0.0.1:8000/v1/chat/completions"
@@ -182,12 +186,6 @@ def _build_startup_script(*, model: str, max_tokens: int) -> str:
         ok = ("def solve" in content) and ("print" in content)
         sys.exit(0 if ok else 2)
         PY
-
-        rc="$?"
-        if [ "$rc" -ne 0 ]; then
-          docker logs --tail 200 vllm | tee /dev/ttyS0 || true
-          fail "coding prompt validation failed rc=$rc"
-        fi
 
         log "{PASS_MARKER}"
         log "startup: done"
