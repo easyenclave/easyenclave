@@ -76,7 +76,9 @@ def _cp_headers(cp_admin_token: str = "") -> dict[str, str]:
     return headers
 
 
-def _cp_get_json(*, cp_url: str, path: str, cp_admin_token: str = "", timeout_seconds: int = 30) -> Any:
+def _cp_get_json(
+    *, cp_url: str, path: str, cp_admin_token: str = "", timeout_seconds: int = 30
+) -> Any:
     url = f"{cp_url.rstrip('/')}{path}"
     req = urllib.request.Request(url, headers=_cp_headers(cp_admin_token))
     with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
@@ -378,7 +380,14 @@ def _gcp_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedResour
                     re.search(r"\bquota\b", last_error, re.IGNORECASE)
                     or re.search(r"\bexceeded\b", last_error, re.IGNORECASE)
                     or re.search(r"not\s+available", last_error, re.IGNORECASE)
-                    or re.search(r"does\s+not\s+have\s+enough\s+resources", last_error, re.IGNORECASE)
+                    or re.search(
+                        r"does\s+not\s+have\s+enough\s+resources", last_error, re.IGNORECASE
+                    )
+                    or re.search(r"is\s+not\s+supported", last_error, re.IGNORECASE)
+                    or re.search(r"configuration_availability", last_error, re.IGNORECASE)
+                    or re.search(r"zone_resource_pool_exhausted", last_error, re.IGNORECASE)
+                    or re.search(r"resource\s+pool\s+exhausted", last_error, re.IGNORECASE)
+                    or re.search(r"was\s+not\s+found", last_error, re.IGNORECASE)
                 )
                 if not retryable or zone == zone_candidates[-1]:
                     raise
@@ -564,22 +573,28 @@ def _azure_vm_related_resource_ids(args: argparse.Namespace, vm_name: str) -> li
     if isinstance(vm_id, str) and vm_id:
         ids.add(vm_id)
 
-    os_disk = (((vm_data.get("storageProfile") or {}).get("osDisk") or {}).get("managedDisk") or {}).get(
-        "id"
-    )
+    os_disk = (
+        ((vm_data.get("storageProfile") or {}).get("osDisk") or {}).get("managedDisk") or {}
+    ).get("id")
     if isinstance(os_disk, str) and os_disk:
         ids.add(os_disk)
 
-    nic_ids = ((vm_data.get("networkProfile") or {}).get("networkInterfaces") or [])
+    nic_ids = (vm_data.get("networkProfile") or {}).get("networkInterfaces") or []
     for nic in nic_ids:
         nic_id = nic.get("id") if isinstance(nic, dict) else ""
         if isinstance(nic_id, str) and nic_id:
             ids.add(nic_id)
-            nic_data = _json_cmd(["az", "network", "nic", "show", "--ids", nic_id, "--output", "json"])
+            nic_data = _json_cmd(
+                ["az", "network", "nic", "show", "--ids", nic_id, "--output", "json"]
+            )
             if isinstance(nic_data, dict):
                 ip_configs = nic_data.get("ipConfigurations") or []
                 for ip_conf in ip_configs:
-                    pip = (ip_conf.get("publicIPAddress") or {}).get("id") if isinstance(ip_conf, dict) else ""
+                    pip = (
+                        (ip_conf.get("publicIPAddress") or {}).get("id")
+                        if isinstance(ip_conf, dict)
+                        else ""
+                    )
                     if isinstance(pip, str) and pip:
                         ids.add(pip)
 
@@ -591,7 +606,19 @@ def _azure_apply_tags(resource_ids: list[str], tags: dict[str, str]) -> None:
         return
     tags_arg = " ".join(f"{k}={v}" for k, v in tags.items())
     for resource_id in resource_ids:
-        _run(["az", "tag", "update", "--resource-id", resource_id, "--operation", "merge", "--tags", *tags_arg.split()])
+        _run(
+            [
+                "az",
+                "tag",
+                "update",
+                "--resource-id",
+                resource_id,
+                "--operation",
+                "merge",
+                "--tags",
+                *tags_arg.split(),
+            ]
+        )
 
 
 def _azure_power_state(args: argparse.Namespace, vm_name: str) -> str:
@@ -1140,20 +1167,38 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--gcp-project", default=os.environ.get("GCP_PROJECT_ID", ""))
         p.add_argument("--gcp-zone", default=os.environ.get("GCP_ZONE", "us-central1-a"))
         p.add_argument("--gcp-region", default=os.environ.get("GCP_REGION", "us-central1"))
-        p.add_argument("--gcp-machine-type", default=os.environ.get("GCP_MACHINE_TYPE", "c3-standard-4"))
-        p.add_argument("--gcp-image-project", default=os.environ.get("GCP_IMAGE_PROJECT", "ubuntu-os-cloud"))
-        p.add_argument("--gcp-image-family", default=os.environ.get("GCP_IMAGE_FAMILY", "ubuntu-2404-lts-amd64"))
+        p.add_argument(
+            "--gcp-machine-type", default=os.environ.get("GCP_MACHINE_TYPE", "c3-standard-4")
+        )
+        p.add_argument(
+            "--gcp-image-project", default=os.environ.get("GCP_IMAGE_PROJECT", "ubuntu-os-cloud")
+        )
+        p.add_argument(
+            "--gcp-image-family",
+            default=os.environ.get("GCP_IMAGE_FAMILY", "ubuntu-2404-lts-amd64"),
+        )
         p.add_argument("--gcp-boot-disk-size", default=os.environ.get("GCP_BOOT_DISK_SIZE", "80GB"))
-        p.add_argument("--gcp-boot-disk-type", default=os.environ.get("GCP_BOOT_DISK_TYPE", "pd-balanced"))
+        p.add_argument(
+            "--gcp-boot-disk-type", default=os.environ.get("GCP_BOOT_DISK_TYPE", "pd-balanced")
+        )
         p.add_argument("--gcp-count", type=int, default=1)
         p.add_argument("--gcp-datacenter", default="")
 
         p.add_argument("--azure-resource-group", default=os.environ.get("AZURE_RESOURCE_GROUP", ""))
         p.add_argument("--azure-location", default=os.environ.get("AZURE_LOCATION", "eastus2"))
-        p.add_argument("--azure-zone-label", default=os.environ.get("AZURE_ZONE_LABEL", "eastus2-3"))
-        p.add_argument("--azure-vm-size", default=os.environ.get("AZURE_VM_SIZE", "Standard_DC2eds_v5"))
-        p.add_argument("--azure-image", default=os.environ.get("AZURE_IMAGE", "Canonical:ubuntu-24_04-lts:cvm:latest"))
-        p.add_argument("--azure-admin-username", default=os.environ.get("AZURE_ADMIN_USERNAME", "easyenclave"))
+        p.add_argument(
+            "--azure-zone-label", default=os.environ.get("AZURE_ZONE_LABEL", "eastus2-3")
+        )
+        p.add_argument(
+            "--azure-vm-size", default=os.environ.get("AZURE_VM_SIZE", "Standard_DC2eds_v5")
+        )
+        p.add_argument(
+            "--azure-image",
+            default=os.environ.get("AZURE_IMAGE", "Canonical:ubuntu-24_04-lts:cvm:latest"),
+        )
+        p.add_argument(
+            "--azure-admin-username", default=os.environ.get("AZURE_ADMIN_USERNAME", "easyenclave")
+        )
         p.add_argument("--azure-count", type=int, default=1)
         p.add_argument("--azure-datacenter", default="")
         p.add_argument("--azure-boot-timeout-seconds", type=int, default=420)
