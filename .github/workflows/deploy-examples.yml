@@ -98,8 +98,13 @@ jobs:
           CP_URL: https://app.easyenclave.com
         run: |
           set -euo pipefail
-          agents=$(curl -sf "$CP_URL/api/v1/agents" || echo '{"agents":[]}')
-          count=$(echo "$agents" | jq '[.agents[] | select(.verified == true and (.health_status // "" | ascii_downcase) == "healthy" and ((.datacenter // "") | startswith("gcp:") or (.datacenter // "") == "gcp" or (.cloud_provider // "" | ascii_downcase) == "gcp"))] | length')
+          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+          count="$(
+            echo "${agents:-}" | jq '[.agents[] | select(.verified == true
+              and (.health_status // "" | ascii_downcase) == "healthy"
+              and ((.datacenter // "") | startswith("gcp:") or (.datacenter // "") == "gcp"))
+            ] | length' 2>/dev/null || echo 0
+          )"
           echo "gcp_eligible_agents=$count" >> "$GITHUB_OUTPUT"
           if [ "$count" -le 0 ]; then
             echo "::notice::No healthy verified GCP agents registered yet; skipping GCP deploy example."
