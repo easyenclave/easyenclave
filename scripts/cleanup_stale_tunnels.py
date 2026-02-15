@@ -1,5 +1,9 @@
 """Delete stale Cloudflare agent tunnels.
 
+Requires:
+- CLOUDFLARE_ACCOUNT_ID
+- CLOUDFLARE_API_TOKEN
+
 Usage: python3 scripts/cleanup_stale_tunnels.py [--dry-run]
 """
 
@@ -11,9 +15,6 @@ import time
 import httpx
 
 API_URL = "https://api.cloudflare.com/client/v4"
-ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "7d2737c32f76407d6a6b1c0381f7e91c")
-API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "8G-6VG8KrjhhWDyTnKJ1kX6ojL3SIHWbLK7UGwRB")
-ZONE_ID = os.environ.get("CLOUDFLARE_ZONE_ID", "cb64fe52ab0923b3ea3a6458e5da3949")
 
 # Rate limiting: Cloudflare allows 1200 req/5min = 4/sec
 # Each tunnel deletion = 2 calls (cleanup connections + delete)
@@ -23,13 +24,20 @@ BATCH_DELAY = 1.0  # seconds between batches
 DRY_RUN = "--dry-run" in sys.argv
 
 
-async def list_all_tunnels(client: httpx.AsyncClient, headers: dict) -> list[dict]:
+def _require_env(name: str) -> str:
+    v = os.environ.get(name)
+    if not v:
+        raise SystemExit(f"Missing required env var {name}")
+    return v
+
+
+async def list_all_tunnels(client: httpx.AsyncClient, headers: dict, *, account_id: str) -> list[dict]:
     """Fetch all non-deleted tunnels across all pages."""
     tunnels = []
     page = 1
     while True:
         resp = await client.get(
-            f"{API_URL}/accounts/{ACCOUNT_ID}/cfd_tunnel",
+            f"{API_URL}/accounts/{account_id}/cfd_tunnel",
             headers=headers,
             params={"per_page": 100, "is_deleted": "false", "page": page},
         )
@@ -45,7 +53,7 @@ async def list_all_tunnels(client: httpx.AsyncClient, headers: dict) -> list[dic
     return tunnels
 
 
-async def delete_tunnel(client: httpx.AsyncClient, headers: dict, tunnel: dict) -> bool:
+async def delete_tunnel(client: httpx.AsyncClient, headers: dict, tunnel: dict, *, account_id: str) -> bool:
     """Delete a single tunnel (clean connections first)."""
     tunnel_id = tunnel["id"]
     name = tunnel["name"]
@@ -53,14 +61,14 @@ async def delete_tunnel(client: httpx.AsyncClient, headers: dict, tunnel: dict) 
     try:
         # Clean up connections first
         await client.delete(
-            f"{API_URL}/accounts/{ACCOUNT_ID}/cfd_tunnel/{tunnel_id}/connections",
+            f"{API_URL}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/connections",
             headers=headers,
         )
         await asyncio.sleep(0.2)
 
         # Delete the tunnel
         resp = await client.delete(
-            f"{API_URL}/accounts/{ACCOUNT_ID}/cfd_tunnel/{tunnel_id}",
+            f"{API_URL}/accounts/{account_id}/cfd_tunnel/{tunnel_id}",
             headers=headers,
         )
         if resp.status_code == 200:
@@ -73,38 +81,17 @@ async def delete_tunnel(client: httpx.AsyncClient, headers: dict, tunnel: dict) 
         return False
 
 
-async def delete_dns_record(client: httpx.AsyncClient, headers: dict, hostname: str) -> bool:
-    """Delete DNS CNAME record for a tunnel hostname."""
-    try:
-        resp = await client.get(
-            f"{API_URL}/zones/{ZONE_ID}/dns_records",
-            headers=headers,
-            params={"name": hostname, "type": "CNAME"},
-        )
-        resp.raise_for_status()
-        records = resp.json().get("result", [])
-        if not records:
-            return True  # Already gone
-
-        record_id = records[0]["id"]
-        del_resp = await client.delete(
-            f"{API_URL}/zones/{ZONE_ID}/dns_records/{record_id}",
-            headers=headers,
-        )
-        return del_resp.status_code == 200
-    except Exception:
-        return False
-
-
 async def main():
+    account_id = _require_env("CLOUDFLARE_ACCOUNT_ID")
+    api_token = _require_env("CLOUDFLARE_API_TOKEN")
     headers = {
-        "Authorization": f"Bearer {API_TOKEN}",
+        "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
     }
 
     print("Fetching all tunnels...")
     async with httpx.AsyncClient(timeout=30.0) as client:
-        tunnels = await list_all_tunnels(client, headers)
+        tunnels = await list_all_tunnels(client, headers, account_id=account_id)
 
     # Filter: only agent-* tunnels with no connections
     stale = [
@@ -142,7 +129,7 @@ async def main():
 
             # Run batch concurrently
             results = await asyncio.gather(
-                *[delete_tunnel(client, headers, t) for t in batch],
+                *[delete_tunnel(client, headers, t, account_id=account_id) for t in batch],
                 return_exceptions=True,
             )
             for r in results:

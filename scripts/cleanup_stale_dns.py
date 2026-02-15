@@ -1,5 +1,10 @@
 """Delete stale agent-* CNAME records from Cloudflare DNS.
 
+Requires:
+- CLOUDFLARE_ACCOUNT_ID
+- CLOUDFLARE_API_TOKEN
+- CLOUDFLARE_ZONE_ID
+
 Usage: python3 scripts/cleanup_stale_dns.py [--dry-run]
 """
 
@@ -11,9 +16,6 @@ import time
 import httpx
 
 API_URL = "https://api.cloudflare.com/client/v4"
-ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID", "7d2737c32f76407d6a6b1c0381f7e91c")
-API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN", "8G-6VG8KrjhhWDyTnKJ1kX6ojL3SIHWbLK7UGwRB")
-ZONE_ID = os.environ.get("CLOUDFLARE_ZONE_ID", "cb64fe52ab0923b3ea3a6458e5da3949")
 
 BATCH_SIZE = 10
 BATCH_DELAY = 1.0
@@ -21,9 +23,19 @@ BATCH_DELAY = 1.0
 DRY_RUN = "--dry-run" in sys.argv
 
 
+def _require_env(name: str) -> str:
+    v = os.environ.get(name)
+    if not v:
+        raise SystemExit(f"Missing required env var {name}")
+    return v
+
+
 async def main():
+    account_id = _require_env("CLOUDFLARE_ACCOUNT_ID")
+    api_token = _require_env("CLOUDFLARE_API_TOKEN")
+    zone_id = _require_env("CLOUDFLARE_ZONE_ID")
     headers = {
-        "Authorization": f"Bearer {API_TOKEN}",
+        "Authorization": f"Bearer {api_token}",
         "Content-Type": "application/json",
     }
 
@@ -34,7 +46,7 @@ async def main():
         page = 1
         while True:
             resp = await client.get(
-                f"{API_URL}/accounts/{ACCOUNT_ID}/cfd_tunnel",
+                f"{API_URL}/accounts/{account_id}/cfd_tunnel",
                 headers=headers,
                 params={"per_page": 100, "is_deleted": "false", "page": page},
             )
@@ -56,7 +68,7 @@ async def main():
         page = 1
         while True:
             resp = await client.get(
-                f"{API_URL}/zones/{ZONE_ID}/dns_records",
+                f"{API_URL}/zones/{zone_id}/dns_records",
                 headers=headers,
                 params={"per_page": 100, "type": "CNAME", "page": page},
             )
@@ -113,7 +125,7 @@ async def main():
             async def delete_record(record):
                 try:
                     resp = await client.delete(
-                        f"{API_URL}/zones/{ZONE_ID}/dns_records/{record['id']}",
+                        f"{API_URL}/zones/{zone_id}/dns_records/{record['id']}",
                         headers=headers,
                     )
                     return resp.status_code == 200

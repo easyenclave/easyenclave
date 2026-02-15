@@ -29,6 +29,19 @@ PASS_MARKER = "EASYENCLAVE_GPU_TEST_RESULT=PASS"
 FAIL_MARKER = "EASYENCLAVE_GPU_TEST_RESULT=FAIL"
 
 
+class CommandError(RuntimeError):
+    def __init__(self, cmd: list[str], rc: int, stdout: str, stderr: str):
+        self.cmd = cmd
+        self.rc = rc
+        self.stdout = stdout
+        self.stderr = stderr
+        super().__init__(
+            f"Command failed (rc={rc}): {' '.join(cmd)}\n"
+            f"stdout:\n{stdout}\n"
+            f"stderr:\n{stderr}\n"
+        )
+
+
 def _now() -> float:
     return time.monotonic()
 
@@ -52,11 +65,7 @@ def _run(
         kwargs["stderr"] = None
     p = subprocess.run(cmd, **kwargs)
     if check and p.returncode != 0:
-        raise RuntimeError(
-            f"Command failed (rc={p.returncode}): {' '.join(cmd)}\n"
-            f"stdout:\n{p.stdout}\n"
-            f"stderr:\n{p.stderr}\n"
-        )
+        raise CommandError(cmd, p.returncode, p.stdout or "", p.stderr or "")
     return p
 
 

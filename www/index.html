@@ -13,6 +13,7 @@
             <a href="/" class="logo">EasyEnclave</a>
             <div class="nav-links">
                 <a href="#app-store">App Store</a>
+                <a href="#market">Capacity</a>
                 <a href="#architecture">Architecture</a>
                 <a href="#tee">TEE</a>
                 <a href="#security">Security</a>
@@ -29,8 +30,8 @@
         <div class="container">
             <h1>The App Store for<br>Confidential Computing</h1>
             <p class="hero-subtitle">
-                Register your app. Publish versions with automated measurement.
-                Deploy to hardware-verified enclaves with tamper-proof root filesystems.
+                Register your app. Publish measured versions.
+                Deploy instantly to hardware-verified enclaves from warm capacity pools, at the clearing price.
             </p>
             <div class="hero-buttons">
                 <a href="#getting-started" class="btn btn-primary btn-large">Get Started</a>
@@ -104,6 +105,64 @@
                     <h4>No Direct Deploys</h4>
                     <p>All deployments go through the catalog. No way to deploy untracked code — <a href="https://github.com/easyenclave/easyenclave/blob/main/.github/workflows/deploy-examples.yml" target="_blank">tested on every push</a>.</p>
                 </div>
+            </div>
+        </div>
+    </section>
+
+    <section id="market" class="market">
+        <div class="container">
+            <h2>Instant Capacity at the Clearing Price</h2>
+            <p class="section-subtitle">No picking servers. No waiting for VMs. The control plane schedules deployments onto verified warm capacity.</p>
+
+            <div class="market-grid">
+                <div class="market-card">
+                    <div class="market-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                            <polyline points="3.3 7.96 12 13 20.7 7.96"/>
+                            <line x1="12" y1="22" x2="12" y2="13"/>
+                        </svg>
+                    </div>
+                    <h3>Warm Pools</h3>
+                    <p>Datacenters keep a buffer of attested, idle agents already running. Deploys are assigned immediately.</p>
+                </div>
+
+                <div class="market-card">
+                    <div class="market-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 1v22"/>
+                            <path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/>
+                        </svg>
+                    </div>
+                    <h3>Clearing Price</h3>
+                    <p>Capacity is priced by supply and demand. If multiple datacenters can fill your request, you get the lowest price that clears.</p>
+                </div>
+
+                <div class="market-card">
+                    <div class="market-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                    </div>
+                    <h3>Verified Scheduling</h3>
+                    <p>You request a size and constraints. The control plane chooses a verified agent. Users never “assign” to an agent except for upgrades.</p>
+                </div>
+
+                <div class="market-card">
+                    <div class="market-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="12" y1="8" x2="12" y2="12"/>
+                            <line x1="12" y1="16" x2="12.01" y2="16"/>
+                        </svg>
+                    </div>
+                    <h3>Fast Fail</h3>
+                    <p>If there is no warm verified capacity, the request fails immediately (or can be queued if you opt in). No silent retry loops.</p>
+                </div>
+            </div>
+
+            <div class="market-note">
+                <strong>Important:</strong> Attestation proves what code is running. Availability comes from warm pools and competition between datacenters.
             </div>
         </div>
     </section>
