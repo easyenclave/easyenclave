@@ -240,74 +240,6 @@ jobs:
             sleep 15
           done
 
-      - name: Resolve image digests (avoid GHCR tag flakiness)
-        run: |
-          set -euo pipefail
-
-          resolve_digest_ref() {
-            local image_tag="$1"
-            local attempts=30
-            local delay=5
-
-            for attempt in $(seq 1 "$attempts"); do
-              # Resolve tag -> digest using OCI Distribution API (no docker required on runner).
-              #
-              # GHCR typically requires a Bearer token even for public images, so we implement
-              # the standard WWW-Authenticate challenge flow and then read Docker-Content-Digest.
-              local registry name tag accept url headers www realm service scope token digest
-              registry="ghcr.io"
-              name="${image_tag#ghcr.io/}"
-              tag="${name##*:}"
-              name="${name%:*}"
-              accept="application/vnd.docker.distribution.manifest.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json"
-              url="https://${registry}/v2/${name}/manifests/${tag}"
-
-              headers="$(curl -sS -I -H "Accept: ${accept}" "${url}" | tr -d '\r' || true)"
-              if echo "$headers" | grep -qi '^docker-content-digest:'; then
-                digest="$(echo "$headers" | grep -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
-              else
-                www="$(echo "$headers" | grep -i '^www-authenticate:' | head -n1 || true)"
-                realm="$(echo "$www" | sed -n 's/.*realm="\\([^"]*\\)".*/\\1/p')"
-                service="$(echo "$www" | sed -n 's/.*service="\\([^"]*\\)".*/\\1/p')"
-                scope="$(echo "$www" | sed -n 's/.*scope="\\([^"]*\\)".*/\\1/p')"
-                if [ -n "$realm" ]; then
-                  token="$(curl -sSf "${realm}?service=${service}&scope=${scope}" | jq -r '.token // .access_token // empty' || true)"
-                else
-                  token=""
-                fi
-                if [ -n "$token" ]; then
-                  headers="$(curl -sS -I -H "Accept: ${accept}" -H "Authorization: Bearer ${token}" "${url}" | tr -d '\r' || true)"
-                  digest="$(echo "$headers" | grep -i '^docker-content-digest:' | awk '{print $2}' | head -n1)"
-                else
-                  digest=""
-                fi
-              fi
-
-              if [ -n "${digest:-}" ]; then
-                echo "ghcr.io/${name}@${digest}"
-                return 0
-              fi
-
-              echo "Waiting for $image_tag to be pullable... ($attempt/$attempts)"
-              sleep "$delay"
-            done
-
-            echo "::error::Failed to pull $image_tag after $attempts attempts"
-            return 1
-          }
-
-          CONTROL_PLANE_TAG="ghcr.io/${GITHUB_REPOSITORY}/control-plane:${GITHUB_SHA}"
-          MEASURER_TAG="ghcr.io/${GITHUB_REPOSITORY}/measuring-enclave:${GITHUB_SHA}"
-
-          CONTROL_PLANE_IMAGE="$(resolve_digest_ref "$CONTROL_PLANE_TAG")"
-          MEASURER_IMAGE="$(resolve_digest_ref "$MEASURER_TAG")"
-
-          echo "Resolved control plane: $CONTROL_PLANE_TAG -> $CONTROL_PLANE_IMAGE"
-          echo "Resolved measurer: $MEASURER_TAG -> $MEASURER_IMAGE"
-
-          echo "CONTROL_PLANE_IMAGE=$CONTROL_PLANE_IMAGE" >> "$GITHUB_ENV"
-          echo "MEASURER_IMAGE=$MEASURER_IMAGE" >> "$GITHUB_ENV"
-
       # ---- Deploy ----
 
       - name: Deploy and bootstrap
@@ -316,6 +248,8 @@ jobs:
           TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
           TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+          CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
+          MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
           NUM_TINY_AGENTS: "1"
           NUM_STANDARD_AGENTS: "0"
           NUM_LLM_AGENTS: "0"
