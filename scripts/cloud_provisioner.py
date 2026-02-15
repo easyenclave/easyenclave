@@ -405,6 +405,12 @@ def _gcp_provision(args: argparse.Namespace, run_tag: str) -> list[ManagedResour
                         or re.search(r"zone_resource_pool_exhausted", last_error, re.IGNORECASE)
                         or re.search(r"resource\s+pool\s+exhausted", last_error, re.IGNORECASE)
                         or re.search(r"was\s+not\s+found", last_error, re.IGNORECASE)
+                        or re.search(r"does\s+not\s+exist", last_error, re.IGNORECASE)
+                        or re.search(
+                            r"invalid\s+value\s+for\s+field\s+'resource\.machineType'",
+                            last_error,
+                            re.IGNORECASE,
+                        )
                     )
                     if not retryable:
                         raise
