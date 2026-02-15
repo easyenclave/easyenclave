@@ -113,7 +113,7 @@ def _build_startup_script(*, model: str, max_tokens: int) -> str:
             if [ -z "${{pkg:-}}" ]; then
               fail "no nvidia-driver-*-open package found (need open driver; recommended nvidia-driver-575-open)"
             fi
-            log "installing ${pkg}"
+            log "installing ${{pkg}}"
             apt-get install -y "$pkg" || fail "failed to install $pkg"
           fi
 
