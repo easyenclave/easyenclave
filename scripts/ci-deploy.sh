@@ -294,10 +294,22 @@ deploy_app() {
 
   for attempt in $(seq 1 "$max_attempts"); do
     local deploy_body
+    # Keep measuring-enclave services off cloud-labeled agents (e.g. GCP) so we always
+    # have an undeployed cloud agent available for deploy-examples placement tests.
+    #
+    # If you want a measuring enclave inside a cloud datacenter, provision >=2 agents
+    # for that cloud (one dedicated measurer + one for app deploys).
+    local denied_clouds_json="[]"
+    if [[ "$app_name" == measuring-enclave* ]] && [ "${NUM_GCP_TINY_AGENTS:-0}" -gt 0 ]; then
+      denied_clouds_json='["gcp"]'
+    fi
     deploy_body=$(jq -cn \
       --argjson config "$service_config" \
       --arg node_size "$node_size" \
-      '{config: $config} + (if $node_size != "" then {node_size: $node_size} else {} end)')
+      --argjson denied_clouds "$denied_clouds_json" \
+      '{config: $config}
+        + (if $node_size != "" then {node_size: $node_size} else {} end)
+        + (if ($denied_clouds | length) > 0 then {denied_clouds: $denied_clouds} else {} end)')
 
     http_code=$(curl -s -o /tmp/deploy_resp.json -w "%{http_code}" \
       -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/deploy" \
