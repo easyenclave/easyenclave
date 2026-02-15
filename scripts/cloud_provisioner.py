@@ -163,7 +163,10 @@ packages:
   - gnupg
   - lsb-release
   - python3
-  - python3-pip
+  - python3-requests
+  - python3-psutil
+  - docker.io
+  - docker-compose-plugin
 write_files:
   - path: /etc/easyenclave/config.json
     permissions: \"0644\"
@@ -195,10 +198,9 @@ runcmd:
   - mkdir -p /opt/launcher /home/tdx /etc/easyenclave
   - [bash, -lc, \"curl -fsSL '{launcher_url}' -o /opt/launcher/launcher.py\"]
   - chmod +x /opt/launcher/launcher.py
-  - [bash, -lc, \"DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io docker-compose-plugin\"]
   - systemctl enable --now docker
-  - [bash, -lc, \"python3 -m pip install --break-system-packages requests psutil || python3 -m pip install requests psutil\"]
-  - [bash, -lc, \"curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && (dpkg -i /tmp/cloudflared.deb || apt-get install -f -y) && rm -f /tmp/cloudflared.deb\"]
+  # cloudflared is optional for agent registration; failures here should not block launcher startup.
+  - [bash, -lc, \"curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && (dpkg -i /tmp/cloudflared.deb || apt-get install -f -y) && rm -f /tmp/cloudflared.deb || true\"]
   - systemctl daemon-reload
   - systemctl enable --now tdx-launcher.service
 final_message: \"EasyEnclave launcher bootstrap complete\"
@@ -417,6 +419,60 @@ def _gcp_cleanup(args: argparse.Namespace, run_tag: str = "") -> dict[str, Any]:
         "deleted_count": deleted,
         "errors": errors,
     }
+
+
+def _gcp_describe_instance(args: argparse.Namespace, name: str) -> dict[str, Any]:
+    if not args.gcp_project or not args.gcp_zone:
+        return {}
+    try:
+        data = _json_cmd(
+            [
+                "gcloud",
+                "compute",
+                "instances",
+                "describe",
+                name,
+                "--project",
+                args.gcp_project,
+                "--zone",
+                args.gcp_zone,
+                "--format=json(name,status,creationTimestamp,networkInterfaces,confidentialInstanceConfig,shieldedInstanceConfig)",
+            ]
+        )
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _gcp_serial_port_tail(args: argparse.Namespace, name: str, *, max_chars: int = 12000) -> str:
+    if not args.gcp_project or not args.gcp_zone:
+        return ""
+    # Fetch serial output and truncate; gcloud does not provide a reliable "tail" flag.
+    result = _run(
+        [
+            "gcloud",
+            "compute",
+            "instances",
+            "get-serial-port-output",
+            name,
+            "--project",
+            args.gcp_project,
+            "--zone",
+            args.gcp_zone,
+            "--port",
+            "1",
+            "--format",
+            "text",
+            "--quiet",
+        ],
+        check=False,
+    )
+    raw = (result.stdout or "").strip()
+    if not raw:
+        raw = (result.stderr or "").strip()
+    if len(raw) > max_chars:
+        return raw[-max_chars:]
+    return raw
 
 
 def _azure_vm_related_resource_ids(args: argparse.Namespace, vm_name: str) -> list[str]:
@@ -1042,6 +1098,22 @@ def main() -> int:
             )
             result["registration"] = wait_result
             if not wait_result.get("ready"):
+                # Best-effort diagnostics for provisioning failures. Keep output compact.
+                diagnostics: dict[str, Any] = {"gcp": [], "azure": []}
+                for item in inventory_items:
+                    if item.provider == "gcp":
+                        diagnostics["gcp"].append(
+                            {
+                                "name": item.name,
+                                "datacenter": item.datacenter,
+                                "describe": _gcp_describe_instance(args, item.name),
+                                "serial_port_tail": _gcp_serial_port_tail(args, item.name),
+                            }
+                        )
+                # Only include non-empty sections.
+                diagnostics = {k: v for k, v in diagnostics.items() if v}
+                if diagnostics:
+                    result["diagnostics"] = diagnostics
                 print(json.dumps(result, indent=2))
                 return 2
 
