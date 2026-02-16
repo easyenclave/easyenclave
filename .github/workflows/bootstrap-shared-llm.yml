@@ -144,6 +144,7 @@ jobs:
 
       - name: Bootstrap measuring-enclave-llm on shared control plane
         env:
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
           ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
           NODE_SIZE: llm
           ALLOWED_CLOUDS: baremetal
@@ -154,6 +155,7 @@ jobs:
           set -euo pipefail
           chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
           CP_URL="${CP_URL}" \
+          ADMIN_TOKEN="${ADMIN_TOKEN}" \
           ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
           NODE_SIZE="${NODE_SIZE}" \
           MEASURER_IMAGE="${MEASURER_IMAGE}" \

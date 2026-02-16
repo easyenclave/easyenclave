@@ -28,16 +28,151 @@ jobs:
   bootstrap-llm:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      CP_URL: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+      GCP_ZONE_LIST: ${{ github.event.inputs.gcp_zone || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Resolve GCP datacenter target
+        id: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          dc="$(echo "${{ github.event.inputs.gcp_datacenter || '' }}" | tr '[:upper:]' '[:lower:]' | xargs)"
+          if [ -z "$dc" ]; then
+            first_zone="$(echo "${GCP_ZONE_LIST}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | head -n1 | tr '[:upper:]' '[:lower:]')"
+            if [ -z "$first_zone" ]; then
+              echo "::error::Unable to resolve GCP datacenter (gcp_datacenter and gcp_zone are empty)."
+              exit 1
+            fi
+            dc="gcp:${first_zone}"
+          fi
+          case "$dc" in
+            gcp:*) ;;
+            gcp) ;;
+            *) dc="gcp:${dc}" ;;
+          esac
+          echo "datacenter=$dc" >> "$GITHUB_OUTPUT"
+          echo "Resolved datacenter: $dc"
+
+      - name: Check measuring-enclave-llm health
+        id: measurer
+        shell: bash
+        run: |
+          set -euo pipefail
+          healthy_count="$(
+            curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/services?name=measuring-enclave-llm&include_down=true" \
+            | jq -r '[.services[]? | select(.name == "measuring-enclave-llm" and (.health_status // "" | ascii_downcase) == "healthy")] | length'
+          )"
+          if [ "${healthy_count:-0}" -gt 0 ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            echo "Existing healthy measuring-enclave-llm found; bootstrap is skipped."
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            echo "No healthy measuring-enclave-llm found; bootstrap is required."
+          fi
+
+      - name: Ensure GCP llm capacity for measurer bootstrap
+        if: steps.measurer.outputs.healthy != 'true'
+        id: preflight_measurer
+        uses: ./.github/actions/preflight-gcp
+        with:
+          control_plane_url: ${{ env.CP_URL }}
+          node_size: llm
+          wait_seconds: ${{ github.event.inputs.wait_seconds || '1800' }}
+          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
+          cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
+          gcp_datacenter: ${{ steps.target.outputs.datacenter }}
+          gcp_zone: ${{ env.GCP_ZONE_LIST }}
+
+      - name: Capture trusted llm baseline from verified GCP agent
+        if: steps.measurer.outputs.healthy != 'true'
+        id: gcp_baseline
+        shell: bash
+        env:
+          TARGET_DC: ${{ steps.target.outputs.datacenter }}
+        run: |
+          set -euo pipefail
+          agents="$(curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/agents")"
+          row="$(
+            echo "$agents" | jq -c --arg dc "${TARGET_DC}" '
+              [
+                .agents[]
+                | (.datacenter // "" | ascii_downcase) as $agent_dc
+                | (.status // "" | ascii_downcase) as $status
+                | select(.verified == true)
+                | select((.health_status // "" | ascii_downcase) == "healthy")
+                | select((.node_size // "" | ascii_downcase) == "llm")
+                | select($agent_dc == ($dc | ascii_downcase))
+                | select($status == "undeployed" or $status == "deployed")
+                | select((.mrtd // "") != "")
+                | (
+                    .rtmrs
+                    // {
+                      rtmr0: (.attestation.tdx.measurements.rtmr0 // ""),
+                      rtmr1: (.attestation.tdx.measurements.rtmr1 // ""),
+                      rtmr2: (.attestation.tdx.measurements.rtmr2 // ""),
+                      rtmr3: (.attestation.tdx.measurements.rtmr3 // "")
+                    }
+                  ) as $resolved_rtmrs
+                | select(($resolved_rtmrs.rtmr0 // "") != "" and ($resolved_rtmrs.rtmr1 // "") != "" and ($resolved_rtmrs.rtmr2 // "") != "" and ($resolved_rtmrs.rtmr3 // "") != "")
+                | . + {_resolved_rtmrs: $resolved_rtmrs}
+              ] | first // empty
+            '
+          )"
+          if [ -z "$row" ] || [ "$row" = "null" ]; then
+            echo "::error::No verified healthy GCP llm agent with MRTD/RTMRs found in datacenter '${TARGET_DC}'."
+            echo "::error::Agents in this datacenter:"
+            echo "$agents" | jq -r --arg dc "${TARGET_DC}" '
+              [.agents[]
+               | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
+               | {agent_id, status, health_status, verified, node_size, datacenter, mrtd, has_rtmrs:(.rtmrs != null), deployed_app}
+              ]'
+            exit 1
+          fi
+
+          mrtd="$(echo "$row" | jq -r '.mrtd')"
+          rtmrs="$(echo "$row" | jq -c '._resolved_rtmrs')"
+          mrtds_by_size="$(jq -cn --arg mrtd "$mrtd" '{llm:$mrtd}')"
+          rtmrs_by_size="$(jq -cn --argjson rtmrs "$rtmrs" '{llm:$rtmrs}')"
+
+          echo "mrtds_by_size=$mrtds_by_size" >> "$GITHUB_OUTPUT"
+          echo "rtmrs_by_size=$rtmrs_by_size" >> "$GITHUB_OUTPUT"
+          echo "Using GCP llm baseline MRTD: ${mrtd:0:16}..."
+
+      - name: Bootstrap measuring-enclave-llm on GCP
+        if: steps.measurer.outputs.healthy != 'true'
+        env:
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+          NODE_SIZE: llm
+          MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+          ALLOWED_CLOUDS: gcp
+          ALLOWED_DATACENTERS: ${{ steps.target.outputs.datacenter }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.gcp_baseline.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.gcp_baseline.outputs.rtmrs_by_size }}
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
+          CP_URL="${CP_URL}" \
+          ADMIN_TOKEN="${ADMIN_TOKEN}" \
+          ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+          NODE_SIZE="${NODE_SIZE}" \
+          MEASURER_IMAGE="${MEASURER_IMAGE}" \
+          ALLOWED_CLOUDS="${ALLOWED_CLOUDS}" \
+          ALLOWED_DATACENTERS="${ALLOWED_DATACENTERS}" \
+          TRUSTED_AGENT_MRTDS_BY_SIZE="${TRUSTED_AGENT_MRTDS_BY_SIZE}" \
+          TRUSTED_AGENT_RTMRS_BY_SIZE="${TRUSTED_AGENT_RTMRS_BY_SIZE}" \
+          ./scripts/bootstrap_shared_measuring_enclave.sh
 
       - name: Register private-llm app
         uses: ./.github/actions/register-app
         with:
           name: private-llm
           description: "Private LLM - Ollama running in a TDX enclave"
-          control_plane_url: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+          control_plane_url: ${{ env.CP_URL }}
 
       - name: Deploy private-llm on GCP
         id: deploy
@@ -47,14 +182,14 @@ jobs:
           compose_file: examples/private-llm/docker-compose.yml
           service_name: private-llm
           health_endpoint: /
-          control_plane_url: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+          control_plane_url: ${{ env.CP_URL }}
           agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
           node_size: llm
-          gcp_datacenter: ${{ github.event.inputs.gcp_datacenter || 'gcp:us-central1-a' }}
+          gcp_datacenter: ${{ steps.target.outputs.datacenter }}
           cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
           cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
-          gcp_zone: ${{ github.event.inputs.gcp_zone || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
+          gcp_zone: ${{ env.GCP_ZONE_LIST }}
           wait_seconds: ${{ github.event.inputs.wait_seconds || '1800' }}
 
       - name: Set up Python
@@ -68,11 +203,15 @@ jobs:
       - name: Smoke test private-llm
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
-          EASYENCLAVE_URL: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+          EASYENCLAVE_URL: ${{ env.CP_URL }}
         run: python3 examples/private-llm/test.py
 
       - name: Summary
         run: |
+          echo "gcp_datacenter=${{ steps.target.outputs.datacenter }}"
+          echo "measurer_already_healthy=${{ steps.measurer.outputs.healthy }}"
+          echo "preflight_gcp_eligible_agents=${{ steps.preflight_measurer.outputs.gcp_eligible_agents }}"
+          echo "preflight_gcp_provisioned=${{ steps.preflight_measurer.outputs.gcp_provisioned }}"
           echo "deployment_id=${{ steps.deploy.outputs.deployment_id }}"
           echo "agent_id=${{ steps.deploy.outputs.agent_id }}"
           echo "service_url=${{ steps.deploy.outputs.service_url }}"

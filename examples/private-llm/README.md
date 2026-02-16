@@ -90,3 +90,7 @@ The [Deploy Examples](../../.github/workflows/deploy-examples.yml) workflow runs
 All paths retry for up to 5 minutes while the model loads, then assert a non-empty response.
 
 The test uses `smollm2:135m` (135M params, ~100MB) for fast pull and load times in CI.
+
+For a full GCP end-to-end LLM run (capacity dispatch + measurer bootstrap + deploy + OpenAI-compatible smoke test), use:
+
+- [`.github/workflows/gcp-bootstrap-llm.yml`](../../.github/workflows/gcp-bootstrap-llm.yml)

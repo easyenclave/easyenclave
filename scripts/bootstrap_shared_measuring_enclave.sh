@@ -7,6 +7,7 @@
 # Required env:
 #   CP_URL
 #   ADMIN_PASSWORD  (optional control plane admin password; falls back to /auth/methods generated_password)
+#   ADMIN_TOKEN     (optional control plane admin bearer token; takes precedence over ADMIN_PASSWORD)
 #   NODE_SIZE       (tiny|standard|llm)
 #   MEASURER_IMAGE  (ghcr.io/.../measuring-enclave:tag)
 #   TRUSTED_AGENT_MRTDS_BY_SIZE (JSON map, e.g. {"llm":"...","tiny":"..."})
@@ -70,9 +71,11 @@ login_with_password() {
   return 0
 }
 
-ADMIN_TOKEN=""
-if [ -n "${ADMIN_PASSWORD:-}" ]; then
-  ADMIN_TOKEN="$(login_with_password "${ADMIN_PASSWORD}" || true)"
+ADMIN_TOKEN="${ADMIN_TOKEN:-}"
+if [ -z "$ADMIN_TOKEN" ]; then
+  if [ -n "${ADMIN_PASSWORD:-}" ]; then
+    ADMIN_TOKEN="$(login_with_password "${ADMIN_PASSWORD}" || true)"
+  fi
 fi
 if [ -z "$ADMIN_TOKEN" ]; then
   generated_pw="$(curl -sSf "${CP_URL}/auth/methods" | jq -r '.generated_password // empty' || true)"
@@ -81,7 +84,7 @@ if [ -z "$ADMIN_TOKEN" ]; then
   fi
 fi
 if [ -z "$ADMIN_TOKEN" ] || [ "$ADMIN_TOKEN" = "null" ]; then
-  echo "::error::Admin login failed (no valid password from ADMIN_PASSWORD or /auth/methods generated_password)"
+  echo "::error::Admin login failed (set ADMIN_TOKEN or provide ADMIN_PASSWORD / generated_password)."
   exit 1
 fi
 
