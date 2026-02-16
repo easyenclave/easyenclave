@@ -1101,9 +1101,13 @@ To start a new EasyEnclave network:
 
                             for bootstrap_size in bootstrap_sizes:
                                 size_mem, size_vcpus, size_disk = NODE_SIZES[bootstrap_size]
+                                bootstrap_vm_id = (
+                                    f"bootstrap-{bootstrap_size}-{uuid.uuid4().hex[:8]}"
+                                )
                                 bootstrap_config = {
                                     "control_plane_url": url,
                                     "intel_api_key": intel_api_key,
+                                    "vm_id": bootstrap_vm_id,
                                 }
                                 if datacenter:
                                     bootstrap_config["datacenter"] = datacenter
@@ -1130,6 +1134,7 @@ To start a new EasyEnclave network:
                                     disk_gib=size_disk,
                                 )
                                 bootstrap_agent["node_size"] = bootstrap_size
+                                bootstrap_agent["launcher_vm_name"] = f"tdx-agent-{bootstrap_vm_id}"
 
                                 bootstrap_ip = mgr.get_vm_ip(bootstrap_agent["name"], timeout=180)
                                 if not bootstrap_ip:
@@ -1144,12 +1149,12 @@ To start a new EasyEnclave network:
 
                                 ready_agent = _wait_for_agent_ready(
                                     url,
-                                    bootstrap_agent["name"],
+                                    bootstrap_agent["launcher_vm_name"],
                                     timeout=args.bootstrap_timeout,
                                 )
                                 if not ready_agent:
                                     print(
-                                        f"Error: Bootstrap agent (size={bootstrap_size}) did not become verified+healthy in time.",
+                                        f"Error: Bootstrap agent (size={bootstrap_size}) did not become verified+registered in time.",
                                         file=sys.stderr,
                                     )
                                     mgr._dump_serial_log(bootstrap_agent.get("serial_log"))
