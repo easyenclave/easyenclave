@@ -78,7 +78,7 @@
                         </svg>
                     </div>
                     <h3>Automated Measurement</h3>
-                    <p>A measuring enclave running in TDX resolves your Docker image tags to immutable SHA256 digests. Only measured versions become attested.</p>
+                    <p>The control plane routes each version to an attested measurer app (<code>measuring-enclave</code> or a size variant). It resolves tags to immutable SHA256 digests and records per-size trusted values before deploy.</p>
                 </div>
                 <div class="flow-arrow">&#8594;</div>
                 <div class="flow-step">
@@ -458,7 +458,7 @@
                 <div class="security-card">
                     <span class="security-label">Automated attestation</span>
                     <h3>Measuring Enclave</h3>
-                    <p>A dedicated TDX enclave resolves Docker image tags to immutable SHA256 digests automatically, removing human judgment from the measurement loop.</p>
+                    <p>Measurer apps run on verified tiny TDX capacity (bare metal or GCP), resolve tags to immutable digests, and submit node-size-specific measurements that deployment must match.</p>
                 </div>
                 <div class="security-card">
                     <span class="security-label">Simple CI policy</span>

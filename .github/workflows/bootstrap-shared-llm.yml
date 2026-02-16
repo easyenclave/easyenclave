@@ -62,35 +62,60 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
+      - name: Cleanup stale CI LLM VMs (preflight, best effort)
+        run: |
+          set -euo pipefail
+          bash ./scripts/cleanup_ci_llm_vms.sh || true
+
       - name: Build and measure trusted values (llm)
         id: measure
         env:
           MEASURE_SIZES: llm
         run: ./scripts/ci-build-measure.sh
 
-      - name: Ensure at least 2 verified undeployed llm agents exist
+      - name: Ensure baremetal LLM capacity for measurer + private-llm
         id: ensure_agents
         shell: bash
         run: |
           set -euo pipefail
           created=()
 
-          count_eligible() {
+          count_non_measurer() {
             curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
               [.agents[]
                 | select(.verified == true)
                 | select((.health_status // "" | ascii_downcase) == "healthy")
-                | select((.status // "" | ascii_downcase) == "undeployed")
+                | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
                 | select((.node_size // "" | ascii_downcase) == "llm")
+                | select((.datacenter // "" | ascii_downcase) == "baremetal:github-runner")
+                | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
               ] | length'
           }
 
-          eligible="$(count_eligible || echo 0)"
-          echo "Eligible llm agents (verified+healthy+undeployed): $eligible"
+          count_measurer() {
+            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+              [.agents[]
+                | select(.verified == true)
+                | select((.health_status // "" | ascii_downcase) == "healthy")
+                | select((.status // "" | ascii_downcase) == "deployed")
+                | select((.node_size // "" | ascii_downcase) == "llm")
+                | select((.datacenter // "" | ascii_downcase) == "baremetal:github-runner")
+                | select((.deployed_app // "") == "measuring-enclave-llm")
+              ] | length'
+          }
 
-          while [ "${eligible:-0}" -lt 2 ]; do
-            echo "Booting a new llm agent VM (need 2 total)..."
-            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --easyenclave-url "${CP_URL}" --intel-api-key "${INTEL_API_KEY}" --wait)"
+          non_measurer="$(count_non_measurer || echo 0)"
+          measurer="$(count_measurer || echo 0)"
+          required_non_measurer=2
+          if [ "${measurer:-0}" -ge 1 ]; then
+            required_non_measurer=1
+          fi
+          echo "Baremetal llm non-measurer candidates: $non_measurer (required: $required_non_measurer)"
+          echo "Baremetal llm measurer agents: $measurer"
+
+          while [ "${non_measurer:-0}" -lt "${required_non_measurer}" ]; do
+            echo "Booting a new baremetal llm agent VM..."
+            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --intel-api-key "${INTEL_API_KEY}" --wait)"
             name="$(echo "$vm_json" | jq -r '.name // empty')"
             if [ -n "$name" ]; then
               created+=("$name")
@@ -98,15 +123,20 @@ jobs:
 
             # Give the agent time to register and pass verification.
             for _ in {1..60}; do
-              eligible="$(count_eligible || echo 0)"
-              if [ "${eligible:-0}" -ge 2 ]; then
+              non_measurer="$(count_non_measurer || echo 0)"
+              if [ "${non_measurer:-0}" -ge "${required_non_measurer}" ]; then
                 break
               fi
               sleep 5
             done
 
-            eligible="$(count_eligible || echo 0)"
-            echo "Eligible llm agents now: $eligible"
+            non_measurer="$(count_non_measurer || echo 0)"
+            measurer="$(count_measurer || echo 0)"
+            if [ "${measurer:-0}" -ge 1 ]; then
+              required_non_measurer=1
+            fi
+            echo "Baremetal llm non-measurer candidates now: $non_measurer (required: $required_non_measurer)"
+            echo "Baremetal llm measurer agents now: $measurer"
           done
 
           printf '%s\n' "${created[@]:-}" > /tmp/new_llm_vms.txt || true
@@ -116,6 +146,8 @@ jobs:
         env:
           ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
           NODE_SIZE: llm
+          ALLOWED_CLOUDS: baremetal
+          ALLOWED_DATACENTERS: baremetal:github-runner
           TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
         run: |
@@ -125,9 +157,33 @@ jobs:
           ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
           NODE_SIZE="${NODE_SIZE}" \
           MEASURER_IMAGE="${MEASURER_IMAGE}" \
+          ALLOWED_CLOUDS="${ALLOWED_CLOUDS}" \
+          ALLOWED_DATACENTERS="${ALLOWED_DATACENTERS}" \
           TRUSTED_AGENT_MRTDS_BY_SIZE="${TRUSTED_AGENT_MRTDS_BY_SIZE}" \
           TRUSTED_AGENT_RTMRS_BY_SIZE="${TRUSTED_AGENT_RTMRS_BY_SIZE}" \
           ./scripts/bootstrap_shared_measuring_enclave.sh
+
+      - name: Verify deployable baremetal llm agent exists
+        run: |
+          set -euo pipefail
+          count="$(curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+            [.agents[]
+              | select(.verified == true)
+              | select((.health_status // "" | ascii_downcase) == "healthy")
+              | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
+              | select((.node_size // "" | ascii_downcase) == "llm")
+              | select((.datacenter // "" | ascii_downcase) == "baremetal:github-runner")
+              | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
+            ] | length
+          ')"
+          echo "Deployable baremetal llm candidates: $count"
+          if [ "${count:-0}" -lt 1 ]; then
+            echo "::error::No deployable baremetal llm agent available for private-llm"
+            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+              [.agents[] | select((.node_size // "" | ascii_downcase) == "llm")
+                | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
+            exit 1
+          fi
 
       - name: Register private-llm app
         uses: ./.github/actions/register-app
@@ -148,6 +204,7 @@ jobs:
           github_owner: ${{ github.repository_owner }}
           node_size: llm
           allowed_clouds: baremetal
+          allowed_datacenters: baremetal:github-runner
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -185,3 +242,9 @@ jobs:
             echo "Deleting VM: $vm"
             python3 infra/tdx_cli.py vm delete "$vm" --easyenclave-url "${CP_URL}" --admin-token "${ADMIN_TOKEN}" || true
           done < /tmp/new_llm_vms.txt
+
+      - name: Cleanup stale CI LLM VMs (post, best effort)
+        if: always() && github.event.inputs.keep_new_vms != 'true'
+        run: |
+          set -euo pipefail
+          bash ./scripts/cleanup_ci_llm_vms.sh || true

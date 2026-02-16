@@ -153,6 +153,14 @@ See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LL
 | `bootstrap.yml` | Manual | Bootstrap infrastructure: control plane, agents, trusted MRTDs |
 | `deploy.yml` | Push to main | Auto-deploy private-llm demo to existing infrastructure |
 
+#### Placement and Measurement Model
+
+- Deploy requests should normally set `node_size` and optional datacenter filters; the control plane picks a verified healthy agent.
+- Direct `agent_id` targeting is reserved for controlled upgrade/recovery flows.
+- App versions are attested per `node_size` before deployment is allowed.
+- Measurement jobs are routed to `measuring-enclave` (default) or `measuring-enclave-<node_size>` variants.
+- Measurer capacity can run on verified tiny agents in either bare metal or GCP datacenters.
+
 #### Bootstrap Actions
 
 ```bash
