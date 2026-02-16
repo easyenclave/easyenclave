@@ -56,8 +56,7 @@ jobs:
             exit 1
           fi
           if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
-            echo "::error::Missing CP_ADMIN_PASSWORD secret"
-            exit 1
+            echo "::warning::CP_ADMIN_PASSWORD secret is empty; bootstrap will fall back to /auth/methods generated_password"
           fi
 
       - name: Install Nix

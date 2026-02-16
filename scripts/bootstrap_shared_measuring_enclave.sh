@@ -6,7 +6,7 @@
 #
 # Required env:
 #   CP_URL
-#   ADMIN_PASSWORD  (control plane admin password)
+#   ADMIN_PASSWORD  (optional control plane admin password; falls back to /auth/methods generated_password)
 #   NODE_SIZE       (tiny|standard|llm)
 #   MEASURER_IMAGE  (ghcr.io/.../measuring-enclave:tag)
 #   TRUSTED_AGENT_MRTDS_BY_SIZE (JSON map, e.g. {"llm":"...","tiny":"..."})
@@ -22,7 +22,7 @@ require() {
   done
 }
 
-require CP_URL ADMIN_PASSWORD NODE_SIZE MEASURER_IMAGE TRUSTED_AGENT_MRTDS_BY_SIZE TRUSTED_AGENT_RTMRS_BY_SIZE
+require CP_URL NODE_SIZE MEASURER_IMAGE TRUSTED_AGENT_MRTDS_BY_SIZE TRUSTED_AGENT_RTMRS_BY_SIZE
 
 case "$NODE_SIZE" in
   tiny|standard|llm) ;;
@@ -35,14 +35,40 @@ esac
 APP_NAME="measuring-enclave-${NODE_SIZE}"
 DESCRIPTION="Measuring enclave for ${NODE_SIZE} node attestation"
 
-ADMIN_TOKEN="$(
-  curl -sf "${CP_URL}/admin/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"password\": \"${ADMIN_PASSWORD}\"}" \
-  | jq -r '.token'
-)"
+login_with_password() {
+  local candidate="$1"
+  [ -n "$candidate" ] || return 1
+  local body code token
+  body="$(mktemp)"
+  code="$(
+    curl -sS -o "$body" -w "%{http_code}" "${CP_URL}/admin/login" \
+      -X POST \
+      -H "Content-Type: application/json" \
+      -d "{\"password\": \"${candidate}\"}" || echo 000
+  )"
+  if [ "$code" != "200" ]; then
+    rm -f "$body"
+    return 1
+  fi
+  token="$(jq -r '.token // empty' "$body" 2>/dev/null || true)"
+  rm -f "$body"
+  [ -n "$token" ] && [ "$token" != "null" ] || return 1
+  printf '%s' "$token"
+  return 0
+}
+
+ADMIN_TOKEN=""
+if [ -n "${ADMIN_PASSWORD:-}" ]; then
+  ADMIN_TOKEN="$(login_with_password "${ADMIN_PASSWORD}" || true)"
+fi
+if [ -z "$ADMIN_TOKEN" ]; then
+  generated_pw="$(curl -sSf "${CP_URL}/auth/methods" | jq -r '.generated_password // empty' || true)"
+  if [ -n "$generated_pw" ]; then
+    ADMIN_TOKEN="$(login_with_password "$generated_pw" || true)"
+  fi
+fi
 if [ -z "$ADMIN_TOKEN" ] || [ "$ADMIN_TOKEN" = "null" ]; then
-  echo "::error::Admin login failed (missing token)"
+  echo "::error::Admin login failed (no valid password from ADMIN_PASSWORD or /auth/methods generated_password)"
   exit 1
 fi
 

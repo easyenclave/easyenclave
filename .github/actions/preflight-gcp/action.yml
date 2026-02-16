@@ -87,6 +87,29 @@ runs:
       run: |
         set -euo pipefail
 
+        login_with_password() {
+          local candidate="$1"
+          [ -n "$candidate" ] || return 1
+          local body code token
+          body="$(mktemp)"
+          code="$(
+            curl -sS -o "$body" -w "%{http_code}" -X POST "$CP_URL/admin/login" \
+              -H "Content-Type: application/json" \
+              -d "{\"password\":\"$candidate\"}" || echo 000
+          )"
+          if [ "$code" != "200" ]; then
+            rm -f "$body"
+            return 1
+          fi
+          token="$(jq -r '.token // empty' "$body" 2>/dev/null || true)"
+          rm -f "$body"
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            return 1
+          fi
+          printf '%s' "$token"
+          return 0
+        }
+
         if [ -n "${CP_ADMIN_TOKEN:-}" ]; then
           echo "Using CP admin token from inputs"
           echo "cp_admin_token=$CP_ADMIN_TOKEN" >> "$GITHUB_OUTPUT"
@@ -95,21 +118,24 @@ runs:
         fi
 
         pw="${CP_ADMIN_PASSWORD:-}"
-        if [ -z "$pw" ]; then
+        token=""
+        if [ -n "$pw" ]; then
+          token="$(login_with_password "$pw" || true)"
+        fi
+
+        if [ -z "$token" ]; then
           # Backward compat: CI control plane sometimes exposes an auto-generated password.
-          pw="$(curl -sSf "$CP_URL/auth/methods" | jq -r '.generated_password // empty' || true)"
+          generated_pw="$(curl -sSf "$CP_URL/auth/methods" | jq -r '.generated_password // empty' || true)"
+          if [ -n "$generated_pw" ] && [ "$generated_pw" != "$pw" ]; then
+            echo "::warning::Provided CP admin password was rejected; retrying with generated password from /auth/methods."
+          fi
+          if [ -n "$generated_pw" ]; then
+            token="$(login_with_password "$generated_pw" || true)"
+          fi
         fi
 
-        if [ -z "$pw" ]; then
+        if [ -z "$token" ]; then
           echo "::warning::No CP admin password available; provisioning can still create a VM, but it likely cannot be auto-trusted."
-          exit 0
-        fi
-
-        resp="$(curl -sSf -X POST "$CP_URL/admin/login" -H "Content-Type: application/json" -d "{\"password\":\"$pw\"}")"
-        token="$(echo "$resp" | jq -r '.token // empty')"
-        if [ -z "$token" ] || [ "$token" = "null" ]; then
-          echo "::warning::Failed to obtain CP admin token via password login."
-          echo "$resp" | jq . || true
           exit 0
         fi
 
