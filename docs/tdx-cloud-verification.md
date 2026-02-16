@@ -35,19 +35,15 @@ DC_AZURE="azure:eastus2-1" \
 ## GitHub workflow
 Use `Verify TDX Clouds` (`.github/workflows/verify-tdx-clouds.yml`) via `workflow_dispatch`.
 
-For full bring-up + verification + cleanup of real cloud agents, use
-`Cloud Confidential Agents` (`.github/workflows/cloud-confidential-agents.yml`).
-It provisions one confidential VM agent per enabled cloud, waits for registration,
-runs policy verification, and always cleans up tagged resources.
+For GCP LLM bring-up + deploy smoke, use
+`GCP Bootstrap LLM` (`.github/workflows/gcp-bootstrap-llm.yml`).
+It requests capacity from the control plane, deploys `private-llm` to GCP-only
+eligible agents, and runs the example smoke test.
 
 ## Credential plan for cloud agent bring-up
-Required repository secrets for cloud bring-up workflow:
-1. `INTEL_API_KEY`
-2. GCP:
-   - `GCP_PROJECT_ID`
-   - either OIDC (`GCP_WORKLOAD_IDENTITY_PROVIDER` + `GCP_SERVICE_ACCOUNT`)
-     or JSON key (`GCP_SERVICE_ACCOUNT_KEY`)
-3. Azure:
-   - `AZURE_RESOURCE_GROUP`
-   - either OIDC (`AZURE_CLIENT_ID` + `AZURE_TENANT_ID` + `AZURE_SUBSCRIPTION_ID`)
-     or JSON credentials (`AZURE_CREDENTIALS`)
+Required repository secrets for CP-driven bring-up workflows:
+1. `CP_ADMIN_TOKEN` (preferred) or `CP_ADMIN_PASSWORD`
+2. `AGENT_ADMIN_PASSWORD`
+
+Cloud credentials are expected to be configured in the control plane
+provisioner integration, not in GitHub Actions.

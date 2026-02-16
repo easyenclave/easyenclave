@@ -1,0 +1,80 @@
+name: GCP Bootstrap LLM
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Control plane URL"
+        required: false
+        default: "https://app.easyenclave.com"
+      gcp_datacenter:
+        description: "Preferred GCP datacenter label"
+        required: false
+        default: "gcp:us-central1-a"
+      gcp_zone:
+        description: "Fallback zone list used only to derive datacenter when unset"
+        required: false
+        default: "us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b"
+      wait_seconds:
+        description: "Seconds to wait for CP-dispatched GCP capacity"
+        required: false
+        default: "1800"
+
+concurrency:
+  group: gcp-bootstrap-llm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap-llm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Register private-llm app
+        uses: ./.github/actions/register-app
+        with:
+          name: private-llm
+          description: "Private LLM - Ollama running in a TDX enclave"
+          control_plane_url: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+
+      - name: Deploy private-llm on GCP
+        id: deploy
+        uses: ./.github/actions/gcp-deploy-example
+        with:
+          app_name: private-llm
+          compose_file: examples/private-llm/docker-compose.yml
+          service_name: private-llm
+          health_endpoint: /
+          control_plane_url: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+          github_owner: ${{ github.repository_owner }}
+          node_size: llm
+          gcp_datacenter: ${{ github.event.inputs.gcp_datacenter || 'gcp:us-central1-a' }}
+          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
+          cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
+          gcp_zone: ${{ github.event.inputs.gcp_zone || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
+          wait_seconds: ${{ github.event.inputs.wait_seconds || '1800' }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SDK and OpenAI client
+        run: pip install ./sdk/ openai
+
+      - name: Smoke test private-llm
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
+          EASYENCLAVE_URL: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+        run: python3 examples/private-llm/test.py
+
+      - name: Summary
+        run: |
+          echo "deployment_id=${{ steps.deploy.outputs.deployment_id }}"
+          echo "agent_id=${{ steps.deploy.outputs.agent_id }}"
+          echo "service_url=${{ steps.deploy.outputs.service_url }}"
+          echo "gcp_eligible_agents=${{ steps.deploy.outputs.gcp_eligible_agents }}"
+          echo "gcp_provisioned=${{ steps.deploy.outputs.gcp_provisioned }}"
