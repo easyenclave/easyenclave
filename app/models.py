@@ -189,6 +189,65 @@ class AgentCapacityReconcileResponse(BaseModel):
     dispatches: list[AgentCapacityDispatchResult] = Field(default_factory=list)
 
 
+class CapacityPoolTargetUpsertRequest(BaseModel):
+    """Create or update a warm-capacity target for one pool."""
+
+    datacenter: str
+    node_size: str = ""
+    min_warm_count: int = Field(default=0, ge=0)
+    enabled: bool = True
+    require_verified: bool = True
+    require_healthy: bool = True
+    require_hostname: bool = True
+    dispatch: bool = False
+    reason: str = "capacity-pool-controller"
+
+
+class CapacityPoolTargetView(BaseModel):
+    """Warm-capacity target plus current reservation state."""
+
+    datacenter: str
+    node_size: str = ""
+    min_warm_count: int
+    enabled: bool
+    require_verified: bool
+    require_healthy: bool
+    require_hostname: bool
+    dispatch: bool
+    reason: str
+    eligible_agents: int = 0
+    open_reservations: int = 0
+    shortfall: int = 0
+
+
+class CapacityPoolTargetListResponse(BaseModel):
+    """Admin response for warm-capacity pool targets."""
+
+    targets: list[CapacityPoolTargetView] = Field(default_factory=list)
+    total: int = 0
+
+
+class CapacityReservationView(BaseModel):
+    """Admin view for one capacity reservation."""
+
+    reservation_id: str
+    agent_id: str
+    datacenter: str
+    node_size: str = ""
+    status: str
+    deployment_id: str | None = None
+    note: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+class CapacityReservationListResponse(BaseModel):
+    """Admin response for capacity reservations."""
+
+    reservations: list[CapacityReservationView] = Field(default_factory=list)
+    total: int = 0
+
+
 class CloudResourceAgent(BaseModel):
     """Observed cloud resource represented by a registered agent."""
 

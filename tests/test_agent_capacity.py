@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.auth import verify_admin_token
-from app.db_models import Agent
-from app.main import app
-from app.storage import agent_store
+from app.db_models import Agent, App, AppVersion
+from app.main import app, reconcile_capacity_targets_once
+from app.storage import (
+    agent_store,
+    app_store,
+    app_version_store,
+    capacity_pool_target_store,
+    capacity_reservation_store,
+)
 
 
 async def _mock_verify_admin_token():
@@ -184,3 +192,117 @@ def test_reconcile_requires_admin_auth(client):
         },
     )
     assert resp.status_code in (401, 403)
+
+
+def test_reconcile_once_creates_open_reservation_for_target():
+    agent = _mk_agent(
+        vm_name="gcp-tiny-1",
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+    )
+    agent_store.register(agent)
+    capacity_pool_target_store.upsert(
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+        min_warm_count=1,
+        enabled=True,
+        dispatch=False,
+    )
+
+    stats = asyncio.run(reconcile_capacity_targets_once())
+    assert stats["targets"] == 1
+    assert stats["created"] == 1
+    assert stats["shortfall"] == 0
+
+    open_reservations = capacity_reservation_store.list("open")
+    assert len(open_reservations) == 1
+    assert open_reservations[0].agent_id == agent.agent_id
+    assert open_reservations[0].datacenter == "gcp:us-central1-a"
+    assert open_reservations[0].node_size == "tiny"
+
+
+def test_preflight_returns_no_warm_capacity_when_targets_enabled(client):
+    agent = _mk_agent(
+        vm_name="gcp-tiny-2",
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+    )
+    agent_store.register(agent)
+
+    app_store.register(App(name="hello-tdx"))
+    app_version_store.create(
+        AppVersion(
+            app_name="hello-tdx",
+            version="1.0.0",
+            node_size="tiny",
+            compose="services:\n  app:\n    image: hello:latest\n",
+            status="attested",
+            mrtd=agent.mrtd,
+            attestation={
+                "measurement_type": "agent_reference",
+                "node_size": "tiny",
+                "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+            },
+        )
+    )
+    capacity_pool_target_store.upsert(
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+        min_warm_count=1,
+        enabled=True,
+        dispatch=False,
+    )
+
+    resp = client.post(
+        "/api/v1/apps/hello-tdx/versions/1.0.0/deploy/preflight",
+        json={"node_size": "tiny", "allowed_datacenters": ["gcp:us-central1-a"]},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["eligible"] is False
+    assert any(issue["code"] == "NO_WARM_CAPACITY" for issue in data["issues"])
+
+
+def test_preflight_returns_no_verified_capacity_when_targets_enabled(client):
+    agent = _mk_agent(
+        vm_name="gcp-tiny-3",
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+        verified=False,
+    )
+    agent_store.register(agent)
+
+    app_store.register(App(name="hello-tdx"))
+    app_version_store.create(
+        AppVersion(
+            app_name="hello-tdx",
+            version="1.0.0",
+            node_size="tiny",
+            compose="services:\n  app:\n    image: hello:latest\n",
+            status="attested",
+            mrtd="f" * 96,
+            attestation={
+                "measurement_type": "agent_reference",
+                "node_size": "tiny",
+                "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+            },
+        )
+    )
+    capacity_pool_target_store.upsert(
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+        min_warm_count=1,
+        enabled=True,
+        dispatch=False,
+    )
+
+    resp = client.post(
+        "/api/v1/apps/hello-tdx/versions/1.0.0/deploy/preflight",
+        json={"node_size": "tiny", "allowed_datacenters": ["gcp:us-central1-a"]},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["eligible"] is False
+    assert any(issue["code"] == "NO_VERIFIED_CAPACITY" for issue in data["issues"])

@@ -196,6 +196,22 @@ _reg(
     "Hours before a silent agent is deleted",
     "operational",
 )
+_reg(
+    "operational.capacity_reconcile_interval_seconds",
+    "CAPACITY_RECONCILE_INTERVAL_SECONDS",
+    "30",
+    False,
+    "Seconds between warm-capacity reconciliation passes",
+    "operational",
+)
+_reg(
+    "operational.capacity_dispatch_cooldown_seconds",
+    "CAPACITY_DISPATCH_COOLDOWN_SECONDS",
+    "300",
+    False,
+    "Minimum seconds between repeated dispatches for the same capacity pool",
+    "operational",
+)
 
 # External provisioner webhook
 _reg(

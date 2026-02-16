@@ -17,6 +17,8 @@ from .db_models import (
     App,
     AppRevenueShare,
     AppVersion,
+    CapacityPoolTarget,
+    CapacityReservation,
     Deployment,
     Service,
     Transaction,
@@ -34,6 +36,10 @@ def _aware(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _normalize_pool_value(value: str | None) -> str:
+    return (value or "").strip().lower()
 
 
 class ServiceStore:
@@ -395,6 +401,269 @@ class AgentStore:
         with get_db() as session:
             for a in session.exec(select(Agent)).all():
                 session.delete(a)
+
+
+class CapacityPoolTargetStore:
+    """Storage for desired warm-capacity targets per datacenter/node-size."""
+
+    def list(self, enabled_only: bool = False) -> list[CapacityPoolTarget]:
+        with get_db() as session:
+            stmt = select(CapacityPoolTarget)
+            if enabled_only:
+                stmt = stmt.where(CapacityPoolTarget.enabled)
+            return list(
+                session.exec(
+                    stmt.order_by(CapacityPoolTarget.datacenter, CapacityPoolTarget.node_size)
+                ).all()
+            )
+
+    def has_enabled_targets(self) -> bool:
+        with get_db() as session:
+            row = session.exec(
+                select(CapacityPoolTarget.target_id).where(CapacityPoolTarget.enabled).limit(1)
+            ).first()
+        return row is not None
+
+    def upsert(
+        self,
+        *,
+        datacenter: str,
+        node_size: str,
+        min_warm_count: int,
+        enabled: bool = True,
+        require_verified: bool = True,
+        require_healthy: bool = True,
+        require_hostname: bool = True,
+        dispatch: bool = False,
+        reason: str = "capacity-pool-controller",
+    ) -> CapacityPoolTarget:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        if not normalized_datacenter:
+            raise ValueError("datacenter is required")
+        if min_warm_count < 0:
+            raise ValueError("min_warm_count must be >= 0")
+        now = datetime.now(timezone.utc)
+        with get_db() as session:
+            existing = session.exec(
+                select(CapacityPoolTarget).where(
+                    CapacityPoolTarget.datacenter == normalized_datacenter,
+                    CapacityPoolTarget.node_size == normalized_node_size,
+                )
+            ).first()
+            if existing:
+                existing.min_warm_count = min_warm_count
+                existing.enabled = enabled
+                existing.require_verified = require_verified
+                existing.require_healthy = require_healthy
+                existing.require_hostname = require_hostname
+                existing.dispatch = dispatch
+                existing.reason = reason.strip() or "capacity-pool-controller"
+                existing.updated_at = now
+                session.add(existing)
+                return existing
+            obj = CapacityPoolTarget(
+                datacenter=normalized_datacenter,
+                node_size=normalized_node_size,
+                min_warm_count=min_warm_count,
+                enabled=enabled,
+                require_verified=require_verified,
+                require_healthy=require_healthy,
+                require_hostname=require_hostname,
+                dispatch=dispatch,
+                reason=reason.strip() or "capacity-pool-controller",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(obj)
+            return obj
+
+    def delete_pool(self, datacenter: str, node_size: str = "") -> bool:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        with get_db() as session:
+            obj = session.exec(
+                select(CapacityPoolTarget).where(
+                    CapacityPoolTarget.datacenter == normalized_datacenter,
+                    CapacityPoolTarget.node_size == normalized_node_size,
+                )
+            ).first()
+            if not obj:
+                return False
+            session.delete(obj)
+            return True
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for row in session.exec(select(CapacityPoolTarget)).all():
+                session.delete(row)
+
+
+class CapacityReservationStore:
+    """Storage for warm-capacity reservations."""
+
+    def list(self, status: str | None = None) -> list[CapacityReservation]:
+        normalized_status = _normalize_pool_value(status)
+        with get_db() as session:
+            stmt = select(CapacityReservation)
+            if normalized_status:
+                stmt = stmt.where(CapacityReservation.status == normalized_status)
+            return list(
+                session.exec(
+                    stmt.order_by(
+                        CapacityReservation.created_at, CapacityReservation.reservation_id
+                    )
+                ).all()
+            )
+
+    def list_open_by_pool(self, datacenter: str, node_size: str = "") -> list[CapacityReservation]:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        with get_db() as session:
+            return list(
+                session.exec(
+                    select(CapacityReservation)
+                    .where(
+                        CapacityReservation.status == "open",
+                        CapacityReservation.datacenter == normalized_datacenter,
+                        CapacityReservation.node_size == normalized_node_size,
+                    )
+                    .order_by(CapacityReservation.created_at, CapacityReservation.reservation_id)
+                ).all()
+            )
+
+    def list_open_by_agent_ids(self, agent_ids: list[str]) -> dict[str, CapacityReservation]:
+        if not agent_ids:
+            return {}
+        with get_db() as session:
+            rows = list(
+                session.exec(
+                    select(CapacityReservation)
+                    .where(
+                        CapacityReservation.status == "open",
+                        CapacityReservation.agent_id.in_(agent_ids),
+                    )
+                    .order_by(CapacityReservation.created_at, CapacityReservation.reservation_id)
+                ).all()
+            )
+        by_agent: dict[str, CapacityReservation] = {}
+        for row in rows:
+            if row.agent_id not in by_agent:
+                by_agent[row.agent_id] = row
+        return by_agent
+
+    def has_open_for_agent(self, agent_id: str) -> bool:
+        with get_db() as session:
+            row = session.exec(
+                select(CapacityReservation.reservation_id)
+                .where(
+                    CapacityReservation.status == "open",
+                    CapacityReservation.agent_id == agent_id,
+                )
+                .limit(1)
+            ).first()
+        return row is not None
+
+    def create_open(
+        self,
+        *,
+        agent_id: str,
+        datacenter: str,
+        node_size: str = "",
+        note: str = "",
+    ) -> CapacityReservation:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        now = datetime.now(timezone.utc)
+        with get_db() as session:
+            existing = session.exec(
+                select(CapacityReservation).where(
+                    CapacityReservation.status == "open",
+                    CapacityReservation.agent_id == agent_id,
+                )
+            ).first()
+            if existing:
+                existing.datacenter = normalized_datacenter
+                existing.node_size = normalized_node_size
+                existing.note = note
+                existing.updated_at = now
+                session.add(existing)
+                return existing
+
+            obj = CapacityReservation(
+                agent_id=agent_id,
+                datacenter=normalized_datacenter,
+                node_size=normalized_node_size,
+                status="open",
+                deployment_id=None,
+                note=note,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(obj)
+            return obj
+
+    def consume(self, reservation_id: str, deployment_id: str) -> bool:
+        now = datetime.now(timezone.utc)
+        with get_db() as session:
+            row = session.get(CapacityReservation, reservation_id)
+            if not row or row.status != "open":
+                return False
+            row.status = "consumed"
+            row.deployment_id = deployment_id
+            row.updated_at = now
+            session.add(row)
+            return True
+
+    def expire_open_for_pool_except(
+        self, *, datacenter: str, node_size: str = "", keep_agent_ids: set[str]
+    ) -> int:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        now = datetime.now(timezone.utc)
+        expired = 0
+        with get_db() as session:
+            rows = list(
+                session.exec(
+                    select(CapacityReservation).where(
+                        CapacityReservation.status == "open",
+                        CapacityReservation.datacenter == normalized_datacenter,
+                        CapacityReservation.node_size == normalized_node_size,
+                    )
+                ).all()
+            )
+            for row in rows:
+                if row.agent_id in keep_agent_ids:
+                    continue
+                row.status = "expired"
+                row.updated_at = now
+                session.add(row)
+                expired += 1
+        return expired
+
+    def expire_open_for_agent(self, agent_id: str) -> int:
+        now = datetime.now(timezone.utc)
+        expired = 0
+        with get_db() as session:
+            rows = list(
+                session.exec(
+                    select(CapacityReservation).where(
+                        CapacityReservation.status == "open",
+                        CapacityReservation.agent_id == agent_id,
+                    )
+                ).all()
+            )
+            for row in rows:
+                row.status = "expired"
+                row.updated_at = now
+                session.add(row)
+                expired += 1
+        return expired
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for row in session.exec(select(CapacityReservation)).all():
+                session.delete(row)
 
 
 class DeploymentStore:
@@ -1052,6 +1321,8 @@ class AdminSessionStore:
 # Global store instances
 store = ServiceStore()
 agent_store = AgentStore()
+capacity_pool_target_store = CapacityPoolTargetStore()
+capacity_reservation_store = CapacityReservationStore()
 deployment_store = DeploymentStore()
 app_store = AppStore()
 app_version_store = AppVersionStore()

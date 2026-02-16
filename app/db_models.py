@@ -95,6 +95,41 @@ class Agent(SQLModel, table=True):
     deployed_app: str | None = None
 
 
+class CapacityPoolTarget(SQLModel, table=True):
+    """Desired warm capacity for a datacenter/node-size pool."""
+
+    __tablename__ = "capacity_pool_targets"
+
+    target_id: str = Field(default_factory=generate_uuid, primary_key=True)
+    datacenter: str = Field(default="", index=True)
+    node_size: str = Field(default="", index=True)
+    min_warm_count: int = Field(default=0)
+    enabled: bool = Field(default=True, index=True)
+    require_verified: bool = Field(default=True)
+    require_healthy: bool = Field(default=True)
+    require_hostname: bool = Field(default=True)
+    dispatch: bool = Field(default=False)
+    reason: str = Field(default="capacity-pool-controller")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class CapacityReservation(SQLModel, table=True):
+    """Warm-capacity reservation mapped to one agent."""
+
+    __tablename__ = "capacity_reservations"
+
+    reservation_id: str = Field(default_factory=generate_uuid, primary_key=True)
+    agent_id: str = Field(index=True)
+    datacenter: str = Field(default="", index=True)
+    node_size: str = Field(default="", index=True)
+    status: str = Field(default="open", index=True)  # open|consumed|released|expired
+    deployment_id: str | None = Field(default=None, index=True)
+    note: str = Field(default="")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class Deployment(SQLModel, table=True):
     """Deployment record."""
 

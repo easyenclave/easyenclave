@@ -83,6 +83,11 @@ from .models import (
     AppVersionCreateRequest,
     AppVersionListResponse,
     AppVersionResponse,
+    CapacityPoolTargetListResponse,
+    CapacityPoolTargetUpsertRequest,
+    CapacityPoolTargetView,
+    CapacityReservationListResponse,
+    CapacityReservationView,
     CloudflareCleanupRequest,
     CloudflareCleanupResponse,
     CloudResourceAgent,
@@ -137,6 +142,8 @@ from .storage import (
     app_revenue_share_store,
     app_store,
     app_version_store,
+    capacity_pool_target_store,
+    capacity_reservation_store,
     deployment_store,
     list_trusted_mrtds,
     load_trusted_mrtds,
@@ -183,9 +190,12 @@ HEALTH_CHECK_INTERVAL = 60
 AGENT_HEALTH_CHECK_INTERVAL = 30  # Check agents every 30 seconds
 AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhealthy
 AGENT_STALE_CLEANUP_INTERVAL = 3600  # Run cleanup every hour
+CAPACITY_RECONCILE_DEFAULT_INTERVAL = 30
+CAPACITY_DISPATCH_DEFAULT_COOLDOWN = 300
 
 # Track when agents were last attested (for periodic re-attestation)
 _agent_last_attestation: dict[str, datetime] = {}
+_capacity_last_dispatch: dict[tuple[str, str], datetime] = {}
 
 
 async def check_service_health(service: Service) -> str:
@@ -611,6 +621,7 @@ async def background_stale_agent_cleanup():
                             )
 
                     # Delete agent record
+                    capacity_reservation_store.expire_open_for_agent(agent.agent_id)
                     agent_store.delete(agent.agent_id)
                     logger.info(
                         f"Deleted stale agent {agent.agent_id} "
@@ -661,9 +672,10 @@ async def lifespan(app: FastAPI):
 
     # Start stale agent cleanup task
     stale_agent_task = asyncio.create_task(background_stale_agent_cleanup())
+    capacity_pool_task = asyncio.create_task(background_capacity_pool_controller())
 
     logger.info(
-        "Started background tasks (health checkers, measurement processor, billing, session cleanup, nonce cleanup, stale agent cleanup)"
+        "Started background tasks (health checkers, measurement processor, billing, session cleanup, nonce cleanup, stale agent cleanup, capacity pool)"
     )
     yield
     # Shutdown
@@ -676,6 +688,7 @@ async def lifespan(app: FastAPI):
     session_cleanup_task.cancel()
     nonce_cleanup_task.cancel()
     stale_agent_task.cancel()
+    capacity_pool_task.cancel()
     for task in [
         service_health_task,
         agent_health_task,
@@ -686,6 +699,7 @@ async def lifespan(app: FastAPI):
         session_cleanup_task,
         nonce_cleanup_task,
         stale_agent_task,
+        capacity_pool_task,
     ]:
         try:
             await task
@@ -1195,6 +1209,323 @@ def _normalize_statuses(values: list[str]) -> set[str]:
     return {value.strip().lower() for value in values if isinstance(value, str) and value.strip()}
 
 
+def _normalize_pool_key(datacenter: str, node_size: str = "") -> tuple[str, str]:
+    return ((datacenter or "").strip().lower(), (node_size or "").strip().lower())
+
+
+def _agent_matches_capacity_target(
+    agent: Agent,
+    *,
+    datacenter: str,
+    node_size: str,
+    require_verified: bool,
+    require_healthy: bool,
+    require_hostname: bool,
+    allowed_statuses: set[str] | None = None,
+) -> bool:
+    agent_status = (agent.status or "").strip().lower()
+    if allowed_statuses is not None and agent_status not in allowed_statuses:
+        return False
+    if require_verified and not agent.verified:
+        return False
+    if require_healthy and (agent.health_status or "").strip().lower() != "healthy":
+        return False
+    if require_hostname and not (agent.hostname or "").strip():
+        return False
+    if (agent.datacenter or "").strip().lower() != datacenter:
+        return False
+    if node_size and (agent.node_size or "").strip().lower() != node_size:
+        return False
+    return True
+
+
+async def reconcile_capacity_targets_once() -> dict[str, int]:
+    """Reconcile open warm-capacity reservations to configured pool targets."""
+    targets = capacity_pool_target_store.list(enabled_only=True)
+    if not targets:
+        return {"targets": 0, "created": 0, "expired": 0, "shortfall": 0, "dispatched": 0}
+
+    agents = agent_store.list()
+    totals = {"targets": len(targets), "created": 0, "expired": 0, "shortfall": 0, "dispatched": 0}
+    cooldown_seconds = max(
+        5,
+        get_setting_int(
+            "operational.capacity_dispatch_cooldown_seconds",
+            fallback=CAPACITY_DISPATCH_DEFAULT_COOLDOWN,
+        ),
+    )
+    now = datetime.now(timezone.utc)
+
+    for target in targets:
+        target_datacenter, target_node_size = _normalize_pool_key(
+            target.datacenter, target.node_size
+        )
+        if not target_datacenter:
+            continue
+
+        eligible_agents = [
+            agent
+            for agent in agents
+            if _agent_matches_capacity_target(
+                agent,
+                datacenter=target_datacenter,
+                node_size=target_node_size,
+                require_verified=target.require_verified,
+                require_healthy=target.require_healthy,
+                require_hostname=target.require_hostname,
+                allowed_statuses={"undeployed"},
+            )
+        ]
+        eligible_agent_ids = {agent.agent_id for agent in eligible_agents}
+
+        open_reservations = capacity_reservation_store.list_open_by_pool(
+            target_datacenter, target_node_size
+        )
+        valid_open_agent_ids: list[str] = []
+        for reservation in open_reservations:
+            if (
+                reservation.agent_id in eligible_agent_ids
+                and reservation.agent_id not in valid_open_agent_ids
+            ):
+                valid_open_agent_ids.append(reservation.agent_id)
+
+        keep_open_agent_ids = set(valid_open_agent_ids[: target.min_warm_count])
+        totals["expired"] += capacity_reservation_store.expire_open_for_pool_except(
+            datacenter=target_datacenter,
+            node_size=target_node_size,
+            keep_agent_ids=keep_open_agent_ids,
+        )
+
+        open_count = len(keep_open_agent_ids)
+        if open_count < target.min_warm_count:
+            for agent in eligible_agents:
+                if open_count >= target.min_warm_count:
+                    break
+                if agent.agent_id in keep_open_agent_ids:
+                    continue
+                if capacity_reservation_store.has_open_for_agent(agent.agent_id):
+                    continue
+                capacity_reservation_store.create_open(
+                    agent_id=agent.agent_id,
+                    datacenter=target_datacenter,
+                    node_size=target_node_size,
+                    note=f"warm-capacity:{target_datacenter}:{target_node_size or 'default'}",
+                )
+                keep_open_agent_ids.add(agent.agent_id)
+                totals["created"] += 1
+                open_count += 1
+
+        shortfall = max(0, target.min_warm_count - open_count)
+        totals["shortfall"] += shortfall
+
+        if shortfall <= 0 or not target.dispatch:
+            continue
+
+        pool_key = (target_datacenter, target_node_size)
+        last_dispatch = _capacity_last_dispatch.get(pool_key)
+        if last_dispatch and (now - last_dispatch) < timedelta(seconds=cooldown_seconds):
+            continue
+
+        reason = (target.reason or "").strip() or "capacity-pool-controller"
+        dispatched, status_code, detail = await dispatch_provision_request(
+            datacenter=target_datacenter,
+            node_size=target_node_size,
+            count=shortfall,
+            reason=reason,
+        )
+        if dispatched:
+            _capacity_last_dispatch[pool_key] = now
+            totals["dispatched"] += 1
+        else:
+            logger.warning(
+                "Capacity dispatch failed for %s/%s: status=%s detail=%s",
+                target_datacenter,
+                target_node_size or "default",
+                status_code,
+                detail,
+            )
+
+    return totals
+
+
+async def background_capacity_pool_controller():
+    """Background controller that keeps warm-capacity reservations in sync with targets."""
+    while True:
+        interval_seconds = max(
+            5,
+            get_setting_int(
+                "operational.capacity_reconcile_interval_seconds",
+                fallback=CAPACITY_RECONCILE_DEFAULT_INTERVAL,
+            ),
+        )
+        try:
+            stats = await reconcile_capacity_targets_once()
+            if stats["targets"] > 0:
+                logger.info(
+                    "Capacity reconcile: targets=%d created=%d expired=%d shortfall=%d dispatched=%d",
+                    stats["targets"],
+                    stats["created"],
+                    stats["expired"],
+                    stats["shortfall"],
+                    stats["dispatched"],
+                )
+        except Exception as e:
+            logger.error(f"Capacity pool reconcile error: {e}")
+        await asyncio.sleep(interval_seconds)
+
+
+def _capacity_pool_target_view(
+    *,
+    datacenter: str,
+    node_size: str,
+    min_warm_count: int,
+    enabled: bool,
+    require_verified: bool,
+    require_healthy: bool,
+    require_hostname: bool,
+    dispatch: bool,
+    reason: str,
+    agents: list[Agent],
+) -> CapacityPoolTargetView:
+    eligible = [
+        agent
+        for agent in agents
+        if _agent_matches_capacity_target(
+            agent,
+            datacenter=datacenter,
+            node_size=node_size,
+            require_verified=require_verified,
+            require_healthy=require_healthy,
+            require_hostname=require_hostname,
+            allowed_statuses={"undeployed"},
+        )
+    ]
+    open_count = len(capacity_reservation_store.list_open_by_pool(datacenter, node_size))
+    return CapacityPoolTargetView(
+        datacenter=datacenter,
+        node_size=node_size,
+        min_warm_count=min_warm_count,
+        enabled=enabled,
+        require_verified=require_verified,
+        require_healthy=require_healthy,
+        require_hostname=require_hostname,
+        dispatch=dispatch,
+        reason=reason,
+        eligible_agents=len(eligible),
+        open_reservations=open_count,
+        shortfall=max(0, min_warm_count - open_count),
+    )
+
+
+@app.get(
+    "/api/v1/admin/agents/capacity/targets",
+    response_model=CapacityPoolTargetListResponse,
+)
+async def list_capacity_targets(_admin: bool = Depends(verify_admin_token)):
+    """List warm-capacity targets and current reservation status."""
+    targets = capacity_pool_target_store.list()
+    agents = agent_store.list()
+    views = [
+        _capacity_pool_target_view(
+            datacenter=(target.datacenter or "").strip().lower(),
+            node_size=(target.node_size or "").strip().lower(),
+            min_warm_count=target.min_warm_count,
+            enabled=target.enabled,
+            require_verified=target.require_verified,
+            require_healthy=target.require_healthy,
+            require_hostname=target.require_hostname,
+            dispatch=target.dispatch,
+            reason=target.reason,
+            agents=agents,
+        )
+        for target in targets
+    ]
+    return CapacityPoolTargetListResponse(targets=views, total=len(views))
+
+
+@app.put(
+    "/api/v1/admin/agents/capacity/targets",
+    response_model=CapacityPoolTargetView,
+)
+async def upsert_capacity_target(
+    request: CapacityPoolTargetUpsertRequest,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Create or update one warm-capacity target."""
+    try:
+        target = capacity_pool_target_store.upsert(
+            datacenter=request.datacenter,
+            node_size=request.node_size,
+            min_warm_count=request.min_warm_count,
+            enabled=request.enabled,
+            require_verified=request.require_verified,
+            require_healthy=request.require_healthy,
+            require_hostname=request.require_hostname,
+            dispatch=request.dispatch,
+            reason=request.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    datacenter, node_size = _normalize_pool_key(target.datacenter, target.node_size)
+    return _capacity_pool_target_view(
+        datacenter=datacenter,
+        node_size=node_size,
+        min_warm_count=target.min_warm_count,
+        enabled=target.enabled,
+        require_verified=target.require_verified,
+        require_healthy=target.require_healthy,
+        require_hostname=target.require_hostname,
+        dispatch=target.dispatch,
+        reason=target.reason,
+        agents=agent_store.list(),
+    )
+
+
+@app.delete("/api/v1/admin/agents/capacity/targets")
+async def delete_capacity_target(
+    datacenter: str = Query(..., description="Datacenter key (e.g. gcp:us-central1-a)"),
+    node_size: str = Query("", description="Node size key (e.g. tiny, llm)"),
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Delete one warm-capacity target."""
+    if not capacity_pool_target_store.delete_pool(datacenter, node_size):
+        raise HTTPException(status_code=404, detail="Capacity target not found")
+    return {"status": "deleted", "datacenter": datacenter, "node_size": node_size}
+
+
+@app.get(
+    "/api/v1/admin/agents/capacity/reservations",
+    response_model=CapacityReservationListResponse,
+)
+async def list_capacity_reservations(
+    status: str = Query(
+        "", description="Filter by reservation status (open/consumed/expired/released)"
+    ),
+    _admin: bool = Depends(verify_admin_token),
+):
+    """List warm-capacity reservations."""
+    normalized_status = (status or "").strip().lower()
+    if normalized_status and normalized_status not in {"open", "consumed", "expired", "released"}:
+        raise HTTPException(status_code=422, detail="Invalid reservation status filter")
+    rows = capacity_reservation_store.list(normalized_status or None)
+    reservations = [
+        CapacityReservationView(
+            reservation_id=row.reservation_id,
+            agent_id=row.agent_id,
+            datacenter=row.datacenter,
+            node_size=row.node_size,
+            status=row.status,
+            deployment_id=row.deployment_id,
+            note=row.note,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+        for row in rows
+    ]
+    return CapacityReservationListResponse(reservations=reservations, total=len(reservations))
+
+
 @app.post(
     "/api/v1/admin/agents/capacity/reconcile",
     response_model=AgentCapacityReconcileResponse,
@@ -1604,6 +1935,7 @@ async def delete_agent(agent_id: str):
             logger.warning(f"Failed to delete Cloudflare tunnel for agent {agent_id}: {e}")
             # Continue with agent deletion even if tunnel cleanup fails
 
+    capacity_reservation_store.expire_open_for_agent(agent_id)
     if not agent_store.delete(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     logger.info(f"Agent deleted: {agent_id}")
@@ -2343,6 +2675,7 @@ async def admin_agent_cleanup(
             except Exception as exc:
                 detail_parts.append(f"Cloudflare cleanup failed for agent: {exc}")
 
+        capacity_reservation_store.expire_open_for_agent(agent.agent_id)
         agent_deleted = bool(agent_store.delete(agent.agent_id))
 
     detail = " ".join([p for p in detail_parts if p]).strip() or None
@@ -3470,6 +3803,8 @@ def _evaluate_deploy_request(
     issues: list[DeploymentPreflightIssue] = []
     selected_agent: Agent | None = None
     selected_version: AppVersion | None = None
+    selected_reservation_id: str | None = None
+    use_warm_reservations = capacity_pool_target_store.has_enabled_targets()
 
     def fail(
         status_code: int, detail: str, *, code: str, agent: Agent | None = None
@@ -3478,6 +3813,7 @@ def _evaluate_deploy_request(
         return {
             "selected_agent": selected_agent,
             "selected_version": selected_version,
+            "selected_reservation_id": selected_reservation_id,
             "issues": issues,
             "error_status": status_code,
             "error_detail": detail,
@@ -3573,22 +3909,10 @@ def _evaluate_deploy_request(
         selected_agent = agent
     else:
         candidates = []
+        verified_policy_agents: list[Agent] = []
         for agent in agent_store.list():
             agent_datacenter = (agent.datacenter or "").strip().lower()
             agent_cloud = _extract_cloud(agent.datacenter)
-            if not agent.verified:
-                issues.append(
-                    _deploy_issue("AGENT_NOT_VERIFIED", "Agent is not verified", agent=agent)
-                )
-                continue
-            if not agent.hostname:
-                issues.append(
-                    _deploy_issue("AGENT_NO_HOSTNAME", "Agent has no hostname", agent=agent)
-                )
-                continue
-            if agent.health_status != "healthy":
-                issues.append(_deploy_issue("AGENT_UNHEALTHY", "Agent is not healthy", agent=agent))
-                continue
             if agent.status not in ("undeployed", "deployed"):
                 issues.append(
                     _deploy_issue(
@@ -3660,11 +3984,36 @@ def _evaluate_deploy_request(
                     )
                 )
                 continue
+            if agent.verified:
+                verified_policy_agents.append(agent)
+            else:
+                issues.append(
+                    _deploy_issue("AGENT_NOT_VERIFIED", "Agent is not verified", agent=agent)
+                )
+                continue
+            if not agent.hostname:
+                issues.append(
+                    _deploy_issue("AGENT_NO_HOSTNAME", "Agent has no hostname", agent=agent)
+                )
+                continue
+            if agent.health_status != "healthy":
+                issues.append(_deploy_issue("AGENT_UNHEALTHY", "Agent is not healthy", agent=agent))
+                continue
             candidates.append(agent)
 
-        candidates.sort(key=lambda a: 0 if a.status == "undeployed" else 1)
+        reservation_by_agent: dict[str, object] = {}
+        filtered_candidates = candidates
+        if use_warm_reservations:
+            reservation_by_agent = capacity_reservation_store.list_open_by_agent_ids(
+                [agent.agent_id for agent in candidates]
+            )
+            filtered_candidates = [
+                agent for agent in candidates if agent.agent_id in reservation_by_agent
+            ]
 
-        for agent in candidates:
+        filtered_candidates.sort(key=lambda a: 0 if a.status == "undeployed" else 1)
+
+        for agent in filtered_candidates:
             candidate_node_size = agent.node_size or ""
             version_obj = app_version_store.get_by_version(
                 app_name, app_version, candidate_node_size
@@ -3696,9 +4045,42 @@ def _evaluate_deploy_request(
 
             selected_agent = agent
             selected_version = version_obj
+            if use_warm_reservations:
+                reservation = reservation_by_agent.get(agent.agent_id)
+                if reservation is not None:
+                    selected_reservation_id = reservation.reservation_id
             break
 
         if selected_agent is None:
+            if use_warm_reservations:
+                if not verified_policy_agents:
+                    summary = (
+                        "No verified capacity available for deployment policy. "
+                        "No verified agents match the requested cloud/datacenter/size."
+                    )
+                    issues.append(_deploy_issue("NO_VERIFIED_CAPACITY", summary))
+                    return {
+                        "selected_agent": None,
+                        "selected_version": None,
+                        "selected_reservation_id": None,
+                        "issues": issues,
+                        "error_status": 503,
+                        "error_detail": summary,
+                    }
+                if candidates and not filtered_candidates:
+                    summary = (
+                        "No warm capacity available for deployment policy. "
+                        "All eligible agents are unreserved; wait for pool reconcile or scale up capacity."
+                    )
+                    issues.append(_deploy_issue("NO_WARM_CAPACITY", summary))
+                    return {
+                        "selected_agent": None,
+                        "selected_version": None,
+                        "selected_reservation_id": None,
+                        "issues": issues,
+                        "error_status": 503,
+                        "error_detail": summary,
+                    }
             summary = "No eligible agents available for deployment"
             if issues:
                 summary += f". Last reason: {issues[-1].message}"
@@ -3706,6 +4088,7 @@ def _evaluate_deploy_request(
             return {
                 "selected_agent": None,
                 "selected_version": None,
+                "selected_reservation_id": None,
                 "issues": issues,
                 "error_status": 503,
                 "error_detail": summary,
@@ -3774,6 +4157,7 @@ def _evaluate_deploy_request(
     return {
         "selected_agent": selected_agent,
         "selected_version": selected_version,
+        "selected_reservation_id": selected_reservation_id,
         "issues": issues,
         "error_status": None,
         "error_detail": None,
@@ -3827,6 +4211,11 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
 
     selected_agent = result["selected_agent"]
     selected_version = result["selected_version"]
+    selected_reservation_id = (
+        str(result["selected_reservation_id"])
+        if result.get("selected_reservation_id") is not None
+        else None
+    )
     assert isinstance(selected_agent, Agent)
     assert isinstance(selected_version, AppVersion)
 
@@ -3848,6 +4237,18 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
         memory_gb=request.memory_gb,
         gpu_count=request.gpu_count,
     )
+    if request.agent_id is None and selected_reservation_id:
+        consumed = capacity_reservation_store.consume(
+            selected_reservation_id, deployment.deployment_id
+        )
+        if not consumed:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Warm capacity reservation is no longer available. "
+                    "Retry deployment after capacity reconcile."
+                ),
+            )
     deployment_id = deployment_store.create(deployment)
     logger.info(
         f"Deployment created: {deployment_id} ({name}@{version} -> {selected_agent.agent_id})"
