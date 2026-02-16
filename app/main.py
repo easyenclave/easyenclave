@@ -6,6 +6,7 @@ import asyncio
 import collections
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -196,6 +197,32 @@ CAPACITY_DISPATCH_DEFAULT_COOLDOWN = 300
 # Track when agents were last attested (for periodic re-attestation)
 _agent_last_attestation: dict[str, datetime] = {}
 _capacity_last_dispatch: dict[tuple[str, str], datetime] = {}
+_NODE_SIZE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
+_DATACENTER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}:[a-z0-9][a-z0-9._-]{0,95}$")
+
+
+def _normalize_registration_node_size(raw_value: str) -> str:
+    return (raw_value or "").strip().lower()
+
+
+def _normalize_registration_datacenter(raw_value: str) -> str:
+    value = (raw_value or "").strip().lower()
+    if not value:
+        return ""
+
+    if ":" not in value:
+        cloud_aliases = _normalize_clouds([value])
+        if cloud_aliases:
+            return f"{next(iter(cloud_aliases))}:default"
+        return value
+
+    cloud_raw, location_raw = value.split(":", 1)
+    cloud_aliases = _normalize_clouds([cloud_raw])
+    cloud = next(iter(cloud_aliases), cloud_raw)
+    location = location_raw.strip()
+    if not location:
+        location = "default"
+    return f"{cloud}:{location}"
 
 
 async def check_service_health(service: Service) -> str:
@@ -920,63 +947,78 @@ async def register_agent(request: AgentRegistrationRequest):
     if not request.attestation:
         raise HTTPException(status_code=400, detail="Registration requires attestation")
 
-    if not request.vm_name:
+    vm_name = (request.vm_name or "").strip()
+    if not vm_name:
         raise HTTPException(status_code=400, detail="Registration requires vm_name")
+    node_size = _normalize_registration_node_size(request.node_size)
+    if not node_size:
+        raise HTTPException(status_code=400, detail="Registration requires node_size")
+    if not _NODE_SIZE_RE.fullmatch(node_size):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid node_size '{request.node_size}'. "
+                "Expected lowercase token like tiny, standard, llm"
+            ),
+        )
+    datacenter = _normalize_registration_datacenter(request.datacenter)
+    if not datacenter:
+        raise HTTPException(status_code=400, detail="Registration requires datacenter")
+    if not _DATACENTER_RE.fullmatch(datacenter):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid datacenter '{request.datacenter}'. "
+                "Expected '<cloud>:<zone>' (for example gcp:us-central1-a)"
+            ),
+        )
 
     # Check if agent with this vm_name already exists
-    existing = agent_store.get_by_vm_name(request.vm_name)
-    # Only treat verified agents as "fully registered" for early-return.
-    # Unverified agents must keep retrying registration so they can become verified
-    # after an admin adds their MRTD baseline.
-    if existing and existing.verified and existing.status != "attestation_failed":
-        # Update heartbeat and return existing agent
-        # Note: We don't return tunnel_token on re-registration for security
-        agent_store.heartbeat(existing.agent_id)
-        logger.info(f"Agent re-registered: {existing.agent_id} ({request.vm_name})")
-        return AgentRegistrationResponse(
-            agent_id=existing.agent_id,
-            poll_interval=30,
-            hostname=existing.hostname,
-        )
-    # If agent is in attestation_failed status, allow full re-registration with new attestation
+    existing = agent_store.get_by_vm_name(vm_name)
+    # If agent is in attestation_failed status, allow full re-registration with fresh attestation.
     if existing and existing.status == "attestation_failed":
         logger.info(f"Agent {existing.agent_id} re-registering after attestation failure")
 
-    # Verify attestation (Intel TA token + MRTD trusted list)
+    # Always verify attestation (Intel TA token + MRTD trusted list), including re-registration.
     try:
-        verification = await verify_agent_registration(
-            request.attestation, node_size=request.node_size
-        )
+        verification = await verify_agent_registration(request.attestation, node_size=node_size)
     except AttestationError as e:
         # Special-case: if the agent MRTD is simply not trusted yet, record the baseline
         # so CI/admin can add it and the agent can keep retrying registration.
         if "MRTD not in trusted list" in (e.detail or ""):
             try:
-                untrusted = await verify_agent_attestation_only(
-                    request.attestation, node_size=request.node_size
-                )
-                rtmrs = extract_rtmrs(request.attestation)
-                agent_kwargs = {
-                    "vm_name": request.vm_name,
-                    "attestation": request.attestation,
-                    "mrtd": untrusted.mrtd,
-                    "rtmrs": rtmrs,
-                    "intel_ta_token": untrusted.intel_ta_token,
-                    "version": request.version,
-                    "node_size": request.node_size,
-                    "datacenter": request.datacenter,
-                    "status": "unverified",
-                    "verified": False,
-                    "verification_error": e.detail,
-                    "tcb_status": untrusted.tcb_status,
-                    "tcb_verified_at": datetime.now(timezone.utc),
-                }
-                if existing:
-                    agent_kwargs["agent_id"] = existing.agent_id
-                agent_store.register(Agent(**agent_kwargs))
-                logger.warning(
-                    f"Recorded untrusted agent baseline: vm={request.vm_name} mrtd={untrusted.mrtd[:16]}..."
-                )
+                # Never downgrade an already-verified agent to "unverified" on a failed re-registration.
+                if existing and existing.verified:
+                    logger.warning(
+                        "Rejected re-registration for verified agent "
+                        f"{existing.agent_id} ({vm_name}) due to untrusted MRTD"
+                    )
+                else:
+                    untrusted = await verify_agent_attestation_only(
+                        request.attestation, node_size=node_size
+                    )
+                    rtmrs = extract_rtmrs(request.attestation)
+                    agent_kwargs = {
+                        "vm_name": vm_name,
+                        "attestation": request.attestation,
+                        "mrtd": untrusted.mrtd,
+                        "rtmrs": rtmrs,
+                        "intel_ta_token": untrusted.intel_ta_token,
+                        "version": request.version,
+                        "node_size": node_size,
+                        "datacenter": datacenter,
+                        "status": "unverified",
+                        "verified": False,
+                        "verification_error": e.detail,
+                        "tcb_status": untrusted.tcb_status,
+                        "tcb_verified_at": datetime.now(timezone.utc),
+                    }
+                    if existing:
+                        agent_kwargs["agent_id"] = existing.agent_id
+                    agent_store.register(Agent(**agent_kwargs))
+                    logger.warning(
+                        f"Recorded untrusted agent baseline: vm={vm_name} mrtd={untrusted.mrtd[:16]}..."
+                    )
             except Exception as record_exc:
                 logger.warning(f"Failed to record untrusted agent baseline: {record_exc}")
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
@@ -999,17 +1041,56 @@ async def register_agent(request: AgentRegistrationRequest):
 
     nonce_mode = _enforcement_mode()
     if nonce_from_quote:
-        nonce_verified, nonce_error = verify_nonce(request.vm_name, nonce_from_quote)
+        nonce_verified, nonce_error = verify_nonce(vm_name, nonce_from_quote)
         if not nonce_verified:
             raise HTTPException(status_code=403, detail=f"Nonce verification failed: {nonce_error}")
-        logger.info(f"Nonce verified for {request.vm_name}")
+        logger.info(f"Nonce verified for {vm_name}")
     elif nonce_mode == "required":
         raise HTTPException(
             status_code=400,
             detail="Nonce required. Call GET /api/v1/agents/challenge first",
         )
     elif nonce_mode == "optional":
-        logger.warning(f"Agent {request.vm_name} registered without nonce (optional mode)")
+        logger.warning(f"Agent {vm_name} registered without nonce (optional mode)")
+
+    # Re-registration must preserve stable identity metadata for the vm_name.
+    if existing and existing.verified and existing.status != "attestation_failed":
+        if existing.mrtd and existing.mrtd != mrtd:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Re-registration rejected: MRTD changed for existing vm_name "
+                    f"('{existing.mrtd[:16]}...' -> '{mrtd[:16]}...')"
+                ),
+            )
+        existing_node_size = (existing.node_size or "").strip().lower()
+        if existing_node_size and existing_node_size != node_size:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Re-registration rejected: node_size changed for existing vm_name "
+                    f"('{existing.node_size}' -> '{node_size}')"
+                ),
+            )
+        existing_datacenter = (existing.datacenter or "").strip().lower()
+        if existing_datacenter and existing_datacenter != datacenter:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Re-registration rejected: datacenter changed for existing vm_name "
+                    f"('{existing.datacenter}' -> '{datacenter}')"
+                ),
+            )
+
+        # Verified existing agent with matching identity metadata.
+        # Update heartbeat and return existing identity without reissuing tunnel token.
+        agent_store.heartbeat(existing.agent_id)
+        logger.info(f"Agent re-registered after attestation check: {existing.agent_id} ({vm_name})")
+        return AgentRegistrationResponse(
+            agent_id=existing.agent_id,
+            poll_interval=30,
+            hostname=existing.hostname,
+        )
 
     # Both Intel TA and MRTD verified - agent is trusted
     intel_ta_verified = True
@@ -1020,14 +1101,14 @@ async def register_agent(request: AgentRegistrationRequest):
 
     # Create agent record (reuse existing agent_id if recovering from attestation_failed)
     agent_kwargs = {
-        "vm_name": request.vm_name,
+        "vm_name": vm_name,
         "attestation": request.attestation,
         "mrtd": mrtd,
         "rtmrs": rtmrs,
         "intel_ta_token": intel_ta_token,
         "version": request.version,
-        "node_size": request.node_size,
-        "datacenter": request.datacenter,
+        "node_size": node_size,
+        "datacenter": datacenter,
         "status": "undeployed",
         "verified": verified,
         "verification_error": None,
@@ -1072,8 +1153,7 @@ async def register_agent(request: AgentRegistrationRequest):
                 ) from e
 
     logger.info(
-        f"Agent registered: {agent_id} ({request.vm_name}) "
-        f"verified={verified} intel_ta={intel_ta_verified}"
+        f"Agent registered: {agent_id} ({vm_name}) verified={verified} intel_ta={intel_ta_verified}"
     )
 
     return AgentRegistrationResponse(

@@ -342,6 +342,12 @@ pip install pytest pytest-asyncio httpx
 pytest tests/ -v
 ```
 
+Critical registration/deploy readiness flow (fast-fail):
+
+```bash
+pytest tests/test_agent_registration_e2e.py -v
+```
+
 ### Project Structure
 
 ```

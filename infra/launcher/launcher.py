@@ -1040,7 +1040,10 @@ def resolve_datacenter_label(config: dict | None = None) -> str:
         return f"{provider}:{region_raw}"
     if provider == "baremetal":
         return "baremetal:default"
-    return ""
+    fallback = str(os.environ.get("EASYENCLAVE_DEFAULT_DATACENTER", "")).strip().lower()
+    if fallback:
+        return fallback
+    return "baremetal:default"
 
 
 def write_status(status: str):
@@ -1365,11 +1368,21 @@ def register_with_control_plane(
     logger.info(f"Registering with control plane: {CONTROL_PLANE_URL}")
 
     config = config or {}
+    node_size = str(config.get("node_size", "")).strip().lower()
+    if not node_size:
+        node_size = (
+            str(os.environ.get("EASYENCLAVE_DEFAULT_SIZE", "tiny")).strip().lower() or "tiny"
+        )
+        logger.warning(
+            "Launcher config did not include node_size; falling back to "
+            f"'{node_size}' for registration"
+        )
     datacenter = resolve_datacenter_label(config)
-    if datacenter:
-        _admin_state["datacenter"] = datacenter
-    if datacenter:
-        logger.info(f"Using datacenter label: {datacenter}")
+    if not datacenter:
+        raise RuntimeError("Unable to resolve datacenter label for registration")
+    _admin_state["datacenter"] = datacenter
+    logger.info(f"Using datacenter label: {datacenter}")
+    logger.info(f"Using node_size: {node_size}")
 
     response = requests.post(
         f"{CONTROL_PLANE_URL}/api/v1/agents/register",
@@ -1377,7 +1390,7 @@ def register_with_control_plane(
             "attestation": attestation,
             "vm_name": vm_name,
             "version": VERSION,
-            "node_size": config.get("node_size", ""),
+            "node_size": node_size,
             "datacenter": datacenter,
         },
         timeout=30,

@@ -46,7 +46,8 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest tests/ -v
+          pytest tests/test_agent_registration_e2e.py -v
+          pytest tests/ -v --ignore=tests/test_agent_registration_e2e.py
 
   docker:
     runs-on: ubuntu-latest
