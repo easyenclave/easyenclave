@@ -816,15 +816,17 @@ def _add_size_args(parser):
 
 
 def _wait_for_agent_ready(
-    cp_url: str, vm_name: str, timeout: int = 300, poll_interval: int = 5
+    cp_url: str,
+    timeout: int = 300,
+    poll_interval: int = 5,
+    known_agent_ids: set[str] | None = None,
+    expected_node_size: str = "",
 ) -> dict | None:
-    """Wait until an agent appears on CP and is verified + registered.
-
-    During bootstrap, tunnel health can lag due Cloudflare/DNS propagation.
-    For readiness, require verified attestation and a non-terminal agent status.
-    """
+    """Wait until a new agent appears on CP and is verified + registered."""
     deadline = time.time() + timeout
     last_status = ""
+    known_ids = known_agent_ids or set()
+    expected_size = expected_node_size.strip().lower()
 
     while time.time() < deadline:
         try:
@@ -835,17 +837,20 @@ def _wait_for_agent_ready(
             continue
 
         for agent in payload.get("agents", []):
-            if agent.get("vm_name") != vm_name:
+            agent_id = str(agent.get("agent_id") or "")
+            if agent_id in known_ids:
+                continue
+            node_size = str(agent.get("node_size") or "").strip().lower()
+            if expected_size and node_size != expected_size:
                 continue
 
             verified = bool(agent.get("verified"))
             health = str(agent.get("health_status") or "").lower()
             status = str(agent.get("status") or "").lower()
-            summary = (
-                f"verified={verified} health={health or 'unknown'} status={status or 'unknown'}"
-            )
+            vm_name = str(agent.get("vm_name") or "unknown")
+            summary = f"vm_name={vm_name} verified={verified} health={health or 'unknown'} status={status or 'unknown'}"
             if summary != last_status:
-                print(f"Bootstrap agent state [{vm_name}]: {summary}", file=sys.stderr)
+                print(f"Bootstrap agent state: {summary}", file=sys.stderr)
                 last_status = summary
 
             if verified and status not in {"", "unverified", "attestation_failed", "error"}:
@@ -854,6 +859,22 @@ def _wait_for_agent_ready(
         time.sleep(poll_interval)
 
     return None
+
+
+def _list_agent_ids(cp_url: str) -> set[str]:
+    """Fetch currently known agent IDs from control plane."""
+    try:
+        with urllib.request.urlopen(f"{cp_url}/api/v1/agents", timeout=10) as resp:
+            payload = json.loads(resp.read())
+    except Exception:
+        return set()
+
+    agent_ids: set[str] = set()
+    for agent in payload.get("agents", []):
+        agent_id = str(agent.get("agent_id") or "").strip()
+        if agent_id:
+            agent_ids.add(agent_id)
+    return agent_ids
 
 
 def main():
@@ -1123,6 +1144,7 @@ To start a new EasyEnclave network:
                                     f"Launching bootstrap measuring agent VM (size={bootstrap_size})...",
                                     file=sys.stderr,
                                 )
+                                known_agent_ids = _list_agent_ids(url)
                                 bootstrap_agent = mgr.vm_new(
                                     image=args.image,
                                     mode=AGENT_MODE,
@@ -1134,7 +1156,6 @@ To start a new EasyEnclave network:
                                     disk_gib=size_disk,
                                 )
                                 bootstrap_agent["node_size"] = bootstrap_size
-                                bootstrap_agent["launcher_vm_name"] = f"tdx-agent-{bootstrap_vm_id}"
 
                                 bootstrap_ip = mgr.get_vm_ip(bootstrap_agent["name"], timeout=180)
                                 if not bootstrap_ip:
@@ -1149,8 +1170,9 @@ To start a new EasyEnclave network:
 
                                 ready_agent = _wait_for_agent_ready(
                                     url,
-                                    bootstrap_agent["launcher_vm_name"],
                                     timeout=args.bootstrap_timeout,
+                                    known_agent_ids=known_agent_ids,
+                                    expected_node_size=bootstrap_size,
                                 )
                                 if not ready_agent:
                                     print(
