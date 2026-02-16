@@ -1,5 +1,5 @@
 name: Preflight - GCP capacity
-description: Ensure at least one healthy verified GCP agent exists (provision one if needed)
+description: Ensure at least one healthy verified GCP agent exists by asking the control plane to dispatch capacity
 
 inputs:
   control_plane_url:
@@ -25,46 +25,45 @@ inputs:
     required: false
     default: ""
 
-  # Required for agent registration.
-  intel_api_key:
-    description: Intel TA API key used by the agent to register/attest
+  # Preferred CP dispatch target. If empty, first entry from gcp_zone is used.
+  gcp_datacenter:
+    description: Datacenter label to request from control plane (e.g. gcp:us-central1-a)
     required: false
     default: ""
 
-  # GCP auth + project selection.
+  # Deprecated legacy inputs retained for compatibility with existing workflow callers.
   gcp_project_id:
-    description: GCP project ID
-    required: true
+    description: Deprecated (ignored)
+    required: false
+    default: ""
   gcp_wif_provider:
-    description: GCP workload identity provider (OIDC)
+    description: Deprecated (ignored)
     required: false
     default: ""
   gcp_wif_service_account:
-    description: GCP service account email for OIDC
+    description: Deprecated (ignored)
     required: false
     default: ""
   gcp_service_account_key:
-    description: JSON service account key (fallback auth)
+    description: Deprecated (ignored)
     required: false
     default: ""
-
-  # Placement / sizing. CSV lists are supported for zone and machine type.
   gcp_zone:
-    description: Comma-separated zones to try
+    description: Comma-separated zones; first entry is used as default dispatch target
     required: false
     default: "us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b"
   gcp_region:
-    description: Region for resource grouping
+    description: Deprecated (ignored)
     required: false
-    default: "us-central1"
+    default: ""
   gcp_machine_type:
-    description: Comma-separated machine types to try
+    description: Deprecated (ignored)
     required: false
-    default: "c3-standard-2,c3-standard-4"
+    default: ""
   gcp_boot_disk_size:
-    description: Boot disk size (e.g. 30GB)
+    description: Deprecated (ignored)
     required: false
-    default: "30GB"
+    default: ""
 
 outputs:
   gcp_eligible_agents:
@@ -147,16 +146,18 @@ runs:
       shell: bash
       env:
         CP_URL: ${{ inputs.control_plane_url }}
+        NODE_SIZE: ${{ inputs.node_size }}
       run: |
         set -euo pipefail
         agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
         count="$(
-          echo "${agents:-}" | jq '
+          echo "${agents:-}" | jq --arg ns "${NODE_SIZE:-}" '
             [.agents[]
               | (.datacenter // "" | ascii_downcase) as $dc
               | (.status // "" | ascii_downcase) as $st
               | select(.verified == true
                 and (.health_status // "" | ascii_downcase) == "healthy"
+                and (if ($ns | length) > 0 then ((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase)) else true end)
                 and ($st == "undeployed" or ($st == "deployed" and ((.deployed_app // "") | test("^measuring-enclave") | not)))
                 and ($dc | startswith("gcp:") or $dc == "gcp"))
             ] | length
@@ -172,122 +173,153 @@ runs:
         fi
 
         echo "need_provision=true" >> "$GITHUB_OUTPUT"
-        echo "::warning::No healthy verified GCP agents available; provisioning one now."
+        echo "::warning::No healthy verified GCP agents available; requesting control-plane capacity dispatch."
 
-    - name: Validate GCP secrets (only if provisioning)
+    - name: Request control-plane GCP capacity dispatch
       if: steps.precheck.outputs.need_provision == 'true'
-      shell: bash
-      env:
-        INTEL_API_KEY: ${{ inputs.intel_api_key }}
-        CP_ADMIN_TOKEN: ${{ steps.cp_admin.outputs.cp_admin_token }}
-        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
-        GCP_WIF_PROVIDER: ${{ inputs.gcp_wif_provider }}
-        GCP_WIF_SERVICE_ACCOUNT: ${{ inputs.gcp_wif_service_account }}
-        GCP_SERVICE_ACCOUNT_KEY: ${{ inputs.gcp_service_account_key }}
-      run: |
-        set -euo pipefail
-        if [ -z "${INTEL_API_KEY:-}" ]; then
-          echo "::error::Missing intel_api_key (needed for agent registration)"
-          exit 1
-        fi
-        if [ -z "${CP_ADMIN_TOKEN:-}" ]; then
-          echo "::warning::CP admin token is not set; provisioning may succeed but the agent may remain unverified until an admin trusts its MRTD baseline."
-        fi
-        if [ -z "${GCP_PROJECT_ID:-}" ]; then
-          echo "::error::Missing gcp_project_id"
-          exit 1
-        fi
-        if [ -n "${GCP_WIF_PROVIDER:-}" ] && [ -n "${GCP_WIF_SERVICE_ACCOUNT:-}" ]; then
-          echo "GCP auth mode: OIDC"
-        elif [ -n "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
-          echo "::warning::GCP OIDC not configured; using service-account-key fallback"
-        else
-          echo "::error::GCP auth is not configured (missing OIDC inputs and service-account key)"
-          exit 1
-        fi
-
-    - name: Authenticate to Google Cloud (OIDC)
-      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_wif_provider != '' && inputs.gcp_wif_service_account != ''
-      uses: google-github-actions/auth@v2
-      with:
-        workload_identity_provider: ${{ inputs.gcp_wif_provider }}
-        service_account: ${{ inputs.gcp_wif_service_account }}
-
-    - name: Authenticate to Google Cloud (service account key fallback)
-      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_wif_provider == '' && inputs.gcp_service_account_key != ''
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ inputs.gcp_service_account_key }}
-
-    - name: Setup gcloud
-      if: steps.precheck.outputs.need_provision == 'true'
-      uses: google-github-actions/setup-gcloud@v2
-
-    - name: Provision GCP agent and auto-trust MRTD baseline
-      if: steps.precheck.outputs.need_provision == 'true'
-      id: provision
+      id: dispatch
       shell: bash
       env:
         CP_URL: ${{ inputs.control_plane_url }}
         CP_ADMIN_TOKEN: ${{ steps.cp_admin.outputs.cp_admin_token }}
-        INTEL_API_KEY: ${{ inputs.intel_api_key }}
         NODE_SIZE: ${{ inputs.node_size }}
-        WAIT_SECONDS: ${{ inputs.wait_seconds }}
-        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+        GCP_DATACENTER: ${{ inputs.gcp_datacenter }}
         GCP_ZONE: ${{ inputs.gcp_zone }}
-        GCP_REGION: ${{ inputs.gcp_region }}
-        GCP_MACHINE_TYPE: ${{ inputs.gcp_machine_type }}
-        GCP_BOOT_DISK_SIZE: ${{ inputs.gcp_boot_disk_size }}
       run: |
         set -euo pipefail
-        RUN_TAG="deploy-examples-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-        echo "RUN_TAG=$RUN_TAG" >> "$GITHUB_ENV"
-        LAUNCHER_URL="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/infra/launcher/launcher.py"
+        if [ -z "${CP_ADMIN_TOKEN:-}" ]; then
+          echo "::error::No admin token available. Cannot request capacity dispatch from control plane."
+          echo "::error::Provide cp_admin_token or cp_admin_password for this action."
+          exit 1
+        fi
 
-        cleanup() {
-          echo "::warning::Provisioning failed; cleaning up managed GCP resources for run-tag=$RUN_TAG"
-          python3 scripts/cloud_provisioner.py cleanup \
-            --provider gcp \
-            --run-id "$RUN_TAG" \
-            --gcp-project "$GCP_PROJECT_ID" \
-            --gcp-zone "$GCP_ZONE" \
-            --gcp-region "$GCP_REGION" || true
-        }
+        target_dc="$(echo "${GCP_DATACENTER:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+        if [ -z "$target_dc" ]; then
+          first_zone="$(echo "${GCP_ZONE:-}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | head -n1)"
+          first_zone="$(echo "$first_zone" | tr '[:upper:]' '[:lower:]')"
+          if [ -n "$first_zone" ]; then
+            case "$first_zone" in
+              gcp:*)
+                target_dc="$first_zone"
+                ;;
+              *)
+                target_dc="gcp:$first_zone"
+                ;;
+            esac
+          else
+            target_dc="gcp"
+          fi
+        fi
 
-        trap cleanup ERR
-        python3 scripts/cloud_provisioner.py provision \
-          --provider gcp \
-          --run-id "$RUN_TAG" \
-          --cp-url "$CP_URL" \
-          --cp-admin-token="$CP_ADMIN_TOKEN" \
-          --intel-api-key "$INTEL_API_KEY" \
-          --node-size "$NODE_SIZE" \
-          --launcher-url "$LAUNCHER_URL" \
-          --gcp-project "$GCP_PROJECT_ID" \
-          --gcp-zone "$GCP_ZONE" \
-          --gcp-region "$GCP_REGION" \
-          --gcp-machine-type "$GCP_MACHINE_TYPE" \
-          --gcp-boot-disk-size "$GCP_BOOT_DISK_SIZE" \
-          --gcp-count 1 \
-          --wait-registration \
-          --wait-seconds "$WAIT_SECONDS"
-        trap - ERR
+        payload="$(jq -cn \
+          --arg dc "$target_dc" \
+          --arg ns "${NODE_SIZE:-}" \
+          --arg reason "deploy-example-gcp-preflight-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
+          '{
+            targets: [{datacenter: $dc, node_size: $ns, min_count: 1}],
+            require_verified: true,
+            require_healthy: true,
+            require_hostname: true,
+            allowed_statuses: ["undeployed", "deployed", "deploying"],
+            dispatch: true,
+            reason: $reason
+          }'
+        )"
+
+        body="$(mktemp)"
+        http_code="$(
+          curl -sS -o "$body" -w "%{http_code}" \
+            -X POST "$CP_URL/api/v1/admin/agents/capacity/reconcile" \
+            -H "Authorization: Bearer ${CP_ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$payload" || echo 000
+        )"
+        resp="$(cat "$body")"
+        rm -f "$body"
+
+        if [ "$http_code" -ge 400 ]; then
+          detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
+          echo "::error::Control-plane dispatch request failed (HTTP $http_code): ${detail:-$resp}"
+          exit 1
+        fi
+
+        shortfall="$(echo "$resp" | jq -r '.targets[0].shortfall // 0' 2>/dev/null || echo 0)"
+        dispatched="$(echo "$resp" | jq -r '.dispatches[0].dispatched // false' 2>/dev/null || echo false)"
+        detail="$(echo "$resp" | jq -r '.dispatches[0].detail // empty' 2>/dev/null || true)"
+        status_code="$(echo "$resp" | jq -r '.dispatches[0].status_code // empty' 2>/dev/null || true)"
+
+        echo "target_datacenter=$target_dc" >> "$GITHUB_OUTPUT"
+        echo "provisioned=$dispatched" >> "$GITHUB_OUTPUT"
+
+        if [ "${shortfall:-0}" -gt 0 ] && [ "$dispatched" != "true" ]; then
+          echo "::error::Control plane reported shortfall=$shortfall but did not dispatch provisioning."
+          if [ -n "$detail" ]; then
+            echo "::error::$detail"
+          fi
+          if [ -n "$status_code" ]; then
+            echo "::error::Dispatch status_code=$status_code"
+          fi
+          exit 1
+        fi
+
+        echo "Control-plane dispatch accepted for datacenter='$target_dc' node_size='${NODE_SIZE:-}' (shortfall=$shortfall dispatched=$dispatched)"
+
+    - name: Wait for eligible GCP capacity after dispatch
+      if: steps.precheck.outputs.need_provision == 'true'
+      shell: bash
+      env:
+        CP_URL: ${{ inputs.control_plane_url }}
+        NODE_SIZE: ${{ inputs.node_size }}
+        WAIT_SECONDS: ${{ inputs.wait_seconds }}
+      run: |
+        set -euo pipefail
+
+        deadline=$(( $(date +%s) + ${WAIT_SECONDS:-900} ))
+        while :; do
+          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
+          count="$(
+            echo "${agents:-}" | jq --arg ns "${NODE_SIZE:-}" '
+              [.agents[]
+                | (.datacenter // "" | ascii_downcase) as $dc
+                | (.status // "" | ascii_downcase) as $st
+                | select(.verified == true
+                  and (.health_status // "" | ascii_downcase) == "healthy"
+                  and (if ($ns | length) > 0 then ((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase)) else true end)
+                  and ($st == "undeployed" or ($st == "deployed" and ((.deployed_app // "") | test("^measuring-enclave") | not)))
+                  and ($dc | startswith("gcp:") or $dc == "gcp"))
+              ] | length
+            ' 2>/dev/null || echo 0
+          )"
+          if [ "$count" -gt 0 ]; then
+            echo "Eligible GCP capacity is now available: $count"
+            exit 0
+          fi
+          now="$(date +%s)"
+          if [ "$now" -ge "$deadline" ]; then
+            echo "::error::Timed out waiting for eligible GCP capacity after dispatch."
+            exit 1
+          fi
+          sleep 10
+        done
 
     - name: Final check - healthy verified GCP agents
       id: final
       shell: bash
       env:
         CP_URL: ${{ inputs.control_plane_url }}
+        NODE_SIZE: ${{ inputs.node_size }}
+        PROVISIONED: ${{ steps.dispatch.outputs.provisioned }}
       run: |
         set -euo pipefail
         agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
         count="$(
-          echo "${agents:-}" | jq '
+          echo "${agents:-}" | jq --arg ns "${NODE_SIZE:-}" '
             [.agents[]
               | (.datacenter // "" | ascii_downcase) as $dc
               | (.status // "" | ascii_downcase) as $st
               | select(.verified == true
                 and (.health_status // "" | ascii_downcase) == "healthy"
+                and (if ($ns | length) > 0 then ((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase)) else true end)
                 and ($st == "undeployed" or ($st == "deployed" and ((.deployed_app // "") | test("^measuring-enclave") | not)))
                 and ($dc | startswith("gcp:") or $dc == "gcp"))
             ] | length
@@ -295,11 +327,15 @@ runs:
         )"
 
         echo "gcp_eligible_agents=$count" >> "$GITHUB_OUTPUT"
-        echo "gcp_provisioned=${{ steps.precheck.outputs.need_provision == 'true' }}" >> "$GITHUB_OUTPUT"
+        provisioned="${PROVISIONED:-false}"
+        if [ -z "$provisioned" ]; then
+          provisioned="false"
+        fi
+        echo "gcp_provisioned=$provisioned" >> "$GITHUB_OUTPUT"
 
         if [ "$count" -le 0 ]; then
-          echo "::error::No eligible verified GCP agents available after provisioning attempt."
-          echo "::error::This should only happen if GCP provisioning failed or the control plane cannot verify/trust the agent."
+          echo "::error::No eligible verified GCP agents available."
+          echo "::error::Control-plane dispatch either failed or no provisioner fulfilled the request."
           exit 1
         fi
         echo "Found $count eligible verified GCP agents."

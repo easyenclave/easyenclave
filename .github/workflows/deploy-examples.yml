@@ -80,9 +80,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: register-hello-tdx
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    permissions:
-      id-token: write
-      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,14 +95,7 @@ jobs:
           agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
           node_size: tiny
+          gcp_datacenter: ${{ vars.GCP_DATACENTER || 'gcp:us-central1-a' }}
           cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
           cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
-          intel_api_key: ${{ secrets.INTEL_API_KEY }}
-          gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
-          gcp_wif_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          gcp_wif_service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-          gcp_service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
-          gcp_region: ${{ vars.GCP_REGION || 'us-central1' }}
-          gcp_machine_type: ${{ vars.GCP_MACHINE_TYPE || 'c3-standard-2,c3-standard-4' }}
-          gcp_boot_disk_size: ${{ vars.GCP_BOOT_DISK_SIZE || '30GB' }}
