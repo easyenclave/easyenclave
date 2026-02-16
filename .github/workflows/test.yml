@@ -250,8 +250,8 @@ jobs:
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
           CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
-          # Need one tiny agent reserved for measuring-enclave + at least one tiny agent for deployments.
-          NUM_TINY_AGENTS: "2"
+          # control-plane new bootstraps one tiny measurer agent; keep one extra tiny for deployments.
+          NUM_TINY_AGENTS: "1"
           NUM_STANDARD_AGENTS: "0"
           NUM_LLM_AGENTS: "2"
         run: ./scripts/ci-deploy.sh

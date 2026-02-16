@@ -12,9 +12,10 @@
 #
 # Optional env vars:
 #   CP_URL      - control plane URL (default: https://app.easyenclave.com)
-#   NUM_TINY_AGENTS    - number of tiny agents to launch (default: 2)
-#   NUM_STANDARD_AGENTS - number of standard agents to launch (default: 2)
-#   NUM_LLM_AGENTS     - number of LLM-sized agents to launch (default: 1)
+#   NUM_TINY_AGENTS    - number of additional tiny agents to launch (default: 1)
+#   NUM_STANDARD_AGENTS - number of additional standard agents to launch (default: 0)
+#   NUM_LLM_AGENTS     - number of additional LLM-sized agents to launch (default: 0)
+#   CP_BOOTSTRAP_SIZES - comma-separated bootstrap measurer sizes for control-plane new (default: tiny)
 #   ADMIN_PASSWORD - admin password (auto-detected from CP logs if not set)
 #   AGENT_DATACENTER - explicit datacenter label override (e.g. baremetal:github-runner-a)
 #   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: baremetal)
@@ -33,6 +34,7 @@ AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
 AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
 ALLOW_AGENT_REFERENCE_BOOTSTRAP="${ALLOW_AGENT_REFERENCE_BOOTSTRAP:-false}"
+CP_BOOTSTRAP_SIZES="${CP_BOOTSTRAP_SIZES:-tiny}"
 
 # ===================================================================
 # Helpers
@@ -431,10 +433,16 @@ python3 infra/tdx_cli.py vm delete all || true
 # 2. Deploy control plane
 # ===================================================================
 echo "==> Deploying control plane..."
-CP_BOOT_JSON="$(python3 infra/tdx_cli.py control-plane new --wait --port 8080)"
+CP_BOOT_JSON="$(
+  python3 infra/tdx_cli.py control-plane new \
+    --wait \
+    --port 8080 \
+    --bootstrap-sizes "$CP_BOOTSTRAP_SIZES"
+)"
 
 CP_INTERNAL_URL="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_url // ""')"
 CP_PUBLIC_HOSTNAME="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_hostname // ""')"
+BOOTSTRAP_AGENT_COUNT="$(echo "$CP_BOOT_JSON" | jq -r '(.bootstrap_agents // []) | length' 2>/dev/null || echo 0)"
 
 if [ -z "$CP_INTERNAL_URL" ] || [ "$CP_INTERNAL_URL" = "null" ]; then
   echo "::error::control-plane new did not return control_plane_url"
@@ -493,14 +501,20 @@ if [ -z "${ADMIN_PASSWORD:-}" ]; then
 fi
 
 # ===================================================================
-# 4. Launch agents in parallel
+# 4. Launch additional agents in parallel
 # ===================================================================
-TOTAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS))
+if ! [[ "$BOOTSTRAP_AGENT_COUNT" =~ ^[0-9]+$ ]]; then
+  BOOTSTRAP_AGENT_COUNT=0
+fi
+
+TOTAL_ADDITIONAL_AGENTS=$((NUM_TINY_AGENTS + NUM_STANDARD_AGENTS + NUM_LLM_AGENTS))
+TOTAL_AGENTS=$((BOOTSTRAP_AGENT_COUNT + TOTAL_ADDITIONAL_AGENTS))
 if [ "$TOTAL_AGENTS" -le 0 ]; then
-  echo "::error::TOTAL_AGENTS is 0; set NUM_TINY_AGENTS (or other counts) to launch at least one agent"
+  echo "::error::No agents available (bootstrap=0 and additional requested=0)"
   exit 1
 fi
-echo "==> Launching $TOTAL_AGENTS agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
+echo "Bootstrap agents already launched by control-plane new: $BOOTSTRAP_AGENT_COUNT"
+echo "==> Launching $TOTAL_ADDITIONAL_AGENTS additional agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
 
 AGENT_LOCATION_ARGS=()
 if [ -n "$AGENT_DATACENTER" ]; then
@@ -517,31 +531,33 @@ else
   echo "Using agent placement metadata: provider=$AGENT_CLOUD_PROVIDER az=$AGENT_DATACENTER_AZ region=${AGENT_DATACENTER_REGION:-none}"
 fi
 
-for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --size tiny \
-    "${AGENT_LOCATION_ARGS[@]}" \
-    --easyenclave-url "$CP_URL" \
-    --intel-api-key "$INTEL_API_KEY" \
-    --wait &
-done
-for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --size standard \
-    "${AGENT_LOCATION_ARGS[@]}" \
-    --easyenclave-url "$CP_URL" \
-    --intel-api-key "$INTEL_API_KEY" \
-    --wait &
-done
-for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
-  python3 infra/tdx_cli.py vm new --size llm \
-    "${AGENT_LOCATION_ARGS[@]}" \
-    --easyenclave-url "$CP_URL" \
-    --intel-api-key "$INTEL_API_KEY" \
-    --wait &
-done
+if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
+  for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
+    python3 infra/tdx_cli.py vm new --size tiny \
+      "${AGENT_LOCATION_ARGS[@]}" \
+      --easyenclave-url "$CP_URL" \
+      --intel-api-key "$INTEL_API_KEY" \
+      --wait &
+  done
+  for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
+    python3 infra/tdx_cli.py vm new --size standard \
+      "${AGENT_LOCATION_ARGS[@]}" \
+      --easyenclave-url "$CP_URL" \
+      --intel-api-key "$INTEL_API_KEY" \
+      --wait &
+  done
+  for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
+    python3 infra/tdx_cli.py vm new --size llm \
+      "${AGENT_LOCATION_ARGS[@]}" \
+      --easyenclave-url "$CP_URL" \
+      --intel-api-key "$INTEL_API_KEY" \
+      --wait &
+  done
+fi
 
 # TODO(azure): re-enable Azure-labeled agent launch once Azure confidential VM reliability is fixed.
 wait
-echo "All $TOTAL_AGENTS agents launched"
+echo "Additional agent launches complete; expected verified total: $TOTAL_AGENTS"
 
 # ===================================================================
 # 5. Wait for agents to register and verify

@@ -4,7 +4,8 @@
 Simple CLI for launching and managing TDX VMs with the launcher agent pre-installed.
 VMs boot in "undeployed" state and register with the control plane.
 
-Special command: `tdx control-plane new` launches a control plane in a TDX VM.
+Special command: `tdx control-plane new` launches a control plane in a TDX VM
+and bootstraps measuring-capable agent VMs.
 This bootstraps a new EasyEnclave network.
 
 All deployments go through the control plane API - this CLI only handles VM lifecycle.
@@ -19,6 +20,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import uuid
 import zlib
 from pathlib import Path
@@ -806,13 +809,50 @@ def _add_size_args(parser):
     )
 
 
+def _wait_for_agent_ready(
+    cp_url: str, vm_name: str, timeout: int = 300, poll_interval: int = 5
+) -> dict | None:
+    """Wait until an agent appears on CP and becomes verified + healthy."""
+    deadline = time.time() + timeout
+    last_status = ""
+
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(f"{cp_url}/api/v1/agents", timeout=10) as resp:
+                payload = json.loads(resp.read())
+        except Exception:
+            time.sleep(poll_interval)
+            continue
+
+        for agent in payload.get("agents", []):
+            if agent.get("vm_name") != vm_name:
+                continue
+
+            verified = bool(agent.get("verified"))
+            health = str(agent.get("health_status") or "").lower()
+            status = str(agent.get("status") or "").lower()
+            summary = (
+                f"verified={verified} health={health or 'unknown'} status={status or 'unknown'}"
+            )
+            if summary != last_status:
+                print(f"Bootstrap agent state [{vm_name}]: {summary}", file=sys.stderr)
+                last_status = summary
+
+            if verified and health in {"healthy", "up"}:
+                return agent
+
+        time.sleep(poll_interval)
+
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="TDX CLI - Manage TDX VM lifecycle",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  tdx control-plane new               Launch control plane in TDX VM (bootstrap new network)
+  tdx control-plane new --wait        Launch control plane + bootstrap measurer agents
   tdx vm new                          Create new TDX VM (registers with control plane)
   tdx vm measure                      Boot temp VM to get MRTD, then destroy
   tdx vm list                         List all TDX VMs
@@ -821,11 +861,9 @@ Examples:
   tdx vm delete all                   Delete all TDX VMs
 
 To start a new EasyEnclave network:
-  1. tdx control-plane new            Launch control plane
-  2. MRTD=$(tdx vm measure)           Get MRTD from temp VM
-  3. curl -X POST .../trusted-mrtds   Trust the MRTD
-  4. tdx vm new                       Launch agent (now can register)
-  5. POST /api/v1/deployments         Deploy workloads via API
+  1. tdx control-plane new --wait     Launch CP + default tiny bootstrap measurer
+  2. tdx vm new                       Launch additional capacity agents
+  3. POST /api/v1/deployments         Deploy workloads via API
         """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -843,6 +881,23 @@ To start a new EasyEnclave network:
     )
     cp_new_parser.add_argument(
         "--wait", action="store_true", help="Wait for control plane to be ready"
+    )
+    cp_new_parser.add_argument(
+        "--bootstrap-measurers",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Launch bootstrap measuring agents after control plane health is ready (default: true)",
+    )
+    cp_new_parser.add_argument(
+        "--bootstrap-sizes",
+        default="tiny",
+        help=f"Comma-separated bootstrap agent sizes (default: tiny, allowed: {','.join(NODE_SIZES.keys())})",
+    )
+    cp_new_parser.add_argument(
+        "--bootstrap-timeout",
+        type=int,
+        default=300,
+        help="Seconds to wait for each bootstrap agent to register and verify (default: 300)",
     )
     cp_new_parser.add_argument(
         "--debug", action="store_true", help="Enable SSH and set password (tdx) for debugging"
@@ -930,6 +985,31 @@ To start a new EasyEnclave network:
     try:
         if args.command == "control-plane":
             if args.cp_command == "new":
+                bootstrap_sizes: list[str] = []
+                if args.bootstrap_measurers:
+                    if not args.wait:
+                        print(
+                            "Error: --bootstrap-measurers requires --wait so control plane URL is known.",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    bootstrap_sizes_raw = [s.strip() for s in args.bootstrap_sizes.split(",")]
+                    bootstrap_sizes = [s for s in bootstrap_sizes_raw if s]
+                    if not bootstrap_sizes:
+                        print(
+                            "Error: --bootstrap-sizes is empty; provide at least one size (e.g. tiny).",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+                    invalid = [s for s in bootstrap_sizes if s not in NODE_SIZES]
+                    if invalid:
+                        print(
+                            f"Error: invalid bootstrap size(s): {', '.join(invalid)}. "
+                            f"Allowed: {', '.join(NODE_SIZES.keys())}",
+                            file=sys.stderr,
+                        )
+                        sys.exit(1)
+
                 print("Launching control plane in TDX VM...", file=sys.stderr)
                 mem, vcpus, disk, size_name = _resolve_size(args)
                 result = mgr.control_plane_new(
@@ -963,8 +1043,6 @@ To start a new EasyEnclave network:
 
                         # Wait for control plane to be ready
                         print("Waiting for control plane to start...", file=sys.stderr)
-                        import urllib.error
-                        import urllib.request
 
                         # Always include IP in result so workflow can proceed
                         result["ip"] = ip
@@ -993,6 +1071,89 @@ To start a new EasyEnclave network:
                             mgr._dump_serial_log(result.get("serial_log"))
                             print(json.dumps(result, indent=2))
                             sys.exit(1)
+
+                        if args.bootstrap_measurers:
+                            intel_api_key = os.environ.get("INTEL_API_KEY", "")
+                            if not intel_api_key:
+                                print(
+                                    "Error: INTEL_API_KEY is required to bootstrap measuring agents.",
+                                    file=sys.stderr,
+                                )
+                                sys.exit(1)
+
+                            datacenter = os.environ.get("AGENT_DATACENTER", "")
+                            cloud_provider = os.environ.get("AGENT_CLOUD_PROVIDER", "baremetal")
+                            availability_zone = os.environ.get(
+                                "AGENT_DATACENTER_AZ", "github-runner"
+                            )
+                            region = os.environ.get("AGENT_DATACENTER_REGION", "")
+                            result["bootstrap_agents"] = []
+
+                            for bootstrap_size in bootstrap_sizes:
+                                size_mem, size_vcpus, size_disk = NODE_SIZES[bootstrap_size]
+                                bootstrap_config = {
+                                    "control_plane_url": url,
+                                    "intel_api_key": intel_api_key,
+                                }
+                                if datacenter:
+                                    bootstrap_config["datacenter"] = datacenter
+                                else:
+                                    if cloud_provider:
+                                        bootstrap_config["cloud_provider"] = cloud_provider
+                                    if availability_zone:
+                                        bootstrap_config["availability_zone"] = availability_zone
+                                    if region:
+                                        bootstrap_config["region"] = region
+
+                                print(
+                                    f"Launching bootstrap measuring agent VM (size={bootstrap_size})...",
+                                    file=sys.stderr,
+                                )
+                                bootstrap_agent = mgr.vm_new(
+                                    image=args.image,
+                                    mode=AGENT_MODE,
+                                    config=bootstrap_config,
+                                    debug=args.debug,
+                                    memory_gib=size_mem,
+                                    vcpu_count=size_vcpus,
+                                    size_name=bootstrap_size,
+                                    disk_gib=size_disk,
+                                )
+                                bootstrap_agent["node_size"] = bootstrap_size
+
+                                bootstrap_ip = mgr.get_vm_ip(bootstrap_agent["name"], timeout=180)
+                                if not bootstrap_ip:
+                                    print(
+                                        f"Error: Bootstrap agent (size={bootstrap_size}) did not get an IP.",
+                                        file=sys.stderr,
+                                    )
+                                    mgr._dump_network_info(bootstrap_agent["name"])
+                                    mgr._dump_serial_log(bootstrap_agent.get("serial_log"))
+                                    sys.exit(1)
+                                bootstrap_agent["ip"] = bootstrap_ip
+
+                                ready_agent = _wait_for_agent_ready(
+                                    url,
+                                    bootstrap_agent["name"],
+                                    timeout=args.bootstrap_timeout,
+                                )
+                                if not ready_agent:
+                                    print(
+                                        f"Error: Bootstrap agent (size={bootstrap_size}) did not become verified+healthy in time.",
+                                        file=sys.stderr,
+                                    )
+                                    mgr._dump_serial_log(bootstrap_agent.get("serial_log"))
+                                    sys.exit(1)
+
+                                bootstrap_agent["agent_id"] = ready_agent.get("agent_id")
+                                bootstrap_agent["verified"] = ready_agent.get("verified")
+                                bootstrap_agent["health_status"] = ready_agent.get("health_status")
+                                bootstrap_agent["status"] = ready_agent.get("status")
+                                result["bootstrap_agents"].append(bootstrap_agent)
+                                print(
+                                    f"Bootstrap agent ready (size={bootstrap_size}, id={ready_agent.get('agent_id')})",
+                                    file=sys.stderr,
+                                )
 
                         # Always print final result with IP
                         print(json.dumps(result, indent=2))

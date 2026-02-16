@@ -1,22 +1,22 @@
-# Bootstrap Shared LLM (baremetal)
+# Deploy Example - Private LLM
 #
-# Purpose: Ensure the shared control plane has an llm measurer and a working private-llm deployment.
-# This workflow runs on the self-hosted TDX runner and can optionally clean up the VMs it created.
+# Purpose: Demonstrate the LLM flow independently from deploy-examples:
+# 1) add/update llm measurement baseline + measurer app
+# 2) deploy and smoke-test the private-llm example.
 
-name: Bootstrap Shared LLM (baremetal)
+name: Deploy Example - Private LLM
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       cp_url:
         description: "Control plane URL"
         required: false
         default: "https://app.easyenclave.com"
-      deploy_private_llm:
-        description: "Deploy and smoke-test the private-llm example after bootstrapping the measurer"
-        required: false
-        type: boolean
-        default: true
       keep_new_vms:
         description: "Keep any newly-created VMs (capacity) instead of deleting them at the end"
         required: false
@@ -24,12 +24,13 @@ on:
         default: false
 
 concurrency:
-  group: bootstrap-shared-llm-${{ github.ref }}
+  group: deploy-example-private-llm-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   bootstrap:
     runs-on: [self-hosted, tdx]
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
 
@@ -44,6 +45,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Validate required secrets
         run: |
@@ -128,14 +131,12 @@ jobs:
           ./scripts/bootstrap_shared_measuring_enclave.sh
 
       - name: Register private-llm app
-        if: github.event.inputs.deploy_private_llm == 'true'
         uses: ./.github/actions/register-app
         with:
           name: private-llm
           description: "Private LLM - Ollama running in a TDX enclave"
 
       - name: Deploy private-llm (llm)
-        if: github.event.inputs.deploy_private_llm == 'true'
         id: deploy
         uses: ./.github/actions/deploy-example
         with:
@@ -150,17 +151,14 @@ jobs:
           allowed_clouds: baremetal
 
       - name: Set up Python
-        if: github.event.inputs.deploy_private_llm == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install SDK and OpenAI client
-        if: github.event.inputs.deploy_private_llm == 'true'
         run: pip install ./sdk/ openai
 
       - name: Smoke test LLM query (direct + proxy)
-        if: github.event.inputs.deploy_private_llm == 'true'
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: ${{ env.CP_URL }}
