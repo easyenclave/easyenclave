@@ -181,6 +181,9 @@ jobs:
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GITHUB_OAUTH_CLIENT_ID }}
+      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.GITHUB_OAUTH_CLIENT_SECRET }}
+      GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.GITHUB_OAUTH_REDIRECT_URI }}
       # Cloud credentials (optional). Note: GitHub OIDC does not transfer into the TDX VM;
       # if the control plane itself needs to call cloud APIs, provide key-based creds.
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}

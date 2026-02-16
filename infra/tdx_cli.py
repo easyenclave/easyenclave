@@ -386,6 +386,12 @@ class TDXManager:
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
             # Intel Trust Authority (required for launcher to generate its initial attestation)
             "intel_api_key": os.environ.get("INTEL_API_KEY"),
+            # Auth / billing settings passed through to the control-plane container
+            "github_oauth_client_id": os.environ.get("GITHUB_OAUTH_CLIENT_ID"),
+            "github_oauth_client_secret": os.environ.get("GITHUB_OAUTH_CLIENT_SECRET"),
+            "github_oauth_redirect_uri": os.environ.get("GITHUB_OAUTH_REDIRECT_URI"),
+            "stripe_secret_key": os.environ.get("STRIPE_SECRET_KEY"),
+            "stripe_webhook_secret": os.environ.get("STRIPE_WEBHOOK_SECRET"),
             # Trusted MRTDs (comma-separated)
             "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS"),
             "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS"),
@@ -812,7 +818,11 @@ def _add_size_args(parser):
 def _wait_for_agent_ready(
     cp_url: str, vm_name: str, timeout: int = 300, poll_interval: int = 5
 ) -> dict | None:
-    """Wait until an agent appears on CP and becomes verified + healthy."""
+    """Wait until an agent appears on CP and is verified + registered.
+
+    During bootstrap, tunnel health can lag due Cloudflare/DNS propagation.
+    For readiness, require verified attestation and a non-terminal agent status.
+    """
     deadline = time.time() + timeout
     last_status = ""
 
@@ -838,7 +848,7 @@ def _wait_for_agent_ready(
                 print(f"Bootstrap agent state [{vm_name}]: {summary}", file=sys.stderr)
                 last_status = summary
 
-            if verified and health in {"healthy", "up"}:
+            if verified and status not in {"", "unverified", "attestation_failed", "error"}:
                 return agent
 
         time.sleep(poll_interval)
