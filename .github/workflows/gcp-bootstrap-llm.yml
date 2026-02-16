@@ -82,8 +82,9 @@ jobs:
           control_plane_url: ${{ env.CP_URL }}
           node_size: llm
           wait_seconds: ${{ github.event.inputs.wait_seconds || '1800' }}
-          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
-          cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
+          billing_account_id: ${{ secrets.CP_DEPLOYER_ACCOUNT_ID }}
+          billing_api_key: ${{ secrets.CP_DEPLOYER_API_KEY }}
+          billing_months: "1"
           gcp_datacenter: ${{ steps.target.outputs.datacenter }}
           gcp_zone: ${{ env.GCP_ZONE_LIST }}
 
@@ -187,8 +188,9 @@ jobs:
           github_owner: ${{ github.repository_owner }}
           node_size: llm
           gcp_datacenter: ${{ steps.target.outputs.datacenter }}
-          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
-          cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
+          billing_account_id: ${{ secrets.CP_DEPLOYER_ACCOUNT_ID }}
+          billing_api_key: ${{ secrets.CP_DEPLOYER_API_KEY }}
+          billing_months: "1"
           gcp_zone: ${{ env.GCP_ZONE_LIST }}
           wait_seconds: ${{ github.event.inputs.wait_seconds || '1800' }}
 

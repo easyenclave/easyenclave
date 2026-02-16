@@ -212,6 +212,38 @@ _reg(
     "Minimum seconds between repeated dispatches for the same capacity pool",
     "operational",
 )
+_reg(
+    "operational.default_gcp_tiny_capacity_enabled",
+    "DEFAULT_GCP_TINY_CAPACITY_ENABLED",
+    "true",
+    False,
+    "Keep a default warm pool target for tiny nodes in GCP",
+    "operational",
+)
+_reg(
+    "operational.default_gcp_tiny_datacenter",
+    "DEFAULT_GCP_TINY_DATACENTER",
+    "gcp:us-central1-a",
+    False,
+    "Datacenter used by default warm tiny capacity target",
+    "operational",
+)
+_reg(
+    "operational.default_gcp_tiny_capacity_count",
+    "DEFAULT_GCP_TINY_CAPACITY_COUNT",
+    "1",
+    False,
+    "Minimum warm tiny agents kept for the default GCP datacenter",
+    "operational",
+)
+_reg(
+    "operational.default_gcp_tiny_capacity_dispatch",
+    "DEFAULT_GCP_TINY_CAPACITY_DISPATCH",
+    "true",
+    False,
+    "If true, dispatch external provisioning for default warm tiny GCP capacity",
+    "operational",
+)
 
 # External provisioner webhook
 _reg(
@@ -296,6 +328,38 @@ _reg(
     "",
     False,
     "Optional account_id credited with remaining platform revenue",
+    "operational",
+)
+_reg(
+    "billing.capacity_request_dev_simulation",
+    "BILLING_CAPACITY_REQUEST_DEV_SIMULATION",
+    "true",
+    False,
+    "If true, capacity purchase charges are simulated (ledger entry amount 0)",
+    "operational",
+)
+_reg(
+    "billing.capacity_price_tiny_monthly_usd",
+    "BILLING_CAPACITY_PRICE_TINY_MONTHLY_USD",
+    "25",
+    False,
+    "Monthly USD list price per tiny warm-capacity unit",
+    "operational",
+)
+_reg(
+    "billing.capacity_price_standard_monthly_usd",
+    "BILLING_CAPACITY_PRICE_STANDARD_MONTHLY_USD",
+    "100",
+    False,
+    "Monthly USD list price per standard warm-capacity unit",
+    "operational",
+)
+_reg(
+    "billing.capacity_price_llm_monthly_usd",
+    "BILLING_CAPACITY_PRICE_LLM_MONTHLY_USD",
+    "500",
+    False,
+    "Monthly USD list price per llm warm-capacity unit",
     "operational",
 )
 

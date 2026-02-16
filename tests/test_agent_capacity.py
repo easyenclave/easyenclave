@@ -6,7 +6,8 @@ import asyncio
 
 from app.auth import verify_admin_token
 from app.db_models import Agent, App, AppVersion
-from app.main import app, reconcile_capacity_targets_once
+from app.main import _ensure_default_gcp_tiny_capacity_target, app, reconcile_capacity_targets_once
+from app.settings import set_setting
 from app.storage import (
     agent_store,
     app_store,
@@ -306,3 +307,85 @@ def test_preflight_returns_no_verified_capacity_when_targets_enabled(client):
     data = resp.json()
     assert data["eligible"] is False
     assert any(issue["code"] == "NO_VERIFIED_CAPACITY" for issue in data["issues"])
+
+
+def test_capacity_purchase_uses_billing_auth_and_dispatches_capacity(client, monkeypatch):
+    calls: list[tuple[str, str, int, str]] = []
+
+    async def _fake_dispatch_provision_request(
+        *, datacenter: str, node_size: str, count: int, reason: str
+    ):
+        calls.append((datacenter, node_size, count, reason))
+        return (True, 202, None)
+
+    monkeypatch.setattr("app.main.dispatch_provision_request", _fake_dispatch_provision_request)
+
+    create_resp = client.post(
+        "/api/v1/accounts",
+        json={"name": "capacity-deployer", "account_type": "deployer"},
+    )
+    assert create_resp.status_code == 200
+    created = create_resp.json()
+
+    request_resp = client.post(
+        f"/api/v1/accounts/{created['account_id']}/capacity/request",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+        json={
+            "datacenter": "gcp:us-central1-a",
+            "node_size": "tiny",
+            "min_warm_count": 1,
+            "months": 1,
+            "reason": "ci-test",
+        },
+    )
+    assert request_resp.status_code == 200
+    payload = request_resp.json()
+
+    assert payload["account_id"] == created["account_id"]
+    assert payload["datacenter"] == "gcp:us-central1-a"
+    assert payload["node_size"] == "tiny"
+    assert payload["simulated_payment"] is True
+    assert payload["charged_amount_usd"] > 0
+    assert payload["capacity"]["dispatches"][0]["dispatched"] is True
+    assert calls and calls[0][0] == "gcp:us-central1-a"
+    assert calls[0][1] == "tiny"
+    assert calls[0][2] == 1
+
+
+def test_capacity_purchase_requires_funds_when_simulation_disabled(client):
+    set_setting("billing.capacity_request_dev_simulation", "false")
+
+    create_resp = client.post(
+        "/api/v1/accounts",
+        json={"name": "capacity-deployer-funded", "account_type": "deployer"},
+    )
+    assert create_resp.status_code == 200
+    created = create_resp.json()
+
+    request_resp = client.post(
+        f"/api/v1/accounts/{created['account_id']}/capacity/request",
+        headers={"Authorization": f"Bearer {created['api_key']}"},
+        json={
+            "datacenter": "gcp:us-central1-a",
+            "node_size": "tiny",
+            "min_warm_count": 1,
+            "months": 1,
+        },
+    )
+    assert request_resp.status_code == 400
+    assert "Insufficient funds" in request_resp.json().get("detail", "")
+
+
+def test_default_gcp_tiny_capacity_target_can_be_ensured_from_settings():
+    set_setting("operational.default_gcp_tiny_capacity_enabled", "true")
+    set_setting("operational.default_gcp_tiny_datacenter", "gcp:us-central1-a")
+    set_setting("operational.default_gcp_tiny_capacity_count", "1")
+    set_setting("operational.default_gcp_tiny_capacity_dispatch", "true")
+
+    _ensure_default_gcp_tiny_capacity_target()
+    targets = capacity_pool_target_store.list(enabled_only=True)
+    assert len(targets) == 1
+    assert targets[0].datacenter == "gcp:us-central1-a"
+    assert targets[0].node_size == "tiny"
+    assert targets[0].min_warm_count == 1
+    assert targets[0].dispatch is True

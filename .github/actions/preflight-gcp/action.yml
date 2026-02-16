@@ -1,5 +1,5 @@
 name: Preflight - GCP capacity
-description: Ensure at least one healthy verified GCP agent exists by asking the control plane to dispatch capacity
+description: Ensure at least one healthy verified GCP agent exists by requesting billed capacity via the control plane
 
 inputs:
   control_plane_url:
@@ -15,13 +15,27 @@ inputs:
     required: false
     default: "900"
 
-  # Control plane admin (optional but enables baseline auto-trust).
+  # Billing-backed capacity request credentials.
+  billing_account_id:
+    description: Billing deployer account_id used for capacity purchases
+    required: false
+    default: ""
+  billing_api_key:
+    description: Billing account API key (Authorization Bearer)
+    required: false
+    default: ""
+  billing_months:
+    description: Number of months to purchase for requested warm capacity
+    required: false
+    default: "1"
+
+  # Deprecated admin inputs retained for compatibility (ignored).
   cp_admin_token:
-    description: Control plane admin token (preferred)
+    description: Deprecated (ignored)
     required: false
     default: ""
   cp_admin_password:
-    description: Control plane admin password (fallback)
+    description: Deprecated (ignored)
     required: false
     default: ""
 
@@ -76,70 +90,26 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Get control-plane admin token (optional)
-      id: cp_admin
+    - name: Validate billing capacity credentials
       shell: bash
       env:
-        CP_URL: ${{ inputs.control_plane_url }}
+        BILLING_ACCOUNT_ID: ${{ inputs.billing_account_id }}
+        BILLING_API_KEY: ${{ inputs.billing_api_key }}
         CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token }}
         CP_ADMIN_PASSWORD: ${{ inputs.cp_admin_password }}
       run: |
         set -euo pipefail
-
-        login_with_password() {
-          local candidate="$1"
-          [ -n "$candidate" ] || return 1
-          local body code token
-          body="$(mktemp)"
-          code="$(
-            curl -sS -o "$body" -w "%{http_code}" -X POST "$CP_URL/admin/login" \
-              -H "Content-Type: application/json" \
-              -d "{\"password\":\"$candidate\"}" || echo 000
-          )"
-          if [ "$code" != "200" ]; then
-            rm -f "$body"
-            return 1
-          fi
-          token="$(jq -r '.token // empty' "$body" 2>/dev/null || true)"
-          rm -f "$body"
-          if [ -z "$token" ] || [ "$token" = "null" ]; then
-            return 1
-          fi
-          printf '%s' "$token"
-          return 0
-        }
-
-        if [ -n "${CP_ADMIN_TOKEN:-}" ]; then
-          echo "Using CP admin token from inputs"
-          echo "cp_admin_token=$CP_ADMIN_TOKEN" >> "$GITHUB_OUTPUT"
-          echo "CP_ADMIN_TOKEN=$CP_ADMIN_TOKEN" >> "$GITHUB_ENV"
-          exit 0
+        if [ -n "${CP_ADMIN_TOKEN:-}" ] || [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
+          echo "::warning::cp_admin_token/cp_admin_password are deprecated and ignored by preflight-gcp."
         fi
-
-        pw="${CP_ADMIN_PASSWORD:-}"
-        token=""
-        if [ -n "$pw" ]; then
-          token="$(login_with_password "$pw" || true)"
+        if [ -z "${BILLING_ACCOUNT_ID:-}" ]; then
+          echo "::error::Missing billing_account_id. Configure a deployer billing account for capacity requests."
+          exit 1
         fi
-
-        if [ -z "$token" ]; then
-          # Backward compat: CI control plane sometimes exposes an auto-generated password.
-          generated_pw="$(curl -sSf "$CP_URL/auth/methods" | jq -r '.generated_password // empty' || true)"
-          if [ -n "$generated_pw" ] && [ "$generated_pw" != "$pw" ]; then
-            echo "::warning::Provided CP admin password was rejected; retrying with generated password from /auth/methods."
-          fi
-          if [ -n "$generated_pw" ]; then
-            token="$(login_with_password "$generated_pw" || true)"
-          fi
+        if [ -z "${BILLING_API_KEY:-}" ]; then
+          echo "::error::Missing billing_api_key. Configure a deployer billing API key for capacity requests."
+          exit 1
         fi
-
-        if [ -z "$token" ]; then
-          echo "::warning::No CP admin password available; provisioning can still create a VM, but it likely cannot be auto-trusted."
-          exit 0
-        fi
-
-        echo "cp_admin_token=$token" >> "$GITHUB_OUTPUT"
-        echo "CP_ADMIN_TOKEN=$token" >> "$GITHUB_ENV"
 
     - name: Precheck - healthy verified GCP agents
       id: precheck
@@ -181,15 +151,20 @@ runs:
       shell: bash
       env:
         CP_URL: ${{ inputs.control_plane_url }}
-        CP_ADMIN_TOKEN: ${{ steps.cp_admin.outputs.cp_admin_token }}
+        BILLING_ACCOUNT_ID: ${{ inputs.billing_account_id }}
+        BILLING_API_KEY: ${{ inputs.billing_api_key }}
+        BILLING_MONTHS: ${{ inputs.billing_months }}
         NODE_SIZE: ${{ inputs.node_size }}
         GCP_DATACENTER: ${{ inputs.gcp_datacenter }}
         GCP_ZONE: ${{ inputs.gcp_zone }}
       run: |
         set -euo pipefail
-        if [ -z "${CP_ADMIN_TOKEN:-}" ]; then
-          echo "::error::No admin token available. Cannot request capacity dispatch from control plane."
-          echo "::error::Provide cp_admin_token or cp_admin_password for this action."
+        if [ -z "${BILLING_ACCOUNT_ID:-}" ] || [ -z "${BILLING_API_KEY:-}" ]; then
+          echo "::error::Missing billing credentials for capacity purchase."
+          exit 1
+        fi
+        if ! echo "${BILLING_MONTHS:-1}" | grep -Eq '^[1-9][0-9]*$'; then
+          echo "::error::Invalid billing_months='${BILLING_MONTHS:-}'. Expected integer >= 1."
           exit 1
         fi
 
@@ -214,14 +189,13 @@ runs:
         payload="$(jq -cn \
           --arg dc "$target_dc" \
           --arg ns "${NODE_SIZE:-}" \
+          --argjson months "${BILLING_MONTHS:-1}" \
           --arg reason "deploy-example-gcp-preflight-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
           '{
-            targets: [{datacenter: $dc, node_size: $ns, min_count: 1}],
-            require_verified: true,
-            require_healthy: true,
-            require_hostname: true,
-            allowed_statuses: ["undeployed", "deployed", "deploying"],
-            dispatch: true,
+            datacenter: $dc,
+            node_size: $ns,
+            min_warm_count: 1,
+            months: $months,
             reason: $reason
           }'
         )"
@@ -229,8 +203,8 @@ runs:
         body="$(mktemp)"
         http_code="$(
           curl -sS -o "$body" -w "%{http_code}" \
-            -X POST "$CP_URL/api/v1/admin/agents/capacity/reconcile" \
-            -H "Authorization: Bearer ${CP_ADMIN_TOKEN}" \
+            -X POST "$CP_URL/api/v1/accounts/${BILLING_ACCOUNT_ID}/capacity/request" \
+            -H "Authorization: Bearer ${BILLING_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$payload" || echo 000
         )"
@@ -243,13 +217,19 @@ runs:
           exit 1
         fi
 
-        shortfall="$(echo "$resp" | jq -r '.targets[0].shortfall // 0' 2>/dev/null || echo 0)"
-        dispatched="$(echo "$resp" | jq -r '.dispatches[0].dispatched // false' 2>/dev/null || echo false)"
-        detail="$(echo "$resp" | jq -r '.dispatches[0].detail // empty' 2>/dev/null || true)"
-        status_code="$(echo "$resp" | jq -r '.dispatches[0].status_code // empty' 2>/dev/null || true)"
+        shortfall="$(echo "$resp" | jq -r '.capacity.targets[0].shortfall // 0' 2>/dev/null || echo 0)"
+        dispatched="$(echo "$resp" | jq -r '.capacity.dispatches[0].dispatched // false' 2>/dev/null || echo false)"
+        detail="$(echo "$resp" | jq -r '.capacity.dispatches[0].detail // empty' 2>/dev/null || true)"
+        status_code="$(echo "$resp" | jq -r '.capacity.dispatches[0].status_code // empty' 2>/dev/null || true)"
+        tx_id="$(echo "$resp" | jq -r '.transaction_id // empty' 2>/dev/null || true)"
+        charged="$(echo "$resp" | jq -r '.charged_amount_usd // 0' 2>/dev/null || echo 0)"
+        simulated="$(echo "$resp" | jq -r '.simulated_payment // false' 2>/dev/null || echo false)"
 
         echo "target_datacenter=$target_dc" >> "$GITHUB_OUTPUT"
         echo "provisioned=$dispatched" >> "$GITHUB_OUTPUT"
+        if [ -n "$tx_id" ]; then
+          echo "transaction_id=$tx_id" >> "$GITHUB_OUTPUT"
+        fi
 
         if [ "${shortfall:-0}" -gt 0 ] && [ "$dispatched" != "true" ]; then
           echo "::error::Control plane reported shortfall=$shortfall but did not dispatch provisioning."
@@ -262,7 +242,7 @@ runs:
           exit 1
         fi
 
-        echo "Control-plane dispatch accepted for datacenter='$target_dc' node_size='${NODE_SIZE:-}' (shortfall=$shortfall dispatched=$dispatched)"
+        echo "Capacity request accepted: datacenter='$target_dc' node_size='${NODE_SIZE:-}' shortfall=$shortfall dispatched=$dispatched tx_id=${tx_id:-none} charged=${charged} simulated=${simulated}"
 
     - name: Wait for eligible GCP capacity after dispatch
       if: steps.precheck.outputs.need_provision == 'true'

@@ -189,6 +189,16 @@ class AgentCapacityReconcileResponse(BaseModel):
     dispatches: list[AgentCapacityDispatchResult] = Field(default_factory=list)
 
 
+class CapacityPurchaseRequest(BaseModel):
+    """Request paid warm capacity for a datacenter/node-size pool."""
+
+    datacenter: str
+    node_size: str = "tiny"
+    min_warm_count: int = Field(default=1, ge=1)
+    months: int = Field(default=1, ge=1)
+    reason: str = "capacity-purchase"
+
+
 class CapacityPoolTargetUpsertRequest(BaseModel):
     """Create or update a warm-capacity target for one pool."""
 
@@ -246,6 +256,23 @@ class CapacityReservationListResponse(BaseModel):
 
     reservations: list[CapacityReservationView] = Field(default_factory=list)
     total: int = 0
+
+
+class CapacityPurchaseResponse(BaseModel):
+    """Response for a billing-backed capacity purchase request."""
+
+    request_id: str
+    account_id: str
+    datacenter: str
+    node_size: str
+    min_warm_count: int
+    months: int
+    simulated_payment: bool
+    charged_amount_usd: float
+    transaction_id: str
+    balance_after: float
+    target: CapacityPoolTargetView
+    capacity: AgentCapacityReconcileResponse
 
 
 class CloudResourceAgent(BaseModel):

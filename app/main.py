@@ -10,6 +10,7 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -65,6 +66,7 @@ from .models import (
     AgentCapacityDispatchResult,
     AgentCapacityReconcileRequest,
     AgentCapacityReconcileResponse,
+    AgentCapacityTarget,
     AgentCapacityTargetResult,
     AgentChallengeResponse,
     AgentDeployedRequest,
@@ -87,6 +89,8 @@ from .models import (
     CapacityPoolTargetListResponse,
     CapacityPoolTargetUpsertRequest,
     CapacityPoolTargetView,
+    CapacityPurchaseRequest,
+    CapacityPurchaseResponse,
     CapacityReservationListResponse,
     CapacityReservationView,
     CloudflareCleanupRequest,
@@ -223,6 +227,95 @@ def _normalize_registration_datacenter(raw_value: str) -> str:
     if not location:
         location = "default"
     return f"{cloud}:{location}"
+
+
+def _parse_bool_setting(value: str, *, fallback: bool = False) -> bool:
+    lowered = (value or "").strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
+def _capacity_unit_price_monthly_usd(node_size: str) -> float:
+    normalized = (node_size or "").strip().lower()
+    setting_keys = {
+        "tiny": "billing.capacity_price_tiny_monthly_usd",
+        "standard": "billing.capacity_price_standard_monthly_usd",
+        "llm": "billing.capacity_price_llm_monthly_usd",
+    }
+    defaults = {
+        "tiny": 25.0,
+        "standard": 100.0,
+        "llm": 500.0,
+    }
+    key = setting_keys.get(normalized, "billing.capacity_price_tiny_monthly_usd")
+    default = defaults.get(normalized, defaults["tiny"])
+    raw = get_setting(key).strip()
+    try:
+        value = float(raw) if raw else default
+    except ValueError:
+        value = default
+    return max(0.0, value)
+
+
+def _ensure_default_gcp_tiny_capacity_target() -> None:
+    if not _parse_bool_setting(
+        get_setting("operational.default_gcp_tiny_capacity_enabled"),
+        fallback=True,
+    ):
+        return
+
+    datacenter = _normalize_registration_datacenter(
+        get_setting("operational.default_gcp_tiny_datacenter")
+    )
+    if not datacenter or not _DATACENTER_RE.fullmatch(datacenter):
+        logger.warning(
+            "Skipping default warm tiny capacity target due to invalid datacenter '%s'",
+            datacenter,
+        )
+        return
+
+    min_warm_count = max(
+        0,
+        get_setting_int("operational.default_gcp_tiny_capacity_count", fallback=1),
+    )
+    dispatch = _parse_bool_setting(
+        get_setting("operational.default_gcp_tiny_capacity_dispatch"),
+        fallback=True,
+    )
+    reason = "default-gcp-tiny-capacity"
+
+    # Respect explicit user-managed target reasons and avoid overriding them.
+    existing = next(
+        (
+            row
+            for row in capacity_pool_target_store.list()
+            if (row.datacenter or "").strip().lower() == datacenter and row.node_size == "tiny"
+        ),
+        None,
+    )
+    if existing and (existing.reason or "").strip().lower() not in {
+        "",
+        reason,
+    }:
+        return
+
+    try:
+        capacity_pool_target_store.upsert(
+            datacenter=datacenter,
+            node_size="tiny",
+            min_warm_count=min_warm_count,
+            enabled=True,
+            require_verified=True,
+            require_healthy=True,
+            require_hostname=True,
+            dispatch=dispatch,
+            reason=reason,
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to ensure default warm tiny capacity target: {exc}")
 
 
 async def check_service_health(service: Service) -> str:
@@ -679,6 +772,9 @@ async def lifespan(app: FastAPI):
 
     # Log effective settings sources
     log_settings_sources()
+
+    # Ensure baseline warm-capacity policy exists before controllers start.
+    _ensure_default_gcp_tiny_capacity_target()
 
     # Generate initial CP attestation
     _refresh_cp_attestation()
@@ -3192,6 +3288,150 @@ async def list_account_transactions(
 async def get_rate_card():
     """Get the current billing rate card."""
     return RateCardResponse(rates=RATE_CARD)
+
+
+@app.post("/api/v1/accounts/{account_id}/capacity/request", response_model=CapacityPurchaseResponse)
+async def request_paid_capacity(
+    account_id: str,
+    request: CapacityPurchaseRequest,
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """Request warm capacity using billing account authentication."""
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot request capacity for other accounts")
+
+    account = get_or_404(account_store, account_id, "Account")
+    if account.account_type != "deployer":
+        raise HTTPException(
+            status_code=403,
+            detail="Capacity purchases require a deployer account",
+        )
+
+    datacenter = _normalize_registration_datacenter(request.datacenter)
+    if not datacenter or not _DATACENTER_RE.fullmatch(datacenter):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid datacenter. Expected '<cloud>:<zone>' (for example gcp:us-central1-a)"
+            ),
+        )
+
+    node_size = _normalize_registration_node_size(request.node_size)
+    if node_size not in {"tiny", "standard", "llm"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid node_size. Expected one of: tiny, standard, llm",
+        )
+
+    request_id = f"capacity-{uuid4().hex[:16]}"
+    charged_amount_usd = round(
+        _capacity_unit_price_monthly_usd(node_size)
+        * float(request.min_warm_count)
+        * float(request.months),
+        2,
+    )
+    simulated_payment = _parse_bool_setting(
+        get_setting("billing.capacity_request_dev_simulation"),
+        fallback=True,
+    )
+
+    description = (
+        f"Warm capacity {datacenter}/{node_size} x{request.min_warm_count} "
+        f"for {request.months} month(s)"
+    )
+    if simulated_payment:
+        txn = create_transaction(
+            account_store,
+            transaction_store,
+            account_id,
+            amount=0.0,
+            tx_type="charge",
+            description=f"[SIMULATED ${charged_amount_usd:.2f}] {description}",
+            reference_id=request_id,
+        )
+    else:
+        txn = create_transaction(
+            account_store,
+            transaction_store,
+            account_id,
+            amount=-charged_amount_usd,
+            tx_type="charge",
+            description=description,
+            reference_id=request_id,
+        )
+
+    reason = (request.reason or "").strip() or "capacity-purchase"
+    reconcile_reason = f"{reason}:{request_id}"
+    target = capacity_pool_target_store.upsert(
+        datacenter=datacenter,
+        node_size=node_size,
+        min_warm_count=request.min_warm_count,
+        enabled=True,
+        require_verified=True,
+        require_healthy=True,
+        require_hostname=True,
+        dispatch=True,
+        reason=reconcile_reason,
+    )
+
+    capacity_result = await reconcile_agent_capacity(
+        AgentCapacityReconcileRequest(
+            targets=[
+                AgentCapacityTarget(
+                    datacenter=datacenter,
+                    node_size=node_size,
+                    min_count=request.min_warm_count,
+                )
+            ],
+            require_verified=True,
+            require_healthy=True,
+            require_hostname=True,
+            allowed_statuses=["undeployed", "deployed", "deploying"],
+            dispatch=True,
+            reason=reconcile_reason,
+        ),
+        _admin=True,
+    )
+
+    target_view = _capacity_pool_target_view(
+        datacenter=(target.datacenter or "").strip().lower(),
+        node_size=(target.node_size or "").strip().lower(),
+        min_warm_count=target.min_warm_count,
+        enabled=target.enabled,
+        require_verified=target.require_verified,
+        require_healthy=target.require_healthy,
+        require_hostname=target.require_hostname,
+        dispatch=target.dispatch,
+        reason=target.reason,
+        agents=agent_store.list(),
+    )
+
+    logger.info(
+        "Capacity purchase requested: account=%s datacenter=%s node_size=%s min_warm=%d "
+        "months=%d simulated=%s charge=%.2f",
+        account_id,
+        datacenter,
+        node_size,
+        request.min_warm_count,
+        request.months,
+        simulated_payment,
+        charged_amount_usd,
+    )
+
+    return CapacityPurchaseResponse(
+        request_id=request_id,
+        account_id=account_id,
+        datacenter=datacenter,
+        node_size=node_size,
+        min_warm_count=request.min_warm_count,
+        months=request.months,
+        simulated_payment=simulated_payment,
+        charged_amount_usd=charged_amount_usd,
+        transaction_id=txn.transaction_id,
+        balance_after=txn.balance_after,
+        target=target_view,
+        capacity=capacity_result,
+    )
 
 
 @app.post("/api/v1/accounts/{account_id}/payment-intent")
