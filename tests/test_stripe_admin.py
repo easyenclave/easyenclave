@@ -1,14 +1,21 @@
 """Tests for Stripe admin status endpoint."""
 
 import os
+from datetime import datetime, timedelta, timezone
 
 from app.auth import verify_admin_token
+from app.db_models import AdminSession
 from app.main import app
 from app.settings import invalidate_cache
 
 
 async def _mock_verify_admin_token():
-    return True
+    return AdminSession(
+        token_hash="x",
+        token_prefix="x",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        auth_method="password",
+    )
 
 
 def _admin_headers():

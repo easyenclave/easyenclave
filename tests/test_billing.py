@@ -1,8 +1,11 @@
 """Tests for the billing API (accounts, deposits, transactions, rate card)."""
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
 from app.auth import verify_admin_token
+from app.db_models import AdminSession
 from app.main import app
 
 client = TestClient(app)
@@ -10,7 +13,12 @@ client = TestClient(app)
 
 # Mock admin token verification
 async def mock_verify_admin_token():
-    return True
+    return AdminSession(
+        token_hash="x",
+        token_prefix="x",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        auth_method="password",
+    )
 
 
 # Helper to create account and return (account_id, api_key)

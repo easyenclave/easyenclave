@@ -1,20 +1,26 @@
 """Tests for the measuring enclave flow."""
 
 import base64
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import verify_admin_token
-from app.db_models import Agent
+from app.db_models import AdminSession, Agent
 from app.main import app
 from app.storage import agent_store, app_version_store
 
 
 # Mock admin token verification
 async def mock_verify_admin_token():
-    return True
+    return AdminSession(
+        token_hash="x",
+        token_prefix="x",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        auth_method="password",
+    )
 
 
 @pytest.fixture

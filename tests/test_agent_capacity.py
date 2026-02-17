@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from app.auth import verify_admin_token
-from app.db_models import Agent, App, AppVersion
+from app.db_models import AdminSession, Agent, App, AppVersion
 from app.main import _ensure_default_gcp_tiny_capacity_target, app, reconcile_capacity_targets_once
 from app.settings import set_setting
 from app.storage import (
@@ -19,7 +20,12 @@ from app.storage import (
 
 
 async def _mock_verify_admin_token():
-    return True
+    return AdminSession(
+        token_hash="x",
+        token_prefix="x",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        auth_method="password",
+    )
 
 
 def _admin_headers():

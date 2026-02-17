@@ -55,6 +55,10 @@ jobs:
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
+      # Admin password for CI bootstrapping (used to attest the initial measurer).
+      # This is explicit (not auto-generated) and can be removed later once bootstrap uses API keys.
+      ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+
       # Deployer settings.
       CP_BOOTSTRAP_SIZES: ${{ github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
       NUM_TINY_AGENTS: ${{ github.event.inputs.num_tiny_agents || '1' }}

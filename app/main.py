@@ -253,6 +253,16 @@ def _github_oauth_fully_configured() -> bool:
     )
 
 
+def require_admin_session(session: AdminSession = Depends(verify_admin_token)) -> AdminSession:
+    """Dependency that requires an authenticated *admin* session.
+
+    Note: verify_admin_token only authenticates the session; admin privileges are enforced here.
+    """
+    if not is_admin_session(session):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return session
+
+
 def _normalize_registration_node_size(raw_value: str) -> str:
     return (raw_value or "").strip().lower()
 
@@ -705,17 +715,18 @@ def validate_environment():
     github_admin_allowlist = bool((os.environ.get("ADMIN_GITHUB_LOGINS") or "").strip())
     github_admin_mode = bool(github_oauth_ready and github_admin_allowlist)
 
-    # Password admin login is optional and generally disabled in production.
+    # Password admin login is optional. If no hash is configured, we allow an explicit plaintext
+    # ADMIN_PASSWORD (hashed on startup) for CI/dev. We never auto-generate a password when GitHub
+    # OAuth is configured and an admin allowlist exists.
     global _generated_admin_password
-    if _password_login_allowed() and not github_admin_mode:
+    if _password_login_allowed():
         if not os.environ.get("ADMIN_PASSWORD_HASH"):
-            # Dev convenience: allow setting a plaintext password (hashed on startup).
-            # Avoid using this in production; prefer ADMIN_PASSWORD_HASH.
             plaintext_pw = (os.environ.get("ADMIN_PASSWORD") or "").strip()
             if plaintext_pw:
                 os.environ["ADMIN_PASSWORD_HASH"] = hash_password(plaintext_pw)
                 logger.warning("ADMIN_PASSWORD_HASH not set — using hashed ADMIN_PASSWORD from env")
-            else:
+                _generated_admin_password = None
+            elif not github_admin_mode:
                 import secrets as _secrets
 
                 generated_pw = _secrets.token_urlsafe(16)
@@ -723,6 +734,8 @@ def validate_environment():
                 os.environ["ADMIN_PASSWORD_HASH"] = pw_hash
                 _generated_admin_password = generated_pw
                 logger.warning("ADMIN_PASSWORD_HASH not set — auto-generated password")
+            else:
+                _generated_admin_password = None
     else:
         _generated_admin_password = None
 
@@ -1655,7 +1668,7 @@ def _capacity_launch_order_view(order) -> CapacityLaunchOrderView:
     "/api/v1/admin/agents/capacity/targets",
     response_model=CapacityPoolTargetListResponse,
 )
-async def list_capacity_targets(_admin: bool = Depends(verify_admin_token)):
+async def list_capacity_targets(_admin: AdminSession = Depends(require_admin_session)):
     """List warm-capacity targets and current reservation status."""
     targets = capacity_pool_target_store.list()
     agents = agent_store.list()
@@ -1683,7 +1696,7 @@ async def list_capacity_targets(_admin: bool = Depends(verify_admin_token)):
 )
 async def upsert_capacity_target(
     request: CapacityPoolTargetUpsertRequest,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Create or update one warm-capacity target."""
     try:
@@ -1720,7 +1733,7 @@ async def upsert_capacity_target(
 async def delete_capacity_target(
     datacenter: str = Query(..., description="Datacenter key (e.g. gcp:us-central1-a)"),
     node_size: str = Query("", description="Node size key (e.g. tiny, llm)"),
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Delete one warm-capacity target."""
     if not capacity_pool_target_store.delete_pool(datacenter, node_size):
@@ -1736,7 +1749,7 @@ async def list_capacity_reservations(
     status: str = Query(
         "", description="Filter by reservation status (open/consumed/expired/released)"
     ),
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """List warm-capacity reservations."""
     normalized_status = (status or "").strip().lower()
@@ -1768,7 +1781,7 @@ async def list_capacity_launch_orders(
     status: str = Query("", description="Filter by order status"),
     datacenter: str = Query("", description="Optional datacenter filter"),
     node_size: str = Query("", description="Optional node_size filter"),
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """List capacity launch orders queued by the control plane."""
     normalized_status = (status or "").strip().lower()
@@ -1862,7 +1875,7 @@ async def update_capacity_launch_order(
 )
 async def reconcile_agent_capacity(
     request: AgentCapacityReconcileRequest,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Compute and optionally dispatch agent capacity shortfalls per datacenter/size."""
     if not request.targets:
@@ -1967,7 +1980,7 @@ async def reconcile_agent_capacity(
     response_model=CloudResourceInventoryResponse,
 )
 async def list_cloud_resources(
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """List observed cloud resources used by the control plane.
 
@@ -2075,7 +2088,7 @@ async def list_cloud_resources(
     response_model=ExternalCloudInventoryResponse,
 )
 async def list_external_cloud_resources(
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """List Azure/GCP resources from external provisioner inventory webhook."""
     configured, status_code, detail, payload = await fetch_external_inventory()
@@ -2216,7 +2229,7 @@ async def list_external_cloud_resources(
 )
 async def cleanup_external_cloud_resources(
     request: ExternalCloudCleanupRequest,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Dispatch Azure/GCP orphan cleanup through external provisioner webhook."""
     configured, dispatched, status_code, detail, payload = await dispatch_external_cleanup(
@@ -2526,7 +2539,7 @@ async def delete_trusted_mrtd_admin(
 @app.get("/api/v1/admin/settings")
 async def admin_list_settings(
     group: str | None = Query(None),
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """List all settings with values, sources, and metadata."""
     return {"settings": list_settings(group=group)}
@@ -2536,7 +2549,7 @@ async def admin_list_settings(
 async def admin_update_setting(
     key: str,
     body: dict,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Save a setting value to the database."""
     if key not in SETTING_DEFS:
@@ -2552,7 +2565,7 @@ async def admin_update_setting(
 @app.delete("/api/v1/admin/settings/{key:path}")
 async def admin_reset_setting(
     key: str,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Remove a setting from DB (reverts to env var or default)."""
     if key not in SETTING_DEFS:
@@ -2565,7 +2578,7 @@ async def admin_reset_setting(
 @app.get("/api/v1/admin/stripe/status")
 async def admin_stripe_status(
     validate: bool = Query(False),
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Return basic Stripe integration status for the admin UI.
 
@@ -2634,7 +2647,7 @@ def _is_protected_tunnel_name(name: str | None) -> bool:
 
 
 @app.get("/api/v1/admin/cloudflare/status")
-async def cloudflare_status(_admin: bool = Depends(verify_admin_token)):
+async def cloudflare_status(_admin: AdminSession = Depends(require_admin_session)):
     """Check if Cloudflare is configured and return domain info."""
     return {
         "configured": cloudflare.is_configured(),
@@ -2644,7 +2657,7 @@ async def cloudflare_status(_admin: bool = Depends(verify_admin_token)):
 
 
 @app.get("/api/v1/admin/cloudflare/tunnels")
-async def cloudflare_tunnels(_admin: bool = Depends(verify_admin_token)):
+async def cloudflare_tunnels(_admin: AdminSession = Depends(require_admin_session)):
     """List Cloudflare tunnels cross-referenced with agents."""
     if not cloudflare.is_configured():
         raise HTTPException(status_code=400, detail="Cloudflare not configured")
@@ -2692,7 +2705,7 @@ async def cloudflare_tunnels(_admin: bool = Depends(verify_admin_token)):
 
 
 @app.get("/api/v1/admin/cloudflare/dns")
-async def cloudflare_dns(_admin: bool = Depends(verify_admin_token)):
+async def cloudflare_dns(_admin: AdminSession = Depends(require_admin_session)):
     """List Cloudflare DNS CNAME records cross-referenced with tunnels."""
     if not cloudflare.is_configured():
         raise HTTPException(status_code=400, detail="Cloudflare not configured")
@@ -2735,7 +2748,9 @@ async def cloudflare_dns(_admin: bool = Depends(verify_admin_token)):
 
 
 @app.delete("/api/v1/admin/cloudflare/tunnels/{tunnel_id}")
-async def cloudflare_delete_tunnel(tunnel_id: str, _admin: bool = Depends(verify_admin_token)):
+async def cloudflare_delete_tunnel(
+    tunnel_id: str, _admin: AdminSession = Depends(require_admin_session)
+):
     """Delete a Cloudflare tunnel and clear the agent's tunnel fields."""
     if not cloudflare.is_configured():
         raise HTTPException(status_code=400, detail="Cloudflare not configured")
@@ -2767,7 +2782,9 @@ async def cloudflare_delete_tunnel(tunnel_id: str, _admin: bool = Depends(verify
 
 
 @app.delete("/api/v1/admin/cloudflare/dns/{record_id}")
-async def cloudflare_delete_dns(record_id: str, _admin: bool = Depends(verify_admin_token)):
+async def cloudflare_delete_dns(
+    record_id: str, _admin: AdminSession = Depends(require_admin_session)
+):
     """Delete a Cloudflare DNS record by ID."""
     if not cloudflare.is_configured():
         raise HTTPException(status_code=400, detail="Cloudflare not configured")
@@ -2779,7 +2796,7 @@ async def cloudflare_delete_dns(record_id: str, _admin: bool = Depends(verify_ad
 @app.post("/api/v1/admin/cloudflare/cleanup")
 async def cloudflare_cleanup(
     request: CloudflareCleanupRequest | None = None,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ) -> CloudflareCleanupResponse:
     """Bulk delete all orphaned tunnels and DNS records."""
     if not cloudflare.is_configured():
@@ -2866,7 +2883,7 @@ async def cloudflare_cleanup(
 @app.post("/api/v1/admin/cleanup/orphans", response_model=UnifiedOrphanCleanupResponse)
 async def unified_orphan_cleanup(
     request: UnifiedOrphanCleanupRequest,
-    _admin: bool = Depends(verify_admin_token),
+    session: AdminSession = Depends(require_admin_session),
 ):
     """Unified orphan cleanup across Cloudflare + external provisioner inventory."""
     detail_parts: list[str] = []
@@ -2880,7 +2897,7 @@ async def unified_orphan_cleanup(
             try:
                 cf_result = await cloudflare_cleanup(
                     CloudflareCleanupRequest(dry_run=request.dry_run),
-                    _admin=True,
+                    _admin=session,
                 )
             except Exception as exc:
                 detail_parts.append(f"Cloudflare cleanup failed: {exc}")
@@ -2935,7 +2952,7 @@ async def unified_orphan_cleanup(
 async def admin_agent_cleanup(
     agent_id: str,
     request: AdminAgentCleanupRequest,
-    _admin: bool = Depends(verify_admin_token),
+    session: AdminSession = Depends(require_admin_session),
 ):
     """Delete an agent and attempt to delete linked external cloud resources as well."""
     agent = get_or_404(agent_store, agent_id, "Agent")
@@ -2954,7 +2971,7 @@ async def admin_agent_cleanup(
         detail_parts.append(f"External inventory error; skipping linked VM cleanup: {inv_detail}")
     else:
         # Reuse existing normalization logic by calling the admin inventory endpoint function.
-        inventory = await list_external_cloud_resources(_admin=True)
+        inventory = await list_external_cloud_resources(_admin=session)
         vm_name_norm = (agent.vm_name or "").strip().lower()
         for r in inventory.resources:
             if r.linked_agent_id == agent_id:
@@ -3047,7 +3064,7 @@ async def admin_agent_cleanup(
 )
 async def admin_cleanup_stale_agents(
     request: AdminStaleAgentCleanupRequest,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Admin-only: delete stale agents (DB + Cloudflare tunnel/DNS best-effort).
 
@@ -3384,7 +3401,7 @@ async def link_account_identity(
 async def list_accounts(
     name: str | None = Query(None, description="Filter by name (partial match)"),
     account_type: str | None = Query(None, description="Filter by account type"),
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """List all billing accounts (admin only)."""
     accounts = account_store.list(build_filters(name=name, account_type=account_type))
@@ -3893,7 +3910,7 @@ async def list_app_revenue_shares(name: str):
 async def create_app_revenue_share(
     name: str,
     request: AppRevenueShareCreateRequest,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Create a contributor revenue-share rule for an app (admin only)."""
     found_app = app_store.get_by_name(name)
@@ -3944,7 +3961,7 @@ async def create_app_revenue_share(
 async def delete_app_revenue_share(
     name: str,
     share_id: str,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Delete a contributor revenue-share rule for an app (admin only)."""
     found_app = app_store.get_by_name(name)
@@ -4050,7 +4067,7 @@ async def manual_attest_version(
     version: str,
     node_size: str = "",
     request: ManualAttestRequest | None = None,
-    _admin: bool = Depends(verify_admin_token),
+    _admin: AdminSession = Depends(require_admin_session),
 ):
     """Manually attest an app version (admin only).
 

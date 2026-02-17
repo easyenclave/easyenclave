@@ -1,17 +1,24 @@
 """Tests for Cloudflare admin tab API routes."""
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import verify_admin_token
+from app.db_models import AdminSession
 from app.main import app
 from app.storage import agent_store
 
 
 async def mock_verify_admin_token():
-    return True
+    return AdminSession(
+        token_hash="x",
+        token_prefix="x",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        auth_method="password",
+    )
 
 
 @pytest.fixture
