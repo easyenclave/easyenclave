@@ -1662,8 +1662,23 @@ async def background_capacity_launch_order_fulfiller():
 
     internal_launcher_id = "cp-internal-launcher"
     poll_seconds = 5
+    warned_missing_gcp_creds = False
     while True:
         try:
+            # Avoid claiming and failing orders in a tight loop when the control plane
+            # is not configured for GCP provisioning (common in local/CI environments).
+            if not os.environ.get("GCP_PROJECT_ID") or not os.environ.get(
+                "GCP_SERVICE_ACCOUNT_KEY"
+            ):
+                if not warned_missing_gcp_creds:
+                    warned_missing_gcp_creds = True
+                    logger.info(
+                        "GCP credentials not configured (missing GCP_PROJECT_ID/GCP_SERVICE_ACCOUNT_KEY); "
+                        "skipping CP-native GCP capacity fulfillment"
+                    )
+                await asyncio.sleep(poll_seconds)
+                continue
+
             # Find the oldest open GCP order.
             open_orders = capacity_launch_order_store.list("open")
             gcp_order = None
