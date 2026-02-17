@@ -248,6 +248,53 @@ jobs:
             echo "No healthy measuring-enclave-llm found; bootstrap is required."
           fi
 
+      - name: Measure + trust llm baseline (bootstrap)
+        if: steps.measurer.outputs.healthy != 'true'
+        id: llm_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          admin_token="${CP_ADMIN_TOKEN:-}"
+          if [ -z "${admin_token:-}" ]; then
+            if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
+              echo "::error::Missing CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD; cannot trust LLM baseline for bootstrap."
+              exit 1
+            fi
+            resp="$(curl -sSf "${CP_URL}/admin/login" \
+              -H "Content-Type: application/json" \
+              -d "{\"password\": \"${CP_ADMIN_PASSWORD}\"}")"
+            admin_token="$(echo "$resp" | jq -r '.token // empty')"
+          fi
+          if [ -z "${admin_token:-}" ] || [ "${admin_token:-}" = "null" ]; then
+            echo "::error::Admin login failed; cannot trust LLM baseline."
+            exit 1
+          fi
+
+          # Measure locally on the TDX runner so the first LLM agent can verify.
+          measurements="$(python3 infra/tdx_cli.py vm measure --size llm --json)"
+          mrtd="$(echo "$measurements" | jq -r '.mrtd // empty')"
+          rtmrs="$(echo "$measurements" | jq -c '{rtmr0,rtmr1,rtmr2,rtmr3}')"
+          if [ -z "${mrtd:-}" ] || [ "${mrtd:-}" = "null" ]; then
+            echo "::error::Failed to measure llm baseline MRTD"
+            echo "$measurements" | head -c 2000 || true
+            exit 1
+          fi
+
+          # Trust this MRTD baseline at runtime (DB-backed trust list).
+          curl -sSf -X POST "${CP_URL}/api/v1/admin/trusted-mrtds" \
+            -H "Authorization: Bearer ${admin_token}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -cn \
+              --arg mrtd "$mrtd" \
+              --arg note "builtin-examples llm baseline (measured $(date -u +%Y-%m-%dT%H:%M:%SZ))" \
+              '{mrtd:$mrtd,type:"agent",note:$note}')" \
+            >/dev/null
+
+          echo "mrtds_by_size=$(jq -cn --arg mrtd "$mrtd" '{llm:$mrtd}')" >> "$GITHUB_OUTPUT"
+          echo "rtmrs_by_size=$(jq -cn --argjson rtmrs "$rtmrs" '{llm:$rtmrs}')" >> "$GITHUB_OUTPUT"
+          echo "Using measured llm baseline MRTD: ${mrtd:0:16}..."
+
       - name: Ensure baremetal llm capacity for measurer + private-llm
         id: ensure_agents
         shell: bash
@@ -256,6 +303,80 @@ jobs:
           created=()
           max_boots=3
           boots=0
+          desired_total=2
+
+          admin_login() {
+            local resp token
+            resp="$(curl -sSf "${CP_URL}/admin/login" \
+              -H "Content-Type: application/json" \
+              -d "{\"password\": \"${CP_ADMIN_PASSWORD}\"}")"
+            token="$(echo "$resp" | jq -r '.token // empty')"
+            if [ -z "${token:-}" ] || [ "${token:-}" = "null" ]; then
+              echo "::error::Admin login failed; cannot dispatch bootstrap capacity orders."
+              exit 1
+            fi
+            printf '%s' "$token"
+          }
+
+          admin_token="${CP_ADMIN_TOKEN:-}"
+          if [ -z "${admin_token:-}" ]; then
+            if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
+              echo "::error::Missing CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD; cannot dispatch bootstrap capacity orders."
+              exit 1
+            fi
+            admin_token="$(admin_login)"
+          fi
+
+          # Create an ephemeral launcher account to claim bootstrap tokens (keeps Intel keys off VMs).
+          launcher_name="builtin-launcher-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
+          launcher_json="$(
+            curl -sSf -X POST "${CP_URL}/api/v1/accounts" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -cn \
+                --arg name "$launcher_name" \
+                --arg desc "Builtin examples launcher (ephemeral) for bootstrap token claims" \
+                '{name:$name, description:$desc, account_type:"launcher"}')"
+          )"
+          launcher_api_key="$(echo "$launcher_json" | jq -r '.api_key // empty')"
+          launcher_account_id="$(echo "$launcher_json" | jq -r '.account_id // empty')"
+          if [ -z "${launcher_api_key:-}" ] || [ -z "${launcher_account_id:-}" ]; then
+            echo "::error::Failed to create launcher account for bootstrap token claims"
+            echo "$launcher_json" | head -c 2000 || true
+            exit 1
+          fi
+
+          dispatch_orders() {
+            local min_count="$1"
+            curl -sSf -X POST "${CP_URL}/api/v1/admin/agents/capacity/reconcile" \
+              -H "Authorization: Bearer ${admin_token}" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -cn \
+                --arg dc "${TARGET_DATACENTER}" \
+                --arg ns "llm" \
+                --arg reason "builtin-examples-llm-bootstrap-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
+                --argjson min_count "${min_count}" \
+                --arg aid "${launcher_account_id}" \
+                '{targets:[{datacenter:$dc,node_size:$ns,min_count:$min_count}], dispatch:true, reason:$reason, account_id:$aid, require_hostname:false}')" \
+              >/dev/null
+          }
+
+          claim_bootstrap_token() {
+            local resp order_id token
+            resp="$(
+              curl -sSf -X POST "${CP_URL}/api/v1/launchers/capacity/orders/claim" \
+                -H "Authorization: Bearer ${launcher_api_key}" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -cn --arg dc "${TARGET_DATACENTER}" --arg ns "llm" '{datacenter:$dc,node_size:$ns}')"
+            )"
+            order_id="$(echo "$resp" | jq -r '.order.order_id // empty')"
+            token="$(echo "$resp" | jq -r '.bootstrap_token // empty')"
+            if [ -z "${order_id:-}" ] || [ -z "${token:-}" ]; then
+              echo "::error::Failed to claim bootstrap token for llm (${TARGET_DATACENTER})"
+              echo "$resp" | head -c 2000 || true
+              return 1
+            fi
+            printf '%s\t%s\n' "$order_id" "$token"
+          }
 
           count_non_measurer() {
             curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
@@ -281,6 +402,9 @@ jobs:
               ] | length'
           }
 
+          # Ensure there are enough open capacity orders to boot up to desired_total nodes.
+          dispatch_orders "${desired_total}"
+
           non_measurer="$(count_non_measurer || echo 0)"
           measurer="$(count_measurer || echo 0)"
           required_non_measurer=2
@@ -300,7 +424,8 @@ jobs:
               exit 1
             fi
             echo "Booting a new baremetal llm agent VM..."
-            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait)"
+            read -r order_id bootstrap_token < <(claim_bootstrap_token)
+            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait --bootstrap-order-id "${order_id}" --bootstrap-token "${bootstrap_token}")"
             name="$(echo "$vm_json" | jq -r '.name // empty')"
             if [ -n "$name" ]; then
               created+=("$name")
@@ -327,70 +452,6 @@ jobs:
           printf '%s\n' "${created[@]:-}" > /tmp/new_llm_vms.txt || true
           echo "created_vms=$(paste -sd, /tmp/new_llm_vms.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Capture trusted llm baseline from verified baremetal agent
-        if: steps.measurer.outputs.healthy != 'true'
-        id: baremetal_baseline
-        shell: bash
-        run: |
-          set -euo pipefail
-          agents="$(curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/agents")"
-
-          # Poll for a verified, healthy llm agent with MRTD+RTMRs.
-          row=""
-          for _ in {1..120}; do
-            row="$(
-              echo "$agents" | jq -c --arg dc "${TARGET_DATACENTER}" '
-                [
-                  .agents[]
-                  | (.datacenter // "" | ascii_downcase) as $agent_dc
-                  | (.status // "" | ascii_downcase) as $status
-                  | select(.verified == true)
-                  | select((.health_status // "" | ascii_downcase) == "healthy")
-                  | select((.node_size // "" | ascii_downcase) == "llm")
-                  | select($agent_dc == ($dc | ascii_downcase))
-                  | select($status == "undeployed" or $status == "deployed")
-                  | select((.mrtd // "") != "")
-                  | (
-                      .rtmrs
-                      // {
-                        rtmr0: (.attestation.tdx.measurements.rtmr0 // ""),
-                        rtmr1: (.attestation.tdx.measurements.rtmr1 // ""),
-                        rtmr2: (.attestation.tdx.measurements.rtmr2 // ""),
-                        rtmr3: (.attestation.tdx.measurements.rtmr3 // "")
-                      }
-                    ) as $resolved_rtmrs
-                  | select(($resolved_rtmrs.rtmr0 // "") != "" and ($resolved_rtmrs.rtmr1 // "") != "" and ($resolved_rtmrs.rtmr2 // "") != "" and ($resolved_rtmrs.rtmr3 // "") != "")
-                  | . + {_resolved_rtmrs: $resolved_rtmrs}
-                ] | first // empty
-              '
-            )"
-            if [ -n "$row" ] && [ "$row" != "null" ]; then
-              break
-            fi
-            sleep 5
-            agents="$(curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/agents")"
-          done
-
-          if [ -z "$row" ] || [ "$row" = "null" ]; then
-            echo "::error::No verified healthy baremetal llm agent with MRTD/RTMRs found in datacenter '${TARGET_DATACENTER}'."
-            echo "::error::Agents in this datacenter:"
-            echo "$agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
-              [.agents[]
-               | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
-               | {agent_id, status, health_status, verified, node_size, datacenter, mrtd, has_rtmrs:(.rtmrs != null), deployed_app}
-              ]'
-            exit 1
-          fi
-
-          mrtd="$(echo "$row" | jq -r '.mrtd')"
-          rtmrs="$(echo "$row" | jq -c '._resolved_rtmrs')"
-          mrtds_by_size="$(jq -cn --arg mrtd "$mrtd" '{llm:$mrtd}')"
-          rtmrs_by_size="$(jq -cn --argjson rtmrs "$rtmrs" '{llm:$rtmrs}')"
-
-          echo "mrtds_by_size=$mrtds_by_size" >> "$GITHUB_OUTPUT"
-          echo "rtmrs_by_size=$rtmrs_by_size" >> "$GITHUB_OUTPUT"
-          echo "Using baremetal llm baseline MRTD: ${mrtd:0:16}..."
-
       - name: Bootstrap measuring-enclave-llm on baremetal
         if: steps.measurer.outputs.healthy != 'true'
         env:
@@ -400,8 +461,8 @@ jobs:
           MEASURER_IMAGE: ${{ env.MEASURER_IMAGE }}
           ALLOWED_CLOUDS: baremetal
           ALLOWED_DATACENTERS: baremetal:github-runner
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.baremetal_baseline.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.baremetal_baseline.outputs.rtmrs_by_size }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.llm_baseline.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.llm_baseline.outputs.rtmrs_by_size }}
         run: |
           set -euo pipefail
           chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
