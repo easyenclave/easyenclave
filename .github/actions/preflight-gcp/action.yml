@@ -246,16 +246,33 @@ runs:
           }'
         )"
 
-        body="$(mktemp)"
-        http_code="$(
-          curl -sS -o "$body" -w "%{http_code}" \
-            -X POST "$CP_URL/api/v1/accounts/${BILLING_ACCOUNT_ID}/capacity/request" \
-            -H "Authorization: Bearer ${BILLING_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "$payload" || echo 000
-        )"
-        resp="$(cat "$body")"
-        rm -f "$body"
+        # Cloudflare may temporarily return 530/1033 when the tunnel flaps. Retry briefly.
+        resp=""
+        http_code="000"
+        for attempt in $(seq 1 20); do
+          body="$(mktemp)"
+          http_code="$(
+            curl -sS -o "$body" -w "%{http_code}" \
+              -X POST "$CP_URL/api/v1/accounts/${BILLING_ACCOUNT_ID}/capacity/request" \
+              -H "Authorization: Bearer ${BILLING_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "$payload" || echo 000
+          )"
+          resp="$(cat "$body")"
+          rm -f "$body"
+
+          if [ "$http_code" = "530" ]; then
+            echo "::warning::Control plane temporarily unavailable (HTTP 530). Retrying ($attempt/20)..."
+            sleep 3
+            continue
+          fi
+          if [ "$http_code" = "000" ] || [ "$http_code" -ge 500 ]; then
+            echo "::warning::Control plane request failed (HTTP ${http_code}). Retrying ($attempt/20)..."
+            sleep 3
+            continue
+          fi
+          break
+        done
 
         if [ "$http_code" -ge 400 ]; then
           if [ "$http_code" = "404" ]; then
@@ -352,17 +369,35 @@ runs:
         fi
 
         # Create a transient launcher account to claim launch orders.
+        # Retry on Cloudflare tunnel flaps (HTTP 530) / transient 5xx.
         account_name="ci-launcher-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
-        body="$(mktemp)"
-        http_code="$(
-          curl -sS -o "$body" -w "%{http_code}" \
-            -X POST "$CP_URL/api/v1/accounts" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "launcher"}')" \
-            || echo 000
-        )"
-        resp="$(cat "$body")"
-        rm -f "$body"
+        resp=""
+        http_code="000"
+        for attempt in $(seq 1 30); do
+          body="$(mktemp)"
+          http_code="$(
+            curl -sS -o "$body" -w "%{http_code}" \
+              -X POST "$CP_URL/api/v1/accounts" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "launcher"}')" \
+              || echo 000
+          )"
+          resp="$(cat "$body")"
+          rm -f "$body"
+
+          if [ "$http_code" = "530" ]; then
+            echo "::warning::Control plane temporarily unavailable (HTTP 530). Retrying ($attempt/30)..."
+            sleep 3
+            continue
+          fi
+          if [ "$http_code" = "000" ] || [ "$http_code" -ge 500 ]; then
+            echo "::warning::Control plane request failed (HTTP ${http_code}). Retrying ($attempt/30)..."
+            sleep 3
+            continue
+          fi
+          break
+        done
+
         if [ "$http_code" -ge 400 ]; then
           detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
           echo "::error::Failed to create launcher account (HTTP $http_code): ${detail:-$resp}"
@@ -401,7 +436,12 @@ runs:
 
         deadline=$(( $(date +%s) + ${WAIT_SECONDS:-900} ))
         while :; do
-          agents="$(curl -sSf -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
+          agents="$(curl -sS -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+          if [ -z "${agents:-}" ]; then
+            echo "::warning::Control plane temporarily unavailable while waiting for capacity; retrying..."
+            sleep 10
+            continue
+          fi
           count="$(
             echo "${agents:-}" | jq --arg ns "${NODE_SIZE:-}" '
               [.agents[]
