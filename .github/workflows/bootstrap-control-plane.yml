@@ -25,6 +25,11 @@ on:
         required: false
         default: "0"
 
+concurrency:
+  # Serialize workflows that mutate the shared control plane to avoid overlap with Deploy Examples.
+  group: easyenclave-shared-control-plane
+  cancel-in-progress: false
+
 jobs:
   bootstrap:
     runs-on: [self-hosted, tdx]

@@ -11,6 +11,11 @@ on:
     branches: [main]
   workflow_dispatch: {}
 
+concurrency:
+  # Serialize workflows that mutate the shared control plane to avoid overlaps across reruns.
+  group: easyenclave-shared-control-plane
+  cancel-in-progress: false
+
 jobs:
   test-unregistered-app-fails:
     name: Test - Unregistered app deploy fails
