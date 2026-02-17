@@ -345,6 +345,7 @@ runs:
         GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
         TARGET_DC: ${{ steps.dispatch.outputs.target_datacenter }}
         NODE_SIZE: ${{ inputs.node_size }}
+        WAIT_SECONDS: ${{ inputs.wait_seconds }}
         GITHUB_RUN_ID: ${{ github.run_id }}
         GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
       run: |
@@ -407,7 +408,20 @@ runs:
 
         # Claim and fulfill exactly one order for this pool. This is intentionally minimal:
         # the control plane remains source-of-truth for dispatch decisions and accounting.
-        python3 scripts/capacity_launcher_worker.py \
+        #
+        # IMPORTANT: capacity/request can enqueue the launch order asynchronously. A one-shot claim
+        # immediately after request can race and exit "success" without provisioning anything.
+        # Poll until an order becomes claimable (bounded by WAIT_SECONDS).
+        timeout_seconds="${WAIT_SECONDS:-900}"
+        if ! echo "$timeout_seconds" | grep -Eq '^[0-9]+$'; then
+          timeout_seconds=900
+        fi
+        if [ "$timeout_seconds" -lt 60 ]; then
+          timeout_seconds=60
+        fi
+
+        echo "Waiting up to ${timeout_seconds}s to claim+fulfill a GCP launch order for datacenter='${TARGET_DC}' node_size='${NODE_SIZE:-}'..."
+        timeout "$timeout_seconds" python3 scripts/capacity_launcher_worker.py \
           --cp-url "$CP_URL" \
           --launcher-api-key "$launcher_key" \
           --intel-api-key "$INTEL_API_KEY" \
@@ -415,7 +429,7 @@ runs:
           --datacenter "$TARGET_DC" \
           --node-size "${NODE_SIZE:-}" \
           --gcp-project "$GCP_PROJECT_ID" \
-          --one-shot
+          --max-orders 1
 
         echo "fulfilled=true" >> "$GITHUB_OUTPUT"
 
