@@ -210,9 +210,10 @@ jobs:
       - name: Deploy control plane + bootstrap agents/apps
         env:
           TRUSTED_AGENT_MRTDS: ${{ needs.measure-trusted-values.outputs.mrtds }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ needs.measure-trusted-values.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ needs.measure-trusted-values.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ needs.measure-trusted-values.outputs.rtmrs_by_size }}
+          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
+          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ needs.measure-trusted-values.outputs.mrtds_by_size }}'
+          TRUSTED_AGENT_RTMRS: '${{ needs.measure-trusted-values.outputs.rtmrs }}'
+          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ needs.measure-trusted-values.outputs.rtmrs_by_size }}'
         run: ./scripts/ci-deploy.sh
 
   test:
