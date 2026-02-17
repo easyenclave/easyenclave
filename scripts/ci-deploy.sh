@@ -605,7 +605,7 @@ claim_bootstrap_token() {
     echo "$resp" | head -c 2000 || true
     return 1
   fi
-  printf '%s\t%s' "$order_id" "$token"
+  printf '%s\t%s\n' "$order_id" "$token"
 }
 
 # ===================================================================
