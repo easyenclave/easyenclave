@@ -2284,7 +2284,7 @@ async def get_agent_attestation(agent_id: str):
 
 
 @app.delete("/api/v1/agents/{agent_id}")
-async def delete_agent(agent_id: str):
+async def delete_agent(agent_id: str, _admin: AdminSession = Depends(require_admin_session)):
     """Delete an agent from the registry.
 
     This also cleans up the agent's Cloudflare tunnel and DNS record if present.
@@ -2310,7 +2310,7 @@ async def delete_agent(agent_id: str):
 
 
 @app.post("/api/v1/agents/{agent_id}/reset")
-async def reset_agent(agent_id: str):
+async def reset_agent(agent_id: str, _admin: AdminSession = Depends(require_admin_session)):
     """Reset an agent to undeployed status.
 
     This is useful to recover agents stuck in attestation_failed status.
