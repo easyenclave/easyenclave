@@ -486,7 +486,7 @@ runs:
         echo "::add-mask::${admin_token}"
 
         # Add baseline.
-        add_payload="$(jq -cn --arg m "$mrtd" --arg note "ci:gcp:${NODE_SIZE:-}" '{mrtd: $m, type: \"agent\", note: $note}')"
+        add_payload="$(jq -cn --arg m "$mrtd" --arg note "ci:gcp:${NODE_SIZE:-}" '{mrtd: $m, type: "agent", note: $note}')"
         http_code="000"
         resp=""
         for attempt in $(seq 1 10); do
