@@ -424,13 +424,7 @@ if [ "$NUM_LLM_AGENTS" -gt 0 ]; then
 fi
 
 # ===================================================================
-# 1. Delete all existing VMs
-# ===================================================================
-echo "==> Deleting all existing VMs..."
-python3 infra/tdx_cli.py vm delete all || true
-
-# ===================================================================
-# 2. Deploy control plane
+# 1. Deploy control plane
 # ===================================================================
 echo "==> Deploying control plane..."
 CP_BOOT_JSON="$(

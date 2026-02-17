@@ -10,7 +10,60 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  # This CI run also performs TDX VM cleanup (self-hosted). Do not overlap with
+  # control-plane/bootstrap/example workflows that use the same runner.
+  group: easyenclave-shared-control-plane
+  cancel-in-progress: false
+
 jobs:
+  cleanup-tdx-runner:
+    name: Cleanup - Local TDX VMs
+    runs-on: [self-hosted, tdx]
+    # Avoid running destructive cleanup on PRs from forks.
+    if: github.event_name == 'push'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Local VM inventory (before)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== virsh list --all ==="
+          virsh list --all || true
+          echo ""
+          echo "=== tdx_cli vm list ==="
+          python3 infra/tdx_cli.py vm list || true
+          echo ""
+          echo "=== /var/tmp/tdvirsh disk usage ==="
+          sudo du -sh /var/tmp/tdvirsh 2>/dev/null || du -sh /var/tmp/tdvirsh 2>/dev/null || true
+
+      - name: Delete all existing EasyEnclave TDX VMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 infra/tdx_cli.py vm delete all || true
+
+          # Extra safety: measurement VMs are always safe to delete and sometimes leak on timeouts.
+          if command -v virsh >/dev/null 2>&1; then
+            for d in $(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
+              [ -n "$d" ] || continue
+              virsh destroy "$d" >/dev/null 2>&1 || true
+              virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
+            done
+          fi
+
+      - name: Local VM inventory (after)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== virsh list --all ==="
+          virsh list --all || true
+          echo ""
+          echo "=== tdx_cli vm list ==="
+          python3 infra/tdx_cli.py vm list || true
+
   test:
     runs-on: ubuntu-latest
 
