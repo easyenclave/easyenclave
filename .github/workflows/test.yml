@@ -64,6 +64,107 @@ jobs:
           echo "=== tdx_cli vm list ==="
           python3 infra/tdx_cli.py vm list || true
 
+  bootstrap-control-plane:
+    name: Bootstrap Control Plane
+    runs-on: [self-hosted, tdx]
+    if: github.event_name == 'push'
+    needs: cleanup-tdx-runner
+    permissions:
+      contents: read
+    env:
+      # Coordination metadata (exposed by /health).
+      EASYENCLAVE_BOOT_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      EASYENCLAVE_GIT_SHA: ${{ github.sha }}
+
+      # Infra + trust.
+      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+
+      # Cloudflare (public endpoint for https://app.easyenclave.com).
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+
+      # GitHub OAuth (admin login + deployer identity).
+      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
+      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
+      GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }}
+      ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
+
+      # Stripe (optional billing).
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+
+      # Admin password for bootstrap (used to attest the initial measurer).
+      ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+
+      # Bootstrap sizes/capacity.
+      CP_BOOTSTRAP_SIZES: tiny
+      # Total tiny capacity on bootstrap = 3 (1 bootstrap measurer + 2 additional).
+      NUM_TINY_AGENTS: "2"
+      NUM_STANDARD_AGENTS: "0"
+      NUM_LLM_AGENTS: "0"
+
+      # Use :latest so we can bootstrap without needing the exact SHA image.
+      CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:latest
+      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required secret/env: $v"
+              exit 1
+            fi
+          done
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import bcrypt
+          pw = os.environ.get("ADMIN_PASSWORD", "").encode()
+          if not pw:
+            raise SystemExit("ADMIN_PASSWORD missing")
+          hashed = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+            f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
+          PY
+
+      - name: Cleanup leaked measurement VMs (best effort)
+        run: |
+          set -euo pipefail
+          if command -v virsh >/dev/null 2>&1; then
+            for d in $(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
+              [ -n "$d" ] || continue
+              virsh destroy "$d" >/dev/null 2>&1 || true
+              virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
+            done
+          fi
+
+      - name: Build and measure trusted values (tiny)
+        id: measure
+        env:
+          MEASURE_SIZES: tiny
+        run: ./scripts/ci-build-measure.sh
+
+      - name: Deploy control plane + bootstrap agents/apps
+        env:
+          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+        run: ./scripts/ci-deploy.sh
+
   test:
     runs-on: ubuntu-latest
 

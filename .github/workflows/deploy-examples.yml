@@ -12,118 +12,15 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  # This workflow now bootstraps the shared control plane; do not overlap with any other CP-mutating run.
+  # This workflow mutates the shared control plane (apps + deployments); do not overlap with other CP-mutating runs.
   group: easyenclave-shared-control-plane
   cancel-in-progress: false
 
 env:
   CP_URL: https://app.easyenclave.com
-  CP_EXPECTED_BOOT_ID: deploy-examples-${{ github.run_id }}-${{ github.run_attempt }}
   CP_EXPECTED_GIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
 
 jobs:
-  bootstrap-control-plane:
-    name: Bootstrap Control Plane (for examples)
-    runs-on: [self-hosted, tdx]
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    permissions:
-      contents: read
-    env:
-      # Coordination metadata (exposed by /health).
-      EASYENCLAVE_BOOT_ID: deploy-examples-${{ github.run_id }}-${{ github.run_attempt }}
-      EASYENCLAVE_GIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      # Infra + trust.
-      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-
-      # Cloudflare (public endpoint for https://app.easyenclave.com).
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-
-      # GitHub OAuth (admin login + deployer identity).
-      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
-      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
-      GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }}
-      ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
-
-      # Stripe (optional billing).
-      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-
-      # Admin password for bootstrap (used to attest the initial measurer).
-      ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-
-      # Bootstrap sizes (keep minimal by default).
-      CP_BOOTSTRAP_SIZES: tiny
-      # Total tiny capacity on bootstrap = 3 (1 bootstrap measurer + 2 additional).
-      NUM_TINY_AGENTS: "2"
-      NUM_STANDARD_AGENTS: "0"
-      NUM_LLM_AGENTS: "0"
-
-      # Use :latest so we can bootstrap without needing the exact SHA image.
-      CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:latest
-      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.CP_EXPECTED_GIT_SHA }}
-
-      - name: Validate required secrets
-        run: |
-          set -euo pipefail
-          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
-            if [ -z "${!v:-}" ]; then
-              echo "::error::Missing required secret/env: $v"
-              exit 1
-            fi
-          done
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import bcrypt
-          pw = os.environ.get("ADMIN_PASSWORD", "").encode()
-          if not pw:
-            raise SystemExit("ADMIN_PASSWORD missing")
-          hashed = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-            f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
-          PY
-
-      - name: Cleanup leaked measurement VMs (best effort)
-        run: |
-          set -euo pipefail
-          if command -v virsh >/dev/null 2>&1; then
-            for d in $(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
-              [ -n "$d" ] || continue
-              virsh destroy "$d" >/dev/null 2>&1 || true
-              virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
-            done
-          fi
-
-      - name: Build and measure trusted values (tiny)
-        id: measure
-        env:
-          MEASURE_SIZES: tiny
-        run: ./scripts/ci-build-measure.sh
-
-      - name: Deploy control plane + bootstrap agents/apps
-        env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
-        run: ./scripts/ci-deploy.sh
-
   test-unregistered-app-fails:
     name: Test - Unregistered app deploy fails
     runs-on: ubuntu-latest
@@ -133,23 +30,22 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Wait for control plane bootstrap (boot_id match)
+      - name: Wait for control plane bootstrap (git_sha match)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health boot_id=$CP_EXPECTED_BOOT_ID"
+          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            bid="$(echo "${body:-}" | jq -r '.boot_id // empty' 2>/dev/null || true)"
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${bid:-}" ] && [ "$bid" = "$CP_EXPECTED_BOOT_ID" ]; then
-              echo "Control plane ready: boot_id=$bid git_sha=${sha:-unknown}"
+            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
+              echo "Control plane ready: git_sha=$sha"
               break
             fi
             now="$(date +%s)"
             if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane boot_id=$CP_EXPECTED_BOOT_ID"
+              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
               echo "Last /health:"
               echo "${body:-<empty>}"
               exit 1
@@ -184,23 +80,22 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Wait for control plane bootstrap (boot_id match)
+      - name: Wait for control plane bootstrap (git_sha match)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health boot_id=$CP_EXPECTED_BOOT_ID"
+          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            bid="$(echo "${body:-}" | jq -r '.boot_id // empty' 2>/dev/null || true)"
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${bid:-}" ] && [ "$bid" = "$CP_EXPECTED_BOOT_ID" ]; then
-              echo "Control plane ready: boot_id=$bid git_sha=${sha:-unknown}"
+            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
+              echo "Control plane ready: git_sha=$sha"
               break
             fi
             now="$(date +%s)"
             if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane boot_id=$CP_EXPECTED_BOOT_ID"
+              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
               echo "Last /health:"
               echo "${body:-<empty>}"
               exit 1
@@ -224,23 +119,22 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Wait for control plane bootstrap (boot_id match)
+      - name: Wait for control plane bootstrap (git_sha match)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health boot_id=$CP_EXPECTED_BOOT_ID"
+          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            bid="$(echo "${body:-}" | jq -r '.boot_id // empty' 2>/dev/null || true)"
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${bid:-}" ] && [ "$bid" = "$CP_EXPECTED_BOOT_ID" ]; then
-              echo "Control plane ready: boot_id=$bid git_sha=${sha:-unknown}"
+            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
+              echo "Control plane ready: git_sha=$sha"
               break
             fi
             now="$(date +%s)"
             if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane boot_id=$CP_EXPECTED_BOOT_ID"
+              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
               echo "Last /health:"
               echo "${body:-<empty>}"
               exit 1
@@ -270,23 +164,22 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
-      - name: Wait for control plane bootstrap (boot_id match)
+      - name: Wait for control plane bootstrap (git_sha match)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health boot_id=$CP_EXPECTED_BOOT_ID"
+          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            bid="$(echo "${body:-}" | jq -r '.boot_id // empty' 2>/dev/null || true)"
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${bid:-}" ] && [ "$bid" = "$CP_EXPECTED_BOOT_ID" ]; then
-              echo "Control plane ready: boot_id=$bid git_sha=${sha:-unknown}"
+            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
+              echo "Control plane ready: git_sha=$sha"
               break
             fi
             now="$(date +%s)"
             if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane boot_id=$CP_EXPECTED_BOOT_ID"
+              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
               echo "Last /health:"
               echo "${body:-<empty>}"
               exit 1
@@ -316,7 +209,7 @@ jobs:
   inventory-local-tdx:
     name: Inventory/Cleanup - Local TDX measurement VMs
     runs-on: [self-hosted, tdx]
-    needs: [bootstrap-control-plane, deploy-hello-tdx-clouds, deploy-hello-tdx-gcp]
+    needs: [deploy-hello-tdx-clouds, deploy-hello-tdx-gcp]
     if: always()
     steps:
       - uses: actions/checkout@v4
