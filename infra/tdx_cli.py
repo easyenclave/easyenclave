@@ -954,6 +954,16 @@ To start a new EasyEnclave network:
         help="Control plane URL for agent registration (default: https://app.easyenclave.com)",
     )
     new_parser.add_argument(
+        "--bootstrap-order-id",
+        default="",
+        help="Capacity launch order ID (enables CP-mint ITA registration without Intel keys)",
+    )
+    new_parser.add_argument(
+        "--bootstrap-token",
+        default="",
+        help="One-time bootstrap token for the launch order (enables CP-mint ITA registration)",
+    )
+    new_parser.add_argument(
         "--intel-api-key",
         default=os.environ.get("INTEL_API_KEY", ""),
         help="Intel Trust Authority API key (or set INTEL_API_KEY env var)",
@@ -1072,133 +1082,126 @@ To start a new EasyEnclave network:
 
                     print("\nWaiting for VM to get IP...", file=sys.stderr)
                     ip = mgr.get_vm_ip(result["name"])
-                    if ip:
-                        url = f"http://{ip}:{args.port}"
-                        print(f"Control plane VM IP: {ip}", file=sys.stderr)
-                        print(f"Control plane URL: {url}", file=sys.stderr)
-
-                        # Wait for control plane to be ready
-                        print("Waiting for control plane to start...", file=sys.stderr)
-
-                        # Always include IP in result so workflow can proceed
-                        result["ip"] = ip
-                        result["control_plane_url"] = url
-
-                        for _ in range(120):  # 4 minutes for image pull + boot
-                            try:
-                                with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
-                                    if resp.status == 200:
-                                        stop_tail.set()
-                                        print(
-                                            f"\n=== Control plane ready at {url} ===",
-                                            file=sys.stderr,
-                                        )
-                                        break
-                            except (urllib.error.URLError, TimeoutError):
-                                pass
-                            time.sleep(2)
-                        else:
-                            stop_tail.set()
-                            print(
-                                "Error: Control plane did not become ready (health check timeout).",
-                                file=sys.stderr,
-                            )
-                            mgr._dump_network_info(result["name"])
-                            mgr._dump_serial_log(result.get("serial_log"))
-                            print(json.dumps(result, indent=2))
-                            sys.exit(1)
-
-                            if args.bootstrap_measurers:
-                                datacenter = os.environ.get("AGENT_DATACENTER", "")
-                                cloud_provider = os.environ.get("AGENT_CLOUD_PROVIDER", "baremetal")
-                                availability_zone = os.environ.get(
-                                    "AGENT_DATACENTER_AZ", "github-runner"
-                                )
-                                region = os.environ.get("AGENT_DATACENTER_REGION", "")
-                                result["bootstrap_agents"] = []
-
-                                for bootstrap_size in bootstrap_sizes:
-                                    size_mem, size_vcpus, size_disk = NODE_SIZES[bootstrap_size]
-                                    bootstrap_vm_id = (
-                                        f"bootstrap-{bootstrap_size}-{uuid.uuid4().hex[:8]}"
-                                    )
-                                    bootstrap_config = {
-                                        "control_plane_url": url,
-                                        "vm_id": bootstrap_vm_id,
-                                    }
-                                    if datacenter:
-                                        bootstrap_config["datacenter"] = datacenter
-                                    else:
-                                        if cloud_provider:
-                                            bootstrap_config["cloud_provider"] = cloud_provider
-                                        if availability_zone:
-                                            bootstrap_config["availability_zone"] = (
-                                                availability_zone
-                                            )
-                                        if region:
-                                            bootstrap_config["region"] = region
-
-                                print(
-                                    f"Launching bootstrap measuring agent VM (size={bootstrap_size})...",
-                                    file=sys.stderr,
-                                )
-                                known_agent_ids = _list_agent_ids(url)
-                                bootstrap_agent = mgr.vm_new(
-                                    image=args.image,
-                                    mode=AGENT_MODE,
-                                    config=bootstrap_config,
-                                    debug=args.debug,
-                                    memory_gib=size_mem,
-                                    vcpu_count=size_vcpus,
-                                    size_name=bootstrap_size,
-                                    disk_gib=size_disk,
-                                )
-                                bootstrap_agent["node_size"] = bootstrap_size
-
-                                bootstrap_ip = mgr.get_vm_ip(bootstrap_agent["name"], timeout=180)
-                                if not bootstrap_ip:
-                                    print(
-                                        f"Error: Bootstrap agent (size={bootstrap_size}) did not get an IP.",
-                                        file=sys.stderr,
-                                    )
-                                    mgr._dump_network_info(bootstrap_agent["name"])
-                                    mgr._dump_serial_log(bootstrap_agent.get("serial_log"))
-                                    sys.exit(1)
-                                bootstrap_agent["ip"] = bootstrap_ip
-
-                                ready_agent = _wait_for_agent_ready(
-                                    url,
-                                    timeout=args.bootstrap_timeout,
-                                    known_agent_ids=known_agent_ids,
-                                    expected_node_size=bootstrap_size,
-                                )
-                                if not ready_agent:
-                                    print(
-                                        f"Error: Bootstrap agent (size={bootstrap_size}) did not become verified+registered in time.",
-                                        file=sys.stderr,
-                                    )
-                                    mgr._dump_serial_log(bootstrap_agent.get("serial_log"))
-                                    sys.exit(1)
-
-                                bootstrap_agent["agent_id"] = ready_agent.get("agent_id")
-                                bootstrap_agent["verified"] = ready_agent.get("verified")
-                                bootstrap_agent["health_status"] = ready_agent.get("health_status")
-                                bootstrap_agent["status"] = ready_agent.get("status")
-                                result["bootstrap_agents"].append(bootstrap_agent)
-                                print(
-                                    f"Bootstrap agent ready (size={bootstrap_size}, id={ready_agent.get('agent_id')})",
-                                    file=sys.stderr,
-                                )
-
-                        # Always print final result with IP
-                        print(json.dumps(result, indent=2))
-                    else:
+                    if not ip:
                         stop_tail.set()
                         print("Error: Could not get VM IP", file=sys.stderr)
                         mgr._dump_network_info(result["name"])
                         mgr._dump_serial_log(result.get("serial_log"))
                         print(json.dumps(result, indent=2))
                         sys.exit(1)
+
+                    url = f"http://{ip}:{args.port}"
+                    print(f"Control plane VM IP: {ip}", file=sys.stderr)
+                    print(f"Control plane URL: {url}", file=sys.stderr)
+
+                    # Wait for control plane to be ready
+                    print("Waiting for control plane to start...", file=sys.stderr)
+
+                    # Always include IP in result so workflow can proceed
+                    result["ip"] = ip
+                    result["control_plane_url"] = url
+
+                    for _ in range(120):  # 4 minutes for image pull + boot
+                        try:
+                            with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
+                                if resp.status == 200:
+                                    stop_tail.set()
+                                    print(
+                                        f"\n=== Control plane ready at {url} ===", file=sys.stderr
+                                    )
+                                    break
+                        except (urllib.error.URLError, TimeoutError):
+                            pass
+                        time.sleep(2)
+                    else:
+                        stop_tail.set()
+                        print(
+                            "Error: Control plane did not become ready (health check timeout).",
+                            file=sys.stderr,
+                        )
+                        mgr._dump_network_info(result["name"])
+                        mgr._dump_serial_log(result.get("serial_log"))
+                        print(json.dumps(result, indent=2))
+                        sys.exit(1)
+
+                    if args.bootstrap_measurers:
+                        datacenter = os.environ.get("AGENT_DATACENTER", "")
+                        cloud_provider = os.environ.get("AGENT_CLOUD_PROVIDER", "baremetal")
+                        availability_zone = os.environ.get("AGENT_DATACENTER_AZ", "github-runner")
+                        region = os.environ.get("AGENT_DATACENTER_REGION", "")
+                        result["bootstrap_agents"] = []
+
+                        for bootstrap_size in bootstrap_sizes:
+                            size_mem, size_vcpus, size_disk = NODE_SIZES[bootstrap_size]
+                            bootstrap_vm_id = f"bootstrap-{bootstrap_size}-{uuid.uuid4().hex[:8]}"
+                            bootstrap_config = {
+                                "control_plane_url": url,
+                                "vm_id": bootstrap_vm_id,
+                            }
+                            if datacenter:
+                                bootstrap_config["datacenter"] = datacenter
+                            else:
+                                if cloud_provider:
+                                    bootstrap_config["cloud_provider"] = cloud_provider
+                                if availability_zone:
+                                    bootstrap_config["availability_zone"] = availability_zone
+                                if region:
+                                    bootstrap_config["region"] = region
+
+                            print(
+                                f"Launching bootstrap measuring agent VM (size={bootstrap_size})...",
+                                file=sys.stderr,
+                            )
+                            known_agent_ids = _list_agent_ids(url)
+                            bootstrap_agent = mgr.vm_new(
+                                image=args.image,
+                                mode=AGENT_MODE,
+                                config=bootstrap_config,
+                                debug=args.debug,
+                                memory_gib=size_mem,
+                                vcpu_count=size_vcpus,
+                                size_name=bootstrap_size,
+                                disk_gib=size_disk,
+                            )
+                            bootstrap_agent["node_size"] = bootstrap_size
+
+                            bootstrap_ip = mgr.get_vm_ip(bootstrap_agent["name"], timeout=180)
+                            if not bootstrap_ip:
+                                print(
+                                    f"Error: Bootstrap agent (size={bootstrap_size}) did not get an IP.",
+                                    file=sys.stderr,
+                                )
+                                mgr._dump_network_info(bootstrap_agent["name"])
+                                mgr._dump_serial_log(bootstrap_agent.get("serial_log"))
+                                sys.exit(1)
+                            bootstrap_agent["ip"] = bootstrap_ip
+
+                            ready_agent = _wait_for_agent_ready(
+                                url,
+                                timeout=args.bootstrap_timeout,
+                                known_agent_ids=known_agent_ids,
+                                expected_node_size=bootstrap_size,
+                            )
+                            if not ready_agent:
+                                print(
+                                    f"Error: Bootstrap agent (size={bootstrap_size}) did not become verified+registered in time.",
+                                    file=sys.stderr,
+                                )
+                                mgr._dump_serial_log(bootstrap_agent.get("serial_log"))
+                                sys.exit(1)
+
+                            bootstrap_agent["agent_id"] = ready_agent.get("agent_id")
+                            bootstrap_agent["verified"] = ready_agent.get("verified")
+                            bootstrap_agent["health_status"] = ready_agent.get("health_status")
+                            bootstrap_agent["status"] = ready_agent.get("status")
+                            result["bootstrap_agents"].append(bootstrap_agent)
+                            print(
+                                f"Bootstrap agent ready (size={bootstrap_size}, id={ready_agent.get('agent_id')})",
+                                file=sys.stderr,
+                            )
+
+                    # Always print final result with IP
+                    print(json.dumps(result, indent=2))
                 else:
                     # No --wait, just print immediately
                     print(json.dumps(result, indent=2))
@@ -1208,6 +1211,10 @@ To start a new EasyEnclave network:
                 config = {
                     "control_plane_url": args.easyenclave_url,
                 }
+                if args.bootstrap_order_id:
+                    config["bootstrap_order_id"] = args.bootstrap_order_id
+                if args.bootstrap_token:
+                    config["bootstrap_token"] = args.bootstrap_token
                 # Legacy: agents used to call ITA directly. Control plane now mints ITA tokens,
                 # so this should typically be empty; keep only when explicitly provided.
                 if args.intel_api_key:

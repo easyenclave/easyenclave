@@ -493,6 +493,90 @@ if [ -z "${ADMIN_PASSWORD:-}" ]; then
   exit 1
 fi
 
+# Admin token is used for capacity dispatch + manual attest.
+ADMIN_TOKEN="$(admin_login)"
+
+# Create a short-lived launcher account to claim capacity launch orders for CP-mint bootstrap tokens.
+# This keeps Intel keys off the agent VMs while still requiring explicit authorization to register.
+LAUNCHER_ACCOUNT_NAME="ci-launcher-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
+LAUNCHER_JSON="$(
+  curl -sf -X POST "$CP_URL/api/v1/accounts" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -cn \
+      --arg name "$LAUNCHER_ACCOUNT_NAME" \
+      --arg desc "CI launcher account (ephemeral) for bootstrap token claims" \
+      '{name:$name, description:$desc, account_type:"launcher"}')"
+)"
+LAUNCHER_API_KEY="$(echo "$LAUNCHER_JSON" | jq -r '.api_key // empty')"
+LAUNCHER_ACCOUNT_ID="$(echo "$LAUNCHER_JSON" | jq -r '.account_id // empty')"
+if [ -z "${LAUNCHER_API_KEY:-}" ] || [ -z "${LAUNCHER_ACCOUNT_ID:-}" ]; then
+  echo "::error::Failed to create launcher account for capacity claims"
+  echo "$LAUNCHER_JSON" | head -c 2000 || true
+  exit 1
+fi
+
+resolve_target_datacenter() {
+  if [ -n "${AGENT_DATACENTER:-}" ]; then
+    printf '%s' "${AGENT_DATACENTER}"
+    return 0
+  fi
+  # Mirror launcher resolve_datacenter_label(): baremetal:<availability_zone>.
+  local provider="${AGENT_CLOUD_PROVIDER:-baremetal}"
+  local az="${AGENT_DATACENTER_AZ:-github-runner}"
+  provider="$(echo "$provider" | tr '[:upper:]' '[:lower:]')"
+  az="$(echo "$az" | tr '[:upper:]' '[:lower:]')"
+  if [ -z "$az" ]; then
+    az="github-runner"
+  fi
+  if [ "$provider" = "google" ] || [ "$provider" = "gcp" ]; then
+    provider="gcp"
+  elif [ "$provider" = "azure" ] || [ "$provider" = "az" ]; then
+    provider="azure"
+  elif [ "$provider" = "bare-metal" ] || [ "$provider" = "onprem" ] || [ "$provider" = "on-prem" ] || [ "$provider" = "self-hosted" ]; then
+    provider="baremetal"
+  fi
+  printf '%s:%s' "$provider" "$az"
+}
+
+TARGET_DATACENTER="$(resolve_target_datacenter)"
+
+dispatch_bootstrap_orders() {
+  local node_size="$1" count="$2"
+  if [ "${count:-0}" -le 0 ]; then
+    return 0
+  fi
+  curl -sf -X POST "$CP_URL/api/v1/admin/agents/capacity/reconcile" \
+    -H "Authorization: Bearer $ADMIN_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -cn \
+      --arg dc "$TARGET_DATACENTER" \
+      --arg ns "$node_size" \
+      --arg reason "ci-agent-bootstrap-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
+      --argjson count "$count" \
+      --arg aid "$LAUNCHER_ACCOUNT_ID" \
+      '{targets:[{datacenter:$dc,node_size:$ns,min_count:$count}], dispatch:true, reason:$reason, account_id:$aid}')" \
+    >/dev/null
+}
+
+claim_bootstrap_token() {
+  local node_size="$1"
+  local resp order_id token
+  resp="$(
+    curl -sf -X POST "$CP_URL/api/v1/launchers/capacity/orders/claim" \
+      -H "Authorization: Bearer $LAUNCHER_API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "$(jq -cn --arg dc "$TARGET_DATACENTER" --arg ns "$node_size" '{datacenter:$dc,node_size:$ns}')"
+  )"
+  order_id="$(echo "$resp" | jq -r '.order.order_id // empty')"
+  token="$(echo "$resp" | jq -r '.bootstrap_token // empty')"
+  if [ -z "${order_id:-}" ] || [ -z "${token:-}" ]; then
+    echo "::error::Failed to claim bootstrap token for node_size=$node_size datacenter=$TARGET_DATACENTER"
+    echo "$resp" | head -c 2000 || true
+    return 1
+  fi
+  printf '%s\t%s' "$order_id" "$token"
+}
+
 # ===================================================================
 # 4. Launch additional agents in parallel
 # ===================================================================
@@ -508,6 +592,11 @@ if [ "$TOTAL_AGENTS" -le 0 ]; then
 fi
 echo "Bootstrap agents already launched by control-plane new: $BOOTSTRAP_AGENT_COUNT"
 echo "==> Launching $TOTAL_ADDITIONAL_AGENTS additional agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
+
+# Queue capacity launch orders so the control plane can mint ITA tokens for quote-only agent registrations.
+dispatch_bootstrap_orders "tiny" "$NUM_TINY_AGENTS"
+dispatch_bootstrap_orders "standard" "$NUM_STANDARD_AGENTS"
+dispatch_bootstrap_orders "llm" "$NUM_LLM_AGENTS"
 
 AGENT_LOCATION_ARGS=()
 if [ -n "$AGENT_DATACENTER" ]; then
@@ -526,21 +615,30 @@ fi
 
 if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
   for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
+    read -r order_id token < <(claim_bootstrap_token "tiny")
     python3 infra/tdx_cli.py vm new --size tiny \
       "${AGENT_LOCATION_ARGS[@]}" \
       --easyenclave-url "$CP_URL" \
+      --bootstrap-order-id "$order_id" \
+      --bootstrap-token "$token" \
       --wait &
   done
   for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
+    read -r order_id token < <(claim_bootstrap_token "standard")
     python3 infra/tdx_cli.py vm new --size standard \
       "${AGENT_LOCATION_ARGS[@]}" \
       --easyenclave-url "$CP_URL" \
+      --bootstrap-order-id "$order_id" \
+      --bootstrap-token "$token" \
       --wait &
   done
   for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
+    read -r order_id token < <(claim_bootstrap_token "llm")
     python3 infra/tdx_cli.py vm new --size llm \
       "${AGENT_LOCATION_ARGS[@]}" \
       --easyenclave-url "$CP_URL" \
+      --bootstrap-order-id "$order_id" \
+      --bootstrap-token "$token" \
       --wait &
   done
 fi
@@ -586,7 +684,6 @@ fi
 # ===================================================================
 # 6. Bootstrap apps
 # ===================================================================
-ADMIN_TOKEN=$(admin_login)
 
 deploy_app "measuring-enclave-tiny" \
   "Measuring enclave for tiny node attestation" \
