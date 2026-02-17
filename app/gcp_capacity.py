@@ -136,6 +136,17 @@ def _cp_url() -> str:
     return (os.environ.get("EASYENCLAVE_CP_URL") or "https://app.easyenclave.com").strip()
 
 
+def _agent_ita_api_key_env() -> str:
+    # Agents need an ITA API key to mint Intel Trust Authority tokens for registration.
+    # Prefer a dedicated CP env var for CP-native provisioning; fall back to legacy names.
+    return (
+        os.environ.get("EE_AGENT_ITA_API_KEY")
+        or os.environ.get("ITA_API_KEY")
+        or os.environ.get("INTEL_API_KEY")
+        or ""
+    ).strip()
+
+
 def _cloud_init_user_data(*, launcher_config: dict[str, Any]) -> str:
     config_json = json.dumps(launcher_config, indent=2)
     launcher_url = _launcher_url()
@@ -267,6 +278,14 @@ async def create_tdx_instance_for_order(
         "bootstrap_order_id": order_id,
         "bootstrap_token": bootstrap_token,
     }
+    ita_key = _agent_ita_api_key_env()
+    if ita_key:
+        launcher_config["intel_api_key"] = ita_key
+    else:
+        logger.warning(
+            "EE_AGENT_ITA_API_KEY is not set on the control plane; provisioned GCP agents will fail registration "
+            "(they must mint Intel Trust Authority tokens)."
+        )
 
     cloud_init = _cloud_init_user_data(launcher_config=launcher_config)
 

@@ -153,7 +153,7 @@ services:
       - "{port}:8080"
     environment:
       - ITA_API_URL=${{ITA_API_URL:-https://api.trustauthority.intel.com/appraisal/v2}}
-      - ITA_API_KEY=${{ITA_API_KEY:-}}
+      - EE_AGENT_ITA_API_KEY=${{EE_AGENT_ITA_API_KEY:-}}
       - STRIPE_SECRET_KEY=${{STRIPE_SECRET_KEY:-}}
       - STRIPE_WEBHOOK_SECRET=${{STRIPE_WEBHOOK_SECRET:-}}
       - GITHUB_OAUTH_CLIENT_ID=${{GITHUB_OAUTH_CLIENT_ID:-}}
@@ -1181,6 +1181,14 @@ def call_intel_trust_authority(quote_b64: str, api_key: str, api_url: str) -> di
     Returns:
         Response dict containing the attestation token
     """
+    api_url = (api_url or "").strip().rstrip("/")
+    # Users commonly set ITA_API_URL to ".../appraisal/v2" (compose template).
+    # Normalize to the host base and append the stable v1 attest path.
+    for suffix in ("/appraisal/v2", "/appraisal/v1", "/appraisal/v1/attest"):
+        if api_url.endswith(suffix):
+            api_url = api_url[: -len(suffix)].rstrip("/")
+            break
+
     response = requests.post(
         f"{api_url}/appraisal/v1/attest",
         headers={
@@ -1231,11 +1239,13 @@ def generate_initial_attestation(
     config: dict,
     vm_name: str = None,
     update_status: bool = True,
+    require_ita_token: bool = True,
 ) -> dict:
     """Generate initial TDX attestation for registration.
 
-    This function generates a TDX quote (optionally embedding a CP-issued nonce).
-    Intel Trust Authority (ITA) token minting is handled by the control plane.
+    This function generates a TDX quote (optionally embedding a CP-issued nonce),
+    optionally mints an Intel Trust Authority (ITA) token, and returns a single
+    attestation payload used for registration / heartbeats.
 
     Implements nonce challenge flow to prevent replay attacks:
     1. Request nonce from control plane
@@ -1246,9 +1256,11 @@ def generate_initial_attestation(
         config: Launcher config (bootstrap fields are forwarded during registration)
         vm_name: VM name (required for nonce challenge)
         update_status: Whether to set agent status to "attesting"
+        require_ita_token: If true, require ITA_API_KEY and mint intel_ta_token. If false,
+            return quote-only attestation (useful for control-plane mode diagnostics).
 
     Returns:
-        Attestation dict with TDX quote + local measurements
+        Attestation dict with (optional) ITA token + TDX quote + local measurements
 
     Raises:
         RuntimeError: If TDX quote generation fails
@@ -1257,7 +1269,9 @@ def generate_initial_attestation(
         write_status("attesting")
     logger.info("Generating initial TDX attestation...")
 
-    # Launcher never uses Intel API keys. The control plane mints ITA tokens from quote_b64.
+    api_url = str(os.environ.get("ITA_API_URL") or os.environ.get("INTEL_API_URL") or "").strip()
+    if not api_url:
+        api_url = "https://api.trustauthority.intel.com"
 
     # Request nonce challenge for replay attack prevention
     nonce = ""
@@ -1288,12 +1302,37 @@ def generate_initial_attestation(
         else:
             logger.warning("Nonce not found in REPORTDATA (may cause registration failure)")
 
+    intel_ta_token = ""
+    if require_ita_token:
+        # Agent operators must provide their own ITA API key. This keeps registration open
+        # without requiring the control plane to mint ITA tokens on behalf of the internet.
+        api_key = str(config.get("intel_api_key") or "").strip()
+        if not api_key:
+            api_key = str(
+                os.environ.get("ITA_API_KEY") or os.environ.get("INTEL_API_KEY") or ""
+            ).strip()
+        if not api_key:
+            raise RuntimeError(
+                "Missing ITA_API_KEY (Intel Trust Authority API key) for agent registration"
+            )
+
+        # Mint ITA token from the quote.
+        logger.info("Submitting quote to Intel Trust Authority...")
+        ita_resp = call_intel_trust_authority(quote_b64=quote_b64, api_key=api_key, api_url=api_url)
+        intel_ta_token = str((ita_resp or {}).get("token") or "").strip()
+        if not intel_ta_token:
+            raise RuntimeError("Intel Trust Authority response did not include token")
+
+    tdx_payload = {
+        "quote_b64": quote_b64,
+        "measurements": measurements,
+    }
+    if intel_ta_token:
+        tdx_payload["intel_ta_token"] = intel_ta_token
+
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "tdx": {
-            "quote_b64": quote_b64,
-            "measurements": measurements,
-        },
+        "tdx": tdx_payload,
     }
 
 
@@ -1376,8 +1415,6 @@ def register_with_control_plane(
             "version": VERSION,
             "node_size": node_size,
             "datacenter": datacenter,
-            "bootstrap_order_id": str(config.get("bootstrap_order_id") or "").strip(),
-            "bootstrap_token": str(config.get("bootstrap_token") or "").strip(),
         },
         timeout=30,
     )
@@ -1628,9 +1665,7 @@ def register_service(config: dict, attestation: dict, tunnel_hostname: str | Non
         "tags": config.get("tags") or [],
         "mrtd": attestation["tdx"]["measurements"].get("mrtd", ""),
         "intel_ta_token": attestation["tdx"].get("intel_ta_token"),
-        # Include quote + measurements so the control plane can mint an ITA token
-        # (keeping ITA API keys out of agent VMs) and for debugging/verification.
-        "quote_b64": attestation["tdx"].get("quote_b64"),
+        # Full attestation is stored for debugging/verification.
         "attestation_json": attestation,
     }
 
@@ -1907,7 +1942,7 @@ def run_control_plane_mode(config: dict):
 
     # Generate attestation for the control plane VM
     logger.info("Generating control plane attestation...")
-    attestation = generate_initial_attestation(config)
+    attestation = generate_initial_attestation(config, require_ita_token=False)
 
     # Save attestation to a file for reference
     attestation_file = CONTROL_PLANE_DIR / "control-plane-attestation.json"
@@ -1932,10 +1967,10 @@ def run_control_plane_mode(config: dict):
         env["EASYENCLAVE_BOOT_ID"] = config["easyenclave_boot_id"]
     if config.get("easyenclave_git_sha"):
         env["EASYENCLAVE_GIT_SHA"] = config["easyenclave_git_sha"]
-    # Intel Trust Authority API key should live only on the control plane.
-    # Launcher/agents do not use it.
-    if config.get("intel_api_key"):
-        env["ITA_API_KEY"] = config["intel_api_key"]
+    # Control plane does not require an ITA API key to verify agent tokens.
+    # Optional: CP-native provisioning can inject a key into provisioned agent VMs.
+    if config.get("ee_agent_ita_api_key"):
+        env["EE_AGENT_ITA_API_KEY"] = config["ee_agent_ita_api_key"]
     if config.get("stripe_secret_key"):
         env["STRIPE_SECRET_KEY"] = config["stripe_secret_key"]
     if config.get("stripe_webhook_secret"):
@@ -2155,7 +2190,8 @@ def run_agent_mode(config: dict):
     if config.get("control_plane_url"):
         CONTROL_PLANE_URL = config["control_plane_url"]
 
-    # Do not set INTEL_API_KEY in the VM environment; agents should never hold Intel keys.
+    # Intentionally do not export any ITA key into the process environment here.
+    # generate_initial_attestation reads it from launcher config or env when needed.
 
     _admin_state["status"] = "starting"
 

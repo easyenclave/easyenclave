@@ -146,8 +146,8 @@ class CapacityLaunchOrder(SQLModel, table=True):
     claim_expires_at: datetime | None = None
     claimed_at: datetime | None = None
     fulfilled_at: datetime | None = None
-    # One-time bootstrap secret used to allow CP-minted Intel TA tokens without
-    # distributing Intel API keys to every VM. Store only a hash.
+    # One-time secret minted when an order is claimed, used as a proof-of-claim for
+    # external launcher workers. Store only a hash.
     bootstrap_token_hash: str | None = Field(default=None, index=True)
     bootstrap_token_issued_at: datetime | None = None
     bootstrap_token_used_at: datetime | None = None

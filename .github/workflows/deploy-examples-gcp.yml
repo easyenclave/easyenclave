@@ -278,8 +278,9 @@ jobs:
           MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
           ALLOWED_CLOUDS: gcp
           ALLOWED_DATACENTERS: ${{ steps.target.outputs.datacenter }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.gcp_baseline.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.gcp_baseline.outputs.rtmrs_by_size }}
+          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
+          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.gcp_baseline.outputs.mrtds_by_size }}'
+          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.gcp_baseline.outputs.rtmrs_by_size }}'
         run: |
           set -euo pipefail
           chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh

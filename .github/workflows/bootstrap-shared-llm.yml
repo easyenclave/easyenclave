@@ -34,6 +34,8 @@ jobs:
       CP_URL: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
       CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
       AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+      # Used to boot LLM agent VMs that can self-mint Intel Trust Authority tokens for registration.
+      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
       # Manual workflows default to :latest (upgrade-by-default). CI pins to :sha.
       MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
 
@@ -70,7 +72,8 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
           ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
           NODE_SIZE: llm
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
+          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.measure.outputs.mrtds_by_size }}'
           NOTE: ci:bootstrap:llm
         run: |
           set -euo pipefail
@@ -129,7 +132,12 @@ jobs:
               exit 1
             fi
             echo "Booting a new baremetal llm agent VM..."
-            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait)"
+            ita_key="${ITA_API_KEY:-${INTEL_API_KEY:-}}"
+            if [ -z "${ita_key:-}" ]; then
+              echo "::error::Missing ITA_API_KEY (Intel Trust Authority API key); cannot boot LLM agents."
+              exit 1
+            fi
+            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait --intel-api-key "${ita_key}")"
             name="$(echo "$vm_json" | jq -r '.name // empty')"
             if [ -n "$name" ]; then
               created+=("$name")
@@ -163,8 +171,9 @@ jobs:
           NODE_SIZE: llm
           ALLOWED_CLOUDS: baremetal
           ALLOWED_DATACENTERS: baremetal:github-runner
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
+          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.measure.outputs.mrtds_by_size }}'
+          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.measure.outputs.rtmrs_by_size }}'
         run: |
           set -euo pipefail
           chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh

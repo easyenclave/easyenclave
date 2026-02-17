@@ -9,7 +9,6 @@ from app.storage import (
     agent_store,
     app_store,
     app_version_store,
-    capacity_launch_order_store,
     trusted_mrtd_store,
 )
 
@@ -95,52 +94,22 @@ def test_registration_requires_valid_node_size_and_datacenter(client, monkeypatc
     assert "invalid datacenter" in resp.json()["detail"].lower()
 
 
-def test_registration_can_use_cp_mint_flow_with_bootstrap_token(client, monkeypatch):
+def test_registration_requires_intel_ta_token(client, monkeypatch):
     mrtd = "a" * 96
     trusted_mrtd_store.upsert(mrtd, mrtd_type="agent", note="bootstrap baseline")
-
-    # Minting is mocked; verification is still done via verify_attestation_token().
-    async def _mock_mint(*, quote_b64: str, timeout_seconds: int = 30) -> str:
-        assert quote_b64 == "quote-b64"
-        return "minted-token"
-
-    monkeypatch.setattr("app.ita_mint.mint_intel_ta_token", _mock_mint)
-    monkeypatch.setattr(
-        "app.attestation.verify_attestation_token",
-        _mock_verify_by_token({"minted-token": mrtd}),
-    )
-
-    # Create a launch order and claim it to mint a bootstrap token (as a launcher would).
-    launcher = client.post(
-        "/api/v1/accounts", json={"name": "launcher", "account_type": "launcher"}
-    )
-    assert launcher.status_code == 200
-    launcher_key = launcher.json()["api_key"]
-    order = capacity_launch_order_store.create_open(
-        datacenter="gcp:us-central1-a",
-        node_size="tiny",
-        reason="test",
-    )
-    claim = client.post(
-        "/api/v1/launchers/capacity/orders/claim",
-        headers={"Authorization": f"Bearer {launcher_key}"},
-        json={"datacenter": "gcp:us-central1-a", "node_size": "tiny"},
-    )
-    assert claim.status_code == 200
-    bootstrap_token = claim.json()["bootstrap_token"]
+    monkeypatch.setattr("app.attestation.verify_attestation_token", _mock_verify_by_token({}))
 
     resp = client.post(
         "/api/v1/agents/register",
         json={
             "attestation": {"tdx": {"quote_b64": "quote-b64", "measurements": {"mrtd": mrtd}}},
-            "vm_name": "vm-cp-mint",
+            "vm_name": "vm-missing-token",
             "node_size": "tiny",
             "datacenter": "gcp:us-central1-a",
-            "bootstrap_order_id": order.order_id,
-            "bootstrap_token": bootstrap_token,
         },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 400
+    assert "trust authority" in resp.json()["detail"].lower()
 
 
 def test_reregistration_requires_attestation_reverification(client, monkeypatch):

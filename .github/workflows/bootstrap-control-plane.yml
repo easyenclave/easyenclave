@@ -47,6 +47,8 @@ jobs:
     env:
       # Infra + trust.
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      # Optional: enable CP-native provisioning (GCP capacity fulfillment) to inject ITA keys into provisioned agent VMs.
+      EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
 
       # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -137,7 +139,8 @@ jobs:
       - name: Deploy control plane + bootstrap agents/apps
         env:
           TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
+          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.measure.outputs.mrtds_by_size }}'
+          TRUSTED_AGENT_RTMRS: '${{ steps.measure.outputs.rtmrs }}'
+          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.measure.outputs.rtmrs_by_size }}'
         run: ./scripts/ci-deploy.sh

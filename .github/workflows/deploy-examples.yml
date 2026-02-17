@@ -165,6 +165,8 @@ jobs:
       CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
       CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
       AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+      # Used to boot LLM agent VMs that can self-mint Intel Trust Authority tokens for registration.
+      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
       MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
       TARGET_DATACENTER: baremetal:github-runner
     steps:
@@ -303,80 +305,11 @@ jobs:
           created=()
           max_boots=3
           boots=0
-          desired_total=2
-
-          admin_login() {
-            local resp token
-            resp="$(curl -sSf "${CP_URL}/admin/login" \
-              -H "Content-Type: application/json" \
-              -d "{\"password\": \"${CP_ADMIN_PASSWORD}\"}")"
-            token="$(echo "$resp" | jq -r '.token // empty')"
-            if [ -z "${token:-}" ] || [ "${token:-}" = "null" ]; then
-              echo "::error::Admin login failed; cannot dispatch bootstrap capacity orders."
-              exit 1
-            fi
-            printf '%s' "$token"
-          }
-
-          admin_token="${CP_ADMIN_TOKEN:-}"
-          if [ -z "${admin_token:-}" ]; then
-            if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
-              echo "::error::Missing CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD; cannot dispatch bootstrap capacity orders."
-              exit 1
-            fi
-            admin_token="$(admin_login)"
-          fi
-
-          # Create an ephemeral launcher account to claim bootstrap tokens (keeps Intel keys off VMs).
-          launcher_name="builtin-launcher-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
-          launcher_json="$(
-            curl -sSf -X POST "${CP_URL}/api/v1/accounts" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -cn \
-                --arg name "$launcher_name" \
-                --arg desc "Builtin examples launcher (ephemeral) for bootstrap token claims" \
-                '{name:$name, description:$desc, account_type:"launcher"}')"
-          )"
-          launcher_api_key="$(echo "$launcher_json" | jq -r '.api_key // empty')"
-          launcher_account_id="$(echo "$launcher_json" | jq -r '.account_id // empty')"
-          if [ -z "${launcher_api_key:-}" ] || [ -z "${launcher_account_id:-}" ]; then
-            echo "::error::Failed to create launcher account for bootstrap token claims"
-            echo "$launcher_json" | head -c 2000 || true
+          ita_key="${ITA_API_KEY:-${INTEL_API_KEY:-}}"
+          if [ -z "${ita_key:-}" ]; then
+            echo "::error::Missing ITA_API_KEY (Intel Trust Authority API key); cannot boot LLM agents."
             exit 1
           fi
-
-          dispatch_orders() {
-            local min_count="$1"
-            curl -sSf -X POST "${CP_URL}/api/v1/admin/agents/capacity/reconcile" \
-              -H "Authorization: Bearer ${admin_token}" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -cn \
-                --arg dc "${TARGET_DATACENTER}" \
-                --arg ns "llm" \
-                --arg reason "builtin-examples-llm-bootstrap-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
-                --argjson min_count "${min_count}" \
-                --arg aid "${launcher_account_id}" \
-                '{targets:[{datacenter:$dc,node_size:$ns,min_count:$min_count}], dispatch:true, reason:$reason, account_id:$aid, require_hostname:false}')" \
-              >/dev/null
-          }
-
-          claim_bootstrap_token() {
-            local resp order_id token
-            resp="$(
-              curl -sSf -X POST "${CP_URL}/api/v1/launchers/capacity/orders/claim" \
-                -H "Authorization: Bearer ${launcher_api_key}" \
-                -H "Content-Type: application/json" \
-                -d "$(jq -cn --arg dc "${TARGET_DATACENTER}" --arg ns "llm" '{datacenter:$dc,node_size:$ns}')"
-            )"
-            order_id="$(echo "$resp" | jq -r '.order.order_id // empty')"
-            token="$(echo "$resp" | jq -r '.bootstrap_token // empty')"
-            if [ -z "${order_id:-}" ] || [ -z "${token:-}" ]; then
-              echo "::error::Failed to claim bootstrap token for llm (${TARGET_DATACENTER})"
-              echo "$resp" | head -c 2000 || true
-              return 1
-            fi
-            printf '%s\t%s\n' "$order_id" "$token"
-          }
 
           count_non_measurer() {
             curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
@@ -402,9 +335,6 @@ jobs:
               ] | length'
           }
 
-          # Ensure there are enough open capacity orders to boot up to desired_total nodes.
-          dispatch_orders "${desired_total}"
-
           non_measurer="$(count_non_measurer || echo 0)"
           measurer="$(count_measurer || echo 0)"
           required_non_measurer=2
@@ -424,8 +354,7 @@ jobs:
               exit 1
             fi
             echo "Booting a new baremetal llm agent VM..."
-            read -r order_id bootstrap_token < <(claim_bootstrap_token)
-            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait --bootstrap-order-id "${order_id}" --bootstrap-token "${bootstrap_token}")"
+            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait --intel-api-key "${ita_key}")"
             name="$(echo "$vm_json" | jq -r '.name // empty')"
             if [ -n "$name" ]; then
               created+=("$name")
@@ -461,8 +390,9 @@ jobs:
           MEASURER_IMAGE: ${{ env.MEASURER_IMAGE }}
           ALLOWED_CLOUDS: baremetal
           ALLOWED_DATACENTERS: baremetal:github-runner
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.llm_baseline.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.llm_baseline.outputs.rtmrs_by_size }}
+          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
+          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.llm_baseline.outputs.mrtds_by_size }}'
+          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.llm_baseline.outputs.rtmrs_by_size }}'
         run: |
           set -euo pipefail
           chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh

@@ -752,10 +752,23 @@ def validate_environment():
         )
 
     # Intel Trust Authority
-    # Verification uses JWKS and does not require an API key. Minting tokens from quotes does.
-    if not os.environ.get("ITA_API_KEY"):
+    # The control plane only verifies Intel-signed tokens via JWKS (no API key required).
+    # CP-native provisioning (e.g., GCP capacity fulfillment) may optionally inject an ITA API key into provisioned
+    # agent VMs so they can mint tokens for registration.
+    ita_agent_key = (
+        os.environ.get("EE_AGENT_ITA_API_KEY")
+        or os.environ.get("ITA_API_KEY")
+        or os.environ.get("INTEL_API_KEY")
+        or ""
+    ).strip()
+    if (
+        os.environ.get("GCP_PROJECT_ID")
+        and os.environ.get("GCP_SERVICE_ACCOUNT_KEY")
+        and not ita_agent_key
+    ):
         warnings.append(
-            "ITA_API_KEY not set - CP-mint attestation will be disabled (agents must provide Intel TA tokens)."
+            "EE_AGENT_ITA_API_KEY not set - CP-native GCP provisioning will create agent VMs that cannot register "
+            "(agents must mint Intel Trust Authority tokens)."
         )
 
     # Trusted MRTDs (required for agent verification)
@@ -968,43 +981,10 @@ async def register_service(request: ServiceRegistrationRequest):
     if not request.mrtd:
         raise HTTPException(status_code=400, detail="Registration requires MRTD (TDX measurement)")
 
-    # If the service didn't provide an Intel TA token, optionally mint one on the CP.
-    # This keeps ITA API keys out of agent VMs (quote-only flow).
     if not request.intel_ta_token:
-        quote_b64 = (request.quote_b64 or "").strip()
-        if not quote_b64 and isinstance(request.attestation_json, dict):
-            tdx = request.attestation_json.get("tdx") or {}
-            if isinstance(tdx, dict):
-                quote_b64 = (tdx.get("quote_b64") or "").strip()
-
-        if quote_b64:
-            if not os.environ.get("ITA_API_KEY") and not os.environ.get("INTEL_API_KEY"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Registration requires Intel Trust Authority token "
-                        "(ITA_API_KEY not set on control plane for CP-mint flow)"
-                    ),
-                )
-            from app.ita_mint import ITAMintError, mint_intel_ta_token
-
-            try:
-                request.intel_ta_token = await mint_intel_ta_token(quote_b64=quote_b64)
-            except ITAMintError as exc:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-            # If the client sent attestation_json, keep it consistent for debugging.
-            if isinstance(request.attestation_json, dict):
-                tdx = request.attestation_json.get("tdx") or {}
-                if not isinstance(tdx, dict):
-                    tdx = {}
-                tdx["intel_ta_token"] = request.intel_ta_token
-                request.attestation_json["tdx"] = tdx
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Registration requires Intel Trust Authority token",
-            )
+        raise HTTPException(
+            status_code=400, detail="Registration requires Intel Trust Authority token"
+        )
 
     # Verify at least one endpoint
     if not request.endpoints:
@@ -1189,46 +1169,6 @@ async def register_agent(request: AgentRegistrationRequest):
     # If agent is in attestation_failed status, allow full re-registration with fresh attestation.
     if existing and existing.status == "attestation_failed":
         logger.info(f"Agent {existing.agent_id} re-registering after attestation failure")
-
-    # If the agent didn't provide an Intel TA token, optionally mint one on the CP.
-    intel_ta_token_in = (request.attestation.get("tdx") or {}).get("intel_ta_token")
-    if not intel_ta_token_in:
-        order_id = (request.bootstrap_order_id or "").strip()
-        token = (request.bootstrap_token or "").strip()
-        if not order_id or not token:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "attestation.tdx.intel_ta_token is required unless "
-                    "bootstrap_order_id + bootstrap_token are provided"
-                ),
-            )
-        ok = capacity_launch_order_store.verify_and_consume_bootstrap_token(
-            order_id=order_id,
-            token=token,
-            vm_name=vm_name,
-        )
-        if not ok:
-            raise HTTPException(status_code=403, detail="Invalid bootstrap token")
-
-        quote_b64 = (request.attestation.get("tdx") or {}).get("quote_b64")
-        if not quote_b64:
-            raise HTTPException(
-                status_code=400,
-                detail="attestation.tdx.quote_b64 is required for CP-mint flow",
-            )
-        from app.ita_mint import ITAMintError, mint_intel_ta_token
-
-        try:
-            minted = await mint_intel_ta_token(quote_b64=quote_b64)
-        except ITAMintError as exc:
-            raise HTTPException(status_code=502, detail=str(exc)) from exc
-        # Inject minted token for downstream verification.
-        tdx = request.attestation.get("tdx") or {}
-        if not isinstance(tdx, dict):
-            tdx = {}
-        tdx["intel_ta_token"] = minted
-        request.attestation["tdx"] = tdx
 
     # Always verify attestation (Intel TA token + MRTD trusted list), including re-registration.
     try:
@@ -1452,10 +1392,10 @@ async def agent_heartbeat(agent_id: str, request: AgentHeartbeatRequest):
 
     intel_ta_token = (request.attestation.get("tdx") or {}).get("intel_ta_token")
     if not intel_ta_token:
-        # Allow quote-only heartbeats for CP-mint agents (keeps liveness without
-        # forcing Intel API keys onto every VM).
-        agent_store.heartbeat(agent_id)
-        return {"status": "ok"}
+        raise HTTPException(
+            status_code=400,
+            detail="attestation.tdx.intel_ta_token is required",
+        )
 
     # Verify token and bind it to this agent's MRTD (prevents cross-agent spoofing).
     ita_result = await verify_attestation_token(intel_ta_token)

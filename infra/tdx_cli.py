@@ -387,9 +387,9 @@ class TDXManager:
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
             "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
-            # Intel Trust Authority: used by the control plane (CP-mint), not by agents.
-            # Prefer ITA_API_KEY (new name) with INTEL_API_KEY as a legacy alias.
-            "intel_api_key": os.environ.get("ITA_API_KEY") or os.environ.get("INTEL_API_KEY"),
+            # Optional: passed through to the control plane to enable CP-native provisioning to inject
+            # an ITA API key into provisioned agent VMs (EE_AGENT_ITA_API_KEY).
+            "ee_agent_ita_api_key": os.environ.get("EE_AGENT_ITA_API_KEY") or "",
             # GCP credentials for CP-native provisioning (optional).
             "gcp_project_id": os.environ.get("GCP_PROJECT_ID"),
             "gcp_service_account_key": os.environ.get("GCP_SERVICE_ACCOUNT_KEY"),
@@ -954,19 +954,10 @@ To start a new EasyEnclave network:
         help="Control plane URL for agent registration (default: https://app.easyenclave.com)",
     )
     new_parser.add_argument(
-        "--bootstrap-order-id",
-        default="",
-        help="Capacity launch order ID (enables CP-mint ITA registration without Intel keys)",
-    )
-    new_parser.add_argument(
-        "--bootstrap-token",
-        default="",
-        help="One-time bootstrap token for the launch order (enables CP-mint ITA registration)",
-    )
-    new_parser.add_argument(
         "--intel-api-key",
-        default=os.environ.get("INTEL_API_KEY", ""),
-        help="Intel Trust Authority API key (or set INTEL_API_KEY env var)",
+        # Prefer ITA_API_KEY (new name) with INTEL_API_KEY as a legacy alias.
+        default=os.environ.get("ITA_API_KEY") or os.environ.get("INTEL_API_KEY", ""),
+        help="Intel Trust Authority API key (or set ITA_API_KEY / INTEL_API_KEY env var)",
     )
     new_parser.add_argument("--wait", action="store_true", help="Wait for agent to get IP")
     new_parser.add_argument(
@@ -1211,12 +1202,7 @@ To start a new EasyEnclave network:
                 config = {
                     "control_plane_url": args.easyenclave_url,
                 }
-                if args.bootstrap_order_id:
-                    config["bootstrap_order_id"] = args.bootstrap_order_id
-                if args.bootstrap_token:
-                    config["bootstrap_token"] = args.bootstrap_token
-                # Legacy: agents used to call ITA directly. Control plane now mints ITA tokens,
-                # so this should typically be empty; keep only when explicitly provided.
+                # Agents mint Intel Trust Authority tokens directly (requires ITA_API_KEY).
                 if args.intel_api_key:
                     config["intel_api_key"] = args.intel_api_key
                 if args.cloud_provider:
