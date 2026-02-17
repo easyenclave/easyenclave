@@ -430,32 +430,85 @@ runs:
       env:
         CP_URL: ${{ inputs.control_plane_url }}
         NODE_SIZE: ${{ inputs.node_size }}
+        WAIT_SECONDS: ${{ inputs.wait_seconds }}
       run: |
         set -euo pipefail
 
-        # If no gcp agents exist yet, nothing to do.
-        agents="$(curl -sS -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
-        if [ -z "${agents:-}" ]; then
-          echo "::warning::Control plane unavailable while checking for untrusted MRTDs; skipping trust bootstrap."
-          exit 0
-        fi
+        # Wait for the freshly-provisioned VM to register as an unverified agent.
+        # This avoids a race where the CI launcher fulfills the order but the VM
+        # hasn't completed cloud-init / launcher startup yet.
+        deadline=$(( $(date +%s) + ${WAIT_SECONDS:-900} ))
+        mrtd=""
+        while :; do
+          agents="$(curl -sS -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+          if [ -z "${agents:-}" ]; then
+            echo "::warning::Control plane temporarily unavailable while waiting for GCP agent registration; retrying..."
+            sleep 10
+            continue
+          fi
 
-        # Pick the first unverified GCP agent for this size that reported an MRTD.
-        mrtd="$(
-          echo "$agents" | jq -r --arg ns "${NODE_SIZE:-}" '
-            [.agents[]
-              | select(.verified == false)
-              | select((.datacenter // "" | ascii_downcase) | startswith("gcp:"))
-              | select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase))
-              | select((.mrtd // "") | length > 0)
-              | .mrtd
-            ][0] // empty
-          ' 2>/dev/null || true
-        )"
-        if [ -z "${mrtd:-}" ]; then
-          echo "No unverified GCP agents with MRTD found yet; skipping trust bootstrap."
-          exit 0
-        fi
+          # If capacity is already eligible, no need to bootstrap trust.
+          eligible="$(
+            echo "${agents:-}" | jq --arg ns "${NODE_SIZE:-}" '
+              [.agents[]
+                | (.datacenter // "" | ascii_downcase) as $dc
+                | (.status // "" | ascii_downcase) as $st
+                | select(.verified == true
+                  and (.health_status // "" | ascii_downcase) == "healthy"
+                  and (if ($ns | length) > 0 then ((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase)) else true end)
+                  and ($st == "undeployed" or ($st == "deployed" and ((.deployed_app // "") | test("^measuring-enclave") | not)))
+                  and (($dc | startswith("gcp:")) or ($dc == "gcp")))
+              ] | length
+            ' 2>/dev/null || echo 0
+          )"
+          if [ "${eligible:-0}" -gt 0 ]; then
+            echo "Eligible GCP capacity already available; skipping trust bootstrap."
+            exit 0
+          fi
+
+          # Pick the first unverified GCP agent for this size that reported an MRTD.
+          mrtd="$(
+            echo "$agents" | jq -r --arg ns "${NODE_SIZE:-}" '
+              [.agents[]
+                | select(.verified == false)
+                | (.datacenter // "" | ascii_downcase) as $dc
+                | select(($dc | startswith("gcp:")) or ($dc == "gcp"))
+                | select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase))
+                | select((.mrtd // "") | length > 0)
+                | .mrtd
+              ][0] // empty
+            ' 2>/dev/null || true
+          )"
+          if [ -n "${mrtd:-}" ]; then
+            break
+          fi
+
+          now="$(date +%s)"
+          if [ "$now" -ge "$deadline" ]; then
+            echo "::error::Timed out waiting for a newly-provisioned GCP agent to register with an MRTD (node_size='${NODE_SIZE:-}')."
+            echo "Observed GCP agents (debug):"
+            echo "$agents" | jq -r --arg ns "${NODE_SIZE:-}" '
+              [.agents[]
+                | (.datacenter // "" | ascii_downcase) as $dc
+                | select(($dc | startswith("gcp:")) or ($dc == "gcp"))
+                | (if ($ns|length)>0 then select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase)) else . end)
+                | {
+                    agent_id,
+                    vm_name,
+                    node_size,
+                    datacenter,
+                    verified,
+                    health_status,
+                    status,
+                    deployed_app,
+                    mrtd_present: ((.mrtd // "") | length > 0)
+                  }
+              ]'
+            exit 1
+          fi
+          sleep 10
+        done
+
         if ! echo "$mrtd" | grep -Eq '^[0-9a-fA-F]{96}$'; then
           echo "::warning::Agent reported invalid MRTD format; skipping trust bootstrap."
           exit 0
@@ -553,6 +606,24 @@ runs:
           now="$(date +%s)"
           if [ "$now" -ge "$deadline" ]; then
             echo "::error::Timed out waiting for eligible GCP capacity after dispatch."
+            echo "Observed GCP agents (debug):"
+            echo "$agents" | jq -r --arg ns "${NODE_SIZE:-}" '
+              [.agents[]
+                | (.datacenter // "" | ascii_downcase) as $dc
+                | select(($dc | startswith("gcp:")) or ($dc == "gcp"))
+                | (if ($ns|length)>0 then select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase)) else . end)
+                | {
+                    agent_id,
+                    vm_name,
+                    node_size,
+                    datacenter,
+                    verified,
+                    health_status,
+                    status,
+                    deployed_app,
+                    mrtd_present: ((.mrtd // "") | length > 0)
+                  }
+              ]'
             exit 1
           fi
           sleep 10
