@@ -34,6 +34,18 @@ def _truncate(value: str, limit: int = 4000) -> str:
     return compact[: limit - 3] + "..."
 
 
+def _tail(value: str, limit: int = 12000) -> str:
+    """Return the last `limit` characters without whitespace compaction.
+
+    GitHub Actions log rendering can truncate very long single-line messages;
+    preserving newlines makes the actionable gcloud error show up reliably.
+    """
+    raw = value or ""
+    if len(raw) <= limit:
+        return raw
+    return raw[-limit:]
+
+
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, text=True, capture_output=True, check=False)
 
@@ -411,9 +423,11 @@ def run_worker(config: WorkerConfig) -> int:
         try:
             vm_name = _launch_for_order(config, order)
         except Exception as exc:
-            error_text = _truncate(str(exc), 450)
+            error_full = str(exc)
+            error_text = _truncate(error_full, 450)
             cp.update_order(order_id, status="failed", error=error_text)
-            print(f"[launcher] order={order_id} failed: {error_text}", file=sys.stderr, flush=True)
+            print(f"[launcher] order={order_id} failed:", file=sys.stderr, flush=True)
+            print(_tail(error_full), file=sys.stderr, flush=True)
             if config.one_shot:
                 return 1
             processed += 1
