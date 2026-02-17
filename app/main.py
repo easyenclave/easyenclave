@@ -4283,6 +4283,49 @@ def _version_error(version_obj: AppVersion) -> tuple[str, str] | None:
     )
 
 
+def _agent_matches_warm_target(agent: Agent, target: AgentCapacityTarget) -> bool:
+    agent_datacenter = (agent.datacenter or "").strip().lower()
+    if not agent_datacenter:
+        return False
+    target_datacenter = (target.datacenter or "").strip().lower()
+    if agent_datacenter != target_datacenter:
+        return False
+
+    target_node_size = (target.node_size or "").strip().lower()
+    if not target_node_size:
+        return True
+    return (agent.node_size or "").strip().lower() == target_node_size
+
+
+def _warm_target_applies_to_request(
+    target: AgentCapacityTarget,
+    *,
+    request_node_size: str,
+    allowed_datacenters: set[str],
+    denied_datacenters: set[str],
+    allowed_clouds: set[str],
+    denied_clouds: set[str],
+) -> bool:
+    target_datacenter = (target.datacenter or "").strip().lower()
+    if not target_datacenter:
+        return False
+    if allowed_datacenters and target_datacenter not in allowed_datacenters:
+        return False
+    if denied_datacenters and target_datacenter in denied_datacenters:
+        return False
+
+    target_cloud = _extract_cloud(target_datacenter)
+    if allowed_clouds and target_cloud not in allowed_clouds:
+        return False
+    if denied_clouds and target_cloud in denied_clouds:
+        return False
+
+    target_node_size = (target.node_size or "").strip().lower()
+    if request_node_size and target_node_size and target_node_size != request_node_size:
+        return False
+    return True
+
+
 def _evaluate_deploy_request(
     app_name: str, app_version: str, request: DeployFromVersionRequest
 ) -> dict[str, object]:
@@ -4290,7 +4333,7 @@ def _evaluate_deploy_request(
     selected_agent: Agent | None = None
     selected_version: AppVersion | None = None
     selected_reservation_id: str | None = None
-    use_warm_reservations = capacity_pool_target_store.has_enabled_targets()
+    enabled_warm_targets = capacity_pool_target_store.list(enabled_only=True)
 
     def fail(
         status_code: int, detail: str, *, code: str, agent: Agent | None = None
@@ -4325,6 +4368,18 @@ def _evaluate_deploy_request(
             "Cloud policy conflict: same cloud appears in both allowed and denied lists",
             code="CLOUD_POLICY_CONFLICT",
         )
+    request_node_size = (request.node_size or "").strip().lower()
+    warm_policy_in_scope = any(
+        _warm_target_applies_to_request(
+            target,
+            request_node_size=request_node_size,
+            allowed_datacenters=allowed_datacenters,
+            denied_datacenters=denied_datacenters,
+            allowed_clouds=allowed_clouds,
+            denied_clouds=denied_clouds,
+        )
+        for target in enabled_warm_targets
+    )
 
     if request.account_id:
         balance = account_store.get_balance(request.account_id)
@@ -4488,13 +4543,21 @@ def _evaluate_deploy_request(
             candidates.append(agent)
 
         reservation_by_agent: dict[str, object] = {}
+        warm_required_agent_ids: set[str] = set()
         filtered_candidates = candidates
-        if use_warm_reservations:
+        for agent in candidates:
+            if any(_agent_matches_warm_target(agent, target) for target in enabled_warm_targets):
+                warm_required_agent_ids.add(agent.agent_id)
+
+        if warm_required_agent_ids:
             reservation_by_agent = capacity_reservation_store.list_open_by_agent_ids(
-                [agent.agent_id for agent in candidates]
+                list(warm_required_agent_ids)
             )
             filtered_candidates = [
-                agent for agent in candidates if agent.agent_id in reservation_by_agent
+                agent
+                for agent in candidates
+                if agent.agent_id not in warm_required_agent_ids
+                or agent.agent_id in reservation_by_agent
             ]
 
         filtered_candidates.sort(key=lambda a: 0 if a.status == "undeployed" else 1)
@@ -4531,14 +4594,14 @@ def _evaluate_deploy_request(
 
             selected_agent = agent
             selected_version = version_obj
-            if use_warm_reservations:
+            if agent.agent_id in warm_required_agent_ids:
                 reservation = reservation_by_agent.get(agent.agent_id)
                 if reservation is not None:
                     selected_reservation_id = reservation.reservation_id
             break
 
         if selected_agent is None:
-            if use_warm_reservations:
+            if warm_policy_in_scope:
                 if not verified_policy_agents:
                     summary = (
                         "No verified capacity available for deployment policy. "

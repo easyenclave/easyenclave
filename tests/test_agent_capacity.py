@@ -290,6 +290,50 @@ def test_preflight_returns_no_warm_capacity_when_targets_enabled(client):
     assert any(issue["code"] == "NO_WARM_CAPACITY" for issue in data["issues"])
 
 
+def test_preflight_ignores_unrelated_warm_targets(client):
+    agent = _mk_agent(
+        vm_name="baremetal-tiny-1",
+        datacenter="baremetal:github-runner",
+        node_size="tiny",
+    )
+    agent_store.register(agent)
+
+    app_store.register(App(name="hello-tdx"))
+    app_version_store.create(
+        AppVersion(
+            app_name="hello-tdx",
+            version="1.0.0",
+            node_size="tiny",
+            compose="services:\n  app:\n    image: hello:latest\n",
+            status="attested",
+            mrtd=agent.mrtd,
+            attestation={
+                "measurement_type": "agent_reference",
+                "node_size": "tiny",
+                "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+            },
+        )
+    )
+    capacity_pool_target_store.upsert(
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+        min_warm_count=1,
+        enabled=True,
+        dispatch=False,
+    )
+
+    resp = client.post(
+        "/api/v1/apps/hello-tdx/versions/1.0.0/deploy/preflight",
+        json={"node_size": "tiny", "allowed_datacenters": ["baremetal:github-runner"]},
+    )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["eligible"] is True
+    assert data["selected_agent_id"] == agent.agent_id
+    assert not any(issue["code"] == "NO_WARM_CAPACITY" for issue in data["issues"])
+
+
 def test_preflight_returns_no_verified_capacity_when_targets_enabled(client):
     agent = _mk_agent(
         vm_name="gcp-tiny-3",
