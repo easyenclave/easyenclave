@@ -902,6 +902,42 @@
                     <h2>Manage Agents</h2>
                     <button class="btn-primary refresh-btn" onclick="loadAgents()">Refresh</button>
                 </div>
+                <div class="section-card" style="margin-bottom: 16px;">
+                    <div class="add-form" style="grid-template-columns: 2fr 1fr 1fr 1fr auto auto; align-items: center;">
+                        <input type="text" id="agentFilterQuery" placeholder="Search (vm/app/owner/agent_id)" oninput="onAgentsFilterChanged()">
+                        <select id="agentFilterDatacenter" onchange="onAgentsFilterChanged()">
+                            <option value="">All datacenters</option>
+                        </select>
+                        <select id="agentFilterSize" onchange="onAgentsFilterChanged()">
+                            <option value="">All sizes</option>
+                        </select>
+                        <label style="display:flex;gap:8px;align-items:center;white-space:nowrap;">
+                            <input type="number" id="agentFilterActiveHours" min="0" step="0.5" value="2" onchange="onAgentsFilterChanged()" style="width:90px;">
+                            <span style="color:var(--gray-600);">active (h)</span>
+                        </label>
+                        <button class="btn-small btn-secondary" onclick="resetAgentsFilters()">Reset Filters</button>
+                        <button class="btn-small btn-warning" onclick="cleanupStaleAgentsNow()">Cleanup Stale</button>
+                    </div>
+                    <div style="margin-top: 10px; display:flex; gap:14px; flex-wrap:wrap; align-items:center;">
+                        <label style="display:flex;gap:8px;align-items:center;">
+                            <input type="checkbox" id="agentFilterOnlyEligible" checked onchange="onAgentsFilterChanged()">
+                            <span>Only eligible (verified + healthy)</span>
+                        </label>
+                        <label style="display:flex;gap:8px;align-items:center;">
+                            <input type="checkbox" id="agentFilterShowUnverified" onchange="onAgentsFilterChanged()">
+                            <span>Show unverified</span>
+                        </label>
+                        <label style="display:flex;gap:8px;align-items:center;">
+                            <input type="checkbox" id="agentFilterShowUnhealthy" onchange="onAgentsFilterChanged()">
+                            <span>Show unhealthy</span>
+                        </label>
+                        <label style="display:flex;gap:8px;align-items:center;">
+                            <input type="checkbox" id="agentFilterShowStale" onchange="onAgentsFilterChanged()">
+                            <span>Show stale/offline</span>
+                        </label>
+                    </div>
+                    <div id="agentsAdminSummary" style="margin-top: 10px; color: var(--gray-600); font-size: 0.9rem;"></div>
+                </div>
                 <div id="agentsAdminList">
                     <div class="loading">Loading agents...</div>
                 </div>

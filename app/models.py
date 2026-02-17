@@ -483,6 +483,25 @@ class AdminAgentCleanupResponse(BaseModel):
     detail: str | None = None
 
 
+class AdminStaleAgentCleanupRequest(BaseModel):
+    """Bulk-delete agents that are stale (no heartbeat for N hours)."""
+
+    stale_hours: float | None = None
+    include_deployed: bool = False
+    dry_run: bool = True
+
+
+class AdminStaleAgentCleanupResponse(BaseModel):
+    """Response for bulk stale-agent cleanup."""
+
+    dry_run: bool
+    stale_hours: float
+    candidates: int = 0
+    deleted_agents: list[dict] = Field(default_factory=list)
+    skipped_agents: list[dict] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 # =============================================================================
 # Deployment API
 # =============================================================================

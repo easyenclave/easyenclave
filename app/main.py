@@ -63,6 +63,8 @@ from .models import (
     AdminAgentCleanupResponse,
     AdminLoginRequest,
     AdminLoginResponse,
+    AdminStaleAgentCleanupRequest,
+    AdminStaleAgentCleanupResponse,
     Agent,
     AgentCapacityDispatchResult,
     AgentCapacityReconcileRequest,
@@ -3031,6 +3033,88 @@ async def admin_agent_cleanup(
         external_cloud=external_response,
         external_candidates=len(external_candidates),
         detail=detail,
+    )
+
+
+@app.post(
+    "/api/v1/admin/agents/cleanup/stale",
+    response_model=AdminStaleAgentCleanupResponse,
+)
+async def admin_cleanup_stale_agents(
+    request: AdminStaleAgentCleanupRequest,
+    _admin: bool = Depends(verify_admin_token),
+):
+    """Admin-only: delete stale agents (DB + Cloudflare tunnel/DNS best-effort).
+
+    This is intended to keep the Agents tab usable after CI runs, cancelled launches,
+    or broken external provisioner flows.
+    """
+    stale_hours = float(
+        request.stale_hours
+        if request.stale_hours is not None
+        else get_setting_int("operational.agent_stale_hours", fallback=24)
+    )
+    if stale_hours <= 0:
+        raise HTTPException(status_code=422, detail="stale_hours must be > 0")
+
+    include_deployed = bool(request.include_deployed)
+    dry_run = bool(request.dry_run)
+
+    stale_agents = agent_store.get_stale_agents(timedelta(hours=stale_hours))
+    deleted: list[dict] = []
+    skipped: list[dict] = []
+    errors: list[str] = []
+
+    for agent in stale_agents:
+        try:
+            if not include_deployed and agent.current_deployment_id and agent.status == "deployed":
+                skipped.append(
+                    {
+                        "agent_id": agent.agent_id,
+                        "vm_name": agent.vm_name,
+                        "reason": "active_deployment",
+                    }
+                )
+                continue
+
+            if dry_run:
+                deleted.append(
+                    {
+                        "agent_id": agent.agent_id,
+                        "vm_name": agent.vm_name,
+                        "dry_run": True,
+                    }
+                )
+                continue
+
+            # Cloudflare cleanup (best effort).
+            if agent.tunnel_id and cloudflare.is_configured():
+                try:
+                    await cloudflare.delete_tunnel(agent.tunnel_id)
+                    if agent.hostname:
+                        await cloudflare.delete_dns_record(agent.hostname)
+                except Exception as exc:
+                    # Continue deletion anyway; tunnels can be cleaned later via orphan cleanup.
+                    logger.warning(
+                        f"Failed to clean up Cloudflare for stale agent {agent.agent_id}: {exc}"
+                    )
+
+            capacity_reservation_store.expire_open_for_agent(agent.agent_id)
+            ok = bool(agent_store.delete(agent.agent_id))
+            if ok:
+                deleted.append({"agent_id": agent.agent_id, "vm_name": agent.vm_name})
+            else:
+                errors.append(f"Failed to delete agent record: {agent.agent_id}")
+        except Exception as exc:
+            errors.append(f"{agent.agent_id}: {exc}")
+
+    return AdminStaleAgentCleanupResponse(
+        dry_run=dry_run,
+        stale_hours=stale_hours,
+        candidates=len(stale_agents),
+        deleted_agents=deleted,
+        skipped_agents=skipped,
+        errors=errors,
     )
 
 

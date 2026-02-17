@@ -1228,6 +1228,130 @@ function closeAppVersionModal() {
 }
 
 // Agents management
+function _agentsFiltersKey() { return 'easyenclave.admin.agents.filters.v1'; }
+
+function _readAgentsFiltersFromUi() {
+    const query = (document.getElementById('agentFilterQuery')?.value || '').trim().toLowerCase();
+    const datacenter = (document.getElementById('agentFilterDatacenter')?.value || '').trim().toLowerCase();
+    const size = (document.getElementById('agentFilterSize')?.value || '').trim().toLowerCase();
+    const activeHours = parseFloat(document.getElementById('agentFilterActiveHours')?.value || '0') || 0;
+
+    const onlyEligible = !!document.getElementById('agentFilterOnlyEligible')?.checked;
+    const showUnverified = !!document.getElementById('agentFilterShowUnverified')?.checked;
+    const showUnhealthy = !!document.getElementById('agentFilterShowUnhealthy')?.checked;
+    const showStale = !!document.getElementById('agentFilterShowStale')?.checked;
+
+    return { query, datacenter, size, activeHours, onlyEligible, showUnverified, showUnhealthy, showStale };
+}
+
+function _applyAgentsFiltersToUi(filters) {
+    const setVal = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    const setChk = (id, v) => { const el = document.getElementById(id); if (el) el.checked = !!v; };
+    setVal('agentFilterQuery', filters.query || '');
+    setVal('agentFilterDatacenter', filters.datacenter || '');
+    setVal('agentFilterSize', filters.size || '');
+    setVal('agentFilterActiveHours', (filters.activeHours ?? 2));
+    setChk('agentFilterOnlyEligible', filters.onlyEligible ?? true);
+    setChk('agentFilterShowUnverified', filters.showUnverified ?? false);
+    setChk('agentFilterShowUnhealthy', filters.showUnhealthy ?? false);
+    setChk('agentFilterShowStale', filters.showStale ?? false);
+}
+
+function _loadAgentsFilters() {
+    try {
+        const raw = localStorage.getItem(_agentsFiltersKey());
+        if (!raw) return null;
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function _saveAgentsFilters(filters) {
+    try { localStorage.setItem(_agentsFiltersKey(), JSON.stringify(filters)); } catch {}
+}
+
+function onAgentsFilterChanged() {
+    const filters = _readAgentsFiltersFromUi();
+    _saveAgentsFilters(filters);
+    loadAgents();
+}
+
+function resetAgentsFilters() {
+    const defaults = {
+        query: '',
+        datacenter: '',
+        size: '',
+        activeHours: 2,
+        onlyEligible: true,
+        showUnverified: false,
+        showUnhealthy: false,
+        showStale: false,
+    };
+    _applyAgentsFiltersToUi(defaults);
+    _saveAgentsFilters(defaults);
+    loadAgents();
+}
+
+function _parseDate(value) {
+    if (!value) return null;
+    const t = Date.parse(value);
+    return Number.isFinite(t) ? new Date(t) : null;
+}
+
+function _agentLastSeen(agent) {
+    return _parseDate(agent.last_heartbeat) || _parseDate(agent.registered_at) || null;
+}
+
+function _formatAgeShort(d) {
+    if (!d) return 'unknown';
+    const ms = Date.now() - d.getTime();
+    const mins = Math.max(0, Math.floor(ms / 60000));
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 48) return `${hrs}h`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d`;
+}
+
+async function cleanupStaleAgentsNow() {
+    if (!isAdmin) {
+        alert('Admin token required');
+        return;
+    }
+    const staleHoursRaw = prompt('Delete agents stale for more than N hours?', '24');
+    if (staleHoursRaw === null) return;
+    const staleHours = parseFloat(staleHoursRaw);
+    if (!Number.isFinite(staleHours) || staleHours <= 0) {
+        alert('Invalid stale hours');
+        return;
+    }
+    const includeDeployed = confirm('Also delete stale agents that are still marked deployed? (usually no)');
+    if (!confirm('Proceed with stale agent cleanup now?')) return;
+    const dryRun = confirm('Dry run (report what would be deleted, but do not delete)?');
+
+    try {
+        const result = await adminFetchJSON('/api/v1/admin/agents/cleanup/stale', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stale_hours: staleHours, include_deployed: includeDeployed, dry_run: dryRun }),
+        });
+        const deleted = result.deleted_agents || [];
+        const skipped = result.skipped_agents || [];
+        const errors = result.errors || [];
+        alert(
+            `Cleanup complete.\n` +
+            `Deleted: ${deleted.length}\n` +
+            `Skipped: ${skipped.length}\n` +
+            `Errors: ${errors.length}` +
+            (dryRun ? '\n(dry run)' : '')
+        );
+        await Promise.allSettled([loadAgents(), loadCloudflare(), loadCloudResources()]);
+    } catch (e) {
+        alert('Cleanup failed: ' + e.message);
+    }
+}
+
 async function loadAgents() {
     const container = document.getElementById('agentsAdminList');
     try {
@@ -1239,8 +1363,87 @@ async function loadAgents() {
             return;
         }
 
-        // For non-admin, use owner-scoped endpoint
-        const agentList = isAdmin ? data.agents : data.agents;
+        // For non-admin, use owner-scoped endpoint (currently same shape)
+        let agentList = isAdmin ? data.agents : data.agents;
+
+        // Populate filter dropdowns
+        const dcEl = document.getElementById('agentFilterDatacenter');
+        const sizeEl = document.getElementById('agentFilterSize');
+        if (dcEl && dcEl.options.length <= 1) {
+            const dcs = [...new Set(agentList.map(a => (a.datacenter || '').trim()).filter(Boolean))].sort();
+            for (const dc of dcs) {
+                const opt = document.createElement('option');
+                opt.value = dc.toLowerCase();
+                opt.textContent = dc;
+                dcEl.appendChild(opt);
+            }
+        }
+        if (sizeEl && sizeEl.options.length <= 1) {
+            const sizes = [...new Set(agentList.map(a => (a.node_size || '').trim()).filter(Boolean))].sort();
+            for (const s of sizes) {
+                const opt = document.createElement('option');
+                opt.value = s.toLowerCase();
+                opt.textContent = s;
+                sizeEl.appendChild(opt);
+            }
+        }
+
+        // Apply saved filters after dropdown options exist.
+        const saved = _loadAgentsFilters();
+        if (saved) _applyAgentsFiltersToUi(saved);
+        const filters = _readAgentsFiltersFromUi();
+
+        const now = Date.now();
+        const activeMs = filters.activeHours > 0 ? filters.activeHours * 3600 * 1000 : 0;
+
+        const matchesQuery = (agent) => {
+            if (!filters.query) return true;
+            const parts = [
+                agent.vm_name,
+                agent.agent_id,
+                agent.deployed_app,
+                agent.github_owner,
+                agent.node_size,
+                agent.datacenter,
+                agent.hostname,
+            ].filter(Boolean).map(v => String(v).toLowerCase());
+            return parts.some(p => p.includes(filters.query));
+        };
+
+        agentList = agentList.filter(agent => {
+            if (filters.datacenter && (agent.datacenter || '').trim().toLowerCase() !== filters.datacenter) return false;
+            if (filters.size && (agent.node_size || '').trim().toLowerCase() !== filters.size) return false;
+
+            const verified = !!agent.verified;
+            const healthy = (agent.health_status || '').toLowerCase() === 'healthy';
+            const lastSeen = _agentLastSeen(agent);
+            const isStale = lastSeen ? (now - lastSeen.getTime() > activeMs && activeMs > 0) : (activeMs > 0);
+
+            if (filters.onlyEligible) {
+                if (!verified || !healthy) return false;
+            } else {
+                if (!filters.showUnverified && !verified) return false;
+                if (!filters.showUnhealthy && !healthy) return false;
+            }
+
+            if (!filters.showStale && activeMs > 0 && isStale) return false;
+            if (!matchesQuery(agent)) return false;
+            return true;
+        });
+
+        // Sort: newest heartbeat first
+        agentList.sort((a, b) => {
+            const da = _agentLastSeen(a);
+            const db = _agentLastSeen(b);
+            const ta = da ? da.getTime() : 0;
+            const tb = db ? db.getTime() : 0;
+            return tb - ta;
+        });
+
+        const summaryEl = document.getElementById('agentsAdminSummary');
+        if (summaryEl) {
+            summaryEl.textContent = `Showing ${agentList.length} of ${data.agents.length} agent(s)`;
+        }
 
         container.innerHTML = `
             <table class="data-table">
@@ -1253,6 +1456,7 @@ async function loadAgents() {
                         <th>Datacenter</th>
                         <th>Health</th>
                         <th>Verified</th>
+                        <th>Last Seen</th>
                         ${isAdmin ? '<th>Owner</th>' : ''}
                         <th>Hostname</th>
                         <th>Actions</th>
@@ -1273,6 +1477,11 @@ async function loadAgents() {
                             <td>${renderAgentLocation(agent)}</td>
                             <td><span class="health-dot ${agent.health_status || 'unknown'}"></span> ${agent.health_status || 'unknown'}</td>
                             <td>${agent.verified ? '<span class="verified-badge">Verified</span>' : '<span class="unverified-badge">Unverified</span>'}</td>
+                            <td>${(() => {
+                                const d = _agentLastSeen(agent);
+                                const title = d ? d.toISOString() : '';
+                                return `<span title="${title}">${_formatAgeShort(d)}</span>`;
+                            })()}</td>
                             ${isAdmin ? `<td>${agent.github_owner ? `<code>${agent.github_owner}</code>` : '<span style="color:#666">none</span>'} <button class="btn-small btn-secondary" onclick="setAgentOwner('${agent.agent_id}', '${agent.github_owner || ''}')">Set</button></td>` : ''}
                             <td>${agent.hostname ? `<a href="https://${agent.hostname}" target="_blank">${agent.hostname}</a>` : 'No tunnel'}</td>
                             <td class="action-buttons">

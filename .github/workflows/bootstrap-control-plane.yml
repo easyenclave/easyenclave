@@ -41,6 +41,16 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
 
+      # GitHub OAuth (admin login + deployer identity).
+      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GITHUB_OAUTH_CLIENT_ID }}
+      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.GITHUB_OAUTH_CLIENT_SECRET }}
+      # Optional (defaults to https://app.easyenclave.com/auth/github/callback inside the CP if unset).
+      GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.GITHUB_OAUTH_REDIRECT_URI }}
+
+      # Stripe (optional billing).
+      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
+
       # Deployer settings.
       CP_BOOTSTRAP_SIZES: ${{ github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
       NUM_TINY_AGENTS: ${{ github.event.inputs.num_tiny_agents || '1' }}

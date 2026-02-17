@@ -52,6 +52,22 @@ Get from Stripe Dashboard → Webhooks:
 whsec_xxx
 ```
 
+### Optional Secrets (For Admin Login)
+
+#### GITHUB_OAUTH_CLIENT_ID
+GitHub OAuth App client ID (used for admin login).
+
+#### GITHUB_OAUTH_CLIENT_SECRET
+GitHub OAuth App client secret (used for admin login).
+
+#### GITHUB_OAUTH_REDIRECT_URI (Optional)
+Override the redirect URI configured in the OAuth App.
+
+If omitted, the control plane defaults to:
+```
+https://app.easyenclave.com/auth/github/callback
+```
+
 ## Testing Secrets Setup
 
 After adding `ADMIN_PASSWORD_HASH`, trigger a new workflow run:
