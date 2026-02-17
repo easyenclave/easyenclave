@@ -76,7 +76,7 @@ jobs:
       - name: Validate required secrets
         run: |
           set -euo pipefail
-          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
+          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required secret/env: $v"
               exit 1
@@ -85,6 +85,21 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import bcrypt
+          pw = os.environ.get("ADMIN_PASSWORD", "").encode()
+          if not pw:
+            raise SystemExit("ADMIN_PASSWORD missing")
+          hashed = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
+          # Write to GITHUB_ENV without printing the value to logs.
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+            f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
+          PY
 
       - name: Cleanup leaked measurement VMs (best effort)
         run: |
