@@ -10,16 +10,14 @@ on:
   pull_request:
     branches: [main]
 
-concurrency:
-  # This CI run also performs TDX VM cleanup (self-hosted). Do not overlap with
-  # control-plane/bootstrap/example workflows that use the same runner.
-  group: easyenclave-shared-control-plane
-  cancel-in-progress: false
-
 jobs:
   cleanup-tdx-runner:
     name: Cleanup - Local TDX VMs
     runs-on: [self-hosted, tdx]
+    concurrency:
+      # Do not overlap with other workflows that mutate the shared control plane / TDX runner.
+      group: easyenclave-shared-control-plane
+      cancel-in-progress: false
     # Avoid running destructive cleanup on PRs from forks.
     if: github.event_name == 'push'
     steps:
@@ -67,6 +65,10 @@ jobs:
   measure-trusted-values:
     name: Measure Trusted Values (tiny)
     runs-on: [self-hosted, tdx]
+    concurrency:
+      # Serialized with cleanup/bootstrap and other CP-mutating workflows.
+      group: easyenclave-shared-control-plane
+      cancel-in-progress: false
     if: github.event_name == 'push'
     needs: [cleanup-tdx-runner]
     permissions:
@@ -124,6 +126,10 @@ jobs:
   bootstrap-control-plane:
     name: Bootstrap Control Plane
     runs-on: [self-hosted, tdx]
+    concurrency:
+      # Serialized with cleanup/measure and other CP-mutating workflows.
+      group: easyenclave-shared-control-plane
+      cancel-in-progress: false
     if: github.event_name == 'push'
     # Everything can run in parallel except launching the CP VM; this must wait for:
     # 1) docker images for this SHA to be pushed, and
