@@ -130,6 +130,28 @@ class CapacityReservation(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class CapacityLaunchOrder(SQLModel, table=True):
+    """Capacity launch order claimed by launcher workers."""
+
+    __tablename__ = "capacity_launch_orders"
+
+    order_id: str = Field(default_factory=generate_uuid, primary_key=True)
+    datacenter: str = Field(default="", index=True)
+    node_size: str = Field(default="", index=True)
+    status: str = Field(default="open", index=True)  # open|claimed|provisioning|fulfilled|failed
+    reason: str = Field(default="capacity-pool-controller")
+    requested_count: int = Field(default=1)
+    account_id: str | None = Field(default=None, index=True)  # requester/biller
+    claimed_by_account_id: str | None = Field(default=None, index=True)  # launcher account
+    claim_expires_at: datetime | None = None
+    claimed_at: datetime | None = None
+    fulfilled_at: datetime | None = None
+    vm_name: str | None = Field(default=None, index=True)
+    error: str | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class Deployment(SQLModel, table=True):
     """Deployment record."""
 
@@ -203,7 +225,7 @@ class Account(SQLModel, table=True):
     account_id: str = Field(default_factory=generate_uuid, primary_key=True)
     name: str = Field(unique=True, index=True)
     description: str = Field(default="")
-    account_type: str = Field(index=True)  # "deployer" | "agent" | "contributor"
+    account_type: str = Field(index=True)  # "deployer" | "agent" | "contributor" | "launcher"
     created_at: datetime = Field(default_factory=utcnow)
     # API key authentication fields
     api_key_hash: str | None = None  # bcrypt hash

@@ -169,6 +169,19 @@ async def verify_account_api_key(authorization: str = Header(None)) -> str:
     return account.account_id
 
 
+async def verify_launcher_api_key(authorization: str = Header(None)) -> str:
+    """FastAPI dependency to verify launcher API key authentication."""
+    from app.storage import account_store
+
+    account_id = await verify_account_api_key(authorization)
+    account = account_store.get(account_id)
+    if not account:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if (account.account_type or "").strip().lower() != "launcher":
+        raise HTTPException(status_code=403, detail="Launcher API key required")
+    return account_id
+
+
 async def verify_admin_token(authorization: str = Header(None)) -> "AdminSession":
     """FastAPI dependency to verify admin session token.
 

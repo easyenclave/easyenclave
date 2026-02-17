@@ -53,6 +53,7 @@ def clear_all_stores():
         app_revenue_share_store,
         app_store,
         app_version_store,
+        capacity_launch_order_store,
         capacity_pool_target_store,
         capacity_reservation_store,
         deployment_store,
@@ -67,6 +68,7 @@ def clear_all_stores():
         deployment_store.clear()
         app_store.clear()
         app_version_store.clear()
+        capacity_launch_order_store.clear()
         capacity_pool_target_store.clear()
         capacity_reservation_store.clear()
         app_revenue_share_store.clear()

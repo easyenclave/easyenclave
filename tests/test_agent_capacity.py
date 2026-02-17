@@ -12,6 +12,7 @@ from app.storage import (
     agent_store,
     app_store,
     app_version_store,
+    capacity_launch_order_store,
     capacity_pool_target_store,
     capacity_reservation_store,
 )
@@ -143,16 +144,7 @@ def test_reconcile_default_filters_exclude_unhealthy_unverified_and_no_hostname(
     assert data["targets"][0]["shortfall"] == 1
 
 
-def test_reconcile_dispatch_calls_provisioner_for_each_shortfall(client, monkeypatch):
-    calls: list[tuple[str, str, int, str]] = []
-
-    async def _fake_dispatch_provision_request(
-        *, datacenter: str, node_size: str, count: int, reason: str
-    ):
-        calls.append((datacenter, node_size, count, reason))
-        return (True, 202, None)
-
-    monkeypatch.setattr("app.main.dispatch_provision_request", _fake_dispatch_provision_request)
+def test_reconcile_dispatch_queues_launch_orders_for_each_shortfall(client):
     agent_store.register(
         _mk_agent(vm_name="azure-std-1", datacenter="azure:eastus2-1", node_size="standard")
     )
@@ -177,10 +169,43 @@ def test_reconcile_dispatch_calls_provisioner_for_each_shortfall(client, monkeyp
     data = resp.json()
     assert data["total_shortfall"] == 3
     assert len(data["dispatches"]) == 2
-    assert calls == [
-        ("azure:eastus2-1", "standard", 2, "ci-cloud-check"),
-        ("gcp:us-central1-a", "llm", 1, "ci-cloud-check"),
-    ]
+    assert data["dispatches"][0]["dispatched"] is True
+    assert data["dispatches"][1]["dispatched"] is True
+
+    azure_orders = capacity_launch_order_store.list(
+        "open",
+        datacenter="azure:eastus2-1",
+        node_size="standard",
+    )
+    gcp_orders = capacity_launch_order_store.list(
+        "open",
+        datacenter="gcp:us-central1-a",
+        node_size="llm",
+    )
+    assert len(azure_orders) == 2
+    assert len(gcp_orders) == 1
+
+
+def test_admin_can_list_capacity_launch_orders(client):
+    capacity_launch_order_store.create_open(
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+        reason="test-order",
+    )
+
+    try:
+        resp = client.get(
+            "/api/v1/admin/agents/capacity/orders?status=open",
+            headers=_admin_headers(),
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["total"] == 1
+    assert payload["orders"][0]["status"] == "open"
+    assert payload["orders"][0]["datacenter"] == "gcp:us-central1-a"
 
 
 def test_reconcile_requires_admin_auth(client):
@@ -309,17 +334,7 @@ def test_preflight_returns_no_verified_capacity_when_targets_enabled(client):
     assert any(issue["code"] == "NO_VERIFIED_CAPACITY" for issue in data["issues"])
 
 
-def test_capacity_purchase_uses_billing_auth_and_dispatches_capacity(client, monkeypatch):
-    calls: list[tuple[str, str, int, str]] = []
-
-    async def _fake_dispatch_provision_request(
-        *, datacenter: str, node_size: str, count: int, reason: str
-    ):
-        calls.append((datacenter, node_size, count, reason))
-        return (True, 202, None)
-
-    monkeypatch.setattr("app.main.dispatch_provision_request", _fake_dispatch_provision_request)
-
+def test_capacity_purchase_uses_billing_auth_and_queues_capacity(client):
     create_resp = client.post(
         "/api/v1/accounts",
         json={"name": "capacity-deployer", "account_type": "deployer"},
@@ -347,9 +362,13 @@ def test_capacity_purchase_uses_billing_auth_and_dispatches_capacity(client, mon
     assert payload["simulated_payment"] is True
     assert payload["charged_amount_usd"] > 0
     assert payload["capacity"]["dispatches"][0]["dispatched"] is True
-    assert calls and calls[0][0] == "gcp:us-central1-a"
-    assert calls[0][1] == "tiny"
-    assert calls[0][2] == 1
+    orders = capacity_launch_order_store.list(
+        "open",
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+    )
+    assert len(orders) == 1
+    assert orders[0].account_id == created["account_id"]
 
 
 def test_capacity_purchase_requires_funds_when_simulation_disabled(client):

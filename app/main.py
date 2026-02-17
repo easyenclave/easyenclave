@@ -42,6 +42,7 @@ from .auth import (
     require_owner_or_admin,
     verify_account_api_key,
     verify_admin_token,
+    verify_launcher_api_key,
     verify_password,
 )
 from .billing import (
@@ -86,6 +87,11 @@ from .models import (
     AppVersionCreateRequest,
     AppVersionListResponse,
     AppVersionResponse,
+    CapacityLaunchOrderClaimRequest,
+    CapacityLaunchOrderClaimResponse,
+    CapacityLaunchOrderListResponse,
+    CapacityLaunchOrderUpdateRequest,
+    CapacityLaunchOrderView,
     CapacityPoolTargetListResponse,
     CapacityPoolTargetUpsertRequest,
     CapacityPoolTargetView,
@@ -127,7 +133,6 @@ from .models import (
 from .pricing import calculate_deployment_cost_per_hour
 from .provisioner import (
     dispatch_external_cleanup,
-    dispatch_provision_request,
     fetch_external_inventory,
 )
 from .settings import (
@@ -147,6 +152,7 @@ from .storage import (
     app_revenue_share_store,
     app_store,
     app_version_store,
+    capacity_launch_order_store,
     capacity_pool_target_store,
     capacity_reservation_store,
     deployment_store,
@@ -196,13 +202,53 @@ AGENT_HEALTH_CHECK_INTERVAL = 30  # Check agents every 30 seconds
 AGENT_UNHEALTHY_TIMEOUT = timedelta(minutes=5)  # Reassign after 5 minutes unhealthy
 AGENT_STALE_CLEANUP_INTERVAL = 3600  # Run cleanup every hour
 CAPACITY_RECONCILE_DEFAULT_INTERVAL = 30
-CAPACITY_DISPATCH_DEFAULT_COOLDOWN = 300
 
 # Track when agents were last attested (for periodic re-attestation)
 _agent_last_attestation: dict[str, datetime] = {}
-_capacity_last_dispatch: dict[tuple[str, str], datetime] = {}
 _NODE_SIZE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _DATACENTER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}:[a-z0-9][a-z0-9._-]{0,95}$")
+_PRODUCTION_ENV_NAMES = {"prod", "production"}
+
+
+def _parse_bool_setting(raw: str, *, fallback: bool) -> bool:
+    value = (raw or "").strip().lower()
+    if not value:
+        return fallback
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
+def _is_production_environment() -> bool:
+    env_name = (
+        (os.environ.get("EASYENCLAVE_ENV") or os.environ.get("ENVIRONMENT") or "").strip().lower()
+    )
+    return env_name in _PRODUCTION_ENV_NAMES
+
+
+def _password_login_allowed() -> bool:
+    enabled = _parse_bool_setting(get_setting("auth.password_login_enabled"), fallback=True)
+    if not enabled:
+        return False
+    if not _is_production_environment():
+        return True
+    allow_in_prod = _parse_bool_setting(
+        get_setting("auth.allow_password_login_in_production"),
+        fallback=False,
+    )
+    return allow_in_prod
+
+
+def _github_oauth_fully_configured() -> bool:
+    return all(
+        [
+            bool(get_setting("github_oauth.client_id").strip()),
+            bool(get_setting("github_oauth.client_secret").strip()),
+            bool(get_setting("github_oauth.redirect_uri").strip()),
+        ]
+    )
 
 
 def _normalize_registration_node_size(raw_value: str) -> str:
@@ -227,15 +273,6 @@ def _normalize_registration_datacenter(raw_value: str) -> str:
     if not location:
         location = "default"
     return f"{cloud}:{location}"
-
-
-def _parse_bool_setting(value: str, *, fallback: bool = False) -> bool:
-    lowered = (value or "").strip().lower()
-    if lowered in {"1", "true", "yes", "on"}:
-        return True
-    if lowered in {"0", "false", "no", "off"}:
-        return False
-    return fallback
 
 
 def _capacity_unit_price_monthly_usd(node_size: str) -> float:
@@ -646,24 +683,41 @@ def _get_proxy_url() -> str:
 def validate_environment():
     """Validate environment configuration on startup."""
     warnings = []
+    in_production = _is_production_environment()
+    require_github_in_prod = _parse_bool_setting(
+        get_setting("auth.require_github_oauth_in_production"),
+        fallback=True,
+    )
 
-    # Admin authentication — auto-generate password if not configured
+    # Admin authentication - enforce GitHub OAuth policy in production.
+    github_oauth_ready = _github_oauth_fully_configured()
+    if in_production and require_github_in_prod and not github_oauth_ready:
+        raise RuntimeError(
+            "Production mode requires GitHub OAuth. Configure "
+            "GITHUB_OAUTH_CLIENT_ID, GITHUB_OAUTH_CLIENT_SECRET, and "
+            "GITHUB_OAUTH_REDIRECT_URI."
+        )
+
+    # Password admin login is optional and generally disabled in production.
     global _generated_admin_password
-    if not os.environ.get("ADMIN_PASSWORD_HASH"):
-        # Dev convenience: allow setting a plaintext password (hashed on startup).
-        # Avoid using this in production; prefer ADMIN_PASSWORD_HASH.
-        plaintext_pw = (os.environ.get("ADMIN_PASSWORD") or "").strip()
-        if plaintext_pw:
-            os.environ["ADMIN_PASSWORD_HASH"] = hash_password(plaintext_pw)
-            logger.warning("ADMIN_PASSWORD_HASH not set — using hashed ADMIN_PASSWORD from env")
-        else:
-            import secrets as _secrets
+    if _password_login_allowed():
+        if not os.environ.get("ADMIN_PASSWORD_HASH"):
+            # Dev convenience: allow setting a plaintext password (hashed on startup).
+            # Avoid using this in production; prefer ADMIN_PASSWORD_HASH.
+            plaintext_pw = (os.environ.get("ADMIN_PASSWORD") or "").strip()
+            if plaintext_pw:
+                os.environ["ADMIN_PASSWORD_HASH"] = hash_password(plaintext_pw)
+                logger.warning("ADMIN_PASSWORD_HASH not set — using hashed ADMIN_PASSWORD from env")
+            else:
+                import secrets as _secrets
 
-            generated_pw = _secrets.token_urlsafe(16)
-            pw_hash = hash_password(generated_pw)
-            os.environ["ADMIN_PASSWORD_HASH"] = pw_hash
-            _generated_admin_password = generated_pw
-            logger.warning("ADMIN_PASSWORD_HASH not set — auto-generated password")
+                generated_pw = _secrets.token_urlsafe(16)
+                pw_hash = hash_password(generated_pw)
+                os.environ["ADMIN_PASSWORD_HASH"] = pw_hash
+                _generated_admin_password = generated_pw
+                logger.warning("ADMIN_PASSWORD_HASH not set — auto-generated password")
+    else:
+        _generated_admin_password = None
 
     # GitHub OAuth (optional but if one is set, all should be set)
     gh_id = get_setting("github_oauth.client_id")
@@ -1417,21 +1471,13 @@ def _agent_matches_capacity_target(
 
 async def reconcile_capacity_targets_once() -> dict[str, int]:
     """Reconcile open warm-capacity reservations to configured pool targets."""
+    capacity_launch_order_store.release_expired_claims()
     targets = capacity_pool_target_store.list(enabled_only=True)
     if not targets:
         return {"targets": 0, "created": 0, "expired": 0, "shortfall": 0, "dispatched": 0}
 
     agents = agent_store.list()
     totals = {"targets": len(targets), "created": 0, "expired": 0, "shortfall": 0, "dispatched": 0}
-    cooldown_seconds = max(
-        5,
-        get_setting_int(
-            "operational.capacity_dispatch_cooldown_seconds",
-            fallback=CAPACITY_DISPATCH_DEFAULT_COOLDOWN,
-        ),
-    )
-    now = datetime.now(timezone.utc)
-
     for target in targets:
         target_datacenter, target_node_size = _normalize_pool_key(
             target.datacenter, target.node_size
@@ -1497,29 +1543,14 @@ async def reconcile_capacity_targets_once() -> dict[str, int]:
         if shortfall <= 0 or not target.dispatch:
             continue
 
-        pool_key = (target_datacenter, target_node_size)
-        last_dispatch = _capacity_last_dispatch.get(pool_key)
-        if last_dispatch and (now - last_dispatch) < timedelta(seconds=cooldown_seconds):
-            continue
-
         reason = (target.reason or "").strip() or "capacity-pool-controller"
-        dispatched, status_code, detail = await dispatch_provision_request(
+        created_orders = capacity_launch_order_store.create_missing_for_shortfall(
             datacenter=target_datacenter,
             node_size=target_node_size,
-            count=shortfall,
+            shortfall=shortfall,
             reason=reason,
         )
-        if dispatched:
-            _capacity_last_dispatch[pool_key] = now
-            totals["dispatched"] += 1
-        else:
-            logger.warning(
-                "Capacity dispatch failed for %s/%s: status=%s detail=%s",
-                target_datacenter,
-                target_node_size or "default",
-                status_code,
-                detail,
-            )
+        totals["dispatched"] += len(created_orders)
 
     return totals
 
@@ -1590,6 +1621,26 @@ def _capacity_pool_target_view(
         eligible_agents=len(eligible),
         open_reservations=open_count,
         shortfall=max(0, min_warm_count - open_count),
+    )
+
+
+def _capacity_launch_order_view(order) -> CapacityLaunchOrderView:
+    return CapacityLaunchOrderView(
+        order_id=order.order_id,
+        datacenter=order.datacenter,
+        node_size=order.node_size,
+        status=order.status,
+        reason=order.reason,
+        requested_count=order.requested_count,
+        account_id=order.account_id,
+        claimed_by_account_id=order.claimed_by_account_id,
+        claim_expires_at=order.claim_expires_at,
+        claimed_at=order.claimed_at,
+        fulfilled_at=order.fulfilled_at,
+        vm_name=order.vm_name,
+        error=order.error,
+        created_at=order.created_at,
+        updated_at=order.updated_at,
     )
 
 
@@ -1702,6 +1753,102 @@ async def list_capacity_reservations(
     return CapacityReservationListResponse(reservations=reservations, total=len(reservations))
 
 
+@app.get(
+    "/api/v1/admin/agents/capacity/orders",
+    response_model=CapacityLaunchOrderListResponse,
+)
+async def list_capacity_launch_orders(
+    status: str = Query("", description="Filter by order status"),
+    datacenter: str = Query("", description="Optional datacenter filter"),
+    node_size: str = Query("", description="Optional node_size filter"),
+    _admin: bool = Depends(verify_admin_token),
+):
+    """List capacity launch orders queued by the control plane."""
+    normalized_status = (status or "").strip().lower()
+    if normalized_status and normalized_status not in {
+        "open",
+        "claimed",
+        "provisioning",
+        "fulfilled",
+        "failed",
+    }:
+        raise HTTPException(status_code=422, detail="Invalid launch order status filter")
+
+    rows = capacity_launch_order_store.list(
+        normalized_status or None,
+        datacenter=datacenter,
+        node_size=node_size,
+    )
+    views = [_capacity_launch_order_view(row) for row in rows]
+    return CapacityLaunchOrderListResponse(orders=views, total=len(views))
+
+
+@app.post(
+    "/api/v1/launchers/capacity/orders/claim",
+    response_model=CapacityLaunchOrderClaimResponse,
+)
+async def claim_capacity_launch_order(
+    request: CapacityLaunchOrderClaimRequest,
+    launcher_account_id: str = Depends(verify_launcher_api_key),
+):
+    """Claim the next open capacity launch order for a launcher account."""
+    datacenter = _normalize_registration_datacenter(request.datacenter)
+    if datacenter and not _DATACENTER_RE.fullmatch(datacenter):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Invalid datacenter. Expected '<cloud>:<zone>' (for example gcp:us-central1-a)"
+            ),
+        )
+    node_size = _normalize_registration_node_size(request.node_size)
+    if node_size and node_size not in {"tiny", "standard", "llm"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid node_size. Expected one of: tiny, standard, llm",
+        )
+
+    claim_ttl = max(
+        30,
+        get_setting_int("operational.capacity_order_claim_ttl_seconds", fallback=600),
+    )
+    order = capacity_launch_order_store.claim_next(
+        launcher_account_id=launcher_account_id,
+        datacenter=datacenter,
+        node_size=node_size,
+        claim_ttl_seconds=claim_ttl,
+    )
+    if not order:
+        return CapacityLaunchOrderClaimResponse(claimed=False, order=None)
+
+    return CapacityLaunchOrderClaimResponse(claimed=True, order=_capacity_launch_order_view(order))
+
+
+@app.post(
+    "/api/v1/launchers/capacity/orders/{order_id}",
+    response_model=CapacityLaunchOrderView,
+)
+async def update_capacity_launch_order(
+    order_id: str,
+    request: CapacityLaunchOrderUpdateRequest,
+    launcher_account_id: str = Depends(verify_launcher_api_key),
+):
+    """Update a claimed launch order status from launcher workers."""
+    try:
+        updated = capacity_launch_order_store.update_status(
+            order_id=order_id,
+            launcher_account_id=launcher_account_id,
+            status=request.status,
+            vm_name=request.vm_name,
+            error=request.error,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Capacity launch order not found")
+    return _capacity_launch_order_view(updated)
+
+
 @app.post(
     "/api/v1/admin/agents/capacity/reconcile",
     response_model=AgentCapacityReconcileResponse,
@@ -1763,12 +1910,32 @@ async def reconcile_agent_capacity(
         )
 
         if request.dispatch and shortfall > 0:
-            dispatched, status_code, detail = await dispatch_provision_request(
+            in_flight_before = capacity_launch_order_store.count_in_flight(
                 datacenter=target_datacenter,
                 node_size=target_node_size,
-                count=shortfall,
-                reason=reason,
             )
+            created_orders = capacity_launch_order_store.create_missing_for_shortfall(
+                datacenter=target_datacenter,
+                node_size=target_node_size,
+                shortfall=shortfall,
+                reason=reason,
+                account_id=request.account_id,
+            )
+            in_flight_after = capacity_launch_order_store.count_in_flight(
+                datacenter=target_datacenter,
+                node_size=target_node_size,
+            )
+            dispatched = in_flight_after > 0
+            status_code = 202 if dispatched else 200
+            if created_orders:
+                detail = (
+                    f"queued {len(created_orders)} launch order(s); "
+                    f"in_flight_before={in_flight_before}, in_flight_after={in_flight_after}"
+                )
+            elif in_flight_after > 0:
+                detail = f"no new launch orders queued; existing in-flight orders={in_flight_after}"
+            else:
+                detail = "no launch orders available or queued"
             dispatch_results.append(
                 AgentCapacityDispatchResult(
                     datacenter=target_datacenter,
@@ -2875,7 +3042,7 @@ async def admin_agent_cleanup(
 @app.post("/admin/login", response_model=AdminLoginResponse)
 async def admin_login(request: AdminLoginRequest, req: Request):
     """Admin login endpoint - creates a session token."""
-    if get_setting("auth.password_login_enabled").lower() != "true":
+    if not _password_login_allowed():
         raise HTTPException(status_code=403, detail="Password login is disabled. Use GitHub OAuth.")
 
     password_hash = get_admin_password_hash()
@@ -2933,10 +3100,8 @@ async def admin_login(request: AdminLoginRequest, req: Request):
 @app.get("/auth/methods")
 async def auth_methods():
     """Return which login methods are available (public, no auth required)."""
-    from .oauth import _client_id
-
-    password_enabled = get_setting("auth.password_login_enabled").lower() == "true"
-    github_enabled = bool(_client_id())
+    password_enabled = _password_login_allowed()
+    github_enabled = _github_oauth_fully_configured()
     result = {"password": password_enabled, "github": github_enabled}
     if _generated_admin_password:
         result["generated_password"] = _generated_admin_password
@@ -3054,10 +3219,10 @@ RATE_CARD: dict[str, float] = {
 @app.post("/api/v1/accounts")
 async def create_account(request: AccountCreateRequest):
     """Create a new billing account and return API key (only shown once)."""
-    if request.account_type not in ("deployer", "agent", "contributor"):
+    if request.account_type not in ("deployer", "agent", "contributor", "launcher"):
         raise HTTPException(
             status_code=400,
-            detail="account_type must be 'deployer', 'agent', or 'contributor'",
+            detail="account_type must be 'deployer', 'agent', 'contributor', or 'launcher'",
         )
 
     if not request.name:
@@ -3389,6 +3554,7 @@ async def request_paid_capacity(
             allowed_statuses=["undeployed", "deployed", "deploying"],
             dispatch=True,
             reason=reconcile_reason,
+            account_id=account_id,
         ),
         _admin=True,
     )

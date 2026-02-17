@@ -29,16 +29,6 @@ inputs:
     required: false
     default: "1"
 
-  # Deprecated admin inputs retained for compatibility (ignored).
-  cp_admin_token:
-    description: Deprecated (ignored)
-    required: false
-    default: ""
-  cp_admin_password:
-    description: Deprecated (ignored)
-    required: false
-    default: ""
-
   # Preferred CP dispatch target. If empty, first entry from gcp_zone is used.
   gcp_datacenter:
     description: Datacenter label to request from control plane (e.g. gcp:us-central1-a)
@@ -95,13 +85,8 @@ runs:
       env:
         BILLING_ACCOUNT_ID: ${{ inputs.billing_account_id }}
         BILLING_API_KEY: ${{ inputs.billing_api_key }}
-        CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token }}
-        CP_ADMIN_PASSWORD: ${{ inputs.cp_admin_password }}
       run: |
         set -euo pipefail
-        if [ -n "${CP_ADMIN_TOKEN:-}" ] || [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
-          echo "::warning::cp_admin_token/cp_admin_password are deprecated and ignored by preflight-gcp."
-        fi
         if [ -z "${BILLING_ACCOUNT_ID:-}" ]; then
           echo "::error::Missing billing_account_id. Configure a deployer billing account for capacity requests."
           exit 1
@@ -212,6 +197,11 @@ runs:
         rm -f "$body"
 
         if [ "$http_code" -ge 400 ]; then
+          if [ "$http_code" = "404" ]; then
+            echo "::error::Control plane is missing billing capacity endpoint /api/v1/accounts/{account_id}/capacity/request. Deploy a newer control plane first."
+            echo "::error::Response: ${resp:-empty}"
+            exit 1
+          fi
           detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
           echo "::error::Control-plane dispatch request failed (HTTP $http_code): ${detail:-$resp}"
           exit 1

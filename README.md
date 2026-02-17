@@ -32,7 +32,7 @@ A confidential discovery service for TDX-attested applications. EasyEnclave enab
 - AMD SEV-SNP - 🔜 Coming soon
 - ARM CCA - 🔜 Planned
 
-**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for security and deployment Q&A, and [docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md) for reproducibility verification (two clean builds per check; any artifact or measurement drift fails).
+**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for security and deployment Q&A, [docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md) for reproducibility verification (two clean builds per check; any artifact or measurement drift fails), and [docs/CAPACITY_LAUNCHER.md](docs/CAPACITY_LAUNCHER.md) for CP launch-order workers.
 
 ### What is Intel TDX?
 
@@ -160,6 +160,7 @@ See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LL
 - App versions are attested per `node_size` before deployment is allowed.
 - Measurement jobs are routed to `measuring-enclave` (default) or `measuring-enclave-<node_size>` variants.
 - Measurer capacity can run on verified tiny agents in either bare metal or GCP datacenters.
+- Capacity shortfall creates CP launch orders; launcher workers fulfill orders with launcher-scoped API keys.
 
 #### Bootstrap Actions
 
@@ -199,10 +200,18 @@ gh workflow run bootstrap.yml -f action=cleanup-vms
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/admin/login` | Login with password |
+| `POST` | `/admin/login` | Login with password (legacy/non-prod fallback) |
 | `GET` | `/auth/github` | Start GitHub OAuth flow |
 | `GET` | `/auth/github/callback` | GitHub OAuth callback |
 | `GET` | `/auth/me` | Get current user info |
+
+### Capacity Launcher API
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/v1/admin/agents/capacity/orders` | List queued launch orders (admin) |
+| `POST` | `/api/v1/launchers/capacity/orders/claim` | Claim next order (launcher API key) |
+| `POST` | `/api/v1/launchers/capacity/orders/{order_id}` | Update order status (launcher API key) |
 
 ### Register a Service
 

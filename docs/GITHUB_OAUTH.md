@@ -54,7 +54,8 @@ This adds GitHub OAuth fields to the `admin_sessions` and `accounts` tables.
 
 Visit `/admin` and click **"Sign in with GitHub"**. You'll be redirected to GitHub to authorize the application, then redirected back to the admin panel with an active session.
 
-The password-based login is still available as a fallback (useful for self-hosted deployments without GitHub access).
+Password login can be used as a legacy fallback in non-production environments.
+In production, password login is disabled by default and GitHub OAuth is expected.
 
 ### Session Management
 
@@ -109,7 +110,7 @@ OAuth state tokens are generated and verified to prevent CSRF attacks:
 
 - Admin login page (`/admin`) now shows GitHub OAuth button
 - OAuth callback extracts token from URL query param and stores in sessionStorage
-- Existing password-based login remains unchanged
+- Password login remains available as a legacy fallback for non-production/self-hosted use
 
 ## Security Considerations
 
@@ -190,5 +191,5 @@ For integration testing, set up a test GitHub OAuth App with a localhost callbac
 
 1. **Set up GitHub OAuth** (this phase)
 2. **Encourage admins to switch** to GitHub OAuth
-3. **Keep password auth** as fallback for self-hosted/air-gapped deployments
+3. **Use password auth only as legacy fallback** for self-hosted/air-gapped non-production deployments
 4. **Optional**: Deprecate password auth in favor of OAuth-only in the future

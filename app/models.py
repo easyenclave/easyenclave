@@ -156,6 +156,7 @@ class AgentCapacityReconcileRequest(BaseModel):
     )
     dispatch: bool = False
     reason: str = ""
+    account_id: str | None = None
 
 
 class AgentCapacityTargetResult(BaseModel):
@@ -273,6 +274,55 @@ class CapacityPurchaseResponse(BaseModel):
     balance_after: float
     target: CapacityPoolTargetView
     capacity: AgentCapacityReconcileResponse
+
+
+class CapacityLaunchOrderView(BaseModel):
+    """View model for one capacity launch order."""
+
+    order_id: str
+    datacenter: str
+    node_size: str = ""
+    status: str
+    reason: str
+    requested_count: int = 1
+    account_id: str | None = None
+    claimed_by_account_id: str | None = None
+    claim_expires_at: datetime | None = None
+    claimed_at: datetime | None = None
+    fulfilled_at: datetime | None = None
+    vm_name: str | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CapacityLaunchOrderListResponse(BaseModel):
+    """Response for listing capacity launch orders."""
+
+    orders: list[CapacityLaunchOrderView] = Field(default_factory=list)
+    total: int = 0
+
+
+class CapacityLaunchOrderClaimRequest(BaseModel):
+    """Launcher request for claiming next order."""
+
+    datacenter: str = ""
+    node_size: str = ""
+
+
+class CapacityLaunchOrderClaimResponse(BaseModel):
+    """Launcher response after attempting to claim next order."""
+
+    claimed: bool
+    order: CapacityLaunchOrderView | None = None
+
+
+class CapacityLaunchOrderUpdateRequest(BaseModel):
+    """Launcher update for an already-claimed order."""
+
+    status: str  # claimed|provisioning|fulfilled|failed
+    vm_name: str | None = None
+    error: str | None = None
 
 
 class CloudResourceAgent(BaseModel):
@@ -586,7 +636,7 @@ class AccountCreateRequest(BaseModel):
 
     name: str
     description: str = ""
-    account_type: str  # "deployer" | "agent" | "contributor"
+    account_type: str  # "deployer" | "agent" | "contributor" | "launcher"
 
 
 class AccountLinkIdentityRequest(BaseModel):

@@ -69,6 +69,15 @@ def test_create_account_contributor_type():
     assert resp.json()["account_type"] == "contributor"
 
 
+def test_create_account_launcher_type():
+    resp = client.post(
+        "/api/v1/accounts",
+        json={"name": "launcher-1", "account_type": "launcher"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["account_type"] == "launcher"
+
+
 def test_create_account_invalid_type():
     resp = client.post(
         "/api/v1/accounts",

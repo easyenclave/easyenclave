@@ -213,6 +213,14 @@ _reg(
     "operational",
 )
 _reg(
+    "operational.capacity_order_claim_ttl_seconds",
+    "CAPACITY_ORDER_CLAIM_TTL_SECONDS",
+    "600",
+    False,
+    "Seconds before a claimed/provisioning launch order is re-queued",
+    "operational",
+)
+_reg(
     "operational.default_gcp_tiny_capacity_enabled",
     "DEFAULT_GCP_TINY_CAPACITY_ENABLED",
     "true",
@@ -310,6 +318,22 @@ _reg(
     "true",
     False,
     "Enable password-based admin login (set to 'false' to require GitHub OAuth)",
+    "auth",
+)
+_reg(
+    "auth.require_github_oauth_in_production",
+    "AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION",
+    "true",
+    False,
+    "If true, production startup fails when GitHub OAuth is not fully configured",
+    "auth",
+)
+_reg(
+    "auth.allow_password_login_in_production",
+    "AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION",
+    "false",
+    False,
+    "If true, allows password admin login in production (legacy fallback)",
     "auth",
 )
 

@@ -46,16 +46,6 @@ inputs:
     required: false
     default: "1"
 
-  # Deprecated preflight inputs (ignored).
-  cp_admin_token:
-    description: Deprecated (ignored)
-    required: false
-    default: ""
-  cp_admin_password:
-    description: Deprecated (ignored)
-    required: false
-    default: ""
-
   gcp_datacenter:
     description: Preferred CP dispatch target (e.g. gcp:us-central1-a). Empty = derived from gcp_zone.
     required: false
@@ -131,8 +121,6 @@ runs:
         billing_account_id: ${{ inputs.billing_account_id }}
         billing_api_key: ${{ inputs.billing_api_key }}
         billing_months: ${{ inputs.billing_months }}
-        cp_admin_token: ${{ inputs.cp_admin_token }}
-        cp_admin_password: ${{ inputs.cp_admin_password }}
         gcp_datacenter: ${{ inputs.gcp_datacenter }}
         gcp_zone: ${{ inputs.gcp_zone }}
 

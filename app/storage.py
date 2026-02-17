@@ -17,6 +17,7 @@ from .db_models import (
     App,
     AppRevenueShare,
     AppVersion,
+    CapacityLaunchOrder,
     CapacityPoolTarget,
     CapacityReservation,
     Deployment,
@@ -663,6 +664,209 @@ class CapacityReservationStore:
     def clear(self) -> None:
         with get_db() as session:
             for row in session.exec(select(CapacityReservation)).all():
+                session.delete(row)
+
+
+class CapacityLaunchOrderStore:
+    """Storage for capacity launch orders consumed by launcher workers."""
+
+    _IN_FLIGHT_STATUSES = {"open", "claimed", "provisioning"}
+
+    def list(
+        self,
+        status: str | None = None,
+        *,
+        datacenter: str | None = None,
+        node_size: str | None = None,
+    ) -> list[CapacityLaunchOrder]:
+        normalized_status = _normalize_pool_value(status)
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        with get_db() as session:
+            stmt = select(CapacityLaunchOrder)
+            if normalized_status:
+                stmt = stmt.where(CapacityLaunchOrder.status == normalized_status)
+            if normalized_datacenter:
+                stmt = stmt.where(CapacityLaunchOrder.datacenter == normalized_datacenter)
+            if normalized_node_size:
+                stmt = stmt.where(CapacityLaunchOrder.node_size == normalized_node_size)
+            stmt = stmt.order_by(CapacityLaunchOrder.created_at, CapacityLaunchOrder.order_id)
+            return list(session.exec(stmt).all())
+
+    def count_in_flight(self, *, datacenter: str, node_size: str = "") -> int:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        with get_db() as session:
+            rows = session.exec(
+                select(CapacityLaunchOrder).where(
+                    CapacityLaunchOrder.datacenter == normalized_datacenter,
+                    CapacityLaunchOrder.node_size == normalized_node_size,
+                    CapacityLaunchOrder.status.in_(self._IN_FLIGHT_STATUSES),
+                )
+            ).all()
+            return len(list(rows))
+
+    def create_open(
+        self,
+        *,
+        datacenter: str,
+        node_size: str = "",
+        reason: str = "capacity-pool-controller",
+        account_id: str | None = None,
+        requested_count: int = 1,
+    ) -> CapacityLaunchOrder:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        now = datetime.now(timezone.utc)
+        obj = CapacityLaunchOrder(
+            datacenter=normalized_datacenter,
+            node_size=normalized_node_size,
+            status="open",
+            reason=(reason or "").strip() or "capacity-pool-controller",
+            requested_count=max(1, int(requested_count)),
+            account_id=(account_id or "").strip() or None,
+            created_at=now,
+            updated_at=now,
+        )
+        with get_db() as session:
+            session.add(obj)
+        return obj
+
+    def create_missing_for_shortfall(
+        self,
+        *,
+        datacenter: str,
+        node_size: str = "",
+        shortfall: int,
+        reason: str = "capacity-pool-controller",
+        account_id: str | None = None,
+    ) -> list[CapacityLaunchOrder]:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        needed = max(0, int(shortfall))
+        if needed <= 0:
+            return []
+
+        existing = self.count_in_flight(
+            datacenter=normalized_datacenter, node_size=normalized_node_size
+        )
+        to_create = max(0, needed - existing)
+        created: list[CapacityLaunchOrder] = []
+        for _ in range(to_create):
+            created.append(
+                self.create_open(
+                    datacenter=normalized_datacenter,
+                    node_size=normalized_node_size,
+                    reason=reason,
+                    account_id=account_id,
+                    requested_count=1,
+                )
+            )
+        return created
+
+    def release_expired_claims(self, *, now: datetime | None = None) -> int:
+        current = now or datetime.now(timezone.utc)
+        released = 0
+        with get_db() as session:
+            rows = list(
+                session.exec(
+                    select(CapacityLaunchOrder).where(
+                        CapacityLaunchOrder.status.in_(("claimed", "provisioning")),
+                        CapacityLaunchOrder.claim_expires_at.is_not(None),
+                        CapacityLaunchOrder.claim_expires_at < current,
+                    )
+                ).all()
+            )
+            for row in rows:
+                row.status = "open"
+                row.claimed_by_account_id = None
+                row.claimed_at = None
+                row.claim_expires_at = None
+                row.vm_name = None
+                row.error = "claim expired and was re-queued"
+                row.updated_at = current
+                session.add(row)
+                released += 1
+        return released
+
+    def claim_next(
+        self,
+        *,
+        launcher_account_id: str,
+        datacenter: str = "",
+        node_size: str = "",
+        claim_ttl_seconds: int = 600,
+    ) -> CapacityLaunchOrder | None:
+        self.release_expired_claims()
+
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=max(30, int(claim_ttl_seconds)))
+
+        with get_db() as session:
+            stmt = select(CapacityLaunchOrder).where(CapacityLaunchOrder.status == "open")
+            if normalized_datacenter:
+                stmt = stmt.where(CapacityLaunchOrder.datacenter == normalized_datacenter)
+            if normalized_node_size:
+                stmt = stmt.where(CapacityLaunchOrder.node_size == normalized_node_size)
+            stmt = stmt.order_by(
+                CapacityLaunchOrder.created_at, CapacityLaunchOrder.order_id
+            ).limit(1)
+            row = session.exec(stmt).first()
+            if not row:
+                return None
+
+            row.status = "claimed"
+            row.claimed_by_account_id = launcher_account_id
+            row.claimed_at = now
+            row.claim_expires_at = expires_at
+            row.updated_at = now
+            session.add(row)
+            return row
+
+    def update_status(
+        self,
+        *,
+        order_id: str,
+        launcher_account_id: str,
+        status: str,
+        vm_name: str | None = None,
+        error: str | None = None,
+    ) -> CapacityLaunchOrder | None:
+        normalized_status = _normalize_pool_value(status)
+        if normalized_status not in {"claimed", "provisioning", "fulfilled", "failed"}:
+            raise ValueError("invalid order status")
+
+        with get_db() as session:
+            row = session.get(CapacityLaunchOrder, order_id)
+            if not row:
+                return None
+            if row.claimed_by_account_id and row.claimed_by_account_id != launcher_account_id:
+                return None
+
+            now = datetime.now(timezone.utc)
+            row.status = normalized_status
+            row.updated_at = now
+            row.claimed_by_account_id = launcher_account_id
+            if vm_name is not None:
+                row.vm_name = (vm_name or "").strip() or None
+            if error is not None:
+                row.error = (error or "").strip() or None
+            if normalized_status == "fulfilled":
+                row.fulfilled_at = now
+                row.claim_expires_at = None
+            elif normalized_status == "failed":
+                row.claim_expires_at = None
+            elif normalized_status == "provisioning" and row.claim_expires_at is None:
+                row.claim_expires_at = now + timedelta(minutes=15)
+
+            session.add(row)
+            return row
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for row in session.exec(select(CapacityLaunchOrder)).all():
                 session.delete(row)
 
 
@@ -1323,6 +1527,7 @@ store = ServiceStore()
 agent_store = AgentStore()
 capacity_pool_target_store = CapacityPoolTargetStore()
 capacity_reservation_store = CapacityReservationStore()
+capacity_launch_order_store = CapacityLaunchOrderStore()
 deployment_store = DeploymentStore()
 app_store = AppStore()
 app_version_store = AppVersionStore()
