@@ -1,10 +1,6 @@
 name: Reproducibility
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch: {}
 
 concurrency:

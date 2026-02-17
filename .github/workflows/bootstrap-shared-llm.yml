@@ -7,10 +7,6 @@
 name: Deploy Example - Private LLM
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
       cp_url:
