@@ -525,6 +525,8 @@ def _gcp_cleanup(args: argparse.Namespace, run_tag: str = "") -> dict[str, Any]:
             args.gcp_project,
             "--zone",
             zone,
+            "--delete-disks",
+            "all",
             "--quiet",
         ]
         try:

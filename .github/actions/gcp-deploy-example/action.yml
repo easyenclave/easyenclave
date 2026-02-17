@@ -116,6 +116,13 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Setup GCP (inventory/cleanup)
+      if: inputs.gcp_project_id != '' && inputs.gcp_service_account_key != ''
+      uses: ./.github/actions/setup-gcp
+      with:
+        gcp_service_account_key: ${{ inputs.gcp_service_account_key }}
+        gcp_project_id: ${{ inputs.gcp_project_id }}
+
     - id: preflight
       uses: ./.github/actions/preflight-gcp
       with:
@@ -143,3 +150,44 @@ runs:
         github_owner: ${{ inputs.github_owner }}
         node_size: ${{ inputs.node_size }}
         allowed_clouds: gcp
+
+    - name: GCP inventory (managed) before cleanup
+      if: inputs.gcp_project_id != '' && inputs.gcp_service_account_key != ''
+      shell: bash
+      env:
+        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+        GCP_ZONE: ${{ inputs.gcp_zone }}
+      run: |
+        set -euo pipefail
+        echo "=== GCP managed inventory (before cleanup) ==="
+        python3 scripts/cloud_provisioner.py inventory \
+          --provider gcp \
+          --all-managed \
+          --gcp-project "$GCP_PROJECT_ID" \
+          --gcp-zone "$GCP_ZONE" \
+          | jq -r '.resources // [] | (["name","datacenter","status","zone","labels"] | @tsv), (.[] | [.name,.datacenter,.status,.availability_zone,(.labels|tostring)] | @tsv)' \
+          || true
+
+    - name: GCP cleanup (managed) and verify none remain
+      if: inputs.gcp_project_id != '' && inputs.gcp_service_account_key != ''
+      shell: bash
+      env:
+        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+        GCP_ZONE: ${{ inputs.gcp_zone }}
+      run: |
+        set -euo pipefail
+        echo "=== GCP managed cleanup ==="
+        python3 scripts/cloud_provisioner.py cleanup \
+          --provider gcp \
+          --all-managed \
+          --gcp-project "$GCP_PROJECT_ID" \
+          --gcp-zone "$GCP_ZONE"
+
+        echo "=== GCP managed inventory (after cleanup) ==="
+        inv="$(python3 scripts/cloud_provisioner.py inventory --provider gcp --all-managed --gcp-project "$GCP_PROJECT_ID" --gcp-zone "$GCP_ZONE" || true)"
+        remaining="$(echo "$inv" | jq -r '.resources | length' 2>/dev/null || echo 0)"
+        echo "$inv" | jq -r '.resources // [] | (["name","datacenter","status","zone"] | @tsv), (.[] | [.name,.datacenter,.status,.availability_zone] | @tsv)' || true
+        if [ "${remaining:-0}" -gt 0 ]; then
+          echo "::error::GCP cleanup left ${remaining} managed resource(s)."
+          exit 1
+        fi

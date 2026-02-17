@@ -314,15 +314,10 @@ runs:
 
     - name: Auth to Google Cloud (for launcher fulfillment)
       if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
-      uses: google-github-actions/auth@v2
+      uses: ./.github/actions/setup-gcp
       with:
-        credentials_json: ${{ inputs.gcp_service_account_key }}
-
-    - name: Set up gcloud (for launcher fulfillment)
-      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
-      uses: google-github-actions/setup-gcloud@v2
-      with:
-        project_id: ${{ inputs.gcp_project_id }}
+        gcp_service_account_key: ${{ inputs.gcp_service_account_key }}
+        gcp_project_id: ${{ inputs.gcp_project_id }}
 
     - name: Cleanup stale managed GCP VMs (quota guard)
       if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''

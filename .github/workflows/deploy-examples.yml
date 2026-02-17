@@ -12,8 +12,8 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  # Serialize workflows that mutate the shared control plane to avoid overlaps across reruns.
-  group: easyenclave-shared-control-plane
+  # Avoid overlapping runs of deploy-examples with itself. Keep bootstrap independent.
+  group: deploy-examples-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -108,3 +108,56 @@ jobs:
           gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
           gcp_service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
+
+  inventory-local-tdx:
+    name: Inventory/Cleanup - Local TDX measurement VMs
+    runs-on: [self-hosted, tdx]
+    needs: [deploy-hello-tdx-clouds, deploy-hello-tdx-gcp]
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Local VM inventory (before)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== virsh list --all ==="
+          virsh list --all || true
+          echo ""
+          echo "=== tdx_cli vm list ==="
+          python3 infra/tdx_cli.py vm list || true
+          echo ""
+          echo "=== /var/tmp/tdvirsh disk usage ==="
+          sudo du -sh /var/tmp/tdvirsh 2>/dev/null || du -sh /var/tmp/tdvirsh 2>/dev/null || true
+
+      - name: Destroy leaked measurement domains (trust_domain_verity)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v virsh >/dev/null 2>&1; then
+            echo "::warning::virsh not found; skipping measurement domain cleanup"
+            exit 0
+          fi
+          mapfile -t domains < <(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true)
+          if [ "${#domains[@]}" -eq 0 ]; then
+            echo "No leaked trust_domain_verity domains found."
+            exit 0
+          fi
+          echo "Cleaning leaked measurement domains:"
+          printf '  - %s\n' "${domains[@]}"
+          for d in "${domains[@]}"; do
+            virsh destroy "$d" >/dev/null 2>&1 || true
+            virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
+          done
+
+      - name: Local VM inventory (after)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "=== virsh list --all ==="
+          virsh list --all || true
+          echo ""
+          echo "=== tdx_cli vm list ==="
+          python3 infra/tdx_cli.py vm list || true
