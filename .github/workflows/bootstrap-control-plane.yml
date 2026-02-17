@@ -15,7 +15,7 @@ on:
       num_tiny_agents:
         description: "Additional tiny agents to launch (beyond bootstrap measurers)"
         required: false
-        default: "1"
+        default: "2"
       num_standard_agents:
         description: "Additional standard agents to launch"
         required: false
@@ -66,7 +66,7 @@ jobs:
 
       # Deployer settings.
       CP_BOOTSTRAP_SIZES: ${{ github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
-      NUM_TINY_AGENTS: ${{ github.event.inputs.num_tiny_agents || '1' }}
+      NUM_TINY_AGENTS: ${{ github.event.inputs.num_tiny_agents || '2' }}
       NUM_STANDARD_AGENTS: ${{ github.event.inputs.num_standard_agents || '0' }}
       NUM_LLM_AGENTS: ${{ github.event.inputs.num_llm_agents || '0' }}
 

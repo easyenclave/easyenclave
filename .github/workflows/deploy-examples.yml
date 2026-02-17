@@ -57,7 +57,8 @@ jobs:
 
       # Bootstrap sizes (keep minimal by default).
       CP_BOOTSTRAP_SIZES: tiny
-      NUM_TINY_AGENTS: "1"
+      # Total tiny capacity on bootstrap = 3 (1 bootstrap measurer + 2 additional).
+      NUM_TINY_AGENTS: "2"
       NUM_STANDARD_AGENTS: "0"
       NUM_LLM_AGENTS: "0"
 
