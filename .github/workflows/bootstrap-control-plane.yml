@@ -1,0 +1,94 @@
+# Bootstrap Control Plane (manual)
+#
+# This is intentionally separate from CI to keep CI fast and to avoid tying
+# control-plane uptime to every push.
+
+name: Bootstrap Control Plane
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_bootstrap_sizes:
+        description: "Comma-separated measurer bootstrap sizes for tdx_cli control-plane new"
+        required: false
+        default: "tiny"
+      num_tiny_agents:
+        description: "Additional tiny agents to launch (beyond bootstrap measurers)"
+        required: false
+        default: "1"
+      num_standard_agents:
+        description: "Additional standard agents to launch"
+        required: false
+        default: "0"
+      num_llm_agents:
+        description: "Additional llm agents to launch"
+        required: false
+        default: "0"
+
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, tdx]
+    permissions:
+      contents: read
+
+    env:
+      # Infra + trust.
+      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+
+      # Cloudflare (public endpoint for https://app.easyenclave.com).
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+
+      # Deployer settings.
+      CP_BOOTSTRAP_SIZES: ${{ github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
+      NUM_TINY_AGENTS: ${{ github.event.inputs.num_tiny_agents || '1' }}
+      NUM_STANDARD_AGENTS: ${{ github.event.inputs.num_standard_agents || '0' }}
+      NUM_LLM_AGENTS: ${{ github.event.inputs.num_llm_agents || '0' }}
+
+      # Use :latest so we can bootstrap without needing the exact SHA image.
+      CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:latest
+      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required secret/env: $v"
+              exit 1
+            fi
+          done
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Cleanup leaked measurement VMs (best effort)
+        run: |
+          set -euo pipefail
+          if command -v virsh >/dev/null 2>&1; then
+            for d in $(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
+              [ -n "$d" ] || continue
+              virsh destroy "$d" >/dev/null 2>&1 || true
+              virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
+            done
+          fi
+
+      - name: Build and measure trusted values (bootstrap sizes)
+        id: measure
+        env:
+          MEASURE_SIZES: ${{ github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
+        run: ./scripts/ci-build-measure.sh
+
+      - name: Deploy control plane + bootstrap agents/apps
+        env:
+          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+        run: ./scripts/ci-deploy.sh
