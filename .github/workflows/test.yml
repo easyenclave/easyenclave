@@ -194,8 +194,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d infra/image/output ]; then
-            echo "infra/image/output missing; building verity artifacts..."
+          need_build=0
+          for f in easyenclave.vmlinuz easyenclave.initrd easyenclave.root.raw easyenclave.cmdline; do
+            if [ ! -f "infra/image/output/$f" ]; then
+              need_build=1
+            fi
+          done
+
+          if [ "$need_build" -eq 1 ]; then
+            echo "Verity artifacts missing; building infra/image/output..."
+            # mkosi needs unprivileged user namespaces
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
             (cd infra/image && nix develop --command bash -lc 'make build')
           fi
 
