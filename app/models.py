@@ -68,6 +68,8 @@ class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
     version: str = "0.1.0"
+    boot_id: str | None = None
+    git_sha: str | None = None
     attestation: dict | None = None
     proxy_url: str | None = None
 

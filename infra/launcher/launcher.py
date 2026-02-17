@@ -172,6 +172,8 @@ services:
       - CLOUDFLARE_ACCOUNT_ID=${{CLOUDFLARE_ACCOUNT_ID:-}}
       - CLOUDFLARE_ZONE_ID=${{CLOUDFLARE_ZONE_ID:-}}
       - EASYENCLAVE_DOMAIN=${{EASYENCLAVE_DOMAIN:-easyenclave.com}}
+      - EASYENCLAVE_BOOT_ID=${{EASYENCLAVE_BOOT_ID:-}}
+      - EASYENCLAVE_GIT_SHA=${{EASYENCLAVE_GIT_SHA:-}}
       - TRUSTED_AGENT_MRTDS=${{TRUSTED_AGENT_MRTDS:-}}
       - TRUSTED_PROXY_MRTDS=${{TRUSTED_PROXY_MRTDS:-}}
       - TRUSTED_AGENT_RTMRS=${{TRUSTED_AGENT_RTMRS:-}}
@@ -1967,6 +1969,10 @@ def run_control_plane_mode(config: dict):
         env["CLOUDFLARE_ZONE_ID"] = config["cloudflare_zone_id"]
     if config.get("easyenclave_domain"):
         env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
+    if config.get("easyenclave_boot_id"):
+        env["EASYENCLAVE_BOOT_ID"] = config["easyenclave_boot_id"]
+    if config.get("easyenclave_git_sha"):
+        env["EASYENCLAVE_GIT_SHA"] = config["easyenclave_git_sha"]
     if config.get("intel_api_key"):
         env["ITA_API_KEY"] = config["intel_api_key"]
     if config.get("stripe_secret_key"):

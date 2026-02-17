@@ -934,9 +934,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint with attestation and proxy info."""
+    boot_id = (os.environ.get("EASYENCLAVE_BOOT_ID") or "").strip() or None
+    git_sha = (os.environ.get("EASYENCLAVE_GIT_SHA") or "").strip() or None
     return HealthResponse(
         status="healthy",
         timestamp=datetime.now(timezone.utc),
+        boot_id=boot_id,
+        git_sha=git_sha,
         attestation=_cached_attestation,
         proxy_url=_get_proxy_url(),
     )
