@@ -6,6 +6,17 @@ if [ -z "${CP_URL:-}" ]; then
   exit 1
 fi
 
+# Measurement VMs (trust_domain_verity) are always safe to delete and often
+# leak when a CI job is cancelled mid-measure.
+if command -v virsh >/dev/null 2>&1; then
+  mapfile -t verity_domains < <(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true)
+  for domain in "${verity_domains[@]}"; do
+    [ -n "$domain" ] || continue
+    virsh destroy "$domain" >/dev/null 2>&1 || true
+    virsh undefine "$domain" --nvram >/dev/null 2>&1 || virsh undefine "$domain" >/dev/null 2>&1 || true
+  done
+fi
+
 TARGET_DATACENTER="${TARGET_DATACENTER:-baremetal:github-runner}"
 KEEP_SPARE_COUNT="${KEEP_SPARE_COUNT:-1}"
 DRY_RUN="${DRY_RUN:-false}"

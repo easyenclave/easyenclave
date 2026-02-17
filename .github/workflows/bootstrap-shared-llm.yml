@@ -73,12 +73,27 @@ jobs:
           MEASURE_SIZES: llm
         run: ./scripts/ci-build-measure.sh
 
+      - name: Bootstrap trusted agent baseline (llm)
+        env:
+          CP_URL: ${{ env.CP_URL }}
+          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
+          NODE_SIZE: llm
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          NOTE: ci:bootstrap:llm
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/bootstrap_trusted_agent_mrtd.sh
+          ./scripts/bootstrap_trusted_agent_mrtd.sh
+
       - name: Ensure baremetal LLM capacity for measurer + private-llm
         id: ensure_agents
         shell: bash
         run: |
           set -euo pipefail
           created=()
+          max_boots=3
+          boots=0
 
           count_non_measurer() {
             curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
@@ -114,6 +129,14 @@ jobs:
           echo "Baremetal llm measurer agents: $measurer"
 
           while [ "${non_measurer:-0}" -lt "${required_non_measurer}" ]; do
+            boots=$((boots + 1))
+            if [ "$boots" -gt "$max_boots" ]; then
+              echo "::error::Exceeded max LLM boot attempts ($max_boots) while waiting for verified capacity."
+              curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+                [.agents[] | select((.node_size // "" | ascii_downcase) == "llm")
+                  | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
+              exit 1
+            fi
             echo "Booting a new baremetal llm agent VM..."
             vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --intel-api-key "${INTEL_API_KEY}" --wait)"
             name="$(echo "$vm_json" | jq -r '.name // empty')"
