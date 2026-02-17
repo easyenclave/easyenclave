@@ -1624,9 +1624,14 @@ def register_service(config: dict, attestation: dict, tunnel_hostname: str | Non
         "endpoints": {"prod": service_url},
         "source_repo": config.get("source_repo"),
         "source_commit": config.get("source_commit"),
+        "compose_hash": compute_compose_hash(),
         "tags": config.get("tags") or [],
         "mrtd": attestation["tdx"]["measurements"].get("mrtd", ""),
         "intel_ta_token": attestation["tdx"].get("intel_ta_token"),
+        # Include quote + measurements so the control plane can mint an ITA token
+        # (keeping ITA API keys out of agent VMs) and for debugging/verification.
+        "quote_b64": attestation["tdx"].get("quote_b64"),
+        "attestation_json": attestation,
     }
 
     logger.info(f"Registering service: {service_name} at {service_url}")

@@ -967,10 +967,44 @@ async def register_service(request: ServiceRegistrationRequest):
     # Require attestation
     if not request.mrtd:
         raise HTTPException(status_code=400, detail="Registration requires MRTD (TDX measurement)")
+
+    # If the service didn't provide an Intel TA token, optionally mint one on the CP.
+    # This keeps ITA API keys out of agent VMs (quote-only flow).
     if not request.intel_ta_token:
-        raise HTTPException(
-            status_code=400, detail="Registration requires Intel Trust Authority token"
-        )
+        quote_b64 = (request.quote_b64 or "").strip()
+        if not quote_b64 and isinstance(request.attestation_json, dict):
+            tdx = request.attestation_json.get("tdx") or {}
+            if isinstance(tdx, dict):
+                quote_b64 = (tdx.get("quote_b64") or "").strip()
+
+        if quote_b64:
+            if not os.environ.get("ITA_API_KEY") and not os.environ.get("INTEL_API_KEY"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Registration requires Intel Trust Authority token "
+                        "(ITA_API_KEY not set on control plane for CP-mint flow)"
+                    ),
+                )
+            from app.ita_mint import ITAMintError, mint_intel_ta_token
+
+            try:
+                request.intel_ta_token = await mint_intel_ta_token(quote_b64=quote_b64)
+            except ITAMintError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+            # If the client sent attestation_json, keep it consistent for debugging.
+            if isinstance(request.attestation_json, dict):
+                tdx = request.attestation_json.get("tdx") or {}
+                if not isinstance(tdx, dict):
+                    tdx = {}
+                tdx["intel_ta_token"] = request.intel_ta_token
+                request.attestation_json["tdx"] = tdx
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Registration requires Intel Trust Authority token",
+            )
 
     # Verify at least one endpoint
     if not request.endpoints:

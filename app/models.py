@@ -42,6 +42,9 @@ class ServiceRegistrationRequest(BaseModel):
     mrtd: str | None = None
     attestation_json: dict | None = None
     intel_ta_token: str | None = None
+    # Optional quote-only registration: if intel_ta_token is omitted and the CP
+    # has ITA_API_KEY configured, the CP can mint the token from this quote.
+    quote_b64: str | None = None
     tags: list[str] = Field(default_factory=list)
 
 
