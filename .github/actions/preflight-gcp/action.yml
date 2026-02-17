@@ -80,21 +80,74 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Validate billing capacity credentials
+    - name: Resolve billing capacity credentials
+      id: billing
       shell: bash
       env:
+        CP_URL: ${{ inputs.control_plane_url }}
         BILLING_ACCOUNT_ID: ${{ inputs.billing_account_id }}
         BILLING_API_KEY: ${{ inputs.billing_api_key }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
       run: |
         set -euo pipefail
-        if [ -z "${BILLING_ACCOUNT_ID:-}" ]; then
-          echo "::error::Missing billing_account_id. Configure a deployer billing account for capacity requests."
-          exit 1
+        account_id="$(echo "${BILLING_ACCOUNT_ID:-}" | xargs)"
+        api_key="$(echo "${BILLING_API_KEY:-}" | xargs)"
+
+        create_account() {
+          local account_name body http_code resp
+          account_name="ci-gcp-preflight-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
+          body="$(mktemp)"
+          http_code="$(
+            curl -sS -o "$body" -w "%{http_code}" \
+              -X POST "$CP_URL/api/v1/accounts" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "deployer"}')" \
+              || echo 000
+          )"
+          resp="$(cat "$body")"
+          rm -f "$body"
+          if [ "$http_code" -ge 400 ]; then
+            detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
+            echo "::error::Failed to create deployer billing account (HTTP $http_code): ${detail:-$resp}"
+            exit 1
+          fi
+          account_id="$(echo "$resp" | jq -r '.account_id // empty')"
+          api_key="$(echo "$resp" | jq -r '.api_key // empty')"
+          if [ -z "$account_id" ] || [ -z "$api_key" ]; then
+            echo "::error::Control plane did not return billing account credentials"
+            exit 1
+          fi
+          echo "Created transient deployer billing account: $account_id"
+        }
+
+        if [ -n "$account_id" ] && [ -n "$api_key" ]; then
+          probe_body="$(mktemp)"
+          probe_code="$(
+            curl -sS -o "$probe_body" -w "%{http_code}" \
+              -H "Authorization: Bearer ${api_key}" \
+              -H "Accept: application/json" \
+              "$CP_URL/api/v1/accounts/${account_id}" \
+              || echo 000
+          )"
+          if [ "$probe_code" -ge 400 ]; then
+            probe_resp="$(cat "$probe_body")"
+            probe_detail="$(echo "$probe_resp" | jq -r '.detail // empty' 2>/dev/null || true)"
+            echo "::warning::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
+            echo "::warning::Creating transient deployer billing account for this run."
+            create_account
+          else
+            echo "Using provided billing account for GCP preflight capacity request."
+          fi
+          rm -f "$probe_body"
+        else
+          echo "::warning::billing_account_id or billing_api_key not provided; creating transient deployer billing account."
+          create_account
         fi
-        if [ -z "${BILLING_API_KEY:-}" ]; then
-          echo "::error::Missing billing_api_key. Configure a deployer billing API key for capacity requests."
-          exit 1
-        fi
+
+        echo "::add-mask::${api_key}"
+        echo "billing_account_id=${account_id}" >> "$GITHUB_OUTPUT"
+        echo "billing_api_key=${api_key}" >> "$GITHUB_OUTPUT"
 
     - name: Precheck - healthy verified GCP agents
       id: precheck
@@ -136,8 +189,8 @@ runs:
       shell: bash
       env:
         CP_URL: ${{ inputs.control_plane_url }}
-        BILLING_ACCOUNT_ID: ${{ inputs.billing_account_id }}
-        BILLING_API_KEY: ${{ inputs.billing_api_key }}
+        BILLING_ACCOUNT_ID: ${{ steps.billing.outputs.billing_account_id }}
+        BILLING_API_KEY: ${{ steps.billing.outputs.billing_api_key }}
         BILLING_MONTHS: ${{ inputs.billing_months }}
         NODE_SIZE: ${{ inputs.node_size }}
         GCP_DATACENTER: ${{ inputs.gcp_datacenter }}
