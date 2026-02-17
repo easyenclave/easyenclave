@@ -1,0 +1,23 @@
+name: Setup GCP (gcloud)
+description: Authenticate to Google Cloud and install gcloud
+
+inputs:
+  gcp_service_account_key:
+    description: GCP service account JSON key
+    required: true
+  gcp_project_id:
+    description: GCP project ID
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Auth to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ inputs.gcp_service_account_key }}
+
+    - name: Set up gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ inputs.gcp_project_id }}
