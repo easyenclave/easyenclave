@@ -700,9 +700,14 @@ def validate_environment():
             "GITHUB_OAUTH_REDIRECT_URI."
         )
 
+    # If GitHub OAuth is configured and an explicit admin allowlist exists, never auto-generate
+    # a password. In that mode, OAuth is the intended admin access path.
+    github_admin_allowlist = bool((os.environ.get("ADMIN_GITHUB_LOGINS") or "").strip())
+    github_admin_mode = bool(github_oauth_ready and github_admin_allowlist)
+
     # Password admin login is optional and generally disabled in production.
     global _generated_admin_password
-    if _password_login_allowed():
+    if _password_login_allowed() and not github_admin_mode:
         if not os.environ.get("ADMIN_PASSWORD_HASH"):
             # Dev convenience: allow setting a plaintext password (hashed on startup).
             # Avoid using this in production; prefer ADMIN_PASSWORD_HASH.
@@ -3132,8 +3137,7 @@ async def admin_login(request: AdminLoginRequest, req: Request):
     password_hash = get_admin_password_hash()
     if not password_hash:
         raise HTTPException(
-            status_code=500,
-            detail="Admin password not configured. Set ADMIN_PASSWORD_HASH environment variable.",
+            status_code=403, detail="Password login is not configured. Use GitHub OAuth."
         )
 
     # Verify password
@@ -3184,10 +3188,11 @@ async def admin_login(request: AdminLoginRequest, req: Request):
 @app.get("/auth/methods")
 async def auth_methods():
     """Return which login methods are available (public, no auth required)."""
-    password_enabled = _password_login_allowed()
+    # Only advertise password login if it's both allowed and actually configured.
+    password_enabled = bool(_password_login_allowed() and get_admin_password_hash())
     github_enabled = _github_oauth_fully_configured()
     result = {"password": password_enabled, "github": github_enabled}
-    if _generated_admin_password:
+    if password_enabled and _generated_admin_password:
         result["generated_password"] = _generated_admin_password
     return result
 
