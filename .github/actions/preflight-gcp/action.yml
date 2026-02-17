@@ -424,6 +424,97 @@ runs:
 
         echo "fulfilled=true" >> "$GITHUB_OUTPUT"
 
+    - name: Bootstrap trusted MRTD for GCP agents (admin, CI-only)
+      if: steps.precheck.outputs.need_provision == 'true'
+      shell: bash
+      env:
+        CP_URL: ${{ inputs.control_plane_url }}
+        NODE_SIZE: ${{ inputs.node_size }}
+      run: |
+        set -euo pipefail
+
+        # If no gcp agents exist yet, nothing to do.
+        agents="$(curl -sS -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+        if [ -z "${agents:-}" ]; then
+          echo "::warning::Control plane unavailable while checking for untrusted MRTDs; skipping trust bootstrap."
+          exit 0
+        fi
+
+        # Pick the first unverified GCP agent for this size that reported an MRTD.
+        mrtd="$(
+          echo "$agents" | jq -r --arg ns "${NODE_SIZE:-}" '
+            [.agents[]
+              | select(.verified == false)
+              | select((.datacenter // "" | ascii_downcase) | startswith("gcp:"))
+              | select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase))
+              | select((.mrtd // "") | length > 0)
+              | .mrtd
+            ][0] // empty
+          ' 2>/dev/null || true
+        )"
+        if [ -z "${mrtd:-}" ]; then
+          echo "No unverified GCP agents with MRTD found yet; skipping trust bootstrap."
+          exit 0
+        fi
+        if ! echo "$mrtd" | grep -Eq '^[0-9a-fA-F]{96}$'; then
+          echo "::warning::Agent reported invalid MRTD format; skipping trust bootstrap."
+          exit 0
+        fi
+        mrtd="$(echo "$mrtd" | tr '[:upper:]' '[:lower:]')"
+
+        trusted="$(curl -sS -H 'Accept: application/json' "$CP_URL/api/v1/trusted-mrtds" | jq -r --arg m "$mrtd" '[.trusted_mrtds[] | select(.mrtd == $m)] | length' 2>/dev/null || echo 0)"
+        if [ "${trusted:-0}" -gt 0 ]; then
+          echo "MRTD already trusted: ${mrtd:0:16}..."
+          exit 0
+        fi
+
+        methods="$(curl -sS -H 'Accept: application/json' "$CP_URL/auth/methods" || true)"
+        password_enabled="$(echo "${methods:-}" | jq -r '.password // false' 2>/dev/null || echo false)"
+        generated_pw="$(echo "${methods:-}" | jq -r '.generated_password // empty' 2>/dev/null || true)"
+        if [ "$password_enabled" != "true" ] || [ -z "${generated_pw:-}" ]; then
+          echo "::warning::Cannot bootstrap trust: password login disabled or generated_password not available."
+          exit 0
+        fi
+
+        # Login to obtain admin token.
+        login_payload="$(jq -cn --arg p "$generated_pw" '{password: $p}')"
+        admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$login_payload" | jq -r '.token // empty' 2>/dev/null || true)"
+        if [ -z "${admin_token:-}" ]; then
+          echo "::warning::Admin login failed; skipping trust bootstrap."
+          exit 0
+        fi
+        echo "::add-mask::${admin_token}"
+
+        # Add baseline.
+        add_payload="$(jq -cn --arg m "$mrtd" --arg note "ci:gcp:${NODE_SIZE:-}" '{mrtd: $m, type: \"agent\", note: $note}')"
+        http_code="000"
+        resp=""
+        for attempt in $(seq 1 10); do
+          tmp="$(mktemp)"
+          http_code="$(
+            curl -sS -o "$tmp" -w "%{http_code}" \
+              -X POST "$CP_URL/api/v1/admin/trusted-mrtds" \
+              -H "Authorization: Bearer ${admin_token}" \
+              -H 'Content-Type: application/json' \
+              -d "$add_payload" || echo 000
+          )"
+          resp="$(cat "$tmp")"
+          rm -f "$tmp"
+          if [ "$http_code" = "530" ] || [ "$http_code" = "000" ] || [ "$http_code" -ge 500 ]; then
+            echo "::warning::Trust baseline request failed (HTTP ${http_code}); retrying ($attempt/10)..."
+            sleep 3
+            continue
+          fi
+          break
+        done
+        if [ "$http_code" -ge 400 ]; then
+          detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
+          echo "::warning::Failed to add trusted MRTD (HTTP $http_code): ${detail:-$resp}"
+          exit 0
+        fi
+
+        echo "Added trusted MRTD baseline for GCP: ${mrtd:0:16}..."
+
     - name: Wait for eligible GCP capacity after dispatch
       if: steps.precheck.outputs.need_provision == 'true'
       shell: bash
