@@ -500,14 +500,25 @@ ADMIN_TOKEN="$(admin_login)"
 # Create a short-lived launcher account to claim capacity launch orders for CP-mint bootstrap tokens.
 # This keeps Intel keys off the agent VMs while still requiring explicit authorization to register.
 LAUNCHER_ACCOUNT_NAME="ci-launcher-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
-LAUNCHER_JSON="$(
-  curl -sf -X POST "$CP_URL/api/v1/accounts" \
+_launcher_body="$(mktemp)"
+_launcher_code="$(
+  curl -sS -o "$_launcher_body" -w "%{http_code}" -X POST "$CP_URL/api/v1/accounts" \
     -H "Content-Type: application/json" \
     -d "$(jq -cn \
       --arg name "$LAUNCHER_ACCOUNT_NAME" \
       --arg desc "CI launcher account (ephemeral) for bootstrap token claims" \
-      '{name:$name, description:$desc, account_type:"launcher"}')"
+      '{name:$name, description:$desc, account_type:"launcher"}')" || echo 000
 )"
+LAUNCHER_JSON="$(cat "$_launcher_body" 2>/dev/null || echo '{}')"
+rm -f "$_launcher_body"
+case "$_launcher_code" in
+  2??) ;;
+  *)
+    echo "::error::Failed to create launcher account (HTTP $_launcher_code)"
+    echo "$LAUNCHER_JSON" | head -c 2000 || true
+    exit 1
+    ;;
+esac
 LAUNCHER_API_KEY="$(echo "$LAUNCHER_JSON" | jq -r '.api_key // empty')"
 LAUNCHER_ACCOUNT_ID="$(echo "$LAUNCHER_JSON" | jq -r '.account_id // empty')"
 if [ -z "${LAUNCHER_API_KEY:-}" ] || [ -z "${LAUNCHER_ACCOUNT_ID:-}" ]; then
@@ -546,28 +557,47 @@ dispatch_bootstrap_orders() {
   if [ "${count:-0}" -le 0 ]; then
     return 0
   fi
-  curl -sf -X POST "$CP_URL/api/v1/admin/agents/capacity/reconcile" \
-    -H "Authorization: Bearer $ADMIN_TOKEN" \
-    -H "Content-Type: application/json" \
-    -d "$(jq -cn \
-      --arg dc "$TARGET_DATACENTER" \
-      --arg ns "$node_size" \
-      --arg reason "ci-agent-bootstrap-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
-      --argjson count "$count" \
-      --arg aid "$LAUNCHER_ACCOUNT_ID" \
-      '{targets:[{datacenter:$dc,node_size:$ns,min_count:$count}], dispatch:true, reason:$reason, account_id:$aid}')" \
-    >/dev/null
+  local body code payload
+  body="$(mktemp)"
+  payload="$(jq -cn \
+    --arg dc "$TARGET_DATACENTER" \
+    --arg ns "$node_size" \
+    --arg reason "ci-agent-bootstrap-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}" \
+    --argjson count "$count" \
+    --arg aid "$LAUNCHER_ACCOUNT_ID" \
+    '{targets:[{datacenter:$dc,node_size:$ns,min_count:$count}], dispatch:true, reason:$reason, account_id:$aid}')"
+  code="$(
+    curl -sS -o "$body" -w "%{http_code}" -X POST "$CP_URL/api/v1/admin/agents/capacity/reconcile" \
+      -H "Authorization: Bearer $ADMIN_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "$payload" || echo 000
+  )"
+  if ! [[ "$code" =~ ^2 ]]; then
+    echo "::error::Capacity dispatch failed (HTTP $code) dc=$TARGET_DATACENTER node_size=$node_size"
+    head -c 2000 "$body" || true
+    rm -f "$body"
+    return 1
+  fi
+  rm -f "$body"
 }
 
 claim_bootstrap_token() {
   local node_size="$1"
-  local resp order_id token
-  resp="$(
-    curl -sf -X POST "$CP_URL/api/v1/launchers/capacity/orders/claim" \
+  local body code resp order_id token
+  body="$(mktemp)"
+  code="$(
+    curl -sS -o "$body" -w "%{http_code}" -X POST "$CP_URL/api/v1/launchers/capacity/orders/claim" \
       -H "Authorization: Bearer $LAUNCHER_API_KEY" \
       -H "Content-Type: application/json" \
-      -d "$(jq -cn --arg dc "$TARGET_DATACENTER" --arg ns "$node_size" '{datacenter:$dc,node_size:$ns}')"
+      -d "$(jq -cn --arg dc "$TARGET_DATACENTER" --arg ns "$node_size" '{datacenter:$dc,node_size:$ns}')" || echo 000
   )"
+  resp="$(cat "$body" 2>/dev/null || echo '{}')"
+  rm -f "$body"
+  if ! [[ "$code" =~ ^2 ]]; then
+    echo "::error::Failed to claim bootstrap token (HTTP $code) dc=$TARGET_DATACENTER node_size=$node_size"
+    echo "$resp" | head -c 2000 || true
+    return 1
+  fi
   order_id="$(echo "$resp" | jq -r '.order.order_id // empty')"
   token="$(echo "$resp" | jq -r '.bootstrap_token // empty')"
   if [ -z "${order_id:-}" ] || [ -z "${token:-}" ]; then
