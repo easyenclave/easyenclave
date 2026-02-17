@@ -307,6 +307,22 @@ runs:
       with:
         project_id: ${{ inputs.gcp_project_id }}
 
+    - name: Cleanup stale managed GCP VMs (quota guard)
+      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
+      shell: bash
+      env:
+        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+        GCP_ZONE: ${{ inputs.gcp_zone }}
+      run: |
+        set -euo pipefail
+        # Best-effort cleanup of prior CI-created VMs to avoid exhausting global CPU quota.
+        python3 scripts/cloud_provisioner.py cleanup \
+          --provider gcp \
+          --all-managed \
+          --gcp-project "$GCP_PROJECT_ID" \
+          --gcp-zone "$GCP_ZONE" \
+          || true
+
     - name: Fulfill GCP capacity launch order (CI launcher)
       if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
       id: fulfill

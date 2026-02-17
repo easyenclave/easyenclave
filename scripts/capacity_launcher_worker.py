@@ -371,7 +371,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--gcp-machine-type-tiny",
-        default=os.environ.get("LAUNCHER_GCP_MACHINE_TYPE_TINY", ""),
+        # Prefer smaller shapes in CI to avoid global CPU quota exhaustion; fall back to c3-standard-4.
+        default=os.environ.get("LAUNCHER_GCP_MACHINE_TYPE_TINY", "c3-standard-2,c3-standard-4"),
     )
     parser.add_argument(
         "--gcp-machine-type-standard",
