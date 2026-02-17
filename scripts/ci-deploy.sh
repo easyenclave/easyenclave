@@ -430,6 +430,7 @@ CP_BOOT_JSON="$(
   python3 infra/tdx_cli.py control-plane new \
     --wait \
     --port 8080 \
+    --no-bootstrap-measurers \
     --bootstrap-sizes "$CP_BOOTSTRAP_SIZES"
 )"
 
