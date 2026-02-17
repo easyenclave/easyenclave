@@ -64,12 +64,67 @@ jobs:
           echo "=== tdx_cli vm list ==="
           python3 infra/tdx_cli.py vm list || true
 
+  measure-trusted-values:
+    name: Measure Trusted Values (tiny)
+    runs-on: [self-hosted, tdx]
+    if: github.event_name == 'push'
+    needs: [cleanup-tdx-runner]
+    permissions:
+      contents: read
+    env:
+      # Infra + trust.
+      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        run: |
+          set -euo pipefail
+          for v in INTEL_API_KEY; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required secret/env: $v"
+              exit 1
+            fi
+          done
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build and measure trusted values (tiny)
+        id: measure
+        env:
+          MEASURE_SIZES: tiny
+        run: ./scripts/ci-build-measure.sh
+
+      - name: Export trusted values to job outputs
+        id: out
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "mrtds=${{ steps.measure.outputs.mrtds }}"
+            echo "mrtds_by_size=${{ steps.measure.outputs.mrtds_by_size }}"
+            echo "rtmrs=${{ steps.measure.outputs.rtmrs }}"
+            echo "rtmrs_by_size=${{ steps.measure.outputs.rtmrs_by_size }}"
+          } >> "$GITHUB_OUTPUT"
+
+    outputs:
+      mrtds: ${{ steps.out.outputs.mrtds }}
+      mrtds_by_size: ${{ steps.out.outputs.mrtds_by_size }}
+      rtmrs: ${{ steps.out.outputs.rtmrs }}
+      rtmrs_by_size: ${{ steps.out.outputs.rtmrs_by_size }}
+
   bootstrap-control-plane:
     name: Bootstrap Control Plane
     runs-on: [self-hosted, tdx]
     if: github.event_name == 'push'
-    # Wait for Docker images to be built/pushed for this SHA so the CP boots the exact code.
-    needs: [cleanup-tdx-runner, docker]
+    # Everything can run in parallel except launching the CP VM; this must wait for:
+    # 1) docker images for this SHA to be pushed, and
+    # 2) measured trusted values from the TDX runner.
+    needs: [docker, measure-trusted-values]
     permissions:
       contents: read
     env:
@@ -152,91 +207,13 @@ jobs:
             done
           fi
 
-      - name: Build and measure trusted values (tiny)
-        id: measure
-        env:
-          MEASURE_SIZES: tiny
-        run: ./scripts/ci-build-measure.sh
-
-      - name: Upload trusted values (artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: trusted-values-${{ github.sha }}
-          path: infra/output/reproducibility/trusted_values.json
-          if-no-files-found: error
-
       - name: Deploy control plane + bootstrap agents/apps
         env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+          TRUSTED_AGENT_MRTDS: ${{ needs.measure-trusted-values.outputs.mrtds }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ needs.measure-trusted-values.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS: ${{ needs.measure-trusted-values.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ needs.measure-trusted-values.outputs.rtmrs_by_size }}
         run: ./scripts/ci-deploy.sh
-
-  publish-trusted-values:
-    name: Publish Trusted Values (GHCR)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    needs: [bootstrap-control-plane]
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-
-    steps:
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      - name: Download trusted values artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: trusted-values-${{ github.sha }}
-          path: /tmp/trusted-values
-
-      - name: Install oras
-        shell: bash
-        run: |
-          set -euo pipefail
-          ORAS_VERSION="1.2.0"
-          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
-            | tar -xz -C /usr/local/bin oras
-          oras version
-
-      - name: Push trusted values to GHCR (pinned + latest)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          echo "${GH_TOKEN}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-          FILE="/tmp/trusted-values/trusted_values.json"
-          test -s "$FILE"
-
-          REF="ghcr.io/${{ github.repository }}/trusted-values:${{ github.sha }}"
-          LATEST="ghcr.io/${{ github.repository }}/trusted-values:latest"
-          ARTIFACT_TYPE="application/vnd.easyenclave.trusted-values.v1+json"
-
-          oras push "$REF" \
-            --artifact-type "$ARTIFACT_TYPE" \
-            "$FILE:application/json"
-          oras push "$LATEST" \
-            --artifact-type "$ARTIFACT_TYPE" \
-            "$FILE:application/json"
-
-          DIGEST="$(oras manifest fetch --descriptor "$REF" | jq -r '.digest')"
-          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
-            echo "::error::Could not resolve digest for $REF"
-            exit 1
-          fi
-          DIGEST_REF="ghcr.io/${{ github.repository }}/trusted-values@${DIGEST}"
-          echo "Signing $DIGEST_REF"
-          cosign sign --yes "$DIGEST_REF"
-
-          # Ensure the package is publicly pullable (agents/CP may have no ghcr.io credentials)
-          PACKAGE_NAME="${{ github.event.repository.name }}%2Ftrusted-values"
-          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
-            -f visibility=public || echo "::warning::Could not set package visibility to public"
 
   test:
     runs-on: ubuntu-latest
