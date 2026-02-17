@@ -52,7 +52,14 @@ def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[s
     if check and result.returncode != 0:
         stderr = (result.stderr or "").strip()
         stdout = (result.stdout or "").strip()
-        detail = stderr or stdout or f"exit={result.returncode}"
+        # Always include both streams when available; gcloud frequently prints the actionable
+        # error on stderr but may also include structured output on stdout.
+        parts: list[str] = [f"exit={result.returncode}"]
+        if stdout:
+            parts.append(f"stdout:\n{stdout}")
+        if stderr:
+            parts.append(f"stderr:\n{stderr}")
+        detail = "\n".join(parts)
         raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{detail}")
     return result
 

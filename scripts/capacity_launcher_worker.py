@@ -27,7 +27,7 @@ def _split_csv(value: str) -> list[str]:
     return [item.strip().lower() for item in (value or "").split(",") if item.strip()]
 
 
-def _truncate(value: str, limit: int = 500) -> str:
+def _truncate(value: str, limit: int = 4000) -> str:
     compact = " ".join((value or "").split())
     if len(compact) <= limit:
         return compact
