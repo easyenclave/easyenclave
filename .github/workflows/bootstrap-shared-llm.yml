@@ -35,7 +35,7 @@ jobs:
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
       AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
-      # Use :latest so the shared CP can be bootstrapped without needing the exact SHA image.
+      # Manual workflows default to :latest (upgrade-by-default). CI pins to :sha.
       MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
 
     steps:

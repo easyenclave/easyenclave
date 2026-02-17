@@ -8,6 +8,14 @@ name: Bootstrap Control Plane
 on:
   workflow_dispatch:
     inputs:
+      control_plane_image:
+        description: "Control plane image ref override (default: :latest)"
+        required: false
+        default: ""
+      measurer_image:
+        description: "Measuring enclave image ref override (default: :latest)"
+        required: false
+        default: ""
       cp_bootstrap_sizes:
         description: "Comma-separated measurer bootstrap sizes for tdx_cli control-plane new"
         required: false
@@ -70,9 +78,9 @@ jobs:
       NUM_STANDARD_AGENTS: ${{ github.event.inputs.num_standard_agents || '0' }}
       NUM_LLM_AGENTS: ${{ github.event.inputs.num_llm_agents || '0' }}
 
-      # Use :latest so we can bootstrap without needing the exact SHA image.
-      CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:latest
-      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+      # Manual bootstraps default to :latest (upgrade-by-default). CI pins to :sha.
+      CONTROL_PLANE_IMAGE: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:latest', github.repository) }}
+      MEASURER_IMAGE: ${{ github.event.inputs.measurer_image || format('ghcr.io/{0}/measuring-enclave:latest', github.repository) }}
 
     steps:
       - name: Checkout

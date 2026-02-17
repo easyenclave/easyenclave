@@ -1918,9 +1918,12 @@ def run_control_plane_mode(config: dict):
     logger.info("Starting in CONTROL PLANE mode")
 
     port = config.get("port", 8080)
-    image = config.get(
-        "control_plane_image", "ghcr.io/easyenclave/easyenclave/control-plane:latest"
-    )
+    image = config.get("control_plane_image", "")
+    if not image:
+        # Do not silently fall back to :latest. CI and production must be pinned to an immutable ref.
+        raise RuntimeError(
+            "Missing required config 'control_plane_image' (refusing to default to :latest)"
+        )
 
     # Write docker-compose.yml for the control plane container
     compose_file = CONTROL_PLANE_DIR / "docker-compose.yml"

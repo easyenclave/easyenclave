@@ -68,7 +68,8 @@ jobs:
     name: Bootstrap Control Plane
     runs-on: [self-hosted, tdx]
     if: github.event_name == 'push'
-    needs: cleanup-tdx-runner
+    # Wait for Docker images to be built/pushed for this SHA so the CP boots the exact code.
+    needs: [cleanup-tdx-runner, docker]
     permissions:
       contents: read
     env:
@@ -105,9 +106,9 @@ jobs:
       NUM_STANDARD_AGENTS: "0"
       NUM_LLM_AGENTS: "0"
 
-      # Use :latest so we can bootstrap without needing the exact SHA image.
-      CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:latest
-      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+      # Boot the exact revision built in this CI run.
+      CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
+      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
 
     steps:
       - name: Checkout
