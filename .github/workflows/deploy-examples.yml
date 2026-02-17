@@ -109,10 +109,112 @@ jobs:
           name: hello-tdx
           description: "Hello TDX - Example app demonstrating TDX attestation"
 
+  ensure-baremetal-tiny-capacity:
+    name: Ensure baremetal tiny agent (capacity)
+    runs-on: [self-hosted, tdx]
+    needs: register-hello-tdx
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+    env:
+      # Used to boot a tiny agent VM that can self-mint Intel Trust Authority tokens for registration.
+      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build verity artifacts (required for tdx_cli vm new)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd infra/image
+          nix develop --command make build
+
+      - name: Wait for control plane bootstrap (git_sha match)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
+          deadline=$(( $(date +%s) + 900 ))
+          while :; do
+            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
+            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
+            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
+              echo "Control plane ready: git_sha=$sha"
+              break
+            fi
+            now="$(date +%s)"
+            if [ "$now" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
+              echo "Last /health:"
+              echo "${body:-<empty>}"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Ensure deployable baremetal tiny agent exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          ita_key="${ITA_API_KEY:-${INTEL_API_KEY:-}}"
+          if [ -z "${ita_key:-}" ]; then
+            echo "::error::Missing ITA_API_KEY (Intel Trust Authority API key); cannot boot agents."
+            exit 1
+          fi
+
+          count_deployable() {
+            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+              [.agents[]
+                | select(.verified == true)
+                | select((.health_status // "" | ascii_downcase) == "healthy")
+                | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
+                | select((.node_size // "" | ascii_downcase) == "tiny")
+                | select((.datacenter // "" | ascii_downcase) == "baremetal:github-runner")
+                | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
+              ] | length'
+          }
+
+          count="$(count_deployable || echo 0)"
+          echo "Deployable baremetal tiny candidates: $count"
+          if [ "${count:-0}" -ge 1 ]; then
+            exit 0
+          fi
+
+          echo "Booting a new baremetal tiny agent VM..."
+          python3 infra/tdx_cli.py vm new \
+            --size tiny \
+            --cloud-provider baremetal \
+            --availability-zone github-runner \
+            --easyenclave-url "${CP_URL}" \
+            --intel-api-key "${ita_key}" \
+            --wait \
+            >/tmp/new_tiny_vm.json
+          cat /tmp/new_tiny_vm.json || true
+
+          for _ in {1..60}; do
+            count="$(count_deployable || echo 0)"
+            if [ "${count:-0}" -ge 1 ]; then
+              echo "Deployable baremetal tiny capacity is now available: $count"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "::error::Timed out waiting for deployable baremetal tiny capacity."
+          curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+            [.agents[] | select((.node_size // "" | ascii_downcase) == "tiny")
+              | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
+          exit 1
+
   deploy-hello-tdx-clouds:
     name: Deploy Hello TDX (default)
     runs-on: ubuntu-latest
-    needs: register-hello-tdx
+    needs: [register-hello-tdx, ensure-baremetal-tiny-capacity]
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
