@@ -158,6 +158,13 @@ jobs:
           MEASURE_SIZES: tiny
         run: ./scripts/ci-build-measure.sh
 
+      - name: Upload trusted values (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: trusted-values-${{ github.sha }}
+          path: infra/output/reproducibility/trusted_values.json
+          if-no-files-found: error
+
       - name: Deploy control plane + bootstrap agents/apps
         env:
           TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
@@ -165,6 +172,71 @@ jobs:
           TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
           TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
         run: ./scripts/ci-deploy.sh
+
+  publish-trusted-values:
+    name: Publish Trusted Values (GHCR)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: [bootstrap-control-plane]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Download trusted values artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: trusted-values-${{ github.sha }}
+          path: /tmp/trusted-values
+
+      - name: Install oras
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORAS_VERSION="1.2.0"
+          curl -fsSL "https://github.com/oras-project/oras/releases/download/v${ORAS_VERSION}/oras_${ORAS_VERSION}_linux_amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin oras
+          oras version
+
+      - name: Push trusted values to GHCR (pinned + latest)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "${GH_TOKEN}" | oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+          FILE="/tmp/trusted-values/trusted_values.json"
+          test -s "$FILE"
+
+          REF="ghcr.io/${{ github.repository }}/trusted-values:${{ github.sha }}"
+          LATEST="ghcr.io/${{ github.repository }}/trusted-values:latest"
+          ARTIFACT_TYPE="application/vnd.easyenclave.trusted-values.v1+json"
+
+          oras push "$REF" \
+            --artifact-type "$ARTIFACT_TYPE" \
+            "$FILE:application/json"
+          oras push "$LATEST" \
+            --artifact-type "$ARTIFACT_TYPE" \
+            "$FILE:application/json"
+
+          DIGEST="$(oras manifest fetch --descriptor "$REF" | jq -r '.digest')"
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            echo "::error::Could not resolve digest for $REF"
+            exit 1
+          fi
+          DIGEST_REF="ghcr.io/${{ github.repository }}/trusted-values@${DIGEST}"
+          echo "Signing $DIGEST_REF"
+          cosign sign --yes "$DIGEST_REF"
+
+          # Ensure the package is publicly pullable (agents/CP may have no ghcr.io credentials)
+          PACKAGE_NAME="${{ github.event.repository.name }}%2Ftrusted-values"
+          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
+            -f visibility=public || echo "::warning::Could not set package visibility to public"
 
   test:
     runs-on: ubuntu-latest
