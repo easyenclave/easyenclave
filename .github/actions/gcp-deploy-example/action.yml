@@ -51,9 +51,13 @@ inputs:
     required: false
     default: ""
 
-  # Deprecated compatibility inputs (ignored by preflight).
+  # Optional provisioning inputs used by preflight when no GCP capacity exists.
+  intel_api_key:
+    description: Intel Trust Authority API key (used when provisioning capacity from CI)
+    required: false
+    default: ""
   gcp_project_id:
-    description: Deprecated (ignored)
+    description: GCP project ID (used when provisioning capacity from CI)
     required: false
     default: ""
   gcp_wif_provider:
@@ -65,7 +69,7 @@ inputs:
     required: false
     default: ""
   gcp_service_account_key:
-    description: Deprecated (ignored)
+    description: GCP service account JSON key (used when provisioning capacity from CI)
     required: false
     default: ""
   gcp_zone:
@@ -122,6 +126,9 @@ runs:
         billing_api_key: ${{ inputs.billing_api_key }}
         billing_months: ${{ inputs.billing_months }}
         gcp_datacenter: ${{ inputs.gcp_datacenter }}
+        intel_api_key: ${{ inputs.intel_api_key }}
+        gcp_project_id: ${{ inputs.gcp_project_id }}
+        gcp_service_account_key: ${{ inputs.gcp_service_account_key }}
         gcp_zone: ${{ inputs.gcp_zone }}
 
     - id: deploy

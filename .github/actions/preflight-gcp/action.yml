@@ -35,9 +35,17 @@ inputs:
     required: false
     default: ""
 
+  # Optional launcher fulfillment (CI datacenter-manager).
+  # If these are provided and no GCP capacity exists, the action will provision a CVM on GCP
+  # by claiming the CP's launch order (scripts/capacity_launcher_worker.py).
+  intel_api_key:
+    description: Intel Trust Authority API key used by provisioned VMs to attest/register
+    required: false
+    default: ""
+
   # Deprecated legacy inputs retained for compatibility with existing workflow callers.
   gcp_project_id:
-    description: Deprecated (ignored)
+    description: GCP project ID (required to provision from CI)
     required: false
     default: ""
   gcp_wif_provider:
@@ -49,7 +57,7 @@ inputs:
     required: false
     default: ""
   gcp_service_account_key:
-    description: Deprecated (ignored)
+    description: GCP service account JSON key (required to provision from CI)
     required: false
     default: ""
   gcp_zone:
@@ -286,6 +294,84 @@ runs:
         fi
 
         echo "Capacity request accepted: datacenter='$target_dc' node_size='${NODE_SIZE:-}' shortfall=$shortfall dispatched=$dispatched tx_id=${tx_id:-none} charged=${charged} simulated=${simulated}"
+
+    - name: Auth to Google Cloud (for launcher fulfillment)
+      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ inputs.gcp_service_account_key }}
+
+    - name: Set up gcloud (for launcher fulfillment)
+      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ inputs.gcp_project_id }}
+
+    - name: Fulfill GCP capacity launch order (CI launcher)
+      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
+      id: fulfill
+      shell: bash
+      env:
+        CP_URL: ${{ inputs.control_plane_url }}
+        INTEL_API_KEY: ${{ inputs.intel_api_key }}
+        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
+        TARGET_DC: ${{ steps.dispatch.outputs.target_datacenter }}
+        NODE_SIZE: ${{ inputs.node_size }}
+        GITHUB_RUN_ID: ${{ github.run_id }}
+        GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+      run: |
+        set -euo pipefail
+
+        if [ -z "${TARGET_DC:-}" ]; then
+          echo "::error::Missing dispatch target datacenter output"
+          exit 1
+        fi
+        if [ -z "${INTEL_API_KEY:-}" ]; then
+          echo "::error::Missing intel_api_key input (required for provisioning a registering agent)."
+          exit 1
+        fi
+        if [ -z "${GCP_PROJECT_ID:-}" ]; then
+          echo "::error::Missing gcp_project_id input (required for provisioning)."
+          exit 1
+        fi
+
+        # Create a transient launcher account to claim launch orders.
+        account_name="ci-launcher-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
+        body="$(mktemp)"
+        http_code="$(
+          curl -sS -o "$body" -w "%{http_code}" \
+            -X POST "$CP_URL/api/v1/accounts" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "launcher"}')" \
+            || echo 000
+        )"
+        resp="$(cat "$body")"
+        rm -f "$body"
+        if [ "$http_code" -ge 400 ]; then
+          detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
+          echo "::error::Failed to create launcher account (HTTP $http_code): ${detail:-$resp}"
+          exit 1
+        fi
+        launcher_key="$(echo "$resp" | jq -r '.api_key // empty')"
+        if [ -z "$launcher_key" ]; then
+          echo "::error::Control plane did not return launcher API key"
+          exit 1
+        fi
+        echo "::add-mask::${launcher_key}"
+
+        # Claim and fulfill exactly one order for this pool. This is intentionally minimal:
+        # the control plane remains source-of-truth for dispatch decisions and accounting.
+        python3 scripts/capacity_launcher_worker.py \
+          --cp-url "$CP_URL" \
+          --launcher-api-key "$launcher_key" \
+          --intel-api-key "$INTEL_API_KEY" \
+          --providers gcp \
+          --datacenter "$TARGET_DC" \
+          --node-size "${NODE_SIZE:-}" \
+          --gcp-project "$GCP_PROJECT_ID" \
+          --one-shot
+
+        echo "fulfilled=true" >> "$GITHUB_OUTPUT"
 
     - name: Wait for eligible GCP capacity after dispatch
       if: steps.precheck.outputs.need_provision == 'true'
