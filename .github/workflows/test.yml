@@ -172,6 +172,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Preserve infra/image/output produced by measure-trusted-values so tdx_cli can
+          # launch VMs without rebuilding (it defaults to infra/image/output).
+          clean: false
 
       - name: Validate required secrets
         run: |
@@ -185,6 +189,15 @@ jobs:
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Ensure verity artifacts exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d infra/image/output ]; then
+            echo "infra/image/output missing; building verity artifacts..."
+            (cd infra/image && nix develop --command bash -lc 'make build')
+          fi
 
       - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
         run: |
