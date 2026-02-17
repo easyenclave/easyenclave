@@ -54,19 +54,30 @@ whsec_xxx
 
 ### Optional Secrets (For Admin Login)
 
-#### GITHUB_OAUTH_CLIENT_ID
+#### EE_GITHUB_OAUTH_CLIENT_ID
 GitHub OAuth App client ID (used for admin login).
 
-#### GITHUB_OAUTH_CLIENT_SECRET
+#### EE_GITHUB_OAUTH_CLIENT_SECRET
 GitHub OAuth App client secret (used for admin login).
 
-#### GITHUB_OAUTH_REDIRECT_URI (Optional)
+#### EE_GITHUB_OAUTH_REDIRECT_URI (Optional)
 Override the redirect URI configured in the OAuth App.
 
 If omitted, the control plane defaults to:
 ```
 https://app.easyenclave.com/auth/github/callback
 ```
+
+#### ADMIN_GITHUB_LOGINS (Recommended)
+Comma-separated GitHub logins that should have **admin** access after GitHub OAuth login.
+
+Example:
+```
+alice,bob
+```
+
+Note: GitHub Actions blocks repository secret names starting with `GITHUB_`, so we store OAuth
+secrets with the `EE_GITHUB_...` prefix and map them into `GITHUB_OAUTH_...` env vars at runtime.
 
 ## Testing Secrets Setup
 

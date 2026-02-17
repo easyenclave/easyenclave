@@ -42,10 +42,14 @@ jobs:
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
 
       # GitHub OAuth (admin login + deployer identity).
-      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.GITHUB_OAUTH_CLIENT_ID }}
-      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.GITHUB_OAUTH_CLIENT_SECRET }}
+      # Note: GitHub blocks secret names starting with `GITHUB_`, so we store them as EE_GITHUB_*.
+      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
+      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
       # Optional (defaults to https://app.easyenclave.com/auth/github/callback inside the CP if unset).
-      GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.GITHUB_OAUTH_REDIRECT_URI }}
+      GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }}
+
+      # Admin allowlist for GitHub OAuth (comma-separated logins).
+      ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
 
       # Stripe (optional billing).
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
