@@ -1975,6 +1975,8 @@ def run_control_plane_mode(config: dict):
         env["GITHUB_OAUTH_CLIENT_SECRET"] = config["github_oauth_client_secret"]
     if config.get("github_oauth_redirect_uri"):
         env["GITHUB_OAUTH_REDIRECT_URI"] = config["github_oauth_redirect_uri"]
+    if config.get("admin_github_logins"):
+        env["ADMIN_GITHUB_LOGINS"] = config["admin_github_logins"]
     if config.get("gcp_project_id"):
         env["GCP_PROJECT_ID"] = config["gcp_project_id"]
     if config.get("gcp_workload_identity_provider"):

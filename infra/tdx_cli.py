@@ -390,6 +390,8 @@ class TDXManager:
             "github_oauth_client_id": os.environ.get("GITHUB_OAUTH_CLIENT_ID"),
             "github_oauth_client_secret": os.environ.get("GITHUB_OAUTH_CLIENT_SECRET"),
             "github_oauth_redirect_uri": os.environ.get("GITHUB_OAUTH_REDIRECT_URI"),
+            # GitHub OAuth admin allowlist (comma-separated logins)
+            "admin_github_logins": os.environ.get("ADMIN_GITHUB_LOGINS"),
             "stripe_secret_key": os.environ.get("STRIPE_SECRET_KEY"),
             "stripe_webhook_secret": os.environ.get("STRIPE_WEBHOOK_SECRET"),
             # Trusted MRTDs (comma-separated)
