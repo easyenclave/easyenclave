@@ -32,7 +32,6 @@ jobs:
 
     env:
       CP_URL: ${{ github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
-      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
       AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
       # Manual workflows default to :latest (upgrade-by-default). CI pins to :sha.
@@ -47,10 +46,6 @@ jobs:
       - name: Validate required secrets
         run: |
           set -euo pipefail
-          if [ -z "${INTEL_API_KEY:-}" ]; then
-            echo "::error::Missing INTEL_API_KEY secret"
-            exit 1
-          fi
           if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
             echo "::warning::CP_ADMIN_PASSWORD secret is empty; bootstrap will fall back to /auth/methods generated_password"
           fi
@@ -134,7 +129,7 @@ jobs:
               exit 1
             fi
             echo "Booting a new baremetal llm agent VM..."
-            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --intel-api-key "${INTEL_API_KEY}" --wait)"
+            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait)"
             name="$(echo "$vm_json" | jq -r '.name // empty')"
             if [ -n "$name" ]; then
               created+=("$name")

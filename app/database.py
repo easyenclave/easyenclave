@@ -76,6 +76,9 @@ def _migrate_add_columns():
         ("app_versions", "node_size", "TEXT", "''"),
         ("deployments", "app_name", "TEXT", "NULL"),
         ("deployments", "app_version", "TEXT", "NULL"),
+        ("capacity_launch_orders", "bootstrap_token_hash", "TEXT", "NULL"),
+        ("capacity_launch_orders", "bootstrap_token_issued_at", "TEXT", "NULL"),
+        ("capacity_launch_orders", "bootstrap_token_used_at", "TEXT", "NULL"),
     ]
 
     for table, column, sql_type, default in migrations:

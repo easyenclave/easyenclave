@@ -1,8 +1,8 @@
-# Deploy Examples
+# Builtin Deploy Examples
 #
 # Deploys example apps after CI passes, using the shared control plane.
 
-name: Deploy Examples
+name: Builtin Deploy Examples
 
 on:
   workflow_run:
@@ -154,10 +154,333 @@ jobs:
           node_size: tiny
           allowed_clouds: baremetal
 
+  deploy-private-llm-baremetal:
+    name: Deploy Private LLM (baremetal)
+    runs-on: [self-hosted, tdx]
+    needs: [deploy-hello-tdx-clouds]
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    permissions:
+      contents: read
+    env:
+      CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+      CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+      AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+      TARGET_DATACENTER: baremetal:github-runner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Wait for control plane bootstrap (git_sha match)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
+          deadline=$(( $(date +%s) + 900 ))
+          while :; do
+            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
+            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
+            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
+              echo "Control plane ready: git_sha=$sha"
+              break
+            fi
+            now="$(date +%s)"
+            if [ "$now" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
+              echo "Last /health:"
+              echo "${body:-<empty>}"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Validate required secrets for baremetal LLM deploy
+        shell: bash
+        env:
+          AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AGENT_ADMIN_PASSWORD:-}" ]; then
+            echo "::error::Missing secret: AGENT_ADMIN_PASSWORD"
+            exit 1
+          fi
+          # CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD are only required when bootstrapping measuring-enclave-llm.
+          if [ -z "${CP_ADMIN_TOKEN:-}" ] && [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
+            echo "::warning::CP_ADMIN_TOKEN and CP_ADMIN_PASSWORD are both missing. If measuring-enclave-llm is not already healthy, this job will fail during bootstrap."
+          fi
+
+      - name: Cleanup stale CI LLM VMs (preflight, best effort)
+        shell: bash
+        env:
+          CP_URL: ${{ env.CP_URL }}
+          CP_ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bash ./scripts/cleanup_ci_llm_vms.sh || true
+
+      - name: Check measuring-enclave-llm health
+        id: measurer
+        shell: bash
+        run: |
+          set -euo pipefail
+          healthy_count="$(
+            curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/services?name=measuring-enclave-llm&include_down=true" \
+            | jq -r '[.services[]? | select(.name == "measuring-enclave-llm" and (.health_status // "" | ascii_downcase) == "healthy")] | length'
+          )"
+          if [ "${healthy_count:-0}" -gt 0 ]; then
+            echo "healthy=true" >> "$GITHUB_OUTPUT"
+            echo "Existing healthy measuring-enclave-llm found; bootstrap is skipped."
+          else
+            echo "healthy=false" >> "$GITHUB_OUTPUT"
+            echo "No healthy measuring-enclave-llm found; bootstrap is required."
+          fi
+
+      - name: Ensure baremetal llm capacity for measurer + private-llm
+        id: ensure_agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          created=()
+          max_boots=3
+          boots=0
+
+          count_non_measurer() {
+            curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
+              [.agents[]
+                | select(.verified == true)
+                | select((.health_status // "" | ascii_downcase) == "healthy")
+                | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
+                | select((.node_size // "" | ascii_downcase) == "llm")
+                | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
+                | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
+              ] | length'
+          }
+
+          count_measurer() {
+            curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
+              [.agents[]
+                | select(.verified == true)
+                | select((.health_status // "" | ascii_downcase) == "healthy")
+                | select((.status // "" | ascii_downcase) == "deployed")
+                | select((.node_size // "" | ascii_downcase) == "llm")
+                | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
+                | select((.deployed_app // "") == "measuring-enclave-llm")
+              ] | length'
+          }
+
+          non_measurer="$(count_non_measurer || echo 0)"
+          measurer="$(count_measurer || echo 0)"
+          required_non_measurer=2
+          if [ "${measurer:-0}" -ge 1 ]; then
+            required_non_measurer=1
+          fi
+          echo "Baremetal llm non-measurer candidates: $non_measurer (required: $required_non_measurer)"
+          echo "Baremetal llm measurer agents: $measurer"
+
+          while [ "${non_measurer:-0}" -lt "${required_non_measurer}" ]; do
+            boots=$((boots + 1))
+            if [ "$boots" -gt "$max_boots" ]; then
+              echo "::error::Exceeded max LLM boot attempts ($max_boots) while waiting for verified capacity."
+              curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+                [.agents[] | select((.node_size // "" | ascii_downcase) == "llm")
+                  | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
+              exit 1
+            fi
+            echo "Booting a new baremetal llm agent VM..."
+            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait)"
+            name="$(echo "$vm_json" | jq -r '.name // empty')"
+            if [ -n "$name" ]; then
+              created+=("$name")
+            fi
+
+            # Give the agent time to register and pass verification.
+            for _ in {1..60}; do
+              non_measurer="$(count_non_measurer || echo 0)"
+              if [ "${non_measurer:-0}" -ge "${required_non_measurer}" ]; then
+                break
+              fi
+              sleep 5
+            done
+
+            non_measurer="$(count_non_measurer || echo 0)"
+            measurer="$(count_measurer || echo 0)"
+            if [ "${measurer:-0}" -ge 1 ]; then
+              required_non_measurer=1
+            fi
+            echo "Baremetal llm non-measurer candidates now: $non_measurer (required: $required_non_measurer)"
+            echo "Baremetal llm measurer agents now: $measurer"
+          done
+
+          printf '%s\n' "${created[@]:-}" > /tmp/new_llm_vms.txt || true
+          echo "created_vms=$(paste -sd, /tmp/new_llm_vms.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
+
+      - name: Capture trusted llm baseline from verified baremetal agent
+        if: steps.measurer.outputs.healthy != 'true'
+        id: baremetal_baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          agents="$(curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/agents")"
+
+          # Poll for a verified, healthy llm agent with MRTD+RTMRs.
+          row=""
+          for _ in {1..120}; do
+            row="$(
+              echo "$agents" | jq -c --arg dc "${TARGET_DATACENTER}" '
+                [
+                  .agents[]
+                  | (.datacenter // "" | ascii_downcase) as $agent_dc
+                  | (.status // "" | ascii_downcase) as $status
+                  | select(.verified == true)
+                  | select((.health_status // "" | ascii_downcase) == "healthy")
+                  | select((.node_size // "" | ascii_downcase) == "llm")
+                  | select($agent_dc == ($dc | ascii_downcase))
+                  | select($status == "undeployed" or $status == "deployed")
+                  | select((.mrtd // "") != "")
+                  | (
+                      .rtmrs
+                      // {
+                        rtmr0: (.attestation.tdx.measurements.rtmr0 // ""),
+                        rtmr1: (.attestation.tdx.measurements.rtmr1 // ""),
+                        rtmr2: (.attestation.tdx.measurements.rtmr2 // ""),
+                        rtmr3: (.attestation.tdx.measurements.rtmr3 // "")
+                      }
+                    ) as $resolved_rtmrs
+                  | select(($resolved_rtmrs.rtmr0 // "") != "" and ($resolved_rtmrs.rtmr1 // "") != "" and ($resolved_rtmrs.rtmr2 // "") != "" and ($resolved_rtmrs.rtmr3 // "") != "")
+                  | . + {_resolved_rtmrs: $resolved_rtmrs}
+                ] | first // empty
+              '
+            )"
+            if [ -n "$row" ] && [ "$row" != "null" ]; then
+              break
+            fi
+            sleep 5
+            agents="$(curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/agents")"
+          done
+
+          if [ -z "$row" ] || [ "$row" = "null" ]; then
+            echo "::error::No verified healthy baremetal llm agent with MRTD/RTMRs found in datacenter '${TARGET_DATACENTER}'."
+            echo "::error::Agents in this datacenter:"
+            echo "$agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
+              [.agents[]
+               | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
+               | {agent_id, status, health_status, verified, node_size, datacenter, mrtd, has_rtmrs:(.rtmrs != null), deployed_app}
+              ]'
+            exit 1
+          fi
+
+          mrtd="$(echo "$row" | jq -r '.mrtd')"
+          rtmrs="$(echo "$row" | jq -c '._resolved_rtmrs')"
+          mrtds_by_size="$(jq -cn --arg mrtd "$mrtd" '{llm:$mrtd}')"
+          rtmrs_by_size="$(jq -cn --argjson rtmrs "$rtmrs" '{llm:$rtmrs}')"
+
+          echo "mrtds_by_size=$mrtds_by_size" >> "$GITHUB_OUTPUT"
+          echo "rtmrs_by_size=$rtmrs_by_size" >> "$GITHUB_OUTPUT"
+          echo "Using baremetal llm baseline MRTD: ${mrtd:0:16}..."
+
+      - name: Bootstrap measuring-enclave-llm on baremetal
+        if: steps.measurer.outputs.healthy != 'true'
+        env:
+          ADMIN_TOKEN: ${{ env.CP_ADMIN_TOKEN }}
+          ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
+          NODE_SIZE: llm
+          MEASURER_IMAGE: ${{ env.MEASURER_IMAGE }}
+          ALLOWED_CLOUDS: baremetal
+          ALLOWED_DATACENTERS: baremetal:github-runner
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.baremetal_baseline.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.baremetal_baseline.outputs.rtmrs_by_size }}
+        run: |
+          set -euo pipefail
+          chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
+          CP_URL="${CP_URL}" \
+          ADMIN_TOKEN="${ADMIN_TOKEN}" \
+          ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
+          NODE_SIZE="${NODE_SIZE}" \
+          MEASURER_IMAGE="${MEASURER_IMAGE}" \
+          ALLOWED_CLOUDS="${ALLOWED_CLOUDS}" \
+          ALLOWED_DATACENTERS="${ALLOWED_DATACENTERS}" \
+          TRUSTED_AGENT_MRTDS_BY_SIZE="${TRUSTED_AGENT_MRTDS_BY_SIZE}" \
+          TRUSTED_AGENT_RTMRS_BY_SIZE="${TRUSTED_AGENT_RTMRS_BY_SIZE}" \
+          ./scripts/bootstrap_shared_measuring_enclave.sh
+
+      - name: Verify deployable baremetal llm agent exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          count="$(curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
+            [.agents[]
+              | select(.verified == true)
+              | select((.health_status // "" | ascii_downcase) == "healthy")
+              | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
+              | select((.node_size // "" | ascii_downcase) == "llm")
+              | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
+              | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
+            ] | length
+          ')"
+          echo "Deployable baremetal llm candidates: $count"
+          if [ "${count:-0}" -lt 1 ]; then
+            echo "::error::No deployable baremetal llm agent available for private-llm"
+            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+              [.agents[] | select((.node_size // "" | ascii_downcase) == "llm")
+                | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
+            exit 1
+          fi
+
+      - name: Ensure app exists (idempotent)
+        uses: ./.github/actions/register-app
+        with:
+          name: private-llm
+          description: "Private LLM - Ollama running in a TDX enclave"
+          control_plane_url: ${{ env.CP_URL }}
+
+      - name: Deploy private-llm (llm)
+        id: deploy
+        uses: ./.github/actions/deploy-example
+        with:
+          app_name: private-llm
+          compose_file: examples/private-llm/docker-compose.yml
+          service_name: private-llm
+          health_endpoint: /
+          control_plane_url: ${{ env.CP_URL }}
+          agent_admin_password: ${{ env.AGENT_ADMIN_PASSWORD }}
+          github_owner: ${{ github.repository_owner }}
+          node_size: llm
+          allowed_clouds: baremetal
+          allowed_datacenters: baremetal:github-runner
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SDK and OpenAI client
+        shell: bash
+        run: pip install ./sdk/ openai
+
+      - name: Smoke test private-llm (OpenAI-compatible)
+        shell: bash
+        env:
+          SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
+          EASYENCLAVE_URL: ${{ env.CP_URL }}
+        run: python3 examples/private-llm/test.py
+
+      - name: Cleanup stale CI LLM VMs (post, best effort)
+        if: always()
+        shell: bash
+        env:
+          CP_URL: ${{ env.CP_URL }}
+          CP_ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bash ./scripts/cleanup_ci_llm_vms.sh || true
+
   inventory-local-tdx:
     name: Inventory/Cleanup - Local TDX measurement VMs
     runs-on: [self-hosted, tdx]
-    needs: [deploy-hello-tdx-clouds]
+    needs: [deploy-hello-tdx-clouds, deploy-private-llm-baremetal]
     if: always()
     steps:
       - uses: actions/checkout@v4

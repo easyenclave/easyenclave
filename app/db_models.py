@@ -146,6 +146,11 @@ class CapacityLaunchOrder(SQLModel, table=True):
     claim_expires_at: datetime | None = None
     claimed_at: datetime | None = None
     fulfilled_at: datetime | None = None
+    # One-time bootstrap secret used to allow CP-minted Intel TA tokens without
+    # distributing Intel API keys to every VM. Store only a hash.
+    bootstrap_token_hash: str | None = Field(default=None, index=True)
+    bootstrap_token_issued_at: datetime | None = None
+    bootstrap_token_used_at: datetime | None = None
     vm_name: str | None = Field(default=None, index=True)
     error: str | None = None
     created_at: datetime = Field(default_factory=utcnow)

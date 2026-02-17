@@ -27,6 +27,7 @@ def test_launcher_can_claim_and_fulfill_capacity_order(client):
     assert claim_payload["claimed"] is True
     assert claim_payload["order"]["order_id"] == order.order_id
     assert claim_payload["order"]["status"] == "claimed"
+    assert claim_payload["bootstrap_token"]
 
     update_resp = client.post(
         f"/api/v1/launchers/capacity/orders/{order.order_id}",

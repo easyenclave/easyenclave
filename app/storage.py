@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 import os
 import re
@@ -782,12 +784,55 @@ class CapacityLaunchOrderStore:
                 row.claimed_by_account_id = None
                 row.claimed_at = None
                 row.claim_expires_at = None
+                row.bootstrap_token_hash = None
+                row.bootstrap_token_issued_at = None
+                row.bootstrap_token_used_at = None
                 row.vm_name = None
                 row.error = "claim expired and was re-queued"
                 row.updated_at = current
                 session.add(row)
                 released += 1
         return released
+
+    def _hash_bootstrap_token(self, token: str) -> str:
+        # Token is random; SHA256 is sufficient for at-rest storage.
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def verify_and_consume_bootstrap_token(
+        self,
+        *,
+        order_id: str,
+        token: str,
+        vm_name: str = "",
+        now: datetime | None = None,
+    ) -> bool:
+        """Verify a one-time bootstrap token for an order and mark it used."""
+        token = (token or "").strip()
+        if not token:
+            return False
+        current = now or datetime.now(timezone.utc)
+        with get_db() as session:
+            row = session.get(CapacityLaunchOrder, order_id)
+            if not row:
+                return False
+            if not row.bootstrap_token_hash or row.bootstrap_token_used_at is not None:
+                return False
+
+            expected = row.bootstrap_token_hash
+            actual = self._hash_bootstrap_token(token)
+            if not hmac.compare_digest(expected, actual):
+                return False
+
+            vm_name = (vm_name or "").strip()
+            if row.vm_name and vm_name and (row.vm_name or "").strip() != vm_name:
+                return False
+            if not row.vm_name and vm_name:
+                row.vm_name = vm_name
+
+            row.bootstrap_token_used_at = current
+            row.updated_at = current
+            session.add(row)
+            return True
 
     def claim_next(
         self,
@@ -797,6 +842,22 @@ class CapacityLaunchOrderStore:
         node_size: str = "",
         claim_ttl_seconds: int = 600,
     ) -> CapacityLaunchOrder | None:
+        claimed, _token = self.claim_next_with_bootstrap_token(
+            launcher_account_id=launcher_account_id,
+            datacenter=datacenter,
+            node_size=node_size,
+            claim_ttl_seconds=claim_ttl_seconds,
+        )
+        return claimed
+
+    def claim_next_with_bootstrap_token(
+        self,
+        *,
+        launcher_account_id: str,
+        datacenter: str = "",
+        node_size: str = "",
+        claim_ttl_seconds: int = 600,
+    ) -> tuple[CapacityLaunchOrder | None, str]:
         self.release_expired_claims()
 
         normalized_datacenter = _normalize_pool_value(datacenter)
@@ -815,15 +876,54 @@ class CapacityLaunchOrderStore:
             ).limit(1)
             row = session.exec(stmt).first()
             if not row:
-                return None
+                return (None, "")
 
             row.status = "claimed"
             row.claimed_by_account_id = launcher_account_id
             row.claimed_at = now
             row.claim_expires_at = expires_at
             row.updated_at = now
+            import secrets
+
+            token = secrets.token_urlsafe(32)
+            row.bootstrap_token_hash = self._hash_bootstrap_token(token)
+            row.bootstrap_token_issued_at = now
+            row.bootstrap_token_used_at = None
             session.add(row)
-            return row
+            return (row, token)
+
+    def claim_order_with_bootstrap_token(
+        self,
+        *,
+        order_id: str,
+        launcher_account_id: str,
+        claim_ttl_seconds: int = 600,
+    ) -> tuple[CapacityLaunchOrder | None, str]:
+        """Claim a specific open order and mint a one-time bootstrap token."""
+        normalized_order_id = (order_id or "").strip()
+        if not normalized_order_id:
+            return (None, "")
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(seconds=max(30, int(claim_ttl_seconds)))
+
+        with get_db() as session:
+            row = session.get(CapacityLaunchOrder, normalized_order_id)
+            if not row or row.status != "open":
+                return (None, "")
+
+            row.status = "claimed"
+            row.claimed_by_account_id = launcher_account_id
+            row.claimed_at = now
+            row.claim_expires_at = expires_at
+            row.updated_at = now
+            import secrets
+
+            token = secrets.token_urlsafe(32)
+            row.bootstrap_token_hash = self._hash_bootstrap_token(token)
+            row.bootstrap_token_issued_at = now
+            row.bootstrap_token_used_at = None
+            session.add(row)
+            return (row, token)
 
     def update_status(
         self,

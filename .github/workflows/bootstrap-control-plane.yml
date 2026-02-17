@@ -34,7 +34,7 @@ on:
         default: "0"
 
 concurrency:
-  # Serialize workflows that mutate the shared control plane to avoid overlap with Deploy Examples.
+  # Serialize workflows that mutate the shared control plane to avoid overlap with Builtin Deploy Examples.
   group: easyenclave-shared-control-plane
   cancel-in-progress: false
 
@@ -46,8 +46,11 @@ jobs:
 
     env:
       # Infra + trust.
-      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+
+      # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
 
       # Cloudflare (public endpoint for https://app.easyenclave.com).
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -89,7 +92,7 @@ jobs:
       - name: Validate required secrets
         run: |
           set -euo pipefail
-          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
+          for v in ITA_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required secret/env: $v"
               exit 1

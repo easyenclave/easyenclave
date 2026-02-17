@@ -87,6 +87,10 @@ class AgentRegistrationRequest(BaseModel):
     version: str = "1.0.0"
     node_size: str = ""
     datacenter: str = ""
+    # Optional CP-managed bootstrap authorization. Used when the agent does not
+    # include an Intel Trust Authority token (CP mints it from quote_b64).
+    bootstrap_order_id: str = ""
+    bootstrap_token: str = ""
 
 
 class AgentRegistrationResponse(BaseModel):
@@ -317,6 +321,8 @@ class CapacityLaunchOrderClaimResponse(BaseModel):
 
     claimed: bool
     order: CapacityLaunchOrderView | None = None
+    # Plaintext one-time token (only returned at claim time).
+    bootstrap_token: str | None = None
 
 
 class CapacityLaunchOrderUpdateRequest(BaseModel):

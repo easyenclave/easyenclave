@@ -387,8 +387,12 @@ class TDXManager:
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
             "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
-            # Intel Trust Authority (required for launcher to generate its initial attestation)
-            "intel_api_key": os.environ.get("INTEL_API_KEY"),
+            # Intel Trust Authority: used by the control plane (CP-mint), not by agents.
+            # Prefer ITA_API_KEY (new name) with INTEL_API_KEY as a legacy alias.
+            "intel_api_key": os.environ.get("ITA_API_KEY") or os.environ.get("INTEL_API_KEY"),
+            # GCP credentials for CP-native provisioning (optional).
+            "gcp_project_id": os.environ.get("GCP_PROJECT_ID"),
+            "gcp_service_account_key": os.environ.get("GCP_SERVICE_ACCOUNT_KEY"),
             # Auth / billing settings passed through to the control-plane container
             "github_oauth_client_id": os.environ.get("GITHUB_OAUTH_CLIENT_ID"),
             "github_oauth_client_secret": os.environ.get("GITHUB_OAUTH_CLIENT_SECRET"),
@@ -410,10 +414,6 @@ class TDXManager:
         }
         # Drop empty keys to minimize kernel cmdline payload size.
         config = {k: v for k, v in config.items() if v not in (None, "")}
-        if "intel_api_key" not in config:
-            raise RuntimeError(
-                "INTEL_API_KEY is required to launch a control plane VM (launcher attestation)."
-            )
         result = self.vm_new(
             image=image,
             mode=CONTROL_PLANE_MODE,
@@ -1108,42 +1108,35 @@ To start a new EasyEnclave network:
                             print(json.dumps(result, indent=2))
                             sys.exit(1)
 
-                        if args.bootstrap_measurers:
-                            intel_api_key = os.environ.get("INTEL_API_KEY", "")
-                            if not intel_api_key:
-                                print(
-                                    "Error: INTEL_API_KEY is required to bootstrap measuring agents.",
-                                    file=sys.stderr,
+                            if args.bootstrap_measurers:
+                                datacenter = os.environ.get("AGENT_DATACENTER", "")
+                                cloud_provider = os.environ.get("AGENT_CLOUD_PROVIDER", "baremetal")
+                                availability_zone = os.environ.get(
+                                    "AGENT_DATACENTER_AZ", "github-runner"
                                 )
-                                sys.exit(1)
+                                region = os.environ.get("AGENT_DATACENTER_REGION", "")
+                                result["bootstrap_agents"] = []
 
-                            datacenter = os.environ.get("AGENT_DATACENTER", "")
-                            cloud_provider = os.environ.get("AGENT_CLOUD_PROVIDER", "baremetal")
-                            availability_zone = os.environ.get(
-                                "AGENT_DATACENTER_AZ", "github-runner"
-                            )
-                            region = os.environ.get("AGENT_DATACENTER_REGION", "")
-                            result["bootstrap_agents"] = []
-
-                            for bootstrap_size in bootstrap_sizes:
-                                size_mem, size_vcpus, size_disk = NODE_SIZES[bootstrap_size]
-                                bootstrap_vm_id = (
-                                    f"bootstrap-{bootstrap_size}-{uuid.uuid4().hex[:8]}"
-                                )
-                                bootstrap_config = {
-                                    "control_plane_url": url,
-                                    "intel_api_key": intel_api_key,
-                                    "vm_id": bootstrap_vm_id,
-                                }
-                                if datacenter:
-                                    bootstrap_config["datacenter"] = datacenter
-                                else:
-                                    if cloud_provider:
-                                        bootstrap_config["cloud_provider"] = cloud_provider
-                                    if availability_zone:
-                                        bootstrap_config["availability_zone"] = availability_zone
-                                    if region:
-                                        bootstrap_config["region"] = region
+                                for bootstrap_size in bootstrap_sizes:
+                                    size_mem, size_vcpus, size_disk = NODE_SIZES[bootstrap_size]
+                                    bootstrap_vm_id = (
+                                        f"bootstrap-{bootstrap_size}-{uuid.uuid4().hex[:8]}"
+                                    )
+                                    bootstrap_config = {
+                                        "control_plane_url": url,
+                                        "vm_id": bootstrap_vm_id,
+                                    }
+                                    if datacenter:
+                                        bootstrap_config["datacenter"] = datacenter
+                                    else:
+                                        if cloud_provider:
+                                            bootstrap_config["cloud_provider"] = cloud_provider
+                                        if availability_zone:
+                                            bootstrap_config["availability_zone"] = (
+                                                availability_zone
+                                            )
+                                        if region:
+                                            bootstrap_config["region"] = region
 
                                 print(
                                     f"Launching bootstrap measuring agent VM (size={bootstrap_size})...",
@@ -1214,8 +1207,11 @@ To start a new EasyEnclave network:
             if args.vm_command == "new":
                 config = {
                     "control_plane_url": args.easyenclave_url,
-                    "intel_api_key": args.intel_api_key,
                 }
+                # Legacy: agents used to call ITA directly. Control plane now mints ITA tokens,
+                # so this should typically be empty; keep only when explicitly provided.
+                if args.intel_api_key:
+                    config["intel_api_key"] = args.intel_api_key
                 if args.cloud_provider:
                     config["cloud_provider"] = args.cloud_provider
                 if args.availability_zone:

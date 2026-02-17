@@ -38,8 +38,10 @@ inputs:
   # Optional launcher fulfillment (CI datacenter-manager).
   # If these are provided and no GCP capacity exists, the action will provision a CVM on GCP
   # by claiming the CP's launch order (scripts/capacity_launcher_worker.py).
+  # NOTE: Intel API keys are no longer required on agents; the control plane mints ITA
+  # tokens from quote_b64 when configured. Retained as a deprecated input for callers.
   intel_api_key:
-    description: Intel Trust Authority API key used by provisioned VMs to attest/register
+    description: Deprecated (ignored)
     required: false
     default: ""
 
@@ -312,126 +314,8 @@ runs:
 
         echo "Capacity request accepted: datacenter='$target_dc' node_size='${NODE_SIZE:-}' shortfall=$shortfall dispatched=$dispatched tx_id=${tx_id:-none} charged=${charged} simulated=${simulated}"
 
-    - name: Auth to Google Cloud (for launcher fulfillment)
-      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
-      uses: ./.github/actions/setup-gcp
-      with:
-        gcp_service_account_key: ${{ inputs.gcp_service_account_key }}
-        gcp_project_id: ${{ inputs.gcp_project_id }}
-
-    - name: Cleanup stale managed GCP VMs (quota guard)
-      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
-      shell: bash
-      env:
-        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
-        GCP_ZONE: ${{ inputs.gcp_zone }}
-      run: |
-        set -euo pipefail
-        # Best-effort cleanup of prior CI-created VMs to avoid exhausting global CPU quota.
-        python3 scripts/cloud_provisioner.py cleanup \
-          --provider gcp \
-          --all-managed \
-          --gcp-project "$GCP_PROJECT_ID" \
-          --gcp-zone "$GCP_ZONE" \
-          || true
-
-    - name: Fulfill GCP capacity launch order (CI launcher)
-      if: steps.precheck.outputs.need_provision == 'true' && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != '' && inputs.intel_api_key != ''
-      id: fulfill
-      shell: bash
-      env:
-        CP_URL: ${{ inputs.control_plane_url }}
-        INTEL_API_KEY: ${{ inputs.intel_api_key }}
-        GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
-        TARGET_DC: ${{ steps.dispatch.outputs.target_datacenter }}
-        NODE_SIZE: ${{ inputs.node_size }}
-        WAIT_SECONDS: ${{ inputs.wait_seconds }}
-        GITHUB_RUN_ID: ${{ github.run_id }}
-        GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
-      run: |
-        set -euo pipefail
-
-        if [ -z "${TARGET_DC:-}" ]; then
-          echo "::error::Missing dispatch target datacenter output"
-          exit 1
-        fi
-        if [ -z "${INTEL_API_KEY:-}" ]; then
-          echo "::error::Missing intel_api_key input (required for provisioning a registering agent)."
-          exit 1
-        fi
-        if [ -z "${GCP_PROJECT_ID:-}" ]; then
-          echo "::error::Missing gcp_project_id input (required for provisioning)."
-          exit 1
-        fi
-
-        # Create a transient launcher account to claim launch orders.
-        # Retry on Cloudflare tunnel flaps (HTTP 530) / transient 5xx.
-        account_name="ci-launcher-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
-        resp=""
-        http_code="000"
-        for attempt in $(seq 1 30); do
-          body="$(mktemp)"
-          http_code="$(
-            curl -sS -o "$body" -w "%{http_code}" \
-              -X POST "$CP_URL/api/v1/accounts" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "launcher"}')" \
-              || echo 000
-          )"
-          resp="$(cat "$body")"
-          rm -f "$body"
-
-          if [ "$http_code" = "530" ]; then
-            echo "::warning::Control plane temporarily unavailable (HTTP 530). Retrying ($attempt/30)..."
-            sleep 3
-            continue
-          fi
-          if [ "$http_code" = "000" ] || [ "$http_code" -ge 500 ]; then
-            echo "::warning::Control plane request failed (HTTP ${http_code}). Retrying ($attempt/30)..."
-            sleep 3
-            continue
-          fi
-          break
-        done
-
-        if [ "$http_code" -ge 400 ]; then
-          detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
-          echo "::error::Failed to create launcher account (HTTP $http_code): ${detail:-$resp}"
-          exit 1
-        fi
-        launcher_key="$(echo "$resp" | jq -r '.api_key // empty')"
-        if [ -z "$launcher_key" ]; then
-          echo "::error::Control plane did not return launcher API key"
-          exit 1
-        fi
-        echo "::add-mask::${launcher_key}"
-
-        # Claim and fulfill exactly one order for this pool. This is intentionally minimal:
-        # the control plane remains source-of-truth for dispatch decisions and accounting.
-        #
-        # IMPORTANT: capacity/request can enqueue the launch order asynchronously. A one-shot claim
-        # immediately after request can race and exit "success" without provisioning anything.
-        # Poll until an order becomes claimable (bounded by WAIT_SECONDS).
-        timeout_seconds="${WAIT_SECONDS:-900}"
-        if ! echo "$timeout_seconds" | grep -Eq '^[0-9]+$'; then
-          timeout_seconds=900
-        fi
-        if [ "$timeout_seconds" -lt 60 ]; then
-          timeout_seconds=60
-        fi
-
-        echo "Waiting up to ${timeout_seconds}s to claim+fulfill a GCP launch order for datacenter='${TARGET_DC}' node_size='${NODE_SIZE:-}'..."
-        timeout "$timeout_seconds" python3 scripts/capacity_launcher_worker.py \
-          --cp-url "$CP_URL" \
-          --launcher-api-key "$launcher_key" \
-          --intel-api-key "$INTEL_API_KEY" \
-          --providers gcp \
-          --datacenter "$TARGET_DC" \
-          --node-size "${NODE_SIZE:-}" \
-          --gcp-project "$GCP_PROJECT_ID" \
-          --max-orders 1
-
-        echo "fulfilled=true" >> "$GITHUB_OUTPUT"
+    # NOTE: provisioning is now expected to happen inside the control plane (datacenter-manager),
+    # not in GitHub Actions. The action only dispatches and waits.
 
     - name: Bootstrap trusted MRTD for GCP agents (admin, CI-only)
       if: steps.precheck.outputs.need_provision == 'true'

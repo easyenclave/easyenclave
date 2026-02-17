@@ -6,8 +6,7 @@
 #   TRUSTED_AGENT_RTMRS  - from ci-reproducibility-check.sh
 #   TRUSTED_AGENT_MRTDS_BY_SIZE - from ci-reproducibility-check.sh
 #   TRUSTED_AGENT_RTMRS_BY_SIZE - from ci-reproducibility-check.sh
-#   INTEL_API_KEY        - Intel Trust Authority key
-#   ITA_API_KEY          - alias (usually same as INTEL_API_KEY)
+#   ITA_API_KEY          - Intel Trust Authority key (used by the control plane for CP-mint)
 #   MEASURER_IMAGE       - ghcr.io image ref for measuring enclave
 #
 # Optional env vars:
@@ -530,21 +529,18 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
     python3 infra/tdx_cli.py vm new --size tiny \
       "${AGENT_LOCATION_ARGS[@]}" \
       --easyenclave-url "$CP_URL" \
-      --intel-api-key "$INTEL_API_KEY" \
       --wait &
   done
   for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
     python3 infra/tdx_cli.py vm new --size standard \
       "${AGENT_LOCATION_ARGS[@]}" \
       --easyenclave-url "$CP_URL" \
-      --intel-api-key "$INTEL_API_KEY" \
       --wait &
   done
   for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
     python3 infra/tdx_cli.py vm new --size llm \
       "${AGENT_LOCATION_ARGS[@]}" \
       --easyenclave-url "$CP_URL" \
-      --intel-api-key "$INTEL_API_KEY" \
       --wait &
   done
 fi

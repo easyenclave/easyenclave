@@ -751,11 +751,11 @@ def validate_environment():
             "Set all of: client_id, client_secret, redirect_uri (via Settings or env vars)"
         )
 
-    # Intel Trust Authority (required for attestation)
+    # Intel Trust Authority
+    # Verification uses JWKS and does not require an API key. Minting tokens from quotes does.
     if not os.environ.get("ITA_API_KEY"):
         warnings.append(
-            "ITA_API_KEY not set - attestation verification will fail. "
-            "Get API key from https://www.intel.com/content/www/us/en/security/trust-authority.html"
+            "ITA_API_KEY not set - CP-mint attestation will be disabled (agents must provide Intel TA tokens)."
         )
 
     # Trusted MRTDs (required for agent verification)
@@ -870,6 +870,7 @@ async def lifespan(app: FastAPI):
     # Start stale agent cleanup task
     stale_agent_task = asyncio.create_task(background_stale_agent_cleanup())
     capacity_pool_task = asyncio.create_task(background_capacity_pool_controller())
+    capacity_fulfill_task = asyncio.create_task(background_capacity_launch_order_fulfiller())
 
     logger.info(
         "Started background tasks (health checkers, measurement processor, billing, session cleanup, nonce cleanup, stale agent cleanup, capacity pool)"
@@ -886,6 +887,7 @@ async def lifespan(app: FastAPI):
     nonce_cleanup_task.cancel()
     stale_agent_task.cancel()
     capacity_pool_task.cancel()
+    capacity_fulfill_task.cancel()
     for task in [
         service_health_task,
         agent_health_task,
@@ -897,6 +899,7 @@ async def lifespan(app: FastAPI):
         nonce_cleanup_task,
         stale_agent_task,
         capacity_pool_task,
+        capacity_fulfill_task,
     ]:
         try:
             await task
@@ -1153,6 +1156,46 @@ async def register_agent(request: AgentRegistrationRequest):
     if existing and existing.status == "attestation_failed":
         logger.info(f"Agent {existing.agent_id} re-registering after attestation failure")
 
+    # If the agent didn't provide an Intel TA token, optionally mint one on the CP.
+    intel_ta_token_in = (request.attestation.get("tdx") or {}).get("intel_ta_token")
+    if not intel_ta_token_in:
+        order_id = (request.bootstrap_order_id or "").strip()
+        token = (request.bootstrap_token or "").strip()
+        if not order_id or not token:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "attestation.tdx.intel_ta_token is required unless "
+                    "bootstrap_order_id + bootstrap_token are provided"
+                ),
+            )
+        ok = capacity_launch_order_store.verify_and_consume_bootstrap_token(
+            order_id=order_id,
+            token=token,
+            vm_name=vm_name,
+        )
+        if not ok:
+            raise HTTPException(status_code=403, detail="Invalid bootstrap token")
+
+        quote_b64 = (request.attestation.get("tdx") or {}).get("quote_b64")
+        if not quote_b64:
+            raise HTTPException(
+                status_code=400,
+                detail="attestation.tdx.quote_b64 is required for CP-mint flow",
+            )
+        from app.ita_mint import ITAMintError, mint_intel_ta_token
+
+        try:
+            minted = await mint_intel_ta_token(quote_b64=quote_b64)
+        except ITAMintError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        # Inject minted token for downstream verification.
+        tdx = request.attestation.get("tdx") or {}
+        if not isinstance(tdx, dict):
+            tdx = {}
+        tdx["intel_ta_token"] = minted
+        request.attestation["tdx"] = tdx
+
     # Always verify attestation (Intel TA token + MRTD trusted list), including re-registration.
     try:
         verification = await verify_agent_registration(request.attestation, node_size=node_size)
@@ -1375,7 +1418,10 @@ async def agent_heartbeat(agent_id: str, request: AgentHeartbeatRequest):
 
     intel_ta_token = (request.attestation.get("tdx") or {}).get("intel_ta_token")
     if not intel_ta_token:
-        raise HTTPException(status_code=400, detail="attestation.tdx.intel_ta_token is required")
+        # Allow quote-only heartbeats for CP-mint agents (keeps liveness without
+        # forcing Intel API keys onto every VM).
+        agent_store.heartbeat(agent_id)
+        return {"status": "ok"}
 
     # Verify token and bind it to this agent's MRTD (prevents cross-agent spoofing).
     ita_result = await verify_attestation_token(intel_ta_token)
@@ -1603,6 +1649,86 @@ async def background_capacity_pool_controller():
         except Exception as e:
             logger.error(f"Capacity pool reconcile error: {e}")
         await asyncio.sleep(interval_seconds)
+
+
+async def background_capacity_launch_order_fulfiller():
+    """CP-native capacity fulfiller (currently: GCP).
+
+    If GCP credentials are configured on the control plane, this task will
+    claim open GCP launch orders and provision instances directly via the
+    Compute API (no external scripts, no gcloud).
+    """
+    from app.gcp_capacity import GCPProvisionError, create_tdx_instance_for_order
+
+    internal_launcher_id = "cp-internal-launcher"
+    poll_seconds = 5
+    while True:
+        try:
+            # Find the oldest open GCP order.
+            open_orders = capacity_launch_order_store.list("open")
+            gcp_order = None
+            for order in open_orders:
+                dc = (order.datacenter or "").strip().lower()
+                if dc == "gcp" or dc.startswith("gcp:"):
+                    gcp_order = order
+                    break
+            if not gcp_order:
+                await asyncio.sleep(poll_seconds)
+                continue
+
+            claim_ttl = max(
+                30,
+                get_setting_int("operational.capacity_order_claim_ttl_seconds", fallback=600),
+            )
+            claimed, bootstrap_token = capacity_launch_order_store.claim_order_with_bootstrap_token(
+                order_id=gcp_order.order_id,
+                launcher_account_id=internal_launcher_id,
+                claim_ttl_seconds=claim_ttl,
+            )
+            if not claimed:
+                await asyncio.sleep(1)
+                continue
+
+            capacity_launch_order_store.update_status(
+                order_id=claimed.order_id,
+                launcher_account_id=internal_launcher_id,
+                status="provisioning",
+            )
+
+            try:
+                vm_name = await create_tdx_instance_for_order(
+                    order_id=claimed.order_id,
+                    bootstrap_token=bootstrap_token,
+                    datacenter=claimed.datacenter,
+                    node_size=claimed.node_size or "tiny",
+                )
+            except GCPProvisionError as exc:
+                capacity_launch_order_store.update_status(
+                    order_id=claimed.order_id,
+                    launcher_account_id=internal_launcher_id,
+                    status="failed",
+                    error=str(exc)[:450],
+                )
+                logger.warning(f"GCP fulfill failed for order {claimed.order_id}: {exc}")
+                await asyncio.sleep(poll_seconds)
+                continue
+
+            capacity_launch_order_store.update_status(
+                order_id=claimed.order_id,
+                launcher_account_id=internal_launcher_id,
+                status="fulfilled",
+                vm_name=vm_name,
+            )
+            logger.info(
+                "Fulfilled GCP capacity order=%s dc=%s size=%s vm=%s",
+                claimed.order_id,
+                claimed.datacenter,
+                claimed.node_size,
+                vm_name,
+            )
+        except Exception as exc:
+            logger.error(f"Capacity launch order fulfiller error: {exc}")
+        await asyncio.sleep(poll_seconds)
 
 
 def _capacity_pool_target_view(
@@ -1835,16 +1961,20 @@ async def claim_capacity_launch_order(
         30,
         get_setting_int("operational.capacity_order_claim_ttl_seconds", fallback=600),
     )
-    order = capacity_launch_order_store.claim_next(
+    order, bootstrap_token = capacity_launch_order_store.claim_next_with_bootstrap_token(
         launcher_account_id=launcher_account_id,
         datacenter=datacenter,
         node_size=node_size,
         claim_ttl_seconds=claim_ttl,
     )
     if not order:
-        return CapacityLaunchOrderClaimResponse(claimed=False, order=None)
+        return CapacityLaunchOrderClaimResponse(claimed=False, order=None, bootstrap_token=None)
 
-    return CapacityLaunchOrderClaimResponse(claimed=True, order=_capacity_launch_order_view(order))
+    return CapacityLaunchOrderClaimResponse(
+        claimed=True,
+        order=_capacity_launch_order_view(order),
+        bootstrap_token=bootstrap_token,
+    )
 
 
 @app.post(
