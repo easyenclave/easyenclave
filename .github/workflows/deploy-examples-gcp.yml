@@ -1,0 +1,107 @@
+# Deploy Examples (GCP)
+#
+# Runs after the local Deploy Examples workflow succeeds.
+#
+# Goal: keep "Deploy Examples" fast and local-only; run cloud provisioning/deploy as
+# a separate, follow-up workflow.
+
+name: Deploy Examples (GCP)
+
+on:
+  workflow_run:
+    workflows: [Deploy Examples]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  # This workflow mutates the shared control plane (apps + deployments); do not overlap with other CP-mutating runs.
+  group: easyenclave-shared-control-plane
+  cancel-in-progress: false
+
+env:
+  CP_URL: https://app.easyenclave.com
+  CP_EXPECTED_GIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  deploy-hello-tdx-gcp:
+    name: Deploy Hello TDX (gcp)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Wait for control plane bootstrap (git_sha match)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
+          deadline=$(( $(date +%s) + 900 ))
+          while :; do
+            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
+            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
+            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
+              echo "Control plane ready: git_sha=$sha"
+              break
+            fi
+            now="$(date +%s)"
+            if [ "$now" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
+              echo "Last /health:"
+              echo "${body:-<empty>}"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Validate required secrets for GCP deploy
+        shell: bash
+        env:
+          INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
+          CP_DEPLOYER_ACCOUNT_ID: ${{ secrets.CP_DEPLOYER_ACCOUNT_ID }}
+          CP_DEPLOYER_API_KEY: ${{ secrets.CP_DEPLOYER_API_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for v in INTEL_API_KEY CP_DEPLOYER_ACCOUNT_ID CP_DEPLOYER_API_KEY GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY AGENT_ADMIN_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::warning::Missing secret: $v"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::notice::GCP deploy is not configured; skipping."
+            exit 0
+          fi
+
+      - name: Ensure app exists (idempotent)
+        uses: ./.github/actions/register-app
+        with:
+          name: hello-tdx
+          description: "Hello TDX - Example app demonstrating TDX attestation"
+          control_plane_url: ${{ env.CP_URL }}
+
+      - name: Deploy to EasyEnclave (GCP)
+        uses: ./.github/actions/gcp-deploy-example
+        with:
+          app_name: hello-tdx
+          compose_file: examples/hello-tdx/docker-compose.yml
+          service_name: hello-tdx
+          health_endpoint: /
+          control_plane_url: ${{ env.CP_URL }}
+          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+          github_owner: ${{ github.repository_owner }}
+          node_size: tiny
+          gcp_datacenter: ${{ vars.GCP_DATACENTER || 'gcp:us-central1-a' }}
+          billing_account_id: ${{ secrets.CP_DEPLOYER_ACCOUNT_ID }}
+          billing_api_key: ${{ secrets.CP_DEPLOYER_API_KEY }}
+          billing_months: "1"
+          intel_api_key: ${{ secrets.INTEL_API_KEY }}
+          gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          gcp_service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}

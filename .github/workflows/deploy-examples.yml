@@ -154,62 +154,10 @@ jobs:
           node_size: tiny
           allowed_clouds: baremetal
 
-  deploy-hello-tdx-gcp:
-    name: Deploy Hello TDX (gcp)
-    runs-on: ubuntu-latest
-    needs: register-hello-tdx
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Wait for control plane bootstrap (git_sha match)
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
-          deadline=$(( $(date +%s) + 900 ))
-          while :; do
-            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
-              echo "Control plane ready: git_sha=$sha"
-              break
-            fi
-            now="$(date +%s)"
-            if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
-              echo "Last /health:"
-              echo "${body:-<empty>}"
-              exit 1
-            fi
-            sleep 5
-          done
-
-      - name: Deploy to EasyEnclave (GCP)
-        uses: ./.github/actions/gcp-deploy-example
-        with:
-          app_name: hello-tdx
-          compose_file: examples/hello-tdx/docker-compose.yml
-          service_name: hello-tdx
-          health_endpoint: /
-          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
-          github_owner: ${{ github.repository_owner }}
-          node_size: tiny
-          gcp_datacenter: ${{ vars.GCP_DATACENTER || 'gcp:us-central1-a' }}
-          billing_account_id: ${{ secrets.CP_DEPLOYER_ACCOUNT_ID }}
-          billing_api_key: ${{ secrets.CP_DEPLOYER_API_KEY }}
-          billing_months: "1"
-          intel_api_key: ${{ secrets.INTEL_API_KEY }}
-          gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
-          gcp_service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-          gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
-
   inventory-local-tdx:
     name: Inventory/Cleanup - Local TDX measurement VMs
     runs-on: [self-hosted, tdx]
-    needs: [deploy-hello-tdx-clouds, deploy-hello-tdx-gcp]
+    needs: [deploy-hello-tdx-clouds]
     if: always()
     steps:
       - uses: actions/checkout@v4
