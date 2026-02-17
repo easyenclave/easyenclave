@@ -152,7 +152,7 @@ runs:
         allowed_clouds: gcp
 
     - name: GCP inventory (managed) before cleanup
-      if: inputs.gcp_project_id != '' && inputs.gcp_service_account_key != ''
+      if: always() && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != ''
       shell: bash
       env:
         GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
@@ -169,7 +169,7 @@ runs:
           || true
 
     - name: GCP cleanup (managed) and verify none remain
-      if: inputs.gcp_project_id != '' && inputs.gcp_service_account_key != ''
+      if: always() && inputs.gcp_project_id != '' && inputs.gcp_service_account_key != ''
       shell: bash
       env:
         GCP_PROJECT_ID: ${{ inputs.gcp_project_id }}
