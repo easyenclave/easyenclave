@@ -172,6 +172,16 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build verity artifacts (required for tdx_cli vm new)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd infra/image
+          nix develop --command make build
+
       - name: Wait for control plane bootstrap (git_sha match)
         shell: bash
         run: |
