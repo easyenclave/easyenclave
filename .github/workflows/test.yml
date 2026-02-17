@@ -105,10 +105,14 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "mrtds=${{ steps.measure.outputs.mrtds }}"
-            echo "mrtds_by_size=${{ steps.measure.outputs.mrtds_by_size }}"
-            echo "rtmrs=${{ steps.measure.outputs.rtmrs }}"
-            echo "rtmrs_by_size=${{ steps.measure.outputs.rtmrs_by_size }}"
+            # IMPORTANT: These outputs are JSON strings that include double quotes.
+            # If we wrap the echo argument in double quotes, bash will treat those
+            # embedded quotes as syntax and the output will be mangled into
+            # non-JSON like {tiny:...}. Use single quotes so JSON is preserved.
+            echo 'mrtds=${{ steps.measure.outputs.mrtds }}'
+            echo 'mrtds_by_size=${{ steps.measure.outputs.mrtds_by_size }}'
+            echo 'rtmrs=${{ steps.measure.outputs.rtmrs }}'
+            echo 'rtmrs_by_size=${{ steps.measure.outputs.rtmrs_by_size }}'
           } >> "$GITHUB_OUTPUT"
 
     outputs:
