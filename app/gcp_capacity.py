@@ -91,16 +91,33 @@ def _project_id_env() -> str:
 
 
 def _machine_type_for_size(node_size: str) -> str:
+    # Back-compat: keep the old single-value API.
+    return _machine_types_for_size(node_size)[0]
+
+
+def _machine_types_for_size(node_size: str) -> list[str]:
+    """Return a list of machine types to try, in order.
+
+    Some zones don't support all TDX-capable machine types (or have transient
+    capacity). Allow a comma-separated fallback list via env, and keep sane
+    defaults for CI.
+    """
+
+    def _csv(value: str) -> list[str]:
+        return [x.strip() for x in (value or "").split(",") if x.strip()]
+
     size = (node_size or "").strip().lower()
     if size == "tiny":
-        # NOTE: Some GCP zones/TDX offerings do not support the smallest C3 shapes.
-        # Default to a known-good baseline; callers can override via EE_GCP_MACHINE_TYPE_TINY.
-        return (os.environ.get("EE_GCP_MACHINE_TYPE_TINY") or "c3-standard-4").strip()
+        raw = os.environ.get("EE_GCP_MACHINE_TYPE_TINY") or "c3-standard-4,c3-standard-8"
+        return _csv(raw) or ["c3-standard-4", "c3-standard-8"]
     if size == "standard":
-        return (os.environ.get("EE_GCP_MACHINE_TYPE_STANDARD") or "c3-standard-4").strip()
+        raw = os.environ.get("EE_GCP_MACHINE_TYPE_STANDARD") or "c3-standard-4,c3-standard-8"
+        return _csv(raw) or ["c3-standard-4", "c3-standard-8"]
     if size == "llm":
-        return (os.environ.get("EE_GCP_MACHINE_TYPE_LLM") or "c3-standard-8").strip()
-    return (os.environ.get("EE_GCP_MACHINE_TYPE_DEFAULT") or "c3-standard-4").strip()
+        raw = os.environ.get("EE_GCP_MACHINE_TYPE_LLM") or "c3-standard-8"
+        return _csv(raw) or ["c3-standard-8"]
+    raw = os.environ.get("EE_GCP_MACHINE_TYPE_DEFAULT") or "c3-standard-4,c3-standard-8"
+    return _csv(raw) or ["c3-standard-4", "c3-standard-8"]
 
 
 def _image_project() -> str:
@@ -266,7 +283,7 @@ async def create_tdx_instance_for_order(
     if not zone:
         raise GCPProvisionError(f"Invalid datacenter '{datacenter}' (missing zone)")
 
-    machine_type = _machine_type_for_size(node_size)
+    machine_types = _machine_types_for_size(node_size)
     instance_name = _sanitize_name(f"ee-{node_size}-" + order_id[:8] + "-" + _rand_suffix())
 
     launcher_config: dict[str, Any] = {
@@ -300,7 +317,8 @@ async def create_tdx_instance_for_order(
 
     body: dict[str, Any] = {
         "name": instance_name,
-        "machineType": f"zones/{zone}/machineTypes/{machine_type}",
+        # machineType will be filled per-attempt below.
+        "machineType": "",
         "confidentialInstanceConfig": {"confidentialInstanceType": "TDX"},
         "disks": [
             {
@@ -330,33 +348,54 @@ async def create_tdx_instance_for_order(
     url = f"https://compute.googleapis.com/compute/v1/projects/{_urlquote(project_id)}/zones/{_urlquote(zone)}/instances"
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.post(url, headers=headers, json=body)
-    if resp.status_code >= 400:
-        raise GCPProvisionError(
-            f"GCP instance insert failed (HTTP {resp.status_code}): {(resp.text or '')[:500]}"
+    last_err: str | None = None
+    for machine_type in machine_types:
+        body["machineType"] = f"zones/{zone}/machineTypes/{machine_type}"
+        logger.info(
+            "Creating GCP TDX instance for order %s in %s with machineType=%s",
+            order_id[:8],
+            zone,
+            machine_type,
         )
-    op = resp.json()
-    op_name = str(op.get("name") or "").strip()
-    if not op_name:
-        # Insert succeeded but returned unexpected payload. Still return instance name.
-        logger.warning("GCP insert returned no operation name; proceeding without operation poll")
-        return instance_name
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, headers=headers, json=body)
+        if resp.status_code >= 400:
+            last_err = f"HTTP {resp.status_code}: {(resp.text or '')[:500]}"
+            logger.warning("GCP insert failed for machineType=%s: %s", machine_type, last_err)
+            continue
 
-    # Poll operation briefly to surface immediate errors (quota/capacity/etc).
-    op_url = f"https://compute.googleapis.com/compute/v1/projects/{_urlquote(project_id)}/zones/{_urlquote(zone)}/operations/{_urlquote(op_name)}"
-    deadline = _utc_now() + timedelta(seconds=120)
-    while _utc_now() < deadline:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            op_resp = await client.get(op_url, headers=headers)
-        if op_resp.status_code >= 400:
-            break
-        payload = op_resp.json()
-        if str(payload.get("status") or "").upper() == "DONE":
-            err = payload.get("error")
-            if err:
-                raise GCPProvisionError(f"GCP operation failed: {json.dumps(err)[:500]}")
+        op = resp.json()
+        op_name = str(op.get("name") or "").strip()
+        if not op_name:
+            # Insert succeeded but returned unexpected payload. Still return instance name.
+            logger.warning(
+                "GCP insert returned no operation name for machineType=%s; proceeding without op poll",
+                machine_type,
+            )
             return instance_name
-        time.sleep(2)
 
-    return instance_name
+        # Poll operation briefly to surface immediate errors (quota/capacity/etc).
+        op_url = f"https://compute.googleapis.com/compute/v1/projects/{_urlquote(project_id)}/zones/{_urlquote(zone)}/operations/{_urlquote(op_name)}"
+        deadline = _utc_now() + timedelta(seconds=120)
+        while _utc_now() < deadline:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                op_resp = await client.get(op_url, headers=headers)
+            if op_resp.status_code >= 400:
+                last_err = f"op poll HTTP {op_resp.status_code}: {(op_resp.text or '')[:240]}"
+                break
+            payload = op_resp.json()
+            if str(payload.get("status") or "").upper() == "DONE":
+                err = payload.get("error")
+                if err:
+                    last_err = f"op failed: {json.dumps(err)[:500]}"
+                    break
+                return instance_name
+            time.sleep(2)
+
+        logger.warning(
+            "GCP operation did not complete cleanly for machineType=%s: %s", machine_type, last_err
+        )
+
+    raise GCPProvisionError(
+        f"GCP instance insert failed for all machine types {machine_types!r}: {last_err or 'unknown error'}"
+    )
