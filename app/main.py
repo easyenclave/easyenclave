@@ -635,52 +635,125 @@ async def send_measurement_request(measure_url: str, version: AppVersion, callba
         logger.info(f"Sent measurement request for {version.app_name}@{version.version}")
 
 
-async def background_measurement_processor():
-    """Send pending app versions to the measuring enclave for measurement.
+async def _measure_pending_version_locally(version: AppVersion) -> None:
+    """Measure a version inside the control plane and update status to attested/failed.
 
-    Groups pending versions by node_size and routes each to the matching
-    measuring enclave service (e.g. measuring-enclave-tiny, measuring-enclave-llm).
-    Falls back to "measuring-enclave" for versions with empty node_size.
+    This removes the need to deploy a separate "measuring-enclave" workload and pin capacity.
+    """
+    from .version_measurement import MeasurementError, measure_compose
+
+    mode = get_setting("operational.signature_verification_mode").strip().lower()
+    if mode not in {"strict", "warn", "disabled"}:
+        logger.warning(f"Invalid SIGNATURE_VERIFICATION_MODE '{mode}', defaulting to 'warn'")
+        mode = "warn"
+
+    # Mark as in-progress (best effort). A periodic worker will also retry attesting
+    # versions if the process restarts mid-measurement.
+    app_version_store.update_status(version.version_id, status="attesting")
+
+    try:
+        measurement = await measure_compose(
+            version.compose,
+            node_size=version.node_size,
+            signature_mode=mode,
+        )
+    except MeasurementError as exc:
+        app_version_store.update_status(
+            version.version_id,
+            status="failed",
+            rejection_reason=str(exc),
+        )
+        logger.warning(
+            "Local measurement failed: %s@%s node_size='%s' (%s): %s",
+            version.app_name,
+            version.version,
+            version.node_size,
+            version.version_id,
+            exc,
+        )
+        return
+    except Exception as exc:
+        app_version_store.update_status(
+            version.version_id,
+            status="failed",
+            rejection_reason=str(exc),
+        )
+        logger.exception(
+            "Local measurement crashed: %s@%s node_size='%s' (%s)",
+            version.app_name,
+            version.version,
+            version.node_size,
+            version.version_id,
+        )
+        return
+
+    # Enforce signature verification policy (strict fails the version).
+    if mode == "strict":
+        failures: list[str] = []
+        resolved_images = (
+            measurement.get("resolved_images") if isinstance(measurement, dict) else None
+        )
+        if not isinstance(resolved_images, dict) or not resolved_images:
+            failures.append("resolved_images missing from measurement payload")
+        else:
+            for service_name, image_entry in resolved_images.items():
+                if not isinstance(image_entry, dict):
+                    failures.append(f"{service_name}: invalid image measurement payload")
+                    continue
+                if image_entry.get("signature_verified") is True:
+                    continue
+                reason = image_entry.get("signature_error") or "signature not verified"
+                failures.append(f"{service_name}: {reason}")
+
+        if failures:
+            summary = "; ".join(failures[:5])
+            if len(failures) > 5:
+                summary += f"; ... (+{len(failures) - 5} more)"
+            message = (
+                "Image signature verification failed: "
+                f"{summary} (mode={mode}, app={version.app_name}@{version.version})"
+            )
+            app_version_store.update_status(
+                version.version_id,
+                status="failed",
+                attestation=measurement,
+                rejection_reason=message,
+            )
+            logger.warning(message)
+            return
+
+    app_version_store.update_status(
+        version.version_id,
+        status="attested",
+        attestation=measurement,
+    )
+    logger.info(
+        "Local measurement success: %s@%s node_size='%s' (%s)",
+        version.app_name,
+        version.version,
+        version.node_size,
+        version.version_id,
+    )
+
+
+async def background_measurement_processor():
+    """Measure pending app versions.
+
+    The control plane performs digest resolution and optional signature verification
+    directly, so deployments don't need to keep a dedicated "measuring-enclave" node.
     """
     while True:
         try:
-            pending = app_version_store.list_by_status("pending")
-            if pending:
-                # Group by node_size
-                by_size: dict[str, list] = {}
-                for version in pending:
-                    by_size.setdefault(version.node_size, []).append(version)
-
-                cp_url = os.environ.get("EASYENCLAVE_CP_URL", "https://app.easyenclave.com")
-
-                for node_size, versions in by_size.items():
-                    # Determine measurer service name
-                    if node_size:
-                        measurer_name = f"measuring-enclave-{node_size}"
-                    else:
-                        measurer_name = "measuring-enclave"
-
-                    try:
-                        # Prefer the proxy routing logic (deployed agents + service_name config).
-                        # The standalone service registry can be stale/misrouted for per-agent tunnels.
-                        url = await proxy.get_service_url(measurer_name)
-                    except HTTPException:
-                        logger.debug(
-                            f"No routable measurer '{measurer_name}' for node_size='{node_size}', "
-                            f"skipping {len(versions)} pending version(s)"
-                        )
+            candidates = app_version_store.list_by_status(
+                "pending"
+            ) + app_version_store.list_by_status("attesting")
+            if candidates:
+                for version in candidates:
+                    # Idempotency guard: if something already wrote an attestation payload,
+                    # don't overwrite it.
+                    if isinstance(version.attestation, dict) and version.attestation:
                         continue
-
-                    measure_url = url.rstrip("/") + "/api/measure"
-
-                    for version in versions:
-                        try:
-                            await send_measurement_request(measure_url, version, cp_url)
-                            app_version_store.update_status(version.version_id, status="attesting")
-                        except Exception as e:
-                            logger.error(
-                                f"Failed to send measurement request for {version.version_id}: {e}"
-                            )
+                    await _measure_pending_version_locally(version)
         except Exception as e:
             logger.error(f"Measurement processor error: {e}")
         await asyncio.sleep(MEASUREMENT_CHECK_INTERVAL)
@@ -4144,7 +4217,14 @@ async def publish_app_version(name: str, request: AppVersionCreateRequest):
         f"({new_version.version_id})"
     )
 
-    # Version stays "pending" until the measuring enclave processes it
+    # Kick measurement immediately (best-effort). A periodic background worker will
+    # still pick up any pending versions if this task is interrupted.
+    try:
+        asyncio.create_task(_measure_pending_version_locally(new_version))
+    except Exception:
+        # Never fail publish due to background scheduling; version remains pending.
+        logger.debug("Failed to schedule immediate measurement task", exc_info=True)
+
     return AppVersionResponse(
         version_id=new_version.version_id,
         app_name=new_version.app_name,

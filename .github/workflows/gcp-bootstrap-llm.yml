@@ -1,3 +1,9 @@
+# GCP Bootstrap LLM (deprecated measurer-free flow)
+#
+# This workflow used to bootstrap measuring-enclave-llm.
+# The control plane now measures app versions directly (digest resolution + optional cosign),
+# so the only remaining requirement is verified GCP LLM agent capacity.
+
 name: GCP Bootstrap LLM
 
 on:
@@ -57,26 +63,8 @@ jobs:
           echo "datacenter=$dc" >> "$GITHUB_OUTPUT"
           echo "Resolved datacenter: $dc"
 
-      - name: Check measuring-enclave-llm health
-        id: measurer
-        shell: bash
-        run: |
-          set -euo pipefail
-          healthy_count="$(
-            curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/services?name=measuring-enclave-llm&include_down=true" \
-            | jq -r '[.services[]? | select(.name == "measuring-enclave-llm" and (.health_status // "" | ascii_downcase) == "healthy")] | length'
-          )"
-          if [ "${healthy_count:-0}" -gt 0 ]; then
-            echo "healthy=true" >> "$GITHUB_OUTPUT"
-            echo "Existing healthy measuring-enclave-llm found; bootstrap is skipped."
-          else
-            echo "healthy=false" >> "$GITHUB_OUTPUT"
-            echo "No healthy measuring-enclave-llm found; bootstrap is required."
-          fi
-
-      - name: Ensure GCP llm capacity for measurer bootstrap
-        if: steps.measurer.outputs.healthy != 'true'
-        id: preflight_measurer
+      - name: Ensure GCP llm capacity for private-llm
+        id: preflight_llm
         uses: ./.github/actions/preflight-gcp
         with:
           control_plane_url: ${{ env.CP_URL }}
@@ -87,87 +75,6 @@ jobs:
           billing_months: "1"
           gcp_datacenter: ${{ steps.target.outputs.datacenter }}
           gcp_zone: ${{ env.GCP_ZONE_LIST }}
-
-      - name: Capture trusted llm baseline from verified GCP agent
-        if: steps.measurer.outputs.healthy != 'true'
-        id: gcp_baseline
-        shell: bash
-        env:
-          TARGET_DC: ${{ steps.target.outputs.datacenter }}
-        run: |
-          set -euo pipefail
-          agents="$(curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/agents")"
-          row="$(
-            echo "$agents" | jq -c --arg dc "${TARGET_DC}" '
-              [
-                .agents[]
-                | (.datacenter // "" | ascii_downcase) as $agent_dc
-                | (.status // "" | ascii_downcase) as $status
-                | select(.verified == true)
-                | select((.health_status // "" | ascii_downcase) == "healthy")
-                | select((.node_size // "" | ascii_downcase) == "llm")
-                | select($agent_dc == ($dc | ascii_downcase))
-                | select($status == "undeployed" or $status == "deployed")
-                | select((.mrtd // "") != "")
-                | (
-                    .rtmrs
-                    // {
-                      rtmr0: (.attestation.tdx.measurements.rtmr0 // ""),
-                      rtmr1: (.attestation.tdx.measurements.rtmr1 // ""),
-                      rtmr2: (.attestation.tdx.measurements.rtmr2 // ""),
-                      rtmr3: (.attestation.tdx.measurements.rtmr3 // "")
-                    }
-                  ) as $resolved_rtmrs
-                | select(($resolved_rtmrs.rtmr0 // "") != "" and ($resolved_rtmrs.rtmr1 // "") != "" and ($resolved_rtmrs.rtmr2 // "") != "" and ($resolved_rtmrs.rtmr3 // "") != "")
-                | . + {_resolved_rtmrs: $resolved_rtmrs}
-              ] | first // empty
-            '
-          )"
-          if [ -z "$row" ] || [ "$row" = "null" ]; then
-            echo "::error::No verified healthy GCP llm agent with MRTD/RTMRs found in datacenter '${TARGET_DC}'."
-            echo "::error::Agents in this datacenter:"
-            echo "$agents" | jq -r --arg dc "${TARGET_DC}" '
-              [.agents[]
-               | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
-               | {agent_id, status, health_status, verified, node_size, datacenter, mrtd, has_rtmrs:(.rtmrs != null), deployed_app}
-              ]'
-            exit 1
-          fi
-
-          mrtd="$(echo "$row" | jq -r '.mrtd')"
-          rtmrs="$(echo "$row" | jq -c '._resolved_rtmrs')"
-          mrtds_by_size="$(jq -cn --arg mrtd "$mrtd" '{llm:$mrtd}')"
-          rtmrs_by_size="$(jq -cn --argjson rtmrs "$rtmrs" '{llm:$rtmrs}')"
-
-          echo "mrtds_by_size=$mrtds_by_size" >> "$GITHUB_OUTPUT"
-          echo "rtmrs_by_size=$rtmrs_by_size" >> "$GITHUB_OUTPUT"
-          echo "Using GCP llm baseline MRTD: ${mrtd:0:16}..."
-
-      - name: Bootstrap measuring-enclave-llm on GCP
-        if: steps.measurer.outputs.healthy != 'true'
-        env:
-          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
-          ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-          NODE_SIZE: llm
-          MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
-          ALLOWED_CLOUDS: gcp
-          ALLOWED_DATACENTERS: ${{ steps.target.outputs.datacenter }}
-          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
-          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.gcp_baseline.outputs.mrtds_by_size }}'
-          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.gcp_baseline.outputs.rtmrs_by_size }}'
-        run: |
-          set -euo pipefail
-          chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
-          CP_URL="${CP_URL}" \
-          ADMIN_TOKEN="${ADMIN_TOKEN}" \
-          ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-          NODE_SIZE="${NODE_SIZE}" \
-          MEASURER_IMAGE="${MEASURER_IMAGE}" \
-          ALLOWED_CLOUDS="${ALLOWED_CLOUDS}" \
-          ALLOWED_DATACENTERS="${ALLOWED_DATACENTERS}" \
-          TRUSTED_AGENT_MRTDS_BY_SIZE="${TRUSTED_AGENT_MRTDS_BY_SIZE}" \
-          TRUSTED_AGENT_RTMRS_BY_SIZE="${TRUSTED_AGENT_RTMRS_BY_SIZE}" \
-          ./scripts/bootstrap_shared_measuring_enclave.sh
 
       - name: Register private-llm app
         uses: ./.github/actions/register-app
@@ -212,9 +119,8 @@ jobs:
       - name: Summary
         run: |
           echo "gcp_datacenter=${{ steps.target.outputs.datacenter }}"
-          echo "measurer_already_healthy=${{ steps.measurer.outputs.healthy }}"
-          echo "preflight_gcp_eligible_agents=${{ steps.preflight_measurer.outputs.gcp_eligible_agents }}"
-          echo "preflight_gcp_provisioned=${{ steps.preflight_measurer.outputs.gcp_provisioned }}"
+          echo "preflight_gcp_eligible_agents=${{ steps.preflight_llm.outputs.gcp_eligible_agents }}"
+          echo "preflight_gcp_provisioned=${{ steps.preflight_llm.outputs.gcp_provisioned }}"
           echo "deployment_id=${{ steps.deploy.outputs.deployment_id }}"
           echo "agent_id=${{ steps.deploy.outputs.agent_id }}"
           echo "service_url=${{ steps.deploy.outputs.service_url }}"

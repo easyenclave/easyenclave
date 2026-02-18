@@ -7,7 +7,8 @@
 #   TRUSTED_AGENT_MRTDS_BY_SIZE - from ci-reproducibility-check.sh
 #   TRUSTED_AGENT_RTMRS_BY_SIZE - from ci-reproducibility-check.sh
 #   ITA_API_KEY          - Intel Trust Authority API key (passed into agent VMs so they can mint ITA tokens)
-#   MEASURER_IMAGE       - ghcr.io image ref for measuring enclave
+# NOTE: The control plane now measures app versions itself (digest resolution + optional cosign),
+# so we do not deploy or pin "measuring-enclave-*" capacity in CI.
 #
 # Optional env vars:
 #   CP_URL      - control plane URL (default: https://app.easyenclave.com)
@@ -15,7 +16,6 @@
 #   NUM_STANDARD_AGENTS - number of additional standard agents to launch (default: 0)
 #   NUM_LLM_AGENTS     - number of additional LLM-sized agents to launch (default: 0)
 #   CP_BOOTSTRAP_SIZES - comma-separated bootstrap measurer sizes for control-plane new (default: tiny)
-#   ADMIN_PASSWORD - admin password (auto-detected from CP logs if not set)
 #   AGENT_DATACENTER - explicit datacenter label override (e.g. baremetal:github-runner-a)
 #   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: baremetal)
 #   AGENT_DATACENTER_AZ - availability zone/datacenter shard label (default: github-runner)
@@ -32,53 +32,11 @@ AGENT_DATACENTER="${AGENT_DATACENTER:-}"
 AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
 AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
-ALLOW_AGENT_REFERENCE_BOOTSTRAP="${ALLOW_AGENT_REFERENCE_BOOTSTRAP:-false}"
 CP_BOOTSTRAP_SIZES="${CP_BOOTSTRAP_SIZES:-tiny}"
 
 # ===================================================================
 # Helpers
 # ===================================================================
-
-admin_login() {
-  local resp token
-  echo "Logging in to admin panel..." >&2
-  resp=$(curl -sf -w "\nHTTP_CODE:%{http_code}" "$CP_URL/admin/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"password\": \"$ADMIN_PASSWORD\"}")
-  token=$(echo "$resp" | grep -v "HTTP_CODE:" | jq -r '.token')
-  if [ -z "$token" ] || [ "$token" = "null" ]; then
-    echo "Admin login failed" >&2
-    echo "$resp" >&2
-    exit 1
-  fi
-  echo "Admin login successful" >&2
-  echo "$token"
-}
-
-find_reference_agent_measurement() {
-  local node_size="$1"
-  local attempts="${2:-30}"
-  local delay_seconds="${3:-10}"
-  local agents_json candidate
-
-  for attempt in $(seq 1 "$attempts"); do
-    agents_json=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
-    candidate=$(echo "$agents_json" | jq -c --arg ns "$node_size" '
-      [.agents[] | select(.verified == true
-        and (if $ns != "" then .node_size == $ns else true end))
-      ] | first')
-
-    if [ -n "$candidate" ] && [ "$candidate" != "null" ]; then
-      echo "$candidate"
-      return 0
-    fi
-
-    echo "Waiting for measurement reference (node_size=${node_size:-any})... ($attempt/$attempts)"
-    sleep "$delay_seconds"
-  done
-
-  return 1
-}
 
 load_json_map() {
   local env_name="$1"
@@ -124,9 +82,8 @@ verify_app_version_variant() {
   local app_name="$1"
   local version="$2"
   local node_size="${3:-}"
-  local require_mrtd="${4:-false}"
   local qs=""
-  local version_json actual_node_size actual_status attested_node_size measured_mrtd
+  local version_json actual_node_size actual_status attested_node_size
 
   if [ -n "$node_size" ]; then
     qs="?node_size=$node_size"
@@ -153,29 +110,21 @@ verify_app_version_variant() {
     fi
   fi
 
-  if [ "$require_mrtd" = "true" ]; then
-    measured_mrtd=$(echo "$version_json" | jq -r '.mrtd // ""')
-    if [ -z "$measured_mrtd" ] || [ "$measured_mrtd" = "null" ]; then
-      echo "::error::Missing MRTD for $app_name@$version (node_size='$node_size')"
-      return 1
-    fi
-  fi
+  # Most app version measurements (digest resolution + signature policy) do not set .mrtd.
+  # MRTD is only meaningful for special bootstrap/manual measurement types.
 
   return 0
 }
 
 # deploy_app APP_NAME DESCRIPTION IMAGE TAGS SERVICE_CONFIG [NODE_SIZE]
-#   Registers app, publishes version, attests, deploys, waits healthy.
+#   Registers app, publishes version, waits attested, deploys, waits healthy.
 #   NODE_SIZE (optional): filter agents by node_size (e.g. "llm").
 deploy_app() {
   local app_name="$1" description="$2" image="$3" tags="$4" service_config="$5"
   local node_size="${6:-}"
   local compose_b64 version publish_resp version_id
   local deployed=false http_code detail selected_agent
-  local manual_attest_body="" reference_agent reference_agent_id reference_mrtd reference_rtmrs
-  local measured_profile_mrtd="" measured_profile_rtmrs="null"
-  local attestation_detail
-  local reference_measurement measured_at attest_qs="" max_attempts require_mrtd
+  local max_attempts
 
   echo ""
   echo "===== Deploying $app_name ====="
@@ -203,100 +152,24 @@ deploy_app() {
   version_id=$(echo "$publish_resp" | jq -r '.version_id')
   echo "Published $app_name@$version ($version_id)"
 
-  # Manual attest (bootstrap) with node-size-specific measurement metadata when available.
-  if [ -n "$node_size" ]; then
-    local mrtds_by_size_json rtmrs_by_size_json
-    mrtds_by_size_json="$(load_json_map TRUSTED_AGENT_MRTDS_BY_SIZE mrtds_by_size)"
-    rtmrs_by_size_json="$(load_json_map TRUSTED_AGENT_RTMRS_BY_SIZE rtmrs_by_size)"
-
-    if ! measured_profile_mrtd="$(echo "$mrtds_by_size_json" | jq -r --arg ns "$node_size" '.[$ns] // ""' 2>/dev/null)"; then
-      echo "::warning::Failed to read MRTD profile for node_size='$node_size'; ignoring CI measured profile map"
-      measured_profile_mrtd=""
+  echo "Waiting for $app_name@$version to be attested..."
+  for i in {1..60}; do
+    vjson="$(curl -sf "$CP_URL/api/v1/apps/$app_name/versions/$version?node_size=$node_size" 2>/dev/null || echo '{}')"
+    vstatus="$(echo "$vjson" | jq -r '.status // ""' 2>/dev/null || true)"
+    if [ "$vstatus" = "attested" ]; then
+      echo "Version attested: $app_name@$version (node_size='$node_size')"
+      break
     fi
-    if ! measured_profile_rtmrs="$(echo "$rtmrs_by_size_json" | jq -c --arg ns "$node_size" '.[$ns] // null' 2>/dev/null)"; then
-      echo "::warning::Failed to read RTMR profile for node_size='$node_size'; ignoring CI measured profile map"
-      measured_profile_rtmrs="null"
+    if [ "$vstatus" = "failed" ] || [ "$vstatus" = "rejected" ]; then
+      echo "::error::Version measurement failed for $app_name@$version (status=$vstatus)"
+      echo "$vjson" | jq -r '.rejection_reason // .detail // empty' || true
+      exit 1
     fi
+    echo "  status=$vstatus ($i/60); waiting 2s..."
+    sleep 2
+  done
 
-    if [ -n "$measured_profile_mrtd" ]; then
-      measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-      reference_measurement=$(jq -cn \
-        --arg ns "$node_size" \
-        --arg mrtd "$measured_profile_mrtd" \
-        --arg measured_at "$measured_at" \
-        --argjson rtmrs "$measured_profile_rtmrs" \
-        '{bootstrap: true, measurement_type: "ci_measured_profile", node_size: $ns, mrtd: $mrtd, rtmrs: $rtmrs, measured_at: $measured_at}')
-      manual_attest_body=$(jq -cn \
-        --arg mrtd "$measured_profile_mrtd" \
-        --argjson attestation "$reference_measurement" \
-        '{mrtd: $mrtd, attestation: $attestation}')
-      echo "Using CI measured profile for $node_size bootstrap measurement"
-    else
-      if [ "$ALLOW_AGENT_REFERENCE_BOOTSTRAP" != "true" ]; then
-        echo "::error::Missing CI-measured baseline for node_size='$node_size' (needed to bootstrap $app_name)."
-        echo "::error::Fix: ensure ./scripts/ci-build-measure.sh ran with MEASURE_SIZES including '$node_size' and that TRUSTED_AGENT_MRTDS_BY_SIZE/TRUSTED_AGENT_RTMRS_BY_SIZE are passed into this job."
-        echo "::error::If you intentionally want to bootstrap from a live agent's attestation (less deterministic), set ALLOW_AGENT_REFERENCE_BOOTSTRAP=true."
-        exit 1
-      fi
-
-      echo "::warning::CI measured profile missing for '$node_size'; bootstrapping from a verified agent reference (ALLOW_AGENT_REFERENCE_BOOTSTRAP=true)"
-      reference_agent=$(find_reference_agent_measurement "$node_size" 30 10) || {
-        echo "::error::Could not find verified '$node_size' agent with MRTD/RTMRs for $app_name"
-        exit 1
-      }
-      reference_agent_id=$(echo "$reference_agent" | jq -r '.agent_id')
-      reference_mrtd=$(echo "$reference_agent" | jq -r '.mrtd')
-      reference_rtmrs=$(echo "$reference_agent" | jq -c '.rtmrs')
-
-      if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ] || [ "$reference_rtmrs" = "null" ]; then
-        attestation_detail=$(curl -sf "$CP_URL/api/v1/agents/$reference_agent_id/attestation" 2>/dev/null || echo '{}')
-        if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ]; then
-          reference_mrtd=$(echo "$attestation_detail" | jq -r '.mrtd // ""')
-        fi
-        if [ "$reference_rtmrs" = "null" ]; then
-          reference_rtmrs=$(echo "$attestation_detail" | jq -c '.rtmrs // null')
-        fi
-      fi
-
-      if [ -z "$reference_mrtd" ] || [ "$reference_mrtd" = "null" ]; then
-        echo "::error::Reference agent $reference_agent_id has no MRTD for node_size='$node_size'"
-        exit 1
-      fi
-
-      measured_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-      reference_measurement=$(jq -cn \
-        --arg ns "$node_size" \
-        --arg aid "$reference_agent_id" \
-        --arg mrtd "$reference_mrtd" \
-        --arg measured_at "$measured_at" \
-        --argjson rtmrs "${reference_rtmrs:-null}" \
-        '{bootstrap: true, measurement_type: "agent_reference", node_size: $ns, agent_id: $aid, mrtd: $mrtd, rtmrs: $rtmrs, measured_at: $measured_at}')
-      manual_attest_body=$(jq -cn \
-        --arg mrtd "$reference_mrtd" \
-        --argjson attestation "$reference_measurement" \
-        '{mrtd: $mrtd, attestation: $attestation}')
-      echo "Using reference agent $reference_agent_id for $node_size bootstrap measurement"
-    fi
-    attest_qs="?node_size=$node_size"
-  fi
-
-  echo "Manually attesting $app_name version $version (node_size=$node_size)..."
-  if [ -n "$manual_attest_body" ]; then
-    curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/attest${attest_qs}" \
-      -H "Authorization: Bearer $ADMIN_TOKEN" \
-      -H "Content-Type: application/json" \
-      -d "$manual_attest_body"
-  else
-    curl -sf -X POST "$CP_URL/api/v1/apps/$app_name/versions/$version/attest${attest_qs}" \
-      -H "Authorization: Bearer $ADMIN_TOKEN"
-  fi
-  echo "Attested $app_name@$version"
-
-  require_mrtd=false
-  if [ -n "$node_size" ]; then
-    require_mrtd=true
-  fi
-  verify_app_version_variant "$app_name" "$version" "$node_size" "$require_mrtd"
+  verify_app_version_variant "$app_name" "$version" "$node_size"
   echo "Verified app store variant for $app_name@$version (node_size='$node_size')"
 
   # Find undeployed agent and deploy (retry)
@@ -401,26 +274,12 @@ make_compose() {
   local app_name="$1"
   local image
   read -r image
-  case "$app_name" in
-    measuring-enclave*)
-      printf 'services:\n  measuring-enclave:\n    image: %s\n    ports:\n      - "8080:8080"\n' "$image"
-      ;;
-    *)
-      printf 'services:\n  %s:\n    image: %s\n    ports:\n      - "8080:8080"\n' "$app_name" "$image"
-      ;;
-  esac
+  printf 'services:\n  %s:\n    image: %s\n    ports:\n      - "8080:8080"\n' "$app_name" "$image"
 }
 
 # ===================================================================
-# 0. Validate required size-aware trust material to avoid slow retry loops
-# ===================================================================
-require_ci_measured_profile "tiny"
-if [ "$NUM_STANDARD_AGENTS" -gt 0 ]; then
-  require_ci_measured_profile "standard"
-fi
-if [ "$NUM_LLM_AGENTS" -gt 0 ]; then
-  require_ci_measured_profile "llm"
-fi
+# 0. Agent trust material is still required (trusted MRTDs) for agent verification.
+# App version measurement is handled directly by the control plane.
 
 # ===================================================================
 # 1. Deploy control plane
@@ -486,16 +345,7 @@ if [ -n "${CP_URL_CANDIDATE:-}" ]; then
 fi
 
 # Get admin password (from env or auto-generated by control plane)
-if [ -z "${ADMIN_PASSWORD:-}" ]; then
-  ADMIN_PASSWORD=$(curl -sf "$CP_URL/auth/methods" | jq -r '.generated_password // empty')
-fi
-if [ -z "${ADMIN_PASSWORD:-}" ]; then
-  echo "::error::Could not determine admin password"
-  exit 1
-fi
-
-# Admin token is used for manual attestation / trust bootstrap.
-ADMIN_TOKEN="$(admin_login)"
+# (No admin login required for CI: app version measurement is performed by the control plane itself.)
 
 # ===================================================================
 # 4. Launch additional agents in parallel
@@ -606,37 +456,4 @@ if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
   exit 1
 fi
 
-# ===================================================================
-# 6. Bootstrap apps
-# ===================================================================
-
-deploy_app "measuring-enclave-tiny" \
-  "Measuring enclave for tiny node attestation" \
-  "$MEASURER_IMAGE" \
-  "" \
-  '{"service_name": "measuring-enclave-tiny"}' \
-  tiny
-
-if [ "$NUM_STANDARD_AGENTS" -gt 0 ]; then
-  deploy_app "measuring-enclave-standard" \
-    "Measuring enclave for standard node attestation" \
-    "$MEASURER_IMAGE" \
-    "" \
-    '{"service_name": "measuring-enclave-standard"}' \
-    standard
-else
-  echo "Skipping standard measuring-enclave bootstrap (NUM_STANDARD_AGENTS=0)"
-fi
-
-if [ "$NUM_LLM_AGENTS" -gt 0 ]; then
-  deploy_app "measuring-enclave-llm" \
-    "Measuring enclave for llm node attestation" \
-    "$MEASURER_IMAGE" \
-    "" \
-    '{"service_name": "measuring-enclave-llm"}' \
-    llm
-else
-  echo "Skipping llm measuring-enclave bootstrap (NUM_LLM_AGENTS=0)"
-fi
-
-echo "==> Deploy complete!"
+echo "==> Deploy complete! (No measuring-enclave bootstrap; CP measures versions directly.)"

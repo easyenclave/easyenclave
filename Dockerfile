@@ -1,6 +1,11 @@
+FROM cgr.dev/chainguard/cosign:latest AS cosign
+
 FROM python:3.11-slim
 
 WORKDIR /app
+
+# Include cosign so SIGNATURE_VERIFICATION_MODE=strict can be enforced inside CP.
+COPY --from=cosign /usr/bin/cosign /usr/local/bin/cosign
 
 # Install docker CLI (for container log access via mounted socket)
 RUN apt-get update && apt-get install -y --no-install-recommends curl \

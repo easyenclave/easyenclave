@@ -166,9 +166,6 @@ jobs:
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
-      # Admin password for bootstrap (used to attest the initial measurer).
-      ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-
       # Bootstrap sizes/capacity.
       CP_BOOTSTRAP_SIZES: tiny
       # Total tiny capacity on bootstrap = 3 (1 bootstrap measurer + 2 additional).
@@ -178,7 +175,6 @@ jobs:
 
       # Boot the exact revision built in this CI run.
       CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
-      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -191,7 +187,7 @@ jobs:
       - name: Validate required secrets
         run: |
           set -euo pipefail
-          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
+          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required secret/env: $v"
               exit 1
@@ -218,20 +214,6 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
             (cd infra/image && nix develop --command bash -lc 'make build')
           fi
-
-      - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import bcrypt
-          pw = os.environ.get("ADMIN_PASSWORD", "").encode()
-          if not pw:
-            raise SystemExit("ADMIN_PASSWORD missing")
-          hashed = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-            f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
-          PY
 
       - name: Cleanup leaked measurement VMs (best effort)
         run: |
@@ -328,46 +310,6 @@ jobs:
           # Cleanup
           docker stop easyenclave-test
           docker rm easyenclave-test
-
-      - name: Build and push measuring enclave image
-        id: measurer
-        if: github.event_name == 'push'
-        run: |
-          retry_push() {
-            local image_ref="$1"
-            local attempts=5
-            local delay=3
-            for attempt in $(seq 1 "$attempts"); do
-              if docker push "$image_ref"; then
-                return 0
-              fi
-              if [ "$attempt" -lt "$attempts" ]; then
-                echo "Push failed for $image_ref (attempt $attempt/$attempts), retrying in ${delay}s..."
-                sleep "$delay"
-              fi
-            done
-            echo "::error::Failed to push $image_ref after $attempts attempts"
-            return 1
-          }
-
-          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          IMAGE="ghcr.io/${{ github.repository }}/measuring-enclave:${{ github.sha }}"
-          LATEST="ghcr.io/${{ github.repository }}/measuring-enclave:latest"
-          docker build -t "$IMAGE" -t "$LATEST" apps/measuring-enclave/
-          retry_push "$IMAGE"
-          retry_push "$LATEST"
-          DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
-          cosign sign --yes "$DIGEST_REF"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "digest=$DIGEST_REF" >> "$GITHUB_OUTPUT"
-          echo "Pushed $IMAGE"
-
-          # Ensure the package is publicly pullable (agents have no ghcr.io credentials)
-          PACKAGE_NAME="${{ github.event.repository.name }}%2Fmeasuring-enclave"
-          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
-            -f visibility=public || echo "::warning::Could not set package visibility to public"
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Build and push control plane image
         id: control_plane

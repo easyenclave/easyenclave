@@ -12,10 +12,6 @@ on:
         description: "Control plane image ref override (default: :latest)"
         required: false
         default: ""
-      measurer_image:
-        description: "Measuring enclave image ref override (default: :latest)"
-        required: false
-        default: ""
       cp_bootstrap_sizes:
         description: "Comma-separated measurer bootstrap sizes for tdx_cli control-plane new"
         required: false
@@ -73,8 +69,7 @@ jobs:
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
-      # Admin password for CI bootstrapping (used to attest the initial measurer).
-      # This is explicit (not auto-generated) and can be removed later once bootstrap uses API keys.
+      # Optional: provide a password admin login for convenience (GitHub OAuth is preferred).
       ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       # Deployer settings.
@@ -85,7 +80,7 @@ jobs:
 
       # Manual bootstraps default to :latest (upgrade-by-default). CI pins to :sha.
       CONTROL_PLANE_IMAGE: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:latest', github.repository) }}
-      MEASURER_IMAGE: ${{ github.event.inputs.measurer_image || format('ghcr.io/{0}/measuring-enclave:latest', github.repository) }}
+      # Control plane measures app versions directly; measurer image is no longer required.
 
     steps:
       - name: Checkout
@@ -94,7 +89,7 @@ jobs:
       - name: Validate required secrets
         run: |
           set -euo pipefail
-          for v in ITA_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
+          for v in ITA_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required secret/env: $v"
               exit 1
@@ -107,6 +102,10 @@ jobs:
       - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
         run: |
           set -euo pipefail
+          if [ -z "${ADMIN_PASSWORD:-}" ]; then
+            echo "ADMIN_PASSWORD not set; skipping password-login configuration."
+            exit 0
+          fi
           python3 - <<'PY'
           import os
           import bcrypt

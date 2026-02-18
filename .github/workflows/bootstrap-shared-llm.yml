@@ -1,7 +1,7 @@
 # Deploy Example - Private LLM
 #
 # Purpose: Demonstrate the LLM flow independently from deploy-examples:
-# 1) add/update llm measurement baseline + measurer app
+# 1) add/update llm trusted agent baseline
 # 2) deploy and smoke-test the private-llm example.
 
 name: Deploy Example - Private LLM
@@ -36,8 +36,7 @@ jobs:
       AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
       # Used to boot LLM agent VMs that can self-mint Intel Trust Authority tokens for registration.
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      # Manual workflows default to :latest (upgrade-by-default). CI pins to :sha.
-      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
+      # Control plane measures app versions directly; no measuring-enclave required.
 
     steps:
       - name: Checkout
@@ -80,7 +79,7 @@ jobs:
           chmod +x ./scripts/bootstrap_trusted_agent_mrtd.sh
           ./scripts/bootstrap_trusted_agent_mrtd.sh
 
-      - name: Ensure baremetal LLM capacity for measurer + private-llm
+      - name: Ensure baremetal LLM capacity for private-llm
         id: ensure_agents
         shell: bash
         run: |
@@ -101,26 +100,9 @@ jobs:
               ] | length'
           }
 
-          count_measurer() {
-            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
-              [.agents[]
-                | select(.verified == true)
-                | select((.health_status // "" | ascii_downcase) == "healthy")
-                | select((.status // "" | ascii_downcase) == "deployed")
-                | select((.node_size // "" | ascii_downcase) == "llm")
-                | select((.datacenter // "" | ascii_downcase) == "baremetal:github-runner")
-                | select((.deployed_app // "") == "measuring-enclave-llm")
-              ] | length'
-          }
-
           non_measurer="$(count_non_measurer || echo 0)"
-          measurer="$(count_measurer || echo 0)"
-          required_non_measurer=2
-          if [ "${measurer:-0}" -ge 1 ]; then
-            required_non_measurer=1
-          fi
+          required_non_measurer=1
           echo "Baremetal llm non-measurer candidates: $non_measurer (required: $required_non_measurer)"
-          echo "Baremetal llm measurer agents: $measurer"
 
           while [ "${non_measurer:-0}" -lt "${required_non_measurer}" ]; do
             boots=$((boots + 1))
@@ -153,40 +135,15 @@ jobs:
             done
 
             non_measurer="$(count_non_measurer || echo 0)"
-            measurer="$(count_measurer || echo 0)"
-            if [ "${measurer:-0}" -ge 1 ]; then
-              required_non_measurer=1
-            fi
             echo "Baremetal llm non-measurer candidates now: $non_measurer (required: $required_non_measurer)"
-            echo "Baremetal llm measurer agents now: $measurer"
           done
 
           printf '%s\n' "${created[@]:-}" > /tmp/new_llm_vms.txt || true
           echo "created_vms=$(paste -sd, /tmp/new_llm_vms.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Bootstrap measuring-enclave-llm on shared control plane
-        env:
-          ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
-          ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
-          NODE_SIZE: llm
-          ALLOWED_CLOUDS: baremetal
-          ALLOWED_DATACENTERS: baremetal:github-runner
-          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
-          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.measure.outputs.mrtds_by_size }}'
-          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.measure.outputs.rtmrs_by_size }}'
+      - name: Measurer bootstrap (skipped)
         run: |
-          set -euo pipefail
-          chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
-          CP_URL="${CP_URL}" \
-          ADMIN_TOKEN="${ADMIN_TOKEN}" \
-          ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-          NODE_SIZE="${NODE_SIZE}" \
-          MEASURER_IMAGE="${MEASURER_IMAGE}" \
-          ALLOWED_CLOUDS="${ALLOWED_CLOUDS}" \
-          ALLOWED_DATACENTERS="${ALLOWED_DATACENTERS}" \
-          TRUSTED_AGENT_MRTDS_BY_SIZE="${TRUSTED_AGENT_MRTDS_BY_SIZE}" \
-          TRUSTED_AGENT_RTMRS_BY_SIZE="${TRUSTED_AGENT_RTMRS_BY_SIZE}" \
-          ./scripts/bootstrap_shared_measuring_enclave.sh
+          echo "Skipped: control plane measures versions directly."
 
       - name: Verify deployable baremetal llm agent exists
         run: |

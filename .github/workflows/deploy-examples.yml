@@ -275,7 +275,6 @@ jobs:
       AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
       # Used to boot LLM agent VMs that can self-mint Intel Trust Authority tokens for registration.
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      MEASURER_IMAGE: ghcr.io/${{ github.repository }}/measuring-enclave:latest
       TARGET_DATACENTER: baremetal:github-runner
     steps:
       - uses: actions/checkout@v4
@@ -327,10 +326,7 @@ jobs:
             echo "::error::Missing secret: AGENT_ADMIN_PASSWORD"
             exit 1
           fi
-          # CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD are only required when bootstrapping measuring-enclave-llm.
-          if [ -z "${CP_ADMIN_TOKEN:-}" ] && [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
-            echo "::warning::CP_ADMIN_TOKEN and CP_ADMIN_PASSWORD are both missing. If measuring-enclave-llm is not already healthy, this job will fail during bootstrap."
-          fi
+          # CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD are no longer required for measurer bootstrap.
 
       - name: Cleanup stale CI LLM VMs (preflight, best effort)
         shell: bash
@@ -342,24 +338,11 @@ jobs:
           bash ./scripts/cleanup_ci_llm_vms.sh || true
 
       - name: Check measuring-enclave-llm health
-        id: measurer
         shell: bash
         run: |
-          set -euo pipefail
-          healthy_count="$(
-            curl -sSf -H 'Accept: application/json' "${CP_URL}/api/v1/services?name=measuring-enclave-llm&include_down=true" \
-            | jq -r '[.services[]? | select(.name == "measuring-enclave-llm" and (.health_status // "" | ascii_downcase) == "healthy")] | length'
-          )"
-          if [ "${healthy_count:-0}" -gt 0 ]; then
-            echo "healthy=true" >> "$GITHUB_OUTPUT"
-            echo "Existing healthy measuring-enclave-llm found; bootstrap is skipped."
-          else
-            echo "healthy=false" >> "$GITHUB_OUTPUT"
-            echo "No healthy measuring-enclave-llm found; bootstrap is required."
-          fi
+          echo "Control plane measures app versions directly; measuring-enclave is no longer required."
 
       - name: Measure + trust llm baseline (bootstrap)
-        if: steps.measurer.outputs.healthy != 'true'
         id: llm_baseline
         shell: bash
         run: |
@@ -405,7 +388,7 @@ jobs:
           echo "rtmrs_by_size=$(jq -cn --argjson rtmrs "$rtmrs" '{llm:$rtmrs}')" >> "$GITHUB_OUTPUT"
           echo "Using measured llm baseline MRTD: ${mrtd:0:16}..."
 
-      - name: Ensure baremetal llm capacity for measurer + private-llm
+      - name: Ensure baremetal llm capacity for private-llm
         id: ensure_agents
         shell: bash
         run: |
@@ -431,26 +414,9 @@ jobs:
               ] | length'
           }
 
-          count_measurer() {
-            curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
-              [.agents[]
-                | select(.verified == true)
-                | select((.health_status // "" | ascii_downcase) == "healthy")
-                | select((.status // "" | ascii_downcase) == "deployed")
-                | select((.node_size // "" | ascii_downcase) == "llm")
-                | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
-                | select((.deployed_app // "") == "measuring-enclave-llm")
-              ] | length'
-          }
-
           non_measurer="$(count_non_measurer || echo 0)"
-          measurer="$(count_measurer || echo 0)"
-          required_non_measurer=2
-          if [ "${measurer:-0}" -ge 1 ]; then
-            required_non_measurer=1
-          fi
+          required_non_measurer=1
           echo "Baremetal llm non-measurer candidates: $non_measurer (required: $required_non_measurer)"
-          echo "Baremetal llm measurer agents: $measurer"
 
           while [ "${non_measurer:-0}" -lt "${required_non_measurer}" ]; do
             boots=$((boots + 1))
@@ -470,10 +436,10 @@ jobs:
 
             # Give the agent time to register and pass verification.
             for i in {1..60}; do
-              non_measurer="$(count_non_measurer || echo 0)"
-              if [ "${non_measurer:-0}" -ge "${required_non_measurer}" ]; then
-                break
-              fi
+            non_measurer="$(count_non_measurer || echo 0)"
+            if [ "${non_measurer:-0}" -ge "${required_non_measurer}" ]; then
+              break
+            fi
               if [ $((i % 6)) -eq 0 ]; then
                 echo "Still waiting for verified+healthy llm capacity... ($i/60)"
                 echo "  non-measurer=$non_measurer required=$required_non_measurer"
@@ -487,42 +453,16 @@ jobs:
             done
 
             non_measurer="$(count_non_measurer || echo 0)"
-            measurer="$(count_measurer || echo 0)"
-            if [ "${measurer:-0}" -ge 1 ]; then
-              required_non_measurer=1
-            fi
             echo "Baremetal llm non-measurer candidates now: $non_measurer (required: $required_non_measurer)"
-            echo "Baremetal llm measurer agents now: $measurer"
           done
 
           printf '%s\n' "${created[@]:-}" > /tmp/new_llm_vms.txt || true
           echo "created_vms=$(paste -sd, /tmp/new_llm_vms.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
 
-      - name: Bootstrap measuring-enclave-llm on baremetal
-        if: steps.measurer.outputs.healthy != 'true'
-        env:
-          ADMIN_TOKEN: ${{ env.CP_ADMIN_TOKEN }}
-          ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
-          NODE_SIZE: llm
-          MEASURER_IMAGE: ${{ env.MEASURER_IMAGE }}
-          ALLOWED_CLOUDS: baremetal
-          ALLOWED_DATACENTERS: baremetal:github-runner
-          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
-          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.llm_baseline.outputs.mrtds_by_size }}'
-          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.llm_baseline.outputs.rtmrs_by_size }}'
+      - name: Measurer bootstrap (skipped)
+        shell: bash
         run: |
-          set -euo pipefail
-          chmod +x ./scripts/bootstrap_shared_measuring_enclave.sh
-          CP_URL="${CP_URL}" \
-          ADMIN_TOKEN="${ADMIN_TOKEN}" \
-          ADMIN_PASSWORD="${ADMIN_PASSWORD}" \
-          NODE_SIZE="${NODE_SIZE}" \
-          MEASURER_IMAGE="${MEASURER_IMAGE}" \
-          ALLOWED_CLOUDS="${ALLOWED_CLOUDS}" \
-          ALLOWED_DATACENTERS="${ALLOWED_DATACENTERS}" \
-          TRUSTED_AGENT_MRTDS_BY_SIZE="${TRUSTED_AGENT_MRTDS_BY_SIZE}" \
-          TRUSTED_AGENT_RTMRS_BY_SIZE="${TRUSTED_AGENT_RTMRS_BY_SIZE}" \
-          ./scripts/bootstrap_shared_measuring_enclave.sh
+          echo "Skipped: control plane measures versions directly."
 
       - name: Verify deployable baremetal llm agent exists
         shell: bash
