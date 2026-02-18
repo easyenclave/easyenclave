@@ -150,6 +150,11 @@ jobs:
       # Infra + trust.
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+      # Optional: allow CP-native provisioning to inject ITA keys into provisioned agent VMs.
+      EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
 
       # Cloudflare (public endpoint for https://app.easyenclave.com).
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
