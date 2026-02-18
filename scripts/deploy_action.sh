@@ -47,6 +47,8 @@ is_json() {
 }
 
 measurer_service_name() {
+  # Legacy (measuring-enclave) name kept for backward compatibility.
+  # The control plane now measures versions directly.
   if [ -n "${NODE_SIZE:-}" ]; then
     echo "measuring-enclave-${NODE_SIZE}"
   else
@@ -54,89 +56,14 @@ measurer_service_name() {
   fi
 }
 
-print_measurer_logs() {
-  local measurer_name services_json endpoint_url endpoint_host agent_id
-  measurer_name="$(measurer_service_name)"
-
-  services_json="$(curl -sS -H 'Accept: application/json' \
-    --connect-timeout 5 --max-time 20 \
-    "${CONTROL_PLANE_URL}/api/v1/services?name=${measurer_name}&include_down=true" || true)"
-
-  if ! echo "$services_json" | is_json; then
-    echo "::warning::Non-JSON response from services endpoint; cannot fetch measurer logs."
-    return 0
-  fi
-
-  endpoint_url="$(
-    echo "$services_json" | jq -r --arg n "$measurer_name" '
-      [.services[]? | select(.name == $n) | (.endpoints | to_entries[]?.value)] | first // empty
-    ' 2>/dev/null || true
-  )"
-
-  if [ -z "$endpoint_url" ]; then
-    echo "::warning::No endpoint found for measurer '${measurer_name}'; cannot fetch logs."
-    return 0
-  fi
-
-  endpoint_host="${endpoint_url#https://}"
-  endpoint_host="${endpoint_host#http://}"
-  endpoint_host="${endpoint_host%%/*}"
-
-  agent_id="$(
-    curl -sS -H 'Accept: application/json' --connect-timeout 5 --max-time 20 \
-      "${CONTROL_PLANE_URL}/api/v1/agents" \
-    | jq -r --arg hn "$endpoint_host" '
-      [.agents[]? | select(.hostname == $hn) | .agent_id] | first // empty
-    ' 2>/dev/null || true
-  )"
-
-  if [ -z "$agent_id" ]; then
-    echo "::warning::Could not map measurer endpoint host '$endpoint_host' to an agent; cannot fetch logs."
-    return 0
-  fi
-
+print_cp_logs() {
   echo ""
-  echo "=== Measurer Logs (agent ${agent_id}) ==="
+  echo "=== Control Plane Logs (last 80 lines) ==="
   curl -sS -H 'Accept: application/json' --connect-timeout 5 --max-time 20 \
-    "${CONTROL_PLANE_URL}/api/v1/agents/${agent_id}/logs?since=30m" \
-    | jq -r '.logs[]? | "[\(.container)] \(.line)"' \
-    | tail -n 200 || true
-  echo "=== End Measurer Logs ==="
-  echo ""
-}
-
-print_measurer_diagnostics() {
-  local measurer_name services_json
-  measurer_name="$(measurer_service_name)"
-
-  echo ""
-  echo "=== Measurer Diagnostic ==="
-  echo "Expected measurer service: ${measurer_name}"
-
-  services_json="$(curl -sS -H 'Accept: application/json' \
-    --connect-timeout 5 --max-time 20 \
-    "${CONTROL_PLANE_URL}/api/v1/services?name=${measurer_name}&include_down=true" || true)"
-
-  if ! echo "$services_json" | is_json; then
-    echo "::warning::Non-JSON response from services endpoint (cannot inspect measurer status)."
-    echo "Response (first 200 bytes):"
-    echo "${services_json:0:200}"
-    echo "=== End Measurer Diagnostic ==="
-    echo ""
-    return 0
-  fi
-
-  if [ "$(echo "$services_json" | jq -r --arg n "$measurer_name" '[.services[]? | select(.name == $n)] | length')" -gt 0 ]; then
-    echo "$services_json" | jq -r --arg n "$measurer_name" '
-      .services[]
-      | select(.name == $n)
-      | "Service: \(.name) health=\(.health_status) last_health=\(.last_health_check // "unknown") endpoints=\(.endpoints // {})"'
-  else
-    echo "::warning::No registered service named '${measurer_name}'. Candidates:"
-    echo "$services_json" | jq -r '.services[]? | "  - \(.name) health=\(.health_status) last_health=\(.last_health_check // "unknown")"'
-  fi
-
-  echo "=== End Measurer Diagnostic ==="
+    "${CONTROL_PLANE_URL}/api/v1/logs/control-plane?limit=80" \
+    | jq -r '.logs[]? | .message' \
+    | tail -n 80 || true
+  echo "=== End Control Plane Logs ==="
   echo ""
 }
 
@@ -281,7 +208,7 @@ wait_attested() {
         echo "${version_json:0:200}"
         if [ "$consecutive_fetch_errors" -ge 3 ]; then
           echo "::error::Failed to fetch version status reliably (3 consecutive non-JSON responses)."
-          print_measurer_diagnostics
+          print_cp_logs
           exit 1
         fi
         sleep 5
@@ -304,29 +231,17 @@ wait_attested() {
       fi
 
       echo "  Status: $version_status ($i/60)"
-      # Fast-fail if we're stuck pending because there is no healthy measurer for this node_size.
-      if [ "$version_status" = "pending" ] && [ "$i" -ge 6 ]; then
-        local measurer_name services_json healthy_count
-        measurer_name="$(measurer_service_name)"
-        services_json="$(curl -sS -H 'Accept: application/json' \
-          --connect-timeout 5 --max-time 20 \
-          "${CONTROL_PLANE_URL}/api/v1/services?name=${measurer_name}&include_down=true" || true)"
-        healthy_count=0
-        if echo "$services_json" | is_json; then
-          healthy_count="$(echo "$services_json" | jq -r --arg n "$measurer_name" '[.services[]? | select(.name == $n and .health_status == "healthy")] | length')"
-        fi
-        if [ "${healthy_count:-0}" -le 0 ]; then
-          echo "::error::No healthy measurer '${measurer_name}' available; cannot attest '${APP_NAME}@${VERSION}'."
-          print_measurer_diagnostics
-          exit 1
-        fi
+      if [ "$version_status" = "pending" ] && [ "$i" -eq 12 ]; then
+        echo "::warning::Version still pending after 1 minute. The control plane should measure versions locally."
+        echo "Version JSON:"
+        echo "$version_json" | jq . || true
+        print_cp_logs
       fi
 
       # If we're stuck in attesting for a while, dump diagnostics once.
       if [ "$version_status" = "attesting" ] && [ "$i" -eq 24 ]; then
         echo "::warning::Version still attesting after 2 minutes; dumping diagnostics."
-        print_measurer_diagnostics
-        print_measurer_logs
+        print_cp_logs
         echo "Version JSON:"
         echo "$version_json" | jq .
       fi
@@ -335,8 +250,7 @@ wait_attested() {
 
     if [ "$version_status" != "attested" ]; then
       echo "::error::Timed out waiting for measurement (status: $version_status)"
-      print_measurer_diagnostics
-      print_measurer_logs
+      print_cp_logs
       exit 1
     fi
   fi
@@ -348,7 +262,7 @@ wait_attested() {
     echo "URL: ${LAST_URL:-unknown}"
     echo "Response (first 200 bytes):"
     echo "${version_json:0:200}"
-    print_measurer_diagnostics
+    print_cp_logs
     exit 1
   fi
   version_status="$(echo "$version_json" | jq -r '.status // "unknown"')"

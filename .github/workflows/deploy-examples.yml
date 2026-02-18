@@ -65,7 +65,7 @@ jobs:
 
       - name: Verify deploy failed
         run: |
-          if [ "${{ steps.deploy.outcome }}" != "failure" ]; then
+          if [ "${{ steps.deploy.outcome }}" != "failure" ] && [ "${{ steps.deploy.conclusion }}" != "failure" ]; then
             echo "::error::Expected deploy to fail for unregistered app, but it succeeded"
             exit 1
           fi
