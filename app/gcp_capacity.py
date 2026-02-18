@@ -93,7 +93,9 @@ def _project_id_env() -> str:
 def _machine_type_for_size(node_size: str) -> str:
     size = (node_size or "").strip().lower()
     if size == "tiny":
-        return (os.environ.get("EE_GCP_MACHINE_TYPE_TINY") or "c3-standard-2").strip()
+        # NOTE: Some GCP zones/TDX offerings do not support the smallest C3 shapes.
+        # Default to a known-good baseline; callers can override via EE_GCP_MACHINE_TYPE_TINY.
+        return (os.environ.get("EE_GCP_MACHINE_TYPE_TINY") or "c3-standard-4").strip()
     if size == "standard":
         return (os.environ.get("EE_GCP_MACHINE_TYPE_STANDARD") or "c3-standard-4").strip()
     if size == "llm":
