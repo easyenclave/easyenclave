@@ -17,7 +17,8 @@ on:
 concurrency:
   # This workflow mutates the shared control plane (apps + deployments); do not overlap with other CP-mutating runs.
   group: easyenclave-shared-control-plane
-  cancel-in-progress: false
+  # Prefer the newest run; older deploy-example runs can get stuck on slow capacity.
+  cancel-in-progress: true
 
 env:
   CP_URL: https://app.easyenclave.com
