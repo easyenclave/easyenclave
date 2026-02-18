@@ -50,8 +50,10 @@ NODE_SIZES = {
     "tiny": (4, 4, 0),
     "standard": (16, 16, 0),
     "llm": (
-        _env_int("EASYENCLAVE_LLM_MEM_GIB", 128),
-        _env_int("EASYENCLAVE_LLM_VCPUS", 16),
+        # Keep the default LLM preset small enough to boot on the self-hosted CI runner.
+        # Production deployments can (and should) override via env vars.
+        _env_int("EASYENCLAVE_LLM_MEM_GIB", 16),
+        _env_int("EASYENCLAVE_LLM_VCPUS", 8),
         _env_int("EASYENCLAVE_LLM_DISK_GIB", 80),
     ),
 }
