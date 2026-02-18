@@ -497,18 +497,49 @@ runs:
         set -euo pipefail
 
         deadline=$(( $(date +%s) + ${WAIT_SECONDS:-900} ))
+        dispatch_started="${DISPATCH_STARTED_AT:-0}"
+        if ! echo "${dispatch_started}" | grep -Eq '^[0-9]+$'; then
+          dispatch_started=0
+        fi
+        stall_seconds=$(( ${WAIT_SECONDS:-900} / 2 ))
+        if [ "$stall_seconds" -lt 300 ]; then
+          stall_seconds=300
+        fi
+        no_order_seconds=180
         while :; do
-          # If provisioning failed, surface the failure immediately rather than waiting for timeout.
+          now="$(date +%s)"
+          elapsed=0
+          if [ "${dispatch_started:-0}" -gt 0 ] && [ "$now" -ge "${dispatch_started}" ]; then
+            elapsed=$(( now - dispatch_started ))
+          fi
+
+          # Surface launch-order failures quickly and fail if we have no observable account orders
+          # or if in-flight account orders are stalled for too long.
           if [ -n "${BILLING_ACCOUNT_ID:-}" ] && [ -n "${BILLING_API_KEY:-}" ]; then
             dc="${TARGET_DATACENTER:-}"
             if [ -z "$dc" ]; then
               dc="gcp"
             fi
-            failed_json="$(curl -sS -H "Authorization: Bearer ${BILLING_API_KEY}" -H 'Accept: application/json' "$CP_URL/api/v1/accounts/${BILLING_ACCOUNT_ID}/capacity/orders?status=failed&datacenter=${dc}&node_size=${NODE_SIZE}" || true)"
-            failed_count="$(echo "${failed_json:-}" | jq -r '.total // 0' 2>/dev/null || echo 0)"
+            orders_json="$(curl -sS -H "Authorization: Bearer ${BILLING_API_KEY}" -H 'Accept: application/json' "$CP_URL/api/v1/accounts/${BILLING_ACCOUNT_ID}/capacity/orders?datacenter=${dc}&node_size=${NODE_SIZE}" || true)"
+            total_orders="$(echo "${orders_json:-}" | jq -r '.total // 0' 2>/dev/null || echo 0)"
+            failed_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "failed")] | length' 2>/dev/null || echo 0)"
+            inflight_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "open" or .status == "claimed" or .status == "provisioning")] | length' 2>/dev/null || echo 0)"
+
             if [ "${failed_count:-0}" -gt 0 ]; then
               echo "::error::GCP capacity provisioning failed (showing up to 3 failed order(s))"
-              echo "${failed_json:-}" | jq -r '.orders[:3] | map({order_id,status,datacenter,node_size,vm_name,error,created_at})' 2>/dev/null || echo "${failed_json:-}"
+              echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "failed"))[:3] | map({order_id,status,datacenter,node_size,vm_name,error,created_at,updated_at})' 2>/dev/null || echo "${orders_json:-}"
+              exit 1
+            fi
+
+            if [ "${total_orders:-0}" -eq 0 ] && [ "$elapsed" -ge "$no_order_seconds" ]; then
+              echo "::error::Capacity request has no account-scoped launch orders after ${elapsed}s (datacenter=${dc}, node_size=${NODE_SIZE})."
+              echo "::error::This usually means dispatch was de-duplicated behind a foreign in-flight order."
+              exit 1
+            fi
+
+            if [ "${inflight_count:-0}" -gt 0 ] && [ "$elapsed" -ge "$stall_seconds" ]; then
+              echo "::error::Capacity launch orders are still in-flight after ${elapsed}s (stall threshold=${stall_seconds}s)."
+              echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "open" or .status == "claimed" or .status == "provisioning"))[:3] | map({order_id,status,datacenter,node_size,claim_expires_at,created_at,updated_at,error})' 2>/dev/null || echo "${orders_json:-}"
               exit 1
             fi
           fi
@@ -536,7 +567,6 @@ runs:
             echo "Eligible GCP capacity is now available: $count"
             exit 0
           fi
-          now="$(date +%s)"
           if [ "$now" -ge "$deadline" ]; then
             echo "::error::Timed out waiting for eligible GCP capacity after dispatch."
             echo "Observed GCP agents (debug):"
