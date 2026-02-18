@@ -312,7 +312,7 @@ def _capacity_unit_price_monthly_usd(node_size: str) -> float:
 def _ensure_default_gcp_tiny_capacity_target() -> None:
     if not _parse_bool_setting(
         get_setting("operational.default_gcp_tiny_capacity_enabled"),
-        fallback=True,
+        fallback=False,
     ):
         return
 
@@ -328,11 +328,11 @@ def _ensure_default_gcp_tiny_capacity_target() -> None:
 
     min_warm_count = max(
         0,
-        get_setting_int("operational.default_gcp_tiny_capacity_count", fallback=1),
+        get_setting_int("operational.default_gcp_tiny_capacity_count", fallback=0),
     )
     dispatch = _parse_bool_setting(
         get_setting("operational.default_gcp_tiny_capacity_dispatch"),
-        fallback=True,
+        fallback=False,
     )
     reason = "default-gcp-tiny-capacity"
 
