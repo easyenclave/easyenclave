@@ -41,7 +41,13 @@ jobs:
       contents: read
 
     env:
+      # Coordination metadata (exposed by /health). Used by deploy-example workflows to
+      # confirm the shared control plane is running the revision under test.
+      EASYENCLAVE_BOOT_ID: manual-${{ github.run_id }}-${{ github.run_attempt }}
+      EASYENCLAVE_GIT_SHA: ${{ github.sha }}
+
       # Infra + trust.
+      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
       # Optional: enable CP-native provisioning (GCP capacity fulfillment) to inject ITA keys into provisioned agent VMs.
       EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
