@@ -23,7 +23,7 @@ jobs:
     name: Cleanup - Local TDX VMs
     runs-on: [self-hosted, tdx]
     # Avoid running destructive cleanup on PRs from forks.
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -69,7 +69,7 @@ jobs:
   measure-trusted-values:
     name: Measure Trusted Values (tiny)
     runs-on: [self-hosted, tdx]
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs: [cleanup-tdx-runner]
     permissions:
       contents: read
@@ -131,7 +131,7 @@ jobs:
   bootstrap-control-plane:
     name: Bootstrap Control Plane
     runs-on: [self-hosted, tdx]
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     # Everything can run in parallel except launching the CP VM; this must wait for:
     # 1) docker images for this SHA to be pushed, and
     # 2) measured trusted values from the TDX runner.
@@ -304,7 +304,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install cosign
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@v3
 
       - name: Build Docker image
@@ -331,7 +331,7 @@ jobs:
 
       - name: Build and push control plane image
         id: control_plane
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         run: |
           retry_push() {
             local image_ref="$1"
