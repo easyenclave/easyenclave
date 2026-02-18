@@ -680,10 +680,12 @@ class CapacityLaunchOrderStore:
         *,
         datacenter: str | None = None,
         node_size: str | None = None,
+        account_id: str | None = None,
     ) -> list[CapacityLaunchOrder]:
         normalized_status = _normalize_pool_value(status)
         normalized_datacenter = _normalize_pool_value(datacenter)
         normalized_node_size = _normalize_pool_value(node_size)
+        normalized_account_id = (account_id or "").strip() or None
         with get_db() as session:
             stmt = select(CapacityLaunchOrder)
             if normalized_status:
@@ -692,6 +694,8 @@ class CapacityLaunchOrderStore:
                 stmt = stmt.where(CapacityLaunchOrder.datacenter == normalized_datacenter)
             if normalized_node_size:
                 stmt = stmt.where(CapacityLaunchOrder.node_size == normalized_node_size)
+            if normalized_account_id:
+                stmt = stmt.where(CapacityLaunchOrder.account_id == normalized_account_id)
             stmt = stmt.order_by(CapacityLaunchOrder.created_at, CapacityLaunchOrder.order_id)
             return list(session.exec(stmt).all())
 

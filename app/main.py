@@ -3902,6 +3902,45 @@ async def request_paid_capacity(
     )
 
 
+@app.get(
+    "/api/v1/accounts/{account_id}/capacity/orders",
+    response_model=CapacityLaunchOrderListResponse,
+)
+async def list_account_capacity_launch_orders(
+    account_id: str,
+    status: str = Query("", description="Filter by order status"),
+    datacenter: str = Query("", description="Optional datacenter filter"),
+    node_size: str = Query("", description="Optional node_size filter"),
+    authenticated_account_id: str = Depends(verify_account_api_key),
+):
+    """List this account's capacity launch orders (deployer account auth).
+
+    This is useful for automation (e.g., CI preflight) to surface provisioning failures
+    without requiring an admin session.
+    """
+    if account_id != authenticated_account_id:
+        raise HTTPException(status_code=403, detail="Cannot access other account orders")
+
+    normalized_status = (status or "").strip().lower()
+    if normalized_status and normalized_status not in {
+        "open",
+        "claimed",
+        "provisioning",
+        "fulfilled",
+        "failed",
+    }:
+        raise HTTPException(status_code=422, detail="Invalid launch order status filter")
+
+    rows = capacity_launch_order_store.list(
+        normalized_status or None,
+        datacenter=datacenter,
+        node_size=node_size,
+        account_id=account_id,
+    )
+    views = [_capacity_launch_order_view(row) for row in rows]
+    return CapacityLaunchOrderListResponse(orders=views, total=len(views))
+
+
 @app.post("/api/v1/accounts/{account_id}/payment-intent")
 async def create_payment_intent(
     account_id: str,
