@@ -1598,7 +1598,7 @@ def compute_compose_hash() -> str:
 
 
 def get_tdx_attestation(config: dict, health_status: dict) -> dict:
-    """Generate a TDX quote for a workload (quote-only; CP mints ITA token).
+    """Generate a TDX quote + Intel Trust Authority token for a workload.
 
     Args:
         config: Launcher config
@@ -1608,25 +1608,19 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
         Full attestation dict
     """
     write_status("attesting")
-
-    # Generate TDX quote
-    logger.info("Generating TDX quote...")
-    quote_b64 = generate_tdx_quote()
-
-    # Parse local measurements from quote
-    measurements = parse_tdx_quote(quote_b64)
-
-    return {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "tdx": {
-            "quote_b64": quote_b64,
-            "measurements": measurements,
-        },
-        "workload": {
-            "compose_hash": f"sha256:{compute_compose_hash()}",
-            "health_status": health_status.get("status", "unknown"),
-        },
+    # Service registration requires an Intel TA token. Use the same minting path as agent
+    # registration, but skip nonce challenge (nonce binds to agent registration, not services).
+    attestation = generate_initial_attestation(
+        config,
+        vm_name=None,
+        update_status=False,
+        require_ita_token=True,
+    )
+    attestation["workload"] = {
+        "compose_hash": f"sha256:{compute_compose_hash()}",
+        "health_status": health_status.get("status", "unknown"),
     }
+    return attestation
 
 
 def register_service(config: dict, attestation: dict, tunnel_hostname: str | None = None) -> str:

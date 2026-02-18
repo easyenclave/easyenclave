@@ -580,6 +580,18 @@ done
 VERIFIED=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null | jq '[.agents[] | select(.verified == true)] | length')
 if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
   echo "::error::Not all agents verified after 5 minutes ($VERIFIED/$TOTAL_AGENTS)"
+  echo "::error::Dumping unverified agents (to surface root cause without VM logs)..."
+  curl -sf "$CP_URL/api/v1/agents" 2>/dev/null \
+    | jq -r '
+      .agents[]
+      | select(.verified != true)
+      | "agent_id=\(.agent_id) vm=\(.vm_name) status=\(.status) health=\(.health_status) size=\(.node_size) dc=\(.datacenter) err=\(.verification_error // \"\")"
+    ' 2>/dev/null \
+    | head -n 30 \
+    | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        echo "::error::$line"
+      done
   echo ""
   echo "=== Agent VM serial logs (last 80 lines each) ==="
   for log in /var/tmp/tdvirsh/console.*.log; do
