@@ -505,7 +505,10 @@ runs:
         if [ "$stall_seconds" -lt 300 ]; then
           stall_seconds=300
         fi
-        no_order_seconds=180
+        if [ "$stall_seconds" -gt 300 ]; then
+          stall_seconds=300
+        fi
+        no_order_seconds=90
         while :; do
           now="$(date +%s)"
           elapsed=0
