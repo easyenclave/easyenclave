@@ -114,8 +114,9 @@ def _machine_types_for_size(node_size: str) -> list[str]:
         raw = os.environ.get("EE_GCP_MACHINE_TYPE_STANDARD") or "c3-standard-4,c3-standard-8"
         return _csv(raw) or ["c3-standard-4", "c3-standard-8"]
     if size == "llm":
-        raw = os.environ.get("EE_GCP_MACHINE_TYPE_LLM") or "c3-standard-8"
-        return _csv(raw) or ["c3-standard-8"]
+        # Prefer smaller shapes first to reduce the chance of hitting project-wide CPU quotas.
+        raw = os.environ.get("EE_GCP_MACHINE_TYPE_LLM") or "c3-standard-4,c3-standard-8"
+        return _csv(raw) or ["c3-standard-4", "c3-standard-8"]
     raw = os.environ.get("EE_GCP_MACHINE_TYPE_DEFAULT") or "c3-standard-4,c3-standard-8"
     return _csv(raw) or ["c3-standard-4", "c3-standard-8"]
 
