@@ -72,6 +72,10 @@ class HealthResponse(BaseModel):
     git_sha: str | None = None
     attestation: dict | None = None
     proxy_url: str | None = None
+    # High-level feature flags (do not expose secrets).
+    gcp_project_configured: bool = False
+    gcp_service_account_key_configured: bool = False
+    gcp_capacity_fulfiller_enabled: bool = False
 
 
 # =============================================================================

@@ -1025,6 +1025,10 @@ async def health_check():
     """Health check endpoint with attestation and proxy info."""
     boot_id = (os.environ.get("EASYENCLAVE_BOOT_ID") or "").strip() or None
     git_sha = (os.environ.get("EASYENCLAVE_GIT_SHA") or "").strip() or None
+    gcp_project_configured = bool((os.environ.get("GCP_PROJECT_ID") or "").strip())
+    gcp_service_account_key_configured = bool(
+        (os.environ.get("GCP_SERVICE_ACCOUNT_KEY") or "").strip()
+    )
     return HealthResponse(
         status="healthy",
         timestamp=datetime.now(timezone.utc),
@@ -1032,6 +1036,11 @@ async def health_check():
         git_sha=git_sha,
         attestation=_cached_attestation,
         proxy_url=_get_proxy_url(),
+        gcp_project_configured=gcp_project_configured,
+        gcp_service_account_key_configured=gcp_service_account_key_configured,
+        gcp_capacity_fulfiller_enabled=(
+            gcp_project_configured and gcp_service_account_key_configured
+        ),
     )
 
 

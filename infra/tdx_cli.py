@@ -263,10 +263,15 @@ class TDXManager:
         if memory_gib >= 64:
             cmdline += " swiotlb=131072"
 
-        # TDX firmware/kernel cmdline has a hard size limit (commonly ~3072 bytes).
+        # TDX firmware/kernel cmdline has a hard size limit.
+        # In practice, some environments truncate well below 3072 bytes; keep a conservative
+        # default and fall back to a config-drive ISO for large configs (e.g. cloud creds).
+        max_cmdline_bytes = int(
+            os.environ.get("EASYENCLAVE_MAX_CMDLINE_BYTES", "2048").strip() or "2048"
+        )
         # Exceeding it will truncate easyenclave.config and can cause the VM to boot
         # with no config (launcher defaults to agent mode), leading to confusing retry loops.
-        if len(cmdline) > 3072:
+        if len(cmdline) > max_cmdline_bytes:
             sizes: list[tuple[str, int]] = []
             for k, v in launcher_config.items():
                 if v is None:
@@ -285,7 +290,7 @@ class TDXManager:
             # a new disk/input that could affect RTMR baselines.
             if mode == "measure":
                 raise RuntimeError(
-                    f"Kernel cmdline too large ({len(cmdline)} bytes > 3072). "
+                    f"Kernel cmdline too large ({len(cmdline)} bytes > {max_cmdline_bytes}). "
                     "This will truncate easyenclave.config and break boot. "
                     f"Largest config entries: {biggest}. "
                     "Avoid passing large JSON blobs (e.g., service account keys) via cmdline."
@@ -294,7 +299,7 @@ class TDXManager:
             # For non-measure VMs, fall back to a config drive ISO.
             # The launcher will mount it and read config.json.
             print(
-                f"Warning: kernel cmdline too large ({len(cmdline)} bytes > 3072); "
+                f"Warning: kernel cmdline too large ({len(cmdline)} bytes > {max_cmdline_bytes}); "
                 f"falling back to cidata ISO config drive. Largest config entries: {biggest}.",
                 file=sys.stderr,
             )
