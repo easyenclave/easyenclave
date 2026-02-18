@@ -1501,6 +1501,41 @@ def register_with_control_plane(
     return result
 
 
+def _ensure_cloudflared_installed() -> bool:
+    """Best-effort install for cloudflared.
+
+    Our VM images normally include cloudflared at build time, but CI/provisioned
+    images can occasionally miss it (transient download/packaging failures).
+    If the tunnel connector isn't running, the control plane can't reach the agent.
+    """
+    if shutil.which("cloudflared"):
+        return True
+
+    url = os.environ.get(
+        "CLOUDFLARED_URL",
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
+    ).strip()
+    dest = Path("/usr/local/bin/cloudflared")
+
+    logger.warning("cloudflared not found; attempting runtime install from %s", url)
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["curl", "-fsSL", url, "-o", str(dest)], check=True, timeout=60)
+        subprocess.run(["chmod", "+x", str(dest)], check=True)
+        if shutil.which("cloudflared"):
+            try:
+                out = subprocess.run(
+                    ["cloudflared", "--version"], capture_output=True, text=True, timeout=10
+                )
+                logger.info("cloudflared installed: %s", (out.stdout or out.stderr or "").strip())
+            except Exception:
+                pass
+            return True
+    except Exception as exc:
+        logger.warning("cloudflared runtime install failed: %s", exc)
+    return False
+
+
 def start_cloudflared(tunnel_token: str) -> subprocess.Popen | None:
     """Start cloudflared tunnel connector.
 
@@ -1511,7 +1546,7 @@ def start_cloudflared(tunnel_token: str) -> subprocess.Popen | None:
         Popen object for the cloudflared process, or None if not available
     """
     # Check if cloudflared is installed
-    if not shutil.which("cloudflared"):
+    if not _ensure_cloudflared_installed():
         logger.warning("cloudflared not installed, skipping tunnel setup")
         return None
 
