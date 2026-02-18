@@ -166,6 +166,9 @@ jobs:
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
+      # Optional (but recommended for CI automation): enable password admin login.
+      ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+
       # Bootstrap sizes/capacity.
       CP_BOOTSTRAP_SIZES: tiny
       # Total tiny capacity on bootstrap = 3 (1 bootstrap measurer + 2 additional).
@@ -187,7 +190,7 @@ jobs:
       - name: Validate required secrets
         run: |
           set -euo pipefail
-          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
+          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required secret/env: $v"
               exit 1
@@ -214,6 +217,20 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
             (cd infra/image && nix develop --command bash -lc 'make build')
           fi
+
+      - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import bcrypt
+          pw = os.environ.get("ADMIN_PASSWORD", "").encode()
+          if not pw:
+            raise SystemExit("ADMIN_PASSWORD missing")
+          hashed = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+            f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
+          PY
 
       - name: Cleanup leaked measurement VMs (best effort)
         run: |

@@ -75,6 +75,8 @@ jobs:
           billing_months: "1"
           gcp_datacenter: ${{ steps.target.outputs.datacenter }}
           gcp_zone: ${{ env.GCP_ZONE_LIST }}
+          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
+          cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       - name: Register private-llm app
         uses: ./.github/actions/register-app

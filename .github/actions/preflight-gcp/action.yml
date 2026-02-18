@@ -79,6 +79,16 @@ inputs:
     required: false
     default: ""
 
+  # Optional admin credentials for bootstrap trust (recommended for CI).
+  cp_admin_token:
+    description: Optional control plane admin bearer token (used to add trusted MRTDs)
+    required: false
+    default: ""
+  cp_admin_password:
+    description: Optional control plane admin password (fallback if token not provided)
+    required: false
+    default: ""
+
 outputs:
   gcp_eligible_agents:
     description: Count of eligible verified healthy GCP agents after preflight
@@ -324,6 +334,8 @@ runs:
         CP_URL: ${{ inputs.control_plane_url }}
         NODE_SIZE: ${{ inputs.node_size }}
         WAIT_SECONDS: ${{ inputs.wait_seconds }}
+        CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token }}
+        CP_ADMIN_PASSWORD: ${{ inputs.cp_admin_password }}
       run: |
         set -euo pipefail
 
@@ -414,17 +426,25 @@ runs:
           exit 0
         fi
 
-        methods="$(curl -sS -H 'Accept: application/json' "$CP_URL/auth/methods" || true)"
-        password_enabled="$(echo "${methods:-}" | jq -r '.password // false' 2>/dev/null || echo false)"
-        generated_pw="$(echo "${methods:-}" | jq -r '.generated_password // empty' 2>/dev/null || true)"
-        if [ "$password_enabled" != "true" ] || [ -z "${generated_pw:-}" ]; then
-          echo "::warning::Cannot bootstrap trust: password login disabled or generated_password not available."
-          exit 0
+        admin_token="$(echo "${CP_ADMIN_TOKEN:-}" | xargs)"
+        if [ -z "${admin_token:-}" ] && [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
+          login_payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
+          admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$login_payload" | jq -r '.token // empty' 2>/dev/null || true)"
         fi
 
-        # Login to obtain admin token.
-        login_payload="$(jq -cn --arg p "$generated_pw" '{password: $p}')"
-        admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$login_payload" | jq -r '.token // empty' 2>/dev/null || true)"
+        if [ -z "${admin_token:-}" ]; then
+          methods="$(curl -sS -H 'Accept: application/json' "$CP_URL/auth/methods" || true)"
+          password_enabled="$(echo "${methods:-}" | jq -r '.password // false' 2>/dev/null || echo false)"
+          generated_pw="$(echo "${methods:-}" | jq -r '.generated_password // empty' 2>/dev/null || true)"
+          if [ "$password_enabled" != "true" ] || [ -z "${generated_pw:-}" ]; then
+            echo "::warning::Cannot bootstrap trust: missing cp_admin_token/cp_admin_password and generated_password not available."
+            exit 0
+          fi
+
+          login_payload="$(jq -cn --arg p "$generated_pw" '{password: $p}')"
+          admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$login_payload" | jq -r '.token // empty' 2>/dev/null || true)"
+        fi
+
         if [ -z "${admin_token:-}" ]; then
           echo "::warning::Admin login failed; skipping trust bootstrap."
           exit 0
