@@ -9,6 +9,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch: {}
 
 # This workflow mutates the shared control plane and the self-hosted TDX runner.
 # Prefer the newest run and cancel older queued/in-progress runs to avoid deadlocks
