@@ -250,6 +250,8 @@ class TDXManager:
 
         # dm-verity boot: direct kernel boot, config passed via cmdline
         artifacts = self._find_verity_image(image)
+        cidata_iso: Path | None = None
+
         config_param, config_value = self._encode_launcher_config_for_cmdline(launcher_config)
         cmdline = f"{artifacts['cmdline']} {config_param}={config_value}"
 
@@ -276,12 +278,59 @@ class TDXManager:
                     sizes.append((k, -1))
             sizes.sort(key=lambda kv: kv[1], reverse=True)
             biggest = ", ".join(f"{k}={n}" for k, n in sizes[:6] if n >= 0) or "n/a"
-            raise RuntimeError(
-                f"Kernel cmdline too large ({len(cmdline)} bytes > 3072). "
-                "This will truncate easyenclave.config and break boot. "
-                f"Largest config entries: {biggest}. "
-                "Avoid passing large JSON blobs (e.g., service account keys) via cmdline."
+
+            # Measurement VMs must remain deterministic; fail fast rather than introducing
+            # a new disk/input that could affect RTMR baselines.
+            if mode == "measure":
+                raise RuntimeError(
+                    f"Kernel cmdline too large ({len(cmdline)} bytes > 3072). "
+                    "This will truncate easyenclave.config and break boot. "
+                    f"Largest config entries: {biggest}. "
+                    "Avoid passing large JSON blobs (e.g., service account keys) via cmdline."
+                )
+
+            # For non-measure VMs, fall back to a config drive ISO.
+            # The launcher will mount it and read config.json.
+            print(
+                f"Warning: kernel cmdline too large ({len(cmdline)} bytes > 3072); "
+                f"falling back to cidata ISO config drive. Largest config entries: {biggest}.",
+                file=sys.stderr,
             )
+
+            cidata_dir = self.WORKDIR / f"cidata.{rand_str}"
+            cidata_dir.mkdir(parents=True, exist_ok=True)
+            (cidata_dir / "config.json").write_text(
+                json.dumps(launcher_config, indent=2),
+                encoding="utf-8",
+            )
+
+            cidata_iso = self.WORKDIR / f"cidata.{rand_str}.iso"
+            # NOTE: keep this ISO world-readable so cleanup scripts/users can inspect it.
+            subprocess.run(
+                [
+                    "genisoimage",
+                    "-output",
+                    str(cidata_iso),
+                    "-volid",
+                    "EE_CONFIG",
+                    "-joliet",
+                    "-rock",
+                    "config.json",
+                ],
+                cwd=str(cidata_dir),
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            try:
+                cidata_iso.chmod(0o644)
+            except PermissionError:
+                pass
+
+            # Drop the cmdline-embedded config; the launcher will load from the ISO.
+            cmdline = artifacts["cmdline"]
+            if memory_gib >= 64:
+                cmdline += " swiotlb=131072"
 
         xml_content = xml_content.replace("KERNEL_PATH", str(artifacts["kernel"]))
         xml_content = xml_content.replace("INITRD_PATH", str(artifacts["initrd"]))
@@ -313,6 +362,18 @@ class TDXManager:
 
             xml_content = _re.sub(
                 r"\s*<!-- DATA_DISK_START -->.*?<!-- DATA_DISK_END -->",
+                "",
+                xml_content,
+                flags=_re.DOTALL,
+            )
+
+        if cidata_iso is not None:
+            xml_content = xml_content.replace("CIDATA_ISO_PATH", str(cidata_iso))
+        else:
+            import re as _re
+
+            xml_content = _re.sub(
+                r"\s*<!-- CIDATA_START -->.*?<!-- CIDATA_END -->",
                 "",
                 xml_content,
                 flags=_re.DOTALL,

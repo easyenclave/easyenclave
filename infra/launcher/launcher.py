@@ -963,11 +963,77 @@ def _parse_cmdline_config() -> dict | None:
     return None
 
 
+def _parse_config_drive() -> dict | None:
+    """Try to read config from an attached config-drive ISO.
+
+    This is used as a fallback when the launcher config is too large to fit in the
+    kernel cmdline (e.g., when provisioning credentials are large JSON blobs).
+
+    Expected ISO contents:
+      - /config.json
+
+    Returns:
+        Parsed config dict, or None if not found/parseable.
+    """
+    import subprocess
+
+    candidates: list[str] = []
+    env_dev = (os.environ.get("EASYENCLAVE_CONFIG_DRIVE") or "").strip()
+    if env_dev:
+        candidates.append(env_dev)
+    # Common CD-ROM device names under qemu/libvirt.
+    candidates.extend(["/dev/sr0", "/dev/sr1", "/dev/cdrom", "/dev/cdrom0"])
+
+    mount_dir = Path("/tmp/easyenclave-config-drive")
+    try:
+        mount_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return None
+
+    for dev in candidates:
+        dev_path = Path(dev)
+        if not dev or not dev_path.exists():
+            continue
+
+        mounted = False
+        try:
+            # Let mount auto-detect filesystem; iso9660 is the common case.
+            subprocess.run(
+                ["mount", "-o", "ro", str(dev_path), str(mount_dir)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            mounted = True
+
+            cfg_path = mount_dir / "config.json"
+            if cfg_path.exists() and cfg_path.is_file():
+                config = json.loads(cfg_path.read_text(encoding="utf-8"))
+                logger.info(
+                    "Loaded config from config drive: mode=%s",
+                    config.get("mode", MODE_AGENT),
+                )
+                return config
+        except Exception:
+            continue
+        finally:
+            if mounted:
+                subprocess.run(
+                    ["umount", str(mount_dir)],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+    return None
+
+
 def get_launcher_config() -> dict:
     """Read config from the first available source.
 
     Search order:
       1. EASYENCLAVE_CONFIG env path / /etc/easyenclave/config.json
+      1.5 Config-drive ISO (/config.json)
       2. Kernel cmdline easyenclave.config=<b64> (verity image fallback)
 
     Returns:
@@ -984,6 +1050,11 @@ def get_launcher_config() -> dict:
                 return config
             except Exception as e:
                 logger.warning(f"Could not read config from {config_path}: {e}")
+
+    # Config-drive ISO (used when cmdline payloads are too large)
+    config = _parse_config_drive()
+    if config is not None:
+        return config
 
     # Fallback: kernel cmdline (verity images)
     config = _parse_cmdline_config()

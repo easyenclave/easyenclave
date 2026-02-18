@@ -41,6 +41,15 @@
       <target dev="vda" bus="virtio"/>
       <readonly/>
     </disk>
+    <!-- CIDATA_START -->
+    <!-- Optional config drive (iso9660) used when launcher config is too large for the kernel cmdline -->
+    <disk type="file" device="cdrom">
+      <driver name="qemu" type="raw" cache="none"/>
+      <source file="CIDATA_ISO_PATH"/>
+      <target dev="sda" bus="sata"/>
+      <readonly/>
+    </disk>
+    <!-- CIDATA_END -->
     <!-- DATA_DISK_START -->
     <!-- Data disk (writable, guest encrypts with ephemeral dm-crypt key) -->
     <disk type="file" device="disk">
