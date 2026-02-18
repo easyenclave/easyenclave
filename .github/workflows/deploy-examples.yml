@@ -196,11 +196,17 @@ jobs:
             >/tmp/new_tiny_vm.json
           cat /tmp/new_tiny_vm.json || true
 
-          for _ in {1..60}; do
+          for i in {1..60}; do
             count="$(count_deployable || echo 0)"
             if [ "${count:-0}" -ge 1 ]; then
               echo "Deployable baremetal tiny capacity is now available: $count"
               exit 0
+            fi
+            if [ $((i % 6)) -eq 0 ]; then
+              echo "Still waiting for deployable baremetal tiny capacity... ($i/60)"
+              curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+                [.agents[] | select((.node_size // "" | ascii_downcase) == "tiny")
+                  | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name, verification_error}]'
             fi
             sleep 5
           done
@@ -463,10 +469,19 @@ jobs:
             fi
 
             # Give the agent time to register and pass verification.
-            for _ in {1..60}; do
+            for i in {1..60}; do
               non_measurer="$(count_non_measurer || echo 0)"
               if [ "${non_measurer:-0}" -ge "${required_non_measurer}" ]; then
                 break
+              fi
+              if [ $((i % 6)) -eq 0 ]; then
+                echo "Still waiting for verified+healthy llm capacity... ($i/60)"
+                echo "  non-measurer=$non_measurer required=$required_non_measurer"
+                curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
+                  [.agents[]
+                    | select((.node_size // "" | ascii_downcase) == "llm")
+                    | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
+                    | {agent_id, status, health_status, verified, deployed_app, vm_name, verification_error}]'
               fi
               sleep 5
             done
