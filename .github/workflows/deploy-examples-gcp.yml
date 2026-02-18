@@ -193,6 +193,8 @@ jobs:
           gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
           gcp_service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
+          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
+          cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       - name: Ensure app exists (idempotent)
         uses: ./.github/actions/register-app
