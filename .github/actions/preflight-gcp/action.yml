@@ -115,30 +115,44 @@ runs:
         api_key="$(echo "${BILLING_API_KEY:-}" | xargs)"
 
         create_account() {
-          local account_name body http_code resp
-          account_name="ci-gcp-preflight-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date +%s)"
-          body="$(mktemp)"
-          http_code="$(
-            curl -sS -o "$body" -w "%{http_code}" \
-              -X POST "$CP_URL/api/v1/accounts" \
-              -H "Content-Type: application/json" \
-              -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "deployer"}')" \
-              || echo 000
-          )"
-          resp="$(cat "$body")"
-          rm -f "$body"
-          if [ "$http_code" -ge 400 ]; then
+          local account_name body http_code resp detail suffix attempt
+          for attempt in $(seq 1 8); do
+            suffix="$(date +%s)-${RANDOM}-${attempt}"
+            account_name="ci-gcp-preflight-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${suffix}"
+            body="$(mktemp)"
+            http_code="$(
+              curl -sS -o "$body" -w "%{http_code}" \
+                -X POST "$CP_URL/api/v1/accounts" \
+                -H "Content-Type: application/json" \
+                -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "deployer"}')" \
+                || echo 000
+            )"
+            resp="$(cat "$body")"
+            rm -f "$body"
+
+            if [ "$http_code" -lt 400 ]; then
+              account_id="$(echo "$resp" | jq -r '.account_id // empty')"
+              api_key="$(echo "$resp" | jq -r '.api_key // empty')"
+              if [ -z "$account_id" ] || [ -z "$api_key" ]; then
+                echo "::error::Control plane did not return billing account credentials"
+                exit 1
+              fi
+              echo "Created transient deployer billing account: $account_id"
+              return 0
+            fi
+
             detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
+            if [ "$http_code" = "409" ]; then
+              echo "::warning::Transient billing account name collision; retrying create ($attempt/8)..."
+              sleep 1
+              continue
+            fi
+
             echo "::error::Failed to create deployer billing account (HTTP $http_code): ${detail:-$resp}"
             exit 1
-          fi
-          account_id="$(echo "$resp" | jq -r '.account_id // empty')"
-          api_key="$(echo "$resp" | jq -r '.api_key // empty')"
-          if [ -z "$account_id" ] || [ -z "$api_key" ]; then
-            echo "::error::Control plane did not return billing account credentials"
-            exit 1
-          fi
-          echo "Created transient deployer billing account: $account_id"
+          done
+          echo "::error::Failed to create deployer billing account after retries (name collisions)"
+          exit 1
         }
 
         if [ -n "$account_id" ] && [ -n "$api_key" ]; then
