@@ -4,14 +4,14 @@ Run a private LLM (Ollama + SmolLM2 135M) inside a TDX enclave. Queries and resp
 
 ## What it does
 
-- **ollama** — Runs the Ollama inference server on port 8080, exposing an OpenAI-compatible API at `/v1/chat/completions`
+- **private-llm** — Runs the Ollama inference server on port 8080, exposing an OpenAI-compatible API at `/v1/chat/completions`
 - **model-loader** — Init container that pulls `smollm2:135m` (~100MB) on first boot, then exits
 
 ## docker-compose.yml
 
 ```yaml
 services:
-  ollama:
+  private-llm:
     image: ollama/ollama:latest
     ports:
       - "8080:8080"
@@ -25,10 +25,10 @@ services:
   model-loader:
     image: curlimages/curl:latest
     depends_on:
-      ollama:
+      private-llm:
         condition: service_healthy
     restart: "no"
-    entrypoint: ["sh", "-c", "curl -sf -X POST http://ollama:8080/api/pull -d '{\"name\":\"smollm2:135m\"}'"]
+    entrypoint: ["sh", "-c", "curl -sf -X POST http://private-llm:8080/api/pull -d '{\"name\":\"smollm2:135m\"}'"]
 ```
 
 ## Querying the LLM
