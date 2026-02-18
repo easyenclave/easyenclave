@@ -10,15 +10,17 @@ on:
   pull_request:
     branches: [main]
 
+# This workflow mutates the shared control plane and the self-hosted TDX runner.
+# Prefer the newest run and cancel older queued/in-progress runs to avoid deadlocks
+# with job-level concurrency.
+concurrency:
+  group: easyenclave-shared-control-plane
+  cancel-in-progress: true
+
 jobs:
   cleanup-tdx-runner:
     name: Cleanup - Local TDX VMs
     runs-on: [self-hosted, tdx]
-    concurrency:
-      # Do not overlap with other workflows that mutate the shared control plane / TDX runner.
-      group: easyenclave-shared-control-plane
-      # Prefer the newest CI run; cancel older queued/in-progress work in this shared environment.
-      cancel-in-progress: true
     # Avoid running destructive cleanup on PRs from forks.
     if: github.event_name == 'push'
     steps:
@@ -66,10 +68,6 @@ jobs:
   measure-trusted-values:
     name: Measure Trusted Values (tiny)
     runs-on: [self-hosted, tdx]
-    concurrency:
-      # Serialized with cleanup/bootstrap and other CP-mutating workflows.
-      group: easyenclave-shared-control-plane
-      cancel-in-progress: true
     if: github.event_name == 'push'
     needs: [cleanup-tdx-runner]
     permissions:
@@ -132,10 +130,6 @@ jobs:
   bootstrap-control-plane:
     name: Bootstrap Control Plane
     runs-on: [self-hosted, tdx]
-    concurrency:
-      # Serialized with cleanup/measure and other CP-mutating workflows.
-      group: easyenclave-shared-control-plane
-      cancel-in-progress: true
     if: github.event_name == 'push'
     # Everything can run in parallel except launching the CP VM; this must wait for:
     # 1) docker images for this SHA to be pushed, and
