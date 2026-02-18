@@ -699,17 +699,25 @@ class CapacityLaunchOrderStore:
             stmt = stmt.order_by(CapacityLaunchOrder.created_at, CapacityLaunchOrder.order_id)
             return list(session.exec(stmt).all())
 
-    def count_in_flight(self, *, datacenter: str, node_size: str = "") -> int:
+    def count_in_flight(
+        self,
+        *,
+        datacenter: str,
+        node_size: str = "",
+        account_id: str | None = None,
+    ) -> int:
         normalized_datacenter = _normalize_pool_value(datacenter)
         normalized_node_size = _normalize_pool_value(node_size)
+        normalized_account_id = (account_id or "").strip() or None
         with get_db() as session:
-            rows = session.exec(
-                select(CapacityLaunchOrder).where(
-                    CapacityLaunchOrder.datacenter == normalized_datacenter,
-                    CapacityLaunchOrder.node_size == normalized_node_size,
-                    CapacityLaunchOrder.status.in_(self._IN_FLIGHT_STATUSES),
-                )
-            ).all()
+            stmt = select(CapacityLaunchOrder).where(
+                CapacityLaunchOrder.datacenter == normalized_datacenter,
+                CapacityLaunchOrder.node_size == normalized_node_size,
+                CapacityLaunchOrder.status.in_(self._IN_FLIGHT_STATUSES),
+            )
+            if normalized_account_id:
+                stmt = stmt.where(CapacityLaunchOrder.account_id == normalized_account_id)
+            rows = session.exec(stmt).all()
             return len(list(rows))
 
     def create_open(
@@ -753,8 +761,11 @@ class CapacityLaunchOrderStore:
         if needed <= 0:
             return []
 
+        normalized_account_id = (account_id or "").strip() or None
         existing = self.count_in_flight(
-            datacenter=normalized_datacenter, node_size=normalized_node_size
+            datacenter=normalized_datacenter,
+            node_size=normalized_node_size,
+            account_id=normalized_account_id,
         )
         to_create = max(0, needed - existing)
         created: list[CapacityLaunchOrder] = []
@@ -764,7 +775,7 @@ class CapacityLaunchOrderStore:
                     datacenter=normalized_datacenter,
                     node_size=normalized_node_size,
                     reason=reason,
-                    account_id=account_id,
+                    account_id=normalized_account_id,
                     requested_count=1,
                 )
             )

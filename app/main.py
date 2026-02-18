@@ -2135,20 +2135,23 @@ async def reconcile_agent_capacity(
         )
 
         if request.dispatch and shortfall > 0:
+            order_scope_account_id = (request.account_id or "").strip() or None
             in_flight_before = capacity_launch_order_store.count_in_flight(
                 datacenter=target_datacenter,
                 node_size=target_node_size,
+                account_id=order_scope_account_id,
             )
             created_orders = capacity_launch_order_store.create_missing_for_shortfall(
                 datacenter=target_datacenter,
                 node_size=target_node_size,
                 shortfall=shortfall,
                 reason=reason,
-                account_id=request.account_id,
+                account_id=order_scope_account_id,
             )
             in_flight_after = capacity_launch_order_store.count_in_flight(
                 datacenter=target_datacenter,
                 node_size=target_node_size,
+                account_id=order_scope_account_id,
             )
             dispatched = in_flight_after > 0
             status_code = 202 if dispatched else 200
