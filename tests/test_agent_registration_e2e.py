@@ -299,3 +299,45 @@ def test_reregistration_rejects_identity_or_metadata_drift(client, monkeypatch):
     size_drift = client.post("/api/v1/agents/register", json=size_drift_payload)
     assert size_drift.status_code == 409
     assert "node_size changed" in size_drift.json()["detail"].lower()
+
+
+def test_agent_status_endpoint_requires_bearer_after_attested_registration(client, monkeypatch):
+    mrtd = "1" * 96
+    trusted_mrtd_store.upsert(mrtd, mrtd_type="agent", note="status-auth-baseline")
+    monkeypatch.setattr(
+        "app.attestation.verify_attestation_token",
+        _mock_verify_by_token({"token-status-auth": mrtd}),
+    )
+
+    payload = {
+        "attestation": _make_attestation("token-status-auth", mrtd),
+        "vm_name": "vm-status-auth",
+        "node_size": "tiny",
+        "datacenter": "gcp:us-central1-a",
+    }
+    reg = client.post("/api/v1/agents/register", json=payload)
+    assert reg.status_code == 200
+    agent_id = reg.json()["agent_id"]
+    agent_api_secret = reg.json().get("agent_api_secret")
+    assert isinstance(agent_api_secret, str)
+    assert agent_api_secret
+
+    no_auth = client.post(
+        f"/api/v1/agents/{agent_id}/status",
+        json={"status": "healthy", "deployment_id": "dep-1"},
+    )
+    assert no_auth.status_code == 401
+
+    bad_auth = client.post(
+        f"/api/v1/agents/{agent_id}/status",
+        headers={"Authorization": "Bearer wrong-secret"},
+        json={"status": "healthy", "deployment_id": "dep-1"},
+    )
+    assert bad_auth.status_code == 401
+
+    ok = client.post(
+        f"/api/v1/agents/{agent_id}/status",
+        headers={"Authorization": f"Bearer {agent_api_secret}"},
+        json={"status": "healthy", "deployment_id": "dep-1"},
+    )
+    assert ok.status_code == 200

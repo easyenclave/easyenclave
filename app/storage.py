@@ -16,6 +16,7 @@ from .db_models import (
     Account,
     AdminSession,
     Agent,
+    AgentControlCredential,
     App,
     AppRevenueShare,
     AppVersion,
@@ -209,6 +210,9 @@ class AgentStore:
         with get_db() as session:
             agent = session.get(Agent, agent_id)
             if agent:
+                cred = session.get(AgentControlCredential, agent_id)
+                if cred:
+                    session.delete(cred)
                 session.delete(agent)
                 return True
             return False
@@ -404,6 +408,59 @@ class AgentStore:
         with get_db() as session:
             for a in session.exec(select(Agent)).all():
                 session.delete(a)
+
+
+class AgentControlCredentialStore:
+    """Storage for per-agent control-channel API credentials."""
+
+    def upsert_secret(self, agent_id: str, api_secret: str) -> None:
+        now = datetime.now(timezone.utc)
+        with get_db() as session:
+            row = session.get(AgentControlCredential, agent_id)
+            if row is None:
+                row = AgentControlCredential(
+                    agent_id=agent_id,
+                    api_secret=api_secret,
+                    created_at=now,
+                    updated_at=now,
+                )
+            else:
+                row.api_secret = api_secret
+                row.updated_at = now
+            session.add(row)
+
+    def get_secret(self, agent_id: str) -> str | None:
+        with get_db() as session:
+            row = session.get(AgentControlCredential, agent_id)
+            return row.api_secret if row else None
+
+    def has_secret(self, agent_id: str) -> bool:
+        with get_db() as session:
+            row = session.get(AgentControlCredential, agent_id)
+            return bool(row and row.api_secret)
+
+    def verify_secret(self, agent_id: str, api_secret: str) -> bool:
+        api_secret = (api_secret or "").strip()
+        if not api_secret:
+            return False
+        with get_db() as session:
+            row = session.get(AgentControlCredential, agent_id)
+            if not row or not row.api_secret:
+                return False
+            return hmac.compare_digest(row.api_secret, api_secret)
+
+    def delete(self, agent_id: str) -> bool:
+        with get_db() as session:
+            row = session.get(AgentControlCredential, agent_id)
+            if not row:
+                return False
+            session.delete(row)
+            return True
+
+    def clear(self) -> None:
+        with get_db() as session:
+            for row in session.exec(select(AgentControlCredential)).all():
+                session.delete(row)
 
 
 class CapacityPoolTargetStore:
@@ -1678,6 +1735,7 @@ class AdminSessionStore:
 # Global store instances
 store = ServiceStore()
 agent_store = AgentStore()
+agent_control_credential_store = AgentControlCredentialStore()
 capacity_pool_target_store = CapacityPoolTargetStore()
 capacity_reservation_store = CapacityReservationStore()
 capacity_launch_order_store = CapacityLaunchOrderStore()

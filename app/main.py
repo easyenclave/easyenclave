@@ -7,12 +7,13 @@ import collections
 import logging
 import os
 import re
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -122,6 +123,7 @@ from .settings import (
 from .storage import (
     account_store,
     admin_session_store,
+    agent_control_credential_store,
     agent_store,
     app_revenue_share_store,
     app_store,
@@ -178,6 +180,38 @@ _agent_last_attestation: dict[str, datetime] = {}
 _NODE_SIZE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _DATACENTER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}:[a-z0-9][a-z0-9._-]{0,95}$")
 _PRODUCTION_ENV_NAMES = {"prod", "production"}
+
+
+def _mint_agent_api_secret() -> str:
+    """Mint a per-agent shared secret for CP<->agent control APIs."""
+    return secrets.token_urlsafe(48)
+
+
+def _extract_bearer_token(authorization: str | None) -> str:
+    auth = (authorization or "").strip()
+    if not auth.lower().startswith("bearer "):
+        return ""
+    return auth[7:].strip()
+
+
+def _require_agent_control_auth(agent_id: str, authorization: str | None) -> None:
+    """Require bearer auth for agents with registered control credentials.
+
+    Backward-compatibility: if an older agent has no credential record yet,
+    allow the request and log a warning.
+    """
+    if not agent_control_credential_store.has_secret(agent_id):
+        logger.warning(
+            "Agent %s has no control credential record; allowing legacy unauthenticated request",
+            agent_id,
+        )
+        return
+
+    token = _extract_bearer_token(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing agent Authorization bearer token")
+    if not agent_control_credential_store.verify_secret(agent_id, token):
+        raise HTTPException(status_code=401, detail="Invalid agent Authorization bearer token")
 
 
 def _parse_bool_setting(raw: str, *, fallback: bool) -> bool:
@@ -1132,10 +1166,13 @@ async def register_agent(request: AgentRegistrationRequest):
         # Verified existing agent with matching identity metadata.
         # Update heartbeat and return existing identity without reissuing tunnel token.
         agent_store.heartbeat(existing.agent_id)
+        agent_api_secret = _mint_agent_api_secret()
+        agent_control_credential_store.upsert_secret(existing.agent_id, agent_api_secret)
         logger.info(f"Agent re-registered after attestation check: {existing.agent_id} ({vm_name})")
         return AgentRegistrationResponse(
             agent_id=existing.agent_id,
             poll_interval=30,
+            agent_api_secret=agent_api_secret,
             hostname=existing.hostname,
         )
 
@@ -1203,21 +1240,30 @@ async def register_agent(request: AgentRegistrationRequest):
         f"Agent registered: {agent_id} ({vm_name}) verified={verified} intel_ta={intel_ta_verified}"
     )
 
+    agent_api_secret = _mint_agent_api_secret()
+    agent_control_credential_store.upsert_secret(agent_id, agent_api_secret)
+
     return AgentRegistrationResponse(
         agent_id=agent_id,
         poll_interval=30,
+        agent_api_secret=agent_api_secret,
         tunnel_token=tunnel_token,
         hostname=hostname,
     )
 
 
 @app.post("/api/v1/agents/{agent_id}/status")
-async def update_agent_status(agent_id: str, request: AgentStatusRequest):
+async def update_agent_status(
+    agent_id: str,
+    request: AgentStatusRequest,
+    authorization: str | None = Header(None),
+):
     """Update agent status during deployment.
 
     Agents call this to report deployment progress.
     """
     get_or_404(agent_store, agent_id, "Agent")
+    _require_agent_control_auth(agent_id, authorization)
 
     # Update agent status
     agent_store.update_status(agent_id, request.status, request.deployment_id)
@@ -1235,13 +1281,18 @@ async def update_agent_status(agent_id: str, request: AgentStatusRequest):
 
 
 @app.post("/api/v1/agents/{agent_id}/heartbeat")
-async def agent_heartbeat(agent_id: str, request: AgentHeartbeatRequest):
+async def agent_heartbeat(
+    agent_id: str,
+    request: AgentHeartbeatRequest,
+    authorization: str | None = Header(None),
+):
     """Receive an agent-pushed heartbeat with fresh attestation.
 
     This is the primary attestation refresh mechanism (agent-driven).
     Control plane may still do health pulls separately.
     """
     agent = get_or_404(agent_store, agent_id, "Agent")
+    _require_agent_control_auth(agent_id, authorization)
 
     if (request.vm_name or "").strip() != (agent.vm_name or "").strip():
         raise HTTPException(status_code=400, detail="vm_name does not match agent record")
@@ -1282,12 +1333,17 @@ async def agent_heartbeat(agent_id: str, request: AgentHeartbeatRequest):
 
 
 @app.post("/api/v1/agents/{agent_id}/deployed")
-async def agent_deployment_complete(agent_id: str, request: AgentDeployedRequest):
+async def agent_deployment_complete(
+    agent_id: str,
+    request: AgentDeployedRequest,
+    authorization: str | None = Header(None),
+):
     """Report successful deployment completion.
 
     Agents call this after successfully deploying a workload.
     """
     agent = get_or_404(agent_store, agent_id, "Agent")
+    _require_agent_control_auth(agent_id, authorization)
 
     # Get deployment to extract service_url for health checking
     deployment = deployment_store.get(request.deployment_id)
@@ -2515,6 +2571,7 @@ async def delete_agent(agent_id: str, _admin: AdminSession = Depends(require_adm
             # Continue with agent deletion even if tunnel cleanup fails
 
     capacity_reservation_store.expire_open_for_agent(agent_id)
+    agent_control_credential_store.delete(agent_id)
     if not agent_store.delete(agent_id):
         raise HTTPException(status_code=404, detail="Agent not found")
     logger.info(f"Agent deleted: {agent_id}")
@@ -3856,9 +3913,19 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
 
     try:
         agent_url = f"https://{selected_agent.hostname}/api/deploy"
+        agent_api_secret = agent_control_credential_store.get_secret(selected_agent.agent_id)
+        headers = {}
+        if agent_api_secret:
+            headers["X-Agent-Secret"] = agent_api_secret
+        else:
+            logger.warning(
+                "Agent %s has no control credential; deploying without X-Agent-Secret (legacy compatibility)",
+                selected_agent.agent_id,
+            )
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
                 agent_url,
+                headers=headers,
                 json={
                     "deployment_id": deployment_id,
                     "app_name": name,

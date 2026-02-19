@@ -98,6 +98,7 @@ class AgentRegistrationResponse(BaseModel):
 
     agent_id: str
     poll_interval: int = 30
+    agent_api_secret: str | None = None
     tunnel_token: str | None = None
     hostname: str | None = None
 

@@ -232,8 +232,11 @@ def push_heartbeat_to_control_plane(
         "status": status,
         "deployment_id": deployment_id,
     }
+    headers = {}
+    if API_SECRET:
+        headers["Authorization"] = f"Bearer {API_SECRET}"
     try:
-        resp = requests.post(url, json=payload, timeout=30)
+        resp = requests.post(url, json=payload, headers=headers, timeout=30)
         if resp.status_code >= 400:
             raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
         logger.info("Pushed agent heartbeat/attestation to control plane")
@@ -341,7 +344,13 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         if not API_SECRET:
             return True  # No secret configured, allow all
         auth = self.headers.get("X-Agent-Secret", "")
-        return auth == API_SECRET
+        if auth == API_SECRET:
+            return True
+        bearer = self.headers.get("Authorization", "")
+        if bearer.startswith("Bearer "):
+            token = bearer[7:].strip()
+            return token == API_SECRET
+        return False
 
     def _check_admin_auth(self) -> bool:
         """Check admin authentication."""
@@ -786,6 +795,9 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
     def _notify_deployment_complete(self, deployment_id: str, attestation: dict, config: dict):
         """Notify control plane that deployment is complete."""
         try:
+            headers = {}
+            if API_SECRET:
+                headers["Authorization"] = f"Bearer {API_SECRET}"
             # Notify control plane
             requests.post(
                 f"{CONTROL_PLANE_URL}/api/v1/agents/{_admin_state['agent_id']}/deployed",
@@ -794,6 +806,7 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                     "service_id": "",
                     "attestation": attestation,
                 },
+                headers=headers,
                 timeout=30,
             )
         except Exception as e:
@@ -802,6 +815,9 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
     def _notify_deployment_failed(self, deployment_id: str, error: str):
         """Notify control plane that deployment failed."""
         try:
+            headers = {}
+            if API_SECRET:
+                headers["Authorization"] = f"Bearer {API_SECRET}"
             requests.post(
                 f"{CONTROL_PLANE_URL}/api/v1/agents/{_admin_state['agent_id']}/status",
                 json={
@@ -809,6 +825,7 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
                     "deployment_id": deployment_id,
                     "error": error,
                 },
+                headers=headers,
                 timeout=30,
             )
         except Exception as e:
@@ -1449,6 +1466,7 @@ def register_with_control_plane(
         Registration response dict containing:
         - agent_id: Unique agent identifier
         - poll_interval: Seconds between polls
+        - agent_api_secret: Per-agent CP<->agent shared control secret
         - tunnel_token: Cloudflare tunnel token (if configured)
         - hostname: Public hostname (if tunnel configured)
     """
@@ -2220,7 +2238,7 @@ def run_agent_mode(config: dict):
     Args:
         config: Launcher config (may contain control_plane_url override)
     """
-    global CONTROL_PLANE_URL
+    global API_SECRET, CONTROL_PLANE_URL
 
     # Override control plane URL if specified in config
     if config.get("control_plane_url"):
@@ -2254,6 +2272,10 @@ def run_agent_mode(config: dict):
             reg_response = register_with_control_plane(attestation, vm_name, config)
             agent_id = reg_response["agent_id"]
             tunnel_hostname = reg_response.get("hostname")
+            api_secret = (reg_response.get("agent_api_secret") or "").strip()
+            if not api_secret:
+                raise RuntimeError("Registration response missing agent_api_secret")
+            API_SECRET = api_secret
 
             _admin_state["agent_id"] = agent_id
             _admin_state["hostname"] = tunnel_hostname
@@ -2304,6 +2326,9 @@ def run_agent_mode(config: dict):
                     # Re-register to get fresh tunnel token
                     try:
                         reg_response = register_with_control_plane(attestation, vm_name, config)
+                        api_secret = (reg_response.get("agent_api_secret") or "").strip()
+                        if api_secret:
+                            API_SECRET = api_secret
                         if reg_response.get("tunnel_token"):
                             cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
                     except Exception as e:

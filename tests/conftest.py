@@ -49,6 +49,7 @@ def clear_all_stores():
     from app.storage import (
         account_store,
         admin_session_store,
+        agent_control_credential_store,
         agent_store,
         app_revenue_share_store,
         app_store,
@@ -65,6 +66,7 @@ def clear_all_stores():
     def _clear():
         store.clear()
         agent_store.clear()
+        agent_control_credential_store.clear()
         deployment_store.clear()
         app_store.clear()
         app_version_store.clear()

@@ -95,6 +95,17 @@ class Agent(SQLModel, table=True):
     deployed_app: str | None = None
 
 
+class AgentControlCredential(SQLModel, table=True):
+    """Per-agent control-channel credential (not exposed via public agent APIs)."""
+
+    __tablename__ = "agent_control_credentials"
+
+    agent_id: str = Field(primary_key=True, index=True)
+    api_secret: str = Field(default="")
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
 class CapacityPoolTarget(SQLModel, table=True):
     """Desired warm capacity for a datacenter/node-size pool."""
 
