@@ -482,3 +482,77 @@ async def delete_instance(
             return True
         time.sleep(2)
     return True
+
+
+async def list_managed_instances() -> list[dict[str, Any]]:
+    """List CP-managed GCP instances across zones.
+
+    Returns lightweight inventory rows:
+      - name
+      - zone
+      - datacenter
+      - status
+      - creation_timestamp
+      - labels
+    """
+    project_id = _project_id_env()
+    if not project_id:
+        raise GCPProvisionError("GCP_PROJECT_ID is not set on the control plane")
+    service_account_raw = _service_account_env()
+    if not service_account_raw:
+        raise GCPProvisionError("GCP_SERVICE_ACCOUNT_KEY is not set on the control plane")
+
+    service_account = _parse_service_account_info(service_account_raw)
+    token = await _oauth_access_token(service_account=service_account)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    results: list[dict[str, Any]] = []
+    page_token = ""
+    while True:
+        url = (
+            "https://compute.googleapis.com/compute/v1/projects/"
+            f"{_urlquote(project_id)}/aggregated/instances"
+        )
+        params: dict[str, str] = {"maxResults": "500"}
+        if page_token:
+            params["pageToken"] = page_token
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url, headers=headers, params=params)
+        if resp.status_code >= 400:
+            raise GCPProvisionError(
+                f"GCP instance aggregated list failed (HTTP {resp.status_code}): {(resp.text or '')[:240]}"
+            )
+
+        payload = resp.json() or {}
+        items = payload.get("items") or {}
+        if isinstance(items, dict):
+            for zone_block in items.values():
+                if not isinstance(zone_block, dict):
+                    continue
+                for inst in zone_block.get("instances") or []:
+                    if not isinstance(inst, dict):
+                        continue
+                    labels = inst.get("labels") or {}
+                    if str(labels.get("easyenclave") or "").strip().lower() != "managed":
+                        continue
+
+                    name = str(inst.get("name") or "").strip()
+                    zone_path = str(inst.get("zone") or "")
+                    zone = zone_path.rsplit("/", 1)[-1] if zone_path else ""
+                    results.append(
+                        {
+                            "name": name,
+                            "zone": zone,
+                            "datacenter": f"gcp:{zone}" if zone else "gcp",
+                            "status": str(inst.get("status") or "").strip().lower(),
+                            "creation_timestamp": str(inst.get("creationTimestamp") or "").strip(),
+                            "labels": labels,
+                        }
+                    )
+
+        page_token = str(payload.get("nextPageToken") or "").strip()
+        if not page_token:
+            break
+
+    return results

@@ -1732,6 +1732,18 @@ def _utc_aware(dt: datetime | None) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _parse_gcp_timestamp(value: str | None) -> datetime | None:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        return datetime.fromisoformat(raw).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
 async def reclaim_stale_fulfilled_gcp_orders(
     *,
     internal_launcher_id: str,
@@ -1822,6 +1834,86 @@ async def reclaim_stale_fulfilled_gcp_orders(
     return reclaimed
 
 
+async def reclaim_orphaned_managed_gcp_instances(
+    *,
+    delete_gcp_instance,
+    list_managed_gcp_instances,
+) -> int:
+    """Delete stale CP-managed GCP instances that have no active agent signal."""
+    now = datetime.now(timezone.utc)
+    grace_seconds = max(
+        300,
+        get_setting_int("operational.capacity_fulfilled_grace_seconds", fallback=1800),
+    )
+    stale_agent_hours = max(
+        1,
+        get_setting_int("operational.agent_stale_hours", fallback=24),
+    )
+    stale_agent_timeout = timedelta(hours=stale_agent_hours)
+    cutoff = now - timedelta(seconds=grace_seconds)
+
+    active_deploy_statuses = {"pending", "deploying", "running", "in_progress", "reassigning"}
+    active_agent_ids = {
+        (d.agent_id or "").strip()
+        for d in deployment_store.list()
+        if (d.status or "").strip().lower() in active_deploy_statuses
+    }
+    agents_by_vm = {
+        (a.vm_name or "").strip().lower(): a
+        for a in agent_store.list()
+        if (a.vm_name or "").strip()
+    }
+
+    try:
+        instances = await list_managed_gcp_instances()
+    except Exception as exc:
+        logger.warning("Failed managed GCP instance inventory for orphan reap: %s", exc)
+        return 0
+
+    reclaimed = 0
+    for inst in instances:
+        vm_name = str(inst.get("name") or "").strip()
+        if not vm_name or not vm_name.startswith("ee-"):
+            continue
+        datacenter = str(inst.get("datacenter") or "").strip().lower()
+        if datacenter != "gcp" and not datacenter.startswith("gcp:"):
+            continue
+
+        created_at = _parse_gcp_timestamp(str(inst.get("creation_timestamp") or ""))
+        if created_at and created_at > cutoff:
+            continue
+
+        agent = agents_by_vm.get(vm_name.lower())
+        if agent:
+            if (agent.agent_id or "").strip() in active_agent_ids:
+                continue
+            heartbeat_ref = _utc_aware(
+                agent.last_heartbeat or agent.last_health_check or agent.updated_at
+            )
+            if now - heartbeat_ref < stale_agent_timeout:
+                continue
+
+        try:
+            deleted = await delete_gcp_instance(datacenter=datacenter, instance_name=vm_name)
+        except Exception as exc:
+            logger.warning("Failed orphan GCP reclaim for vm=%s: %s", vm_name, exc)
+            continue
+
+        if agent and (agent.agent_id or "").strip() not in active_agent_ids:
+            agent_store.delete(agent.agent_id)
+
+        logger.warning(
+            "Reclaimed orphan managed GCP instance vm=%s dc=%s deleted=%s reason=%s",
+            vm_name,
+            datacenter,
+            deleted,
+            "no-agent" if agent is None else "stale-agent",
+        )
+        reclaimed += 1
+
+    return reclaimed
+
+
 async def background_capacity_launch_order_fulfiller():
     """CP-native capacity fulfiller (currently: GCP).
 
@@ -1829,7 +1921,12 @@ async def background_capacity_launch_order_fulfiller():
     claim open GCP launch orders and provision instances directly via the
     Compute API (no external scripts, no gcloud).
     """
-    from app.gcp_capacity import GCPProvisionError, create_tdx_instance_for_order, delete_instance
+    from app.gcp_capacity import (
+        GCPProvisionError,
+        create_tdx_instance_for_order,
+        delete_instance,
+        list_managed_instances,
+    )
 
     internal_launcher_id = "cp-internal-launcher"
     poll_seconds = 5
@@ -1861,10 +1958,19 @@ async def background_capacity_launch_order_fulfiller():
                     internal_launcher_id=internal_launcher_id,
                     delete_gcp_instance=delete_instance,
                 )
+                orphan_reclaimed = await reclaim_orphaned_managed_gcp_instances(
+                    delete_gcp_instance=delete_instance,
+                    list_managed_gcp_instances=list_managed_instances,
+                )
                 if reclaimed > 0:
                     logger.warning(
                         "Reclaimed %d stale fulfilled GCP order-backed VM(s)",
                         reclaimed,
+                    )
+                if orphan_reclaimed > 0:
+                    logger.warning(
+                        "Reclaimed %d orphan managed GCP VM(s)",
+                        orphan_reclaimed,
                     )
                 last_reap_at = now
 
