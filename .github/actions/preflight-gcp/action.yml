@@ -167,13 +167,19 @@ runs:
           if [ "$probe_code" -ge 400 ]; then
             probe_resp="$(cat "$probe_body")"
             probe_detail="$(echo "$probe_resp" | jq -r '.detail // empty' 2>/dev/null || true)"
-            echo "::warning::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
-            echo "::warning::Creating transient deployer billing account for this run."
-            create_account
+            echo "::error::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
+            echo "::error::Refusing to auto-create a transient billing account when explicit credentials were provided."
+            echo "::error::Update CP_DEPLOYER_ACCOUNT_ID / CP_DEPLOYER_API_KEY for this control plane and retry."
+            rm -f "$probe_body"
+            exit 1
           else
             echo "Using provided billing account for GCP preflight capacity request."
           fi
           rm -f "$probe_body"
+        elif [ -n "$account_id" ] || [ -n "$api_key" ]; then
+          echo "::error::billing_account_id and billing_api_key must be provided together."
+          echo "::error::Refusing to auto-create transient billing credentials due partial explicit configuration."
+          exit 1
         else
           echo "::warning::billing_account_id or billing_api_key not provided; creating transient deployer billing account."
           create_account
