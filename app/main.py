@@ -10,15 +10,13 @@ import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import uuid4
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import cloudflare, proxy
+from . import cloudflare
 from .attestation import (
     AttestationError,
     build_attestation_chain,
@@ -54,17 +52,6 @@ from .database import init_db
 from .db_models import AdminSession, AppRevenueShare
 from .ita import verify_attestation_token
 from .models import (
-    Account,
-    AccountCreateRequest,
-    AccountLinkIdentityRequest,
-    AccountListResponse,
-    AccountResponse,
-    AdminAgentCleanupRequest,
-    AdminAgentCleanupResponse,
-    AdminLoginRequest,
-    AdminLoginResponse,
-    AdminStaleAgentCleanupRequest,
-    AdminStaleAgentCleanupResponse,
     Agent,
     AgentCapacityDispatchResult,
     AgentCapacityReconcileRequest,
@@ -78,7 +65,6 @@ from .models import (
     AgentRegistrationRequest,
     AgentRegistrationResponse,
     AgentStatusRequest,
-    ApiKeyRotateResponse,
     App,
     AppCreateRequest,
     AppListResponse,
@@ -97,42 +83,32 @@ from .models import (
     CapacityPoolTargetListResponse,
     CapacityPoolTargetUpsertRequest,
     CapacityPoolTargetView,
-    CapacityPurchaseRequest,
-    CapacityPurchaseResponse,
     CapacityReservationListResponse,
     CapacityReservationView,
-    CloudflareCleanupRequest,
-    CloudflareCleanupResponse,
     CloudResourceAgent,
     CloudResourceCloudSummary,
     CloudResourceInventoryResponse,
-    CreatePaymentIntentRequest,
     DeployFromVersionRequest,
     Deployment,
     DeploymentCreateResponse,
     DeploymentListResponse,
     DeploymentPreflightIssue,
     DeploymentPreflightResponse,
-    DepositRequest,
-    ExternalCloudCleanupRequest,
-    ExternalCloudCleanupResponse,
     ExternalCloudInventoryResponse,
     ExternalCloudResource,
     HealthResponse,
     ManualAttestRequest,
     MeasurementCallbackRequest,
-    RateCardResponse,
     SetAgentOwnerRequest,
-    TransactionListResponse,
-    TransactionResponse,
-    UnifiedOrphanCleanupRequest,
-    UnifiedOrphanCleanupResponse,
 )
 from .pricing import calculate_deployment_cost_per_hour
 from .provisioner import (
     dispatch_external_cleanup,
     fetch_external_inventory,
 )
+from .routes_admin_cloud import register_admin_cloud_routes
+from .routes_auth_billing import register_auth_billing_routes
+from .routes_misc import register_misc_routes
 from .settings import (
     SETTING_DEFS,
     delete_setting,
@@ -2685,696 +2661,30 @@ async def get_deployment(deployment_id: str):
     return get_or_404(deployment_store, deployment_id, "Deployment")
 
 
-# ==============================================================================
-# Trusted MRTD API - Read-only view of effective trust (env vars + DB)
-# ==============================================================================
-
-
-@app.get("/api/v1/trusted-mrtds")
-async def get_trusted_mrtds():
-    """List all trusted MRTDs (effective trust list).
-
-    Trusted MRTDs can be bootstrapped via environment variables
-    (TRUSTED_AGENT_MRTDS / TRUSTED_PROXY_MRTDS, comma-separated) and can also be
-    extended at runtime via the admin-only DB-backed API.
-    """
-    mrtds = list_trusted_mrtds()
-    return {
-        "trusted_mrtds": [{"mrtd": k, "type": v} for k, v in mrtds.items()],
-        "total": len(mrtds),
-    }
-
-
-@app.get("/api/v1/admin/trusted-mrtds")
-async def list_trusted_mrtds_admin(session: AdminSession = Depends(verify_admin_token)):
-    """Admin-only view of DB-backed trusted MRTDs."""
-    if not is_admin_session(session):
-        raise HTTPException(status_code=403, detail="Admin access required")
-    from .storage import trusted_mrtd_store
-
-    rows = trusted_mrtd_store.list()
-    return {
-        "trusted_mrtds": [
-            {
-                "mrtd": r.mrtd,
-                "type": r.mrtd_type,
-                "note": r.note,
-                "added_at": r.added_at.isoformat() if r.added_at else None,
-            }
-            for r in rows
-        ],
-        "total": len(rows),
-    }
-
-
-@app.post("/api/v1/admin/trusted-mrtds")
-async def add_trusted_mrtd_admin(
-    request: dict,
-    session: AdminSession = Depends(verify_admin_token),
-):
-    """Admin-only: add a trusted MRTD baseline without rebooting the control plane.
-
-    Body:
-      - mrtd: 96-hex string
-      - type: agent|proxy (default: agent)
-      - note: optional free-form note
-    """
-    if not is_admin_session(session):
-        raise HTTPException(status_code=403, detail="Admin access required")
-    mrtd = str(request.get("mrtd") or "").strip()
-    mrtd_type = str(request.get("type") or "agent").strip()
-    note = str(request.get("note") or "").strip()
-    if not mrtd:
-        raise HTTPException(status_code=400, detail="mrtd is required")
-    from .storage import trusted_mrtd_store
-
-    try:
-        obj = trusted_mrtd_store.upsert(mrtd, mrtd_type=mrtd_type, note=note)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    return {"mrtd": obj.mrtd, "type": obj.mrtd_type, "note": obj.note}
-
-
-@app.delete("/api/v1/admin/trusted-mrtds/{mrtd}")
-async def delete_trusted_mrtd_admin(
-    mrtd: str,
-    session: AdminSession = Depends(verify_admin_token),
-):
-    """Admin-only: remove a trusted MRTD baseline."""
-    if not is_admin_session(session):
-        raise HTTPException(status_code=403, detail="Admin access required")
-    from .storage import trusted_mrtd_store
-
-    ok = trusted_mrtd_store.delete(mrtd)
-    if not ok:
-        raise HTTPException(status_code=404, detail="MRTD not found")
-    return {"status": "deleted", "mrtd": mrtd}
-
-
-# ==============================================================================
-# Admin: Settings
-# ==============================================================================
-
-
-@app.get("/api/v1/admin/settings")
-async def admin_list_settings(
-    group: str | None = Query(None),
-    _admin: AdminSession = Depends(require_admin_session),
-):
-    """List all settings with values, sources, and metadata."""
-    return {"settings": list_settings(group=group)}
-
-
-@app.put("/api/v1/admin/settings/{key:path}")
-async def admin_update_setting(
-    key: str,
-    body: dict,
-    _admin: AdminSession = Depends(require_admin_session),
-):
-    """Save a setting value to the database."""
-    if key not in SETTING_DEFS:
-        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
-    value = body.get("value")
-    if value is None:
-        raise HTTPException(status_code=422, detail="Missing 'value' field")
-    set_setting(key, str(value))
-    logger.info(f"Setting updated: {key}")
-    return {"key": key, "status": "saved"}
-
-
-@app.delete("/api/v1/admin/settings/{key:path}")
-async def admin_reset_setting(
-    key: str,
-    _admin: AdminSession = Depends(require_admin_session),
-):
-    """Remove a setting from DB (reverts to env var or default)."""
-    if key not in SETTING_DEFS:
-        raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
-    deleted = delete_setting(key)
-    logger.info(f"Setting reset: {key} (was_in_db={deleted})")
-    return {"key": key, "status": "reset"}
-
-
-@app.get("/api/v1/admin/stripe/status")
-async def admin_stripe_status(
-    validate: bool = Query(False),
-    _admin: AdminSession = Depends(require_admin_session),
-):
-    """Return basic Stripe integration status for the admin UI.
-
-    If validate=true, attempts a lightweight Stripe API call to confirm the key works.
-    """
-    from .billing import _ensure_stripe, _stripe_mod
-
-    secret_key = get_setting("stripe.secret_key")
-    webhook_secret = get_setting("stripe.webhook_secret")
-
-    mode = ""
-    if secret_key.startswith("sk_test_"):
-        mode = "test"
-    elif secret_key.startswith("sk_live_"):
-        mode = "live"
-
-    stripe_available = _stripe_mod is not None
-    stripe_enabled = _ensure_stripe()
-
-    validation = {"attempted": bool(validate), "ok": None, "error": None}
-    if validate:
-        if not stripe_enabled:
-            validation["ok"] = False
-            validation["error"] = (
-                "Stripe not enabled (missing STRIPE_SECRET_KEY or SDK unavailable)"
-            )
-        else:
-            try:
-                # A small, read-only call that works in test mode too.
-                _stripe_mod.Balance.retrieve()
-                validation["ok"] = True
-            except Exception as e:
-                # Return a safe summary; avoid leaking request details.
-                validation["ok"] = False
-                validation["error"] = f"{type(e).__name__}: {str(e)[:200]}"
-
-    return {
-        "stripe_available": stripe_available,
-        "stripe_enabled": stripe_enabled,
-        "mode": mode,
-        "secret_key_configured": bool(secret_key),
-        "secret_key_source": get_setting_source("stripe.secret_key"),
-        "webhook_secret_configured": bool(webhook_secret),
-        "webhook_secret_source": get_setting_source("stripe.webhook_secret"),
-        "webhook_path": "/api/v1/webhooks/stripe",
-        "validation": validation,
-    }
-
-
-# ==============================================================================
-# Admin: Cloudflare Management
-# ==============================================================================
-
-CLOUDFLARE_AGENT_TUNNEL_PREFIX = "agent-"
-# Created by infra/launcher/launcher.py for the control plane itself.
-# Never treat this as "orphaned" and never delete it via bulk cleanup.
-CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME = "easyenclave-control-plane"
-
-
-def _is_agent_tunnel_name(name: str | None) -> bool:
-    return bool(name) and name.startswith(CLOUDFLARE_AGENT_TUNNEL_PREFIX)
-
-
-def _is_protected_tunnel_name(name: str | None) -> bool:
-    return name == CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME
-
-
-@app.get("/api/v1/admin/cloudflare/status")
-async def cloudflare_status(_admin: AdminSession = Depends(require_admin_session)):
-    """Check if Cloudflare is configured and return domain info."""
-    return {
-        "configured": cloudflare.is_configured(),
-        "domain": cloudflare.get_domain(),
-        "protected_tunnel_names": [CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME],
-    }
-
-
-@app.get("/api/v1/admin/cloudflare/tunnels")
-async def cloudflare_tunnels(_admin: AdminSession = Depends(require_admin_session)):
-    """List Cloudflare tunnels cross-referenced with agents."""
-    if not cloudflare.is_configured():
-        raise HTTPException(status_code=400, detail="Cloudflare not configured")
-
-    tunnels = await cloudflare.list_tunnels()
-    agents = agent_store.list()
-
-    # Build lookup: tunnel_id -> agent
-    tunnel_to_agent = {}
-    for agent in agents:
-        if agent.tunnel_id:
-            tunnel_to_agent[agent.tunnel_id] = agent
-
-    enriched = []
-    orphaned_count = 0
-    for t in tunnels:
-        agent = tunnel_to_agent.get(t["tunnel_id"])
-        name = t.get("name")
-        protected = _is_protected_tunnel_name(name)
-        # Only agent-* tunnels can be considered "orphaned". Other tunnels (e.g. the control plane)
-        # are outside the agent inventory and should never be deleted by bulk orphan cleanup.
-        is_orphaned = (agent is None) and (not protected) and _is_agent_tunnel_name(name)
-        if is_orphaned:
-            orphaned_count += 1
-        enriched.append(
-            {
-                **t,
-                "agent_id": agent.agent_id if agent else None,
-                "agent_vm_name": agent.vm_name if agent else None,
-                "agent_status": agent.status if agent else None,
-                "orphaned": is_orphaned,
-                "protected": protected,
-                "owner": "agent"
-                if _is_agent_tunnel_name(name)
-                else ("control-plane" if protected else "unmanaged"),
-            }
-        )
-
-    return {
-        "tunnels": enriched,
-        "total": len(enriched),
-        "orphaned_count": orphaned_count,
-        "connected_count": sum(1 for t in enriched if t["has_connections"]),
-    }
-
-
-@app.get("/api/v1/admin/cloudflare/dns")
-async def cloudflare_dns(_admin: AdminSession = Depends(require_admin_session)):
-    """List Cloudflare DNS CNAME records cross-referenced with tunnels."""
-    if not cloudflare.is_configured():
-        raise HTTPException(status_code=400, detail="Cloudflare not configured")
-
-    records = await cloudflare.list_dns_records()
-    tunnels = await cloudflare.list_tunnels()
-
-    # Build lookup: tunnel_id -> tunnel
-    tunnel_ids = {t["tunnel_id"] for t in tunnels}
-
-    enriched = []
-    orphaned_count = 0
-    for r in records:
-        content = r.get("content", "")
-        # CNAME records for tunnels point to <tunnel_id>.cfargotunnel.com
-        is_tunnel_record = content.endswith(".cfargotunnel.com")
-        linked_tunnel_id = None
-        if is_tunnel_record:
-            linked_tunnel_id = content.replace(".cfargotunnel.com", "")
-
-        is_orphaned = is_tunnel_record and linked_tunnel_id not in tunnel_ids
-        if is_orphaned:
-            orphaned_count += 1
-
-        enriched.append(
-            {
-                **r,
-                "is_tunnel_record": is_tunnel_record,
-                "linked_tunnel_id": linked_tunnel_id,
-                "orphaned": is_orphaned,
-            }
-        )
-
-    return {
-        "records": enriched,
-        "total": len(enriched),
-        "orphaned_count": orphaned_count,
-        "tunnel_record_count": sum(1 for r in enriched if r["is_tunnel_record"]),
-    }
-
-
-@app.delete("/api/v1/admin/cloudflare/tunnels/{tunnel_id}")
-async def cloudflare_delete_tunnel(
-    tunnel_id: str, _admin: AdminSession = Depends(require_admin_session)
-):
-    """Delete a Cloudflare tunnel and clear the agent's tunnel fields."""
-    if not cloudflare.is_configured():
-        raise HTTPException(status_code=400, detail="Cloudflare not configured")
-
-    # Safety: don't allow deleting the control plane tunnel via this endpoint.
-    try:
-        tunnels = await cloudflare.list_tunnels()
-        match = next((t for t in tunnels if t.get("tunnel_id") == tunnel_id), None)
-        if match and _is_protected_tunnel_name(match.get("name")):
-            raise HTTPException(
-                status_code=400,
-                detail="Refusing to delete the protected control plane tunnel.",
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
-        # If we can't resolve the tunnel name, continue with deletion (admin explicit action).
-        logger.warning(f"Cloudflare delete tunnel precheck failed: {e}")
-
-    deleted = await cloudflare.delete_tunnel(tunnel_id)
-
-    # Clear tunnel info from any agent that references this tunnel
-    for agent in agent_store.list():
-        if agent.tunnel_id == tunnel_id:
-            agent_store.clear_tunnel_info(agent.agent_id)
-            logger.info(f"Cleared tunnel info for agent {agent.agent_id}")
-
-    return {"deleted": deleted, "tunnel_id": tunnel_id}
-
-
-@app.delete("/api/v1/admin/cloudflare/dns/{record_id}")
-async def cloudflare_delete_dns(
-    record_id: str, _admin: AdminSession = Depends(require_admin_session)
-):
-    """Delete a Cloudflare DNS record by ID."""
-    if not cloudflare.is_configured():
-        raise HTTPException(status_code=400, detail="Cloudflare not configured")
-
-    deleted = await cloudflare.delete_dns_record_by_id(record_id)
-    return {"deleted": deleted, "record_id": record_id}
-
-
-async def cloudflare_cleanup(
-    request: CloudflareCleanupRequest | None = None,
-) -> CloudflareCleanupResponse:
-    """Bulk delete all orphaned tunnels and DNS records."""
-    if not cloudflare.is_configured():
-        raise HTTPException(status_code=400, detail="Cloudflare not configured")
-
-    dry_run = bool(request and request.dry_run)
-
-    # Get current tunnels and agents
-    tunnels = await cloudflare.list_tunnels()
-    agents = agent_store.list()
-    tunnel_to_agent = {}
-    for agent in agents:
-        if agent.tunnel_id:
-            tunnel_to_agent[agent.tunnel_id] = agent
-
-    orphan_tunnel_ids = [
-        tunnel["tunnel_id"]
-        for tunnel in tunnels
-        if tunnel.get("tunnel_id")
-        and tunnel["tunnel_id"] not in tunnel_to_agent
-        and _is_agent_tunnel_name(tunnel.get("name"))
-        and not _is_protected_tunnel_name(tunnel.get("name"))
-    ]
-
-    # DNS candidates are:
-    # - tunnel CNAMEs whose linked tunnel no longer exists
-    # - plus any tunnel CNAMEs that will become orphaned because we're deleting the tunnel
-    records = await cloudflare.list_dns_records()
-    tunnel_ids = {tunnel.get("tunnel_id") for tunnel in tunnels if tunnel.get("tunnel_id")}
-    orphan_dns_record_ids: list[str] = []
-    for record in records:
-        content = (record.get("content") or "").strip()
-        if not content.endswith(".cfargotunnel.com"):
-            continue
-        linked_id = content.replace(".cfargotunnel.com", "")
-        if linked_id in orphan_tunnel_ids or linked_id not in tunnel_ids:
-            if record.get("record_id"):
-                orphan_dns_record_ids.append(record["record_id"])
-
-    if dry_run:
-        return CloudflareCleanupResponse(
-            dry_run=True,
-            tunnels_deleted=0,
-            dns_deleted=0,
-            tunnels_candidates=len(orphan_tunnel_ids),
-            dns_candidates=len(orphan_dns_record_ids),
-            tunnels_failed=0,
-            dns_failed=0,
-        )
-
-    tunnel_results = await _cloudflare_delete_many(
-        ids=orphan_tunnel_ids,
-        delete_fn=cloudflare.delete_tunnel,
-        concurrency=8,
-    )
-    tunnels_deleted = int(tunnel_results["deleted"])
-    tunnels_failed = int(tunnel_results["failed"])
-
-    dns_results = await _cloudflare_delete_many(
-        ids=orphan_dns_record_ids,
-        delete_fn=cloudflare.delete_dns_record_by_id,
-        concurrency=8,
-    )
-    dns_deleted = int(dns_results["deleted"])
-    dns_failed = int(dns_results["failed"])
-
-    logger.info(
-        "Cloudflare cleanup complete: "
-        f"tunnels_deleted={tunnels_deleted}/{len(orphan_tunnel_ids)} "
-        f"dns_deleted={dns_deleted}/{len(orphan_dns_record_ids)} "
-        f"tunnels_failed={tunnels_failed} dns_failed={dns_failed}"
-    )
-    return CloudflareCleanupResponse(
-        dry_run=False,
-        tunnels_deleted=tunnels_deleted,
-        dns_deleted=dns_deleted,
-        tunnels_candidates=len(orphan_tunnel_ids),
-        dns_candidates=len(orphan_dns_record_ids),
-        tunnels_failed=tunnels_failed,
-        dns_failed=dns_failed,
-    )
-
-
-@app.post("/api/v1/admin/cleanup/orphans", response_model=UnifiedOrphanCleanupResponse)
-async def unified_orphan_cleanup(
-    request: UnifiedOrphanCleanupRequest,
-    session: AdminSession = Depends(require_admin_session),
-):
-    """Unified orphan cleanup across Cloudflare + external provisioner inventory."""
-    detail_parts: list[str] = []
-
-    cf_configured = cloudflare.is_configured()
-    cf_result: CloudflareCleanupResponse | None = None
-    if request.cloudflare:
-        if not cf_configured:
-            detail_parts.append("Cloudflare is not configured.")
-        else:
-            try:
-                cf_result = await cloudflare_cleanup(
-                    CloudflareCleanupRequest(dry_run=request.dry_run),
-                )
-            except Exception as exc:
-                detail_parts.append(f"Cloudflare cleanup failed: {exc}")
-
-    ext_result: ExternalCloudCleanupResponse | None = None
-    ext_configured = bool(get_setting("provisioner.cleanup_url").strip())
-    if request.external_cloud:
-        if not ext_configured:
-            detail_parts.append("External cloud cleanup webhook is not configured.")
-        else:
-            try:
-                (
-                    configured,
-                    dispatched,
-                    status_code,
-                    ext_detail,
-                    payload,
-                ) = await dispatch_external_cleanup(
-                    ExternalCloudCleanupRequest(
-                        dry_run=request.dry_run,
-                        only_orphaned=request.external_only_orphaned,
-                        providers=request.external_providers,
-                        resource_ids=request.external_resource_ids,
-                        reason=request.reason,
-                    ).model_dump()
-                )
-                ext_result = ExternalCloudCleanupResponse(
-                    configured=configured,
-                    dispatched=dispatched,
-                    dry_run=request.dry_run,
-                    requested_count=_extract_cleanup_requested_count(payload),
-                    status_code=status_code,
-                    detail=ext_detail
-                    or (payload.get("detail") if isinstance(payload.get("detail"), str) else None),
-                )
-                ext_configured = configured
-            except Exception as exc:
-                detail_parts.append(f"External cloud cleanup failed: {exc}")
-
-    detail = " ".join([p for p in detail_parts if p]).strip() or None
-    return UnifiedOrphanCleanupResponse(
-        dry_run=request.dry_run,
-        cloudflare_configured=cf_configured,
-        external_cloud_configured=ext_configured,
-        cloudflare=cf_result,
-        external_cloud=ext_result,
-        detail=detail,
-    )
-
-
-@app.post("/api/v1/admin/agents/{agent_id}/cleanup", response_model=AdminAgentCleanupResponse)
-async def admin_agent_cleanup(
-    agent_id: str,
-    request: AdminAgentCleanupRequest,
-    session: AdminSession = Depends(require_admin_session),
-):
-    """Delete an agent and attempt to delete linked external cloud resources as well."""
-    agent = get_or_404(agent_store, agent_id, "Agent")
-    dry_run = bool(request.dry_run)
-
-    # External cloud candidates (requires inventory webhook).
-    external_candidates: list[str] = []
-    external_response: ExternalCloudCleanupResponse | None = None
-    detail_parts: list[str] = []
-
-    configured, _status_code, inv_detail, payload = await fetch_external_inventory()
-    if not configured:
-        # Not configured isn't fatal for agent deletion.
-        detail_parts.append("External inventory not configured; skipping linked VM cleanup.")
-    elif inv_detail:
-        detail_parts.append(f"External inventory error; skipping linked VM cleanup: {inv_detail}")
-    else:
-        # Reuse existing normalization logic by calling the admin inventory endpoint function.
-        inventory = await list_external_cloud_resources(_admin=session)
-        vm_name_norm = (agent.vm_name or "").strip().lower()
-        for r in inventory.resources:
-            if r.linked_agent_id == agent_id:
-                external_candidates.append(r.resource_id)
-                continue
-            if vm_name_norm and (r.linked_vm_name or "").strip().lower() == vm_name_norm:
-                external_candidates.append(r.resource_id)
-
-        external_candidates = sorted({c for c in external_candidates if c})
-
-        if external_candidates:
-            if dry_run:
-                external_response = ExternalCloudCleanupResponse(
-                    configured=bool(get_setting("provisioner.cleanup_url").strip()),
-                    dispatched=False,
-                    dry_run=True,
-                    requested_count=len(external_candidates),
-                    status_code=None,
-                    detail="dry run",
-                )
-            else:
-                ext_cfg = bool(get_setting("provisioner.cleanup_url").strip())
-                if not ext_cfg:
-                    detail_parts.append(
-                        "External cleanup webhook not configured; skipping linked VM deletion."
-                    )
-                else:
-                    (
-                        configured2,
-                        dispatched,
-                        status_code,
-                        ext_detail,
-                        payload2,
-                    ) = await dispatch_external_cleanup(
-                        ExternalCloudCleanupRequest(
-                            dry_run=False,
-                            only_orphaned=False,
-                            providers=[],
-                            resource_ids=external_candidates,
-                            reason=request.reason,
-                        ).model_dump()
-                    )
-                    external_response = ExternalCloudCleanupResponse(
-                        configured=configured2,
-                        dispatched=dispatched,
-                        dry_run=False,
-                        requested_count=_extract_cleanup_requested_count(payload2)
-                        or len(external_candidates),
-                        status_code=status_code,
-                        detail=ext_detail
-                        or (
-                            payload2.get("detail")
-                            if isinstance(payload2.get("detail"), str)
-                            else None
-                        ),
-                    )
-
-    cloudflare_deleted = False
-    agent_deleted = False
-    if not dry_run:
-        # Cloudflare tunnel + DNS cleanup (best-effort).
-        if agent.tunnel_id and cloudflare.is_configured():
-            try:
-                await cloudflare.delete_tunnel(agent.tunnel_id)
-                if agent.hostname:
-                    await cloudflare.delete_dns_record(agent.hostname)
-                cloudflare_deleted = True
-            except Exception as exc:
-                detail_parts.append(f"Cloudflare cleanup failed for agent: {exc}")
-
-        capacity_reservation_store.expire_open_for_agent(agent.agent_id)
-        agent_deleted = bool(agent_store.delete(agent.agent_id))
-
-    detail = " ".join([p for p in detail_parts if p]).strip() or None
-    return AdminAgentCleanupResponse(
-        dry_run=dry_run,
-        agent_id=agent.agent_id,
-        vm_name=agent.vm_name,
-        cloudflare_deleted=cloudflare_deleted,
-        agent_deleted=agent_deleted,
-        external_cloud=external_response,
-        external_candidates=len(external_candidates),
-        detail=detail,
-    )
-
-
-@app.post(
-    "/api/v1/admin/agents/cleanup/stale",
-    response_model=AdminStaleAgentCleanupResponse,
+register_admin_cloud_routes(
+    app,
+    logger=logger,
+    verify_admin_token=verify_admin_token,
+    require_admin_session=require_admin_session,
+    is_admin_session=is_admin_session,
+    list_trusted_mrtds_fn=list_trusted_mrtds,
+    setting_defs=SETTING_DEFS,
+    list_settings_fn=list_settings,
+    set_setting_fn=set_setting,
+    delete_setting_fn=delete_setting,
+    get_setting_fn=get_setting,
+    get_setting_source_fn=get_setting_source,
+    get_setting_int_fn=get_setting_int,
+    cloudflare_module=cloudflare,
+    agent_store=agent_store,
+    capacity_reservation_store=capacity_reservation_store,
+    get_or_404_fn=get_or_404,
+    list_external_cloud_resources_fn=list_external_cloud_resources,
+    dispatch_external_cleanup_fn=lambda body: dispatch_external_cleanup(body),
+    fetch_external_inventory_fn=lambda: fetch_external_inventory(),
+    extract_cleanup_requested_count_fn=lambda payload: _extract_cleanup_requested_count(payload),
+    cloudflare_delete_many_fn=lambda **kwargs: _cloudflare_delete_many(**kwargs),
 )
-async def admin_cleanup_stale_agents(
-    request: AdminStaleAgentCleanupRequest,
-    _admin: AdminSession = Depends(require_admin_session),
-):
-    """Admin-only: delete stale agents (DB + Cloudflare tunnel/DNS best-effort).
-
-    This is intended to keep the Agents tab usable after CI runs, cancelled launches,
-    or broken external provisioner flows.
-    """
-    stale_hours = float(
-        request.stale_hours
-        if request.stale_hours is not None
-        else get_setting_int("operational.agent_stale_hours", fallback=24)
-    )
-    if stale_hours <= 0:
-        raise HTTPException(status_code=422, detail="stale_hours must be > 0")
-
-    include_deployed = bool(request.include_deployed)
-    dry_run = bool(request.dry_run)
-
-    stale_agents = agent_store.get_stale_agents(timedelta(hours=stale_hours))
-    deleted: list[dict] = []
-    skipped: list[dict] = []
-    errors: list[str] = []
-
-    for agent in stale_agents:
-        try:
-            if not include_deployed and agent.current_deployment_id and agent.status == "deployed":
-                skipped.append(
-                    {
-                        "agent_id": agent.agent_id,
-                        "vm_name": agent.vm_name,
-                        "reason": "active_deployment",
-                    }
-                )
-                continue
-
-            if dry_run:
-                deleted.append(
-                    {
-                        "agent_id": agent.agent_id,
-                        "vm_name": agent.vm_name,
-                        "dry_run": True,
-                    }
-                )
-                continue
-
-            # Cloudflare cleanup (best effort).
-            if agent.tunnel_id and cloudflare.is_configured():
-                try:
-                    await cloudflare.delete_tunnel(agent.tunnel_id)
-                    if agent.hostname:
-                        await cloudflare.delete_dns_record(agent.hostname)
-                except Exception as exc:
-                    # Continue deletion anyway; tunnels can be cleaned later via orphan cleanup.
-                    logger.warning(
-                        f"Failed to clean up Cloudflare for stale agent {agent.agent_id}: {exc}"
-                    )
-
-            capacity_reservation_store.expire_open_for_agent(agent.agent_id)
-            ok = bool(agent_store.delete(agent.agent_id))
-            if ok:
-                deleted.append({"agent_id": agent.agent_id, "vm_name": agent.vm_name})
-            else:
-                errors.append(f"Failed to delete agent record: {agent.agent_id}")
-        except Exception as exc:
-            errors.append(f"{agent.agent_id}: {exc}")
-
-    return AdminStaleAgentCleanupResponse(
-        dry_run=dry_run,
-        stale_hours=stale_hours,
-        candidates=len(stale_agents),
-        deleted_agents=deleted,
-        skipped_agents=skipped,
-        errors=errors,
-    )
 
 
 # ==============================================================================
@@ -3382,701 +2692,42 @@ async def admin_cleanup_stale_agents(
 # ==============================================================================
 
 
-@app.post("/admin/login", response_model=AdminLoginResponse)
-async def admin_login(request: AdminLoginRequest, req: Request):
-    """Admin login endpoint - creates a session token."""
-    if not _password_login_allowed():
-        raise HTTPException(status_code=403, detail="Password login is disabled. Use GitHub OAuth.")
-
-    password_hash = get_admin_password_hash()
-    if not password_hash:
-        raise HTTPException(
-            status_code=403, detail="Password login is not configured. Use GitHub OAuth."
-        )
-
-    # Verify password
-    if not verify_password(request.password, password_hash):
-        logger.warning(
-            f"Failed admin login attempt from {req.client.host if req.client else 'unknown'}"
-        )
-        raise HTTPException(status_code=401, detail="Invalid password")
-
-    # Create session
-    from app.db_models import AdminSession
-
-    token = generate_session_token()
-    token_hash_val = hash_api_key(token)  # Reuse API key hashing
-    token_prefix = get_token_prefix(token)
-    expires_at = create_session_expiry(hours=24)
-
-    session = AdminSession(
-        token_hash=token_hash_val,
-        token_prefix=token_prefix,
-        expires_at=expires_at,
-        ip_address=req.client.host if req.client else None,
-    )
-
-    admin_session_store.create(session)
-
-    # Debug: verify session was persisted (investigating token-immediately-invalid bug)
-    readback = admin_session_store.get_by_prefix(token_prefix)
-    if readback:
-        logger.info(
-            f"Admin login: session persisted OK, prefix={token_prefix!r}, "
-            f"session_id={session.session_id}"
-        )
-    else:
-        logger.error(
-            f"Admin login: session NOT found after create! prefix={token_prefix!r}, "
-            f"session_id={session.session_id}"
-        )
-
-    logger.info(f"Admin logged in from {req.client.host if req.client else 'unknown'}")
-
-    return AdminLoginResponse(
-        token=token,
-        expires_at=expires_at,
-    )
-
-
-@app.get("/auth/methods")
-async def auth_methods():
-    """Return which login methods are available (public, no auth required)."""
-    # Only advertise password login if it's both allowed and actually configured.
-    password_enabled = bool(_password_login_allowed() and get_admin_password_hash())
-    github_enabled = _github_oauth_fully_configured()
-    result = {"password": password_enabled, "github": github_enabled}
-    if password_enabled and _generated_admin_password:
-        result["generated_password"] = _generated_admin_password
-    return result
-
-
-@app.get("/auth/github")
-async def github_oauth_start():
-    """Initiate GitHub OAuth flow for admin login."""
-    from .oauth import _client_id, create_oauth_state, get_github_authorize_url
-
-    if not _client_id():
-        raise HTTPException(
-            status_code=503, detail="GitHub OAuth not configured. Set GITHUB_OAUTH_CLIENT_ID."
-        )
-
-    # Generate CSRF state token
-    state = create_oauth_state()
-    auth_url = get_github_authorize_url(state)
-
-    return {"auth_url": auth_url, "state": state}
-
-
-@app.get("/auth/github/callback")
-async def github_oauth_callback(
-    code: str,
-    state: str,
-    req: Request,
-):
-    """Handle GitHub OAuth callback and create admin session."""
-    from fastapi.responses import RedirectResponse
-
-    from app.db_models import AdminSession
-
-    from .oauth import (
-        exchange_code_for_token,
-        get_github_user,
-        get_github_user_orgs,
-        verify_oauth_state,
-    )
-
-    # Verify state (CSRF protection)
-    if not verify_oauth_state(state):
-        raise HTTPException(status_code=400, detail="Invalid or expired state token")
-
-    # Exchange code for access token
-    try:
-        access_token = await exchange_code_for_token(code)
-        user_info = await get_github_user(access_token)
-    except Exception as e:
-        logger.error(f"GitHub OAuth error: {e}")
-        raise HTTPException(status_code=400, detail="GitHub authentication failed") from e
-
-    # Fetch org memberships
-    try:
-        github_orgs = await get_github_user_orgs(access_token)
-    except Exception as e:
-        logger.warning(f"Failed to fetch GitHub orgs: {e}")
-        github_orgs = []
-
-    # Create admin session
-    token = generate_session_token()
-    expires_at = create_session_expiry(hours=24)
-
-    session = AdminSession(
-        token_hash=hash_api_key(token),
-        token_prefix=get_token_prefix(token),
-        expires_at=expires_at,
-        ip_address=req.client.host if req.client else None,
-        github_id=user_info["github_id"],
-        github_login=user_info["github_login"],
-        github_email=user_info["github_email"],
-        github_avatar_url=user_info.get("github_avatar_url"),
-        auth_method="github_oauth",
-        github_orgs=github_orgs or None,
-    )
-
-    admin_session_store.create(session)
-    logger.info(
-        f"Admin logged in via GitHub: {user_info['github_login']} from {req.client.host if req.client else 'unknown'}"
-    )
-
-    # Redirect to admin UI with token in query param
-    return RedirectResponse(url=f"/admin?token={token}", status_code=302)
-
-
-@app.get("/auth/me")
-async def get_current_user(session: AdminSession = Depends(verify_admin_token)):
-    """Get current authenticated admin user info."""
-    return {
-        "authenticated": True,
-        "auth_method": session.auth_method,
-        "is_admin": is_admin_session(session),
-        "github_login": session.github_login,
-        "github_email": session.github_email,
-        "github_avatar_url": session.github_avatar_url,
-        "github_orgs": session.github_orgs or [],
-        "created_at": session.created_at.isoformat(),
-        "expires_at": session.expires_at.isoformat(),
-    }
-
-
-# ==============================================================================
-# Billing API - Accounts, deposits, transactions, rate card
-# ==============================================================================
-
-RATE_CARD: dict[str, float] = {
-    "cpu_per_vcpu_hr": 0.04,
-    "memory_per_gb_hr": 0.005,
-    "gpu_per_gpu_hr": 0.50,
-    "storage_per_gb_mo": 0.10,
-}
-
-
-@app.post("/api/v1/accounts")
-async def create_account(request: AccountCreateRequest):
-    """Create a new billing account and return API key (only shown once)."""
-    if request.account_type not in ("deployer", "agent", "contributor", "launcher"):
-        raise HTTPException(
-            status_code=400,
-            detail="account_type must be 'deployer', 'agent', 'contributor', or 'launcher'",
-        )
-
-    if not request.name:
-        raise HTTPException(status_code=400, detail="Account name is required")
-
-    existing = account_store.get_by_name(request.name)
-    if existing:
-        raise HTTPException(status_code=409, detail=f"Account '{request.name}' already exists")
-
-    # Generate API key
-    api_key = generate_api_key("live")
-    api_key_hash_val = hash_api_key(api_key)
-    api_key_prefix = get_key_prefix(api_key)
-
-    account = Account(
-        name=request.name,
-        description=request.description,
-        account_type=request.account_type,
-        api_key_hash=api_key_hash_val,
-        api_key_prefix=api_key_prefix,
-    )
-    account_store.create(account)
-    logger.info(f"Account created: {account.name} ({account.account_id})")
-
-    return {
-        "account_id": account.account_id,
-        "name": account.name,
-        "description": account.description,
-        "account_type": account.account_type,
-        "balance": 0.0,
-        "created_at": account.created_at,
-        "api_key": api_key,  # ONLY returned once!
-        "warning": "Save this API key now. It will never be shown again.",
-    }
-
-
-@app.post("/api/v1/accounts/{account_id}/identity", response_model=AccountResponse)
-async def link_account_identity(
-    account_id: str,
-    request: AccountLinkIdentityRequest,
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """Link an account to contributor identity metadata (GitHub login/org)."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot edit identity for other accounts")
-
-    account = get_or_404(account_store, account_id, "Account")
-    account = account_store.update_identity(
-        account_id=account_id,
-        github_login=(request.github_login or "").strip() or None,
-        github_org=(request.github_org or "").strip() or None,
-        linked_at=datetime.now(timezone.utc),
-    )
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    return AccountResponse(
-        account_id=account.account_id,
-        name=account.name,
-        description=account.description,
-        account_type=account.account_type,
-        github_login=account.github_login,
-        github_org=account.github_org,
-        balance=account_store.get_balance(account.account_id),
-        created_at=account.created_at,
-    )
-
-
-@app.get("/api/v1/accounts", response_model=AccountListResponse)
-async def list_accounts(
-    name: str | None = Query(None, description="Filter by name (partial match)"),
-    account_type: str | None = Query(None, description="Filter by account type"),
-    _admin: AdminSession = Depends(require_admin_session),
-):
-    """List all billing accounts (admin only)."""
-    accounts = account_store.list(build_filters(name=name, account_type=account_type))
-    responses = [
-        AccountResponse(
-            account_id=a.account_id,
-            name=a.name,
-            description=a.description,
-            account_type=a.account_type,
-            github_login=a.github_login,
-            github_org=a.github_org,
-            balance=account_store.get_balance(a.account_id),
-            created_at=a.created_at,
-        )
-        for a in accounts
-    ]
-    return AccountListResponse(accounts=responses, total=len(responses))
-
-
-@app.get("/api/v1/accounts/{account_id}", response_model=AccountResponse)
-async def get_account(
-    account_id: str,
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """Get a billing account with its current balance (account owner only)."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot access other accounts")
-
-    account = get_or_404(account_store, account_id, "Account")
-    return AccountResponse(
-        account_id=account.account_id,
-        name=account.name,
-        description=account.description,
-        account_type=account.account_type,
-        github_login=account.github_login,
-        github_org=account.github_org,
-        balance=account_store.get_balance(account.account_id),
-        created_at=account.created_at,
-    )
-
-
-@app.post("/api/v1/accounts/{account_id}/api-key/rotate", response_model=ApiKeyRotateResponse)
-async def rotate_account_api_key(
-    account_id: str,
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """Rotate an account API key (account owner only)."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot rotate API key for other accounts")
-
-    get_or_404(account_store, account_id, "Account")
-
-    new_api_key = generate_api_key("live")
-    updated = account_store.update_api_credentials(
-        account_id=account_id,
-        api_key_hash=hash_api_key(new_api_key),
-        api_key_prefix=get_key_prefix(new_api_key),
-    )
-    if not updated:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    return ApiKeyRotateResponse(
-        account_id=account_id,
-        api_key=new_api_key,
-        rotated_at=datetime.now(timezone.utc),
-        warning="Save this API key now. Previous key has been revoked.",
-    )
-
-
-@app.delete("/api/v1/accounts/{account_id}")
-async def delete_account(
-    account_id: str,
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """Delete a billing account (only if balance is zero, account owner only)."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot delete other accounts")
-
-    account = get_or_404(account_store, account_id, "Account")
-    balance = account_store.get_balance(account_id)
-    if balance != 0.0:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot delete account with non-zero balance ({balance:.2f})",
-        )
-    account_store.delete(account_id)
-    logger.info(f"Account deleted: {account.name} ({account_id})")
-    return {"status": "deleted", "account_id": account_id}
-
-
-@app.post("/api/v1/accounts/{account_id}/deposit", response_model=TransactionResponse)
-async def deposit_to_account(
-    account_id: str,
-    request: DepositRequest,
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """Deposit funds into an account (account owner only)."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot deposit to other accounts")
-
-    txn = create_transaction(
-        account_store,
-        transaction_store,
-        account_id,
-        amount=request.amount,
-        tx_type="deposit",
-        description=request.description or "Deposit",
-    )
-    logger.info(f"Deposit: {request.amount:.2f} to account {account_id}")
-    return TransactionResponse(
-        transaction_id=txn.transaction_id,
-        account_id=txn.account_id,
-        amount=txn.amount,
-        balance_after=txn.balance_after,
-        tx_type=txn.tx_type,
-        description=txn.description,
-        reference_id=txn.reference_id,
-        created_at=txn.created_at,
-    )
-
-
-@app.get("/api/v1/accounts/{account_id}/transactions", response_model=TransactionListResponse)
-async def list_account_transactions(
-    account_id: str,
-    limit: int = Query(50, le=200),
-    offset: int = Query(0, ge=0),
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """List transactions for an account (newest first, account owner only)."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot access other account transactions")
-
-    get_or_404(account_store, account_id, "Account")
-    transactions = transaction_store.list_for_account(account_id, limit=limit, offset=offset)
-    total = transaction_store.count_for_account(account_id)
-    return TransactionListResponse(
-        transactions=[
-            TransactionResponse(
-                transaction_id=t.transaction_id,
-                account_id=t.account_id,
-                amount=t.amount,
-                balance_after=t.balance_after,
-                tx_type=t.tx_type,
-                description=t.description,
-                reference_id=t.reference_id,
-                created_at=t.created_at,
-            )
-            for t in transactions
-        ],
-        total=total,
-    )
-
-
-@app.get("/api/v1/billing/rates", response_model=RateCardResponse)
-async def get_rate_card():
-    """Get the current billing rate card."""
-    return RateCardResponse(rates=RATE_CARD)
-
-
-@app.post("/api/v1/accounts/{account_id}/capacity/request", response_model=CapacityPurchaseResponse)
-async def request_paid_capacity(
-    account_id: str,
-    request: CapacityPurchaseRequest,
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """Request warm capacity using billing account authentication."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot request capacity for other accounts")
-
-    account = get_or_404(account_store, account_id, "Account")
-    if account.account_type != "deployer":
-        raise HTTPException(
-            status_code=403,
-            detail="Capacity purchases require a deployer account",
-        )
-
-    datacenter = _normalize_registration_datacenter(request.datacenter)
-    if not datacenter or not _DATACENTER_RE.fullmatch(datacenter):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Invalid datacenter. Expected '<cloud>:<zone>' (for example gcp:us-central1-a)"
-            ),
-        )
-
-    node_size = _normalize_registration_node_size(request.node_size)
-    if node_size not in {"tiny", "standard", "llm"}:
-        raise HTTPException(
-            status_code=422,
-            detail="Invalid node_size. Expected one of: tiny, standard, llm",
-        )
-
-    request_id = f"capacity-{uuid4().hex[:16]}"
-    charged_amount_usd = round(
-        _capacity_unit_price_monthly_usd(node_size)
-        * float(request.min_warm_count)
-        * float(request.months),
-        2,
-    )
-    simulated_payment = _parse_bool_setting(
-        get_setting("billing.capacity_request_dev_simulation"),
-        fallback=True,
-    )
-
-    description = (
-        f"Warm capacity {datacenter}/{node_size} x{request.min_warm_count} "
-        f"for {request.months} month(s)"
-    )
-    if simulated_payment:
-        txn = create_transaction(
-            account_store,
-            transaction_store,
-            account_id,
-            amount=0.0,
-            tx_type="charge",
-            description=f"[SIMULATED ${charged_amount_usd:.2f}] {description}",
-            reference_id=request_id,
-        )
-    else:
-        txn = create_transaction(
-            account_store,
-            transaction_store,
-            account_id,
-            amount=-charged_amount_usd,
-            tx_type="charge",
-            description=description,
-            reference_id=request_id,
-        )
-
-    reason = (request.reason or "").strip() or "capacity-purchase"
-    reconcile_reason = f"{reason}:{request_id}"
-    target = capacity_pool_target_store.upsert(
-        datacenter=datacenter,
-        node_size=node_size,
-        min_warm_count=request.min_warm_count,
-        enabled=True,
-        require_verified=True,
-        require_healthy=True,
-        require_hostname=True,
-        dispatch=True,
-        reason=reconcile_reason,
-    )
-
-    capacity_result = await reconcile_agent_capacity(
-        AgentCapacityReconcileRequest(
-            targets=[
-                AgentCapacityTarget(
-                    datacenter=datacenter,
-                    node_size=node_size,
-                    min_count=request.min_warm_count,
-                )
-            ],
-            require_verified=True,
-            require_healthy=True,
-            require_hostname=True,
-            allowed_statuses=["undeployed", "deployed", "deploying"],
-            dispatch=True,
-            reason=reconcile_reason,
-            account_id=account_id,
-        ),
-        _admin=True,
-    )
-
-    target_view = _capacity_pool_target_view(
-        datacenter=(target.datacenter or "").strip().lower(),
-        node_size=(target.node_size or "").strip().lower(),
-        min_warm_count=target.min_warm_count,
-        enabled=target.enabled,
-        require_verified=target.require_verified,
-        require_healthy=target.require_healthy,
-        require_hostname=target.require_hostname,
-        dispatch=target.dispatch,
-        reason=target.reason,
-        agents=agent_store.list(),
-    )
-
-    logger.info(
-        "Capacity purchase requested: account=%s datacenter=%s node_size=%s min_warm=%d "
-        "months=%d simulated=%s charge=%.2f",
-        account_id,
-        datacenter,
-        node_size,
-        request.min_warm_count,
-        request.months,
-        simulated_payment,
-        charged_amount_usd,
-    )
-
-    return CapacityPurchaseResponse(
-        request_id=request_id,
-        account_id=account_id,
-        datacenter=datacenter,
-        node_size=node_size,
-        min_warm_count=request.min_warm_count,
-        months=request.months,
-        simulated_payment=simulated_payment,
-        charged_amount_usd=charged_amount_usd,
-        transaction_id=txn.transaction_id,
-        balance_after=txn.balance_after,
-        target=target_view,
-        capacity=capacity_result,
-    )
-
-
-@app.get(
-    "/api/v1/accounts/{account_id}/capacity/orders",
-    response_model=CapacityLaunchOrderListResponse,
+register_auth_billing_routes(
+    app,
+    logger=logger,
+    verify_admin_token=verify_admin_token,
+    require_admin_session=require_admin_session,
+    verify_account_api_key=verify_account_api_key,
+    is_admin_session=is_admin_session,
+    password_login_allowed_fn=_password_login_allowed,
+    get_admin_password_hash_fn=get_admin_password_hash,
+    generated_admin_password_fn=lambda: _generated_admin_password,
+    verify_password_fn=verify_password,
+    generate_session_token_fn=generate_session_token,
+    create_session_expiry_fn=create_session_expiry,
+    hash_api_key_fn=hash_api_key,
+    get_token_prefix_fn=get_token_prefix,
+    generate_api_key_fn=generate_api_key,
+    get_key_prefix_fn=get_key_prefix,
+    admin_session_store=admin_session_store,
+    account_store=account_store,
+    transaction_store=transaction_store,
+    capacity_pool_target_store=capacity_pool_target_store,
+    capacity_launch_order_store=capacity_launch_order_store,
+    agent_store=agent_store,
+    build_filters_fn=build_filters,
+    create_transaction_fn=create_transaction,
+    get_or_404_fn=get_or_404,
+    normalize_registration_datacenter_fn=_normalize_registration_datacenter,
+    datacenter_re=_DATACENTER_RE,
+    normalize_registration_node_size_fn=_normalize_registration_node_size,
+    parse_bool_setting_fn=_parse_bool_setting,
+    get_setting_fn=get_setting,
+    capacity_unit_price_monthly_usd_fn=_capacity_unit_price_monthly_usd,
+    reconcile_agent_capacity_fn=reconcile_agent_capacity,
+    capacity_pool_target_view_fn=_capacity_pool_target_view,
+    capacity_launch_order_view_fn=_capacity_launch_order_view,
 )
-async def list_account_capacity_launch_orders(
-    account_id: str,
-    status: str = Query("", description="Filter by order status"),
-    datacenter: str = Query("", description="Optional datacenter filter"),
-    node_size: str = Query("", description="Optional node_size filter"),
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """List this account's capacity launch orders (deployer account auth).
-
-    This is useful for automation (e.g., CI preflight) to surface provisioning failures
-    without requiring an admin session.
-    """
-    if account_id != authenticated_account_id:
-        raise HTTPException(status_code=403, detail="Cannot access other account orders")
-
-    normalized_status = (status or "").strip().lower()
-    if normalized_status and normalized_status not in {
-        "open",
-        "claimed",
-        "provisioning",
-        "fulfilled",
-        "failed",
-    }:
-        raise HTTPException(status_code=422, detail="Invalid launch order status filter")
-
-    rows = capacity_launch_order_store.list(
-        normalized_status or None,
-        datacenter=datacenter,
-        node_size=node_size,
-        account_id=account_id,
-    )
-    views = [_capacity_launch_order_view(row) for row in rows]
-    return CapacityLaunchOrderListResponse(orders=views, total=len(views))
-
-
-@app.post("/api/v1/accounts/{account_id}/payment-intent")
-async def create_payment_intent(
-    account_id: str,
-    request: CreatePaymentIntentRequest,
-    authenticated_account_id: str = Depends(verify_account_api_key),
-):
-    """Create a Stripe payment intent for depositing funds (account owner only)."""
-    if account_id != authenticated_account_id:
-        raise HTTPException(
-            status_code=403, detail="Cannot create payment intent for other accounts"
-        )
-
-    # Import stripe from billing module
-    from .billing import _ensure_stripe, _stripe_mod
-
-    if not _ensure_stripe():
-        raise HTTPException(
-            status_code=503,
-            detail="Stripe integration not configured. Set STRIPE_SECRET_KEY environment variable.",
-        )
-
-    get_or_404(account_store, account_id, "Account")
-
-    try:
-        intent = _stripe_mod.PaymentIntent.create(
-            amount=int(request.amount * 100),  # Convert to cents
-            currency="usd",
-            metadata={"account_id": account_id},
-        )
-
-        logger.info(f"Created payment intent for account {account_id}: ${request.amount:.2f}")
-
-        return {
-            "client_secret": intent.client_secret,
-            "amount": request.amount,
-            "payment_intent_id": intent.id,
-        }
-    except Exception as e:
-        logger.error(f"Error creating Stripe payment intent: {e}")
-        raise HTTPException(
-            status_code=500, detail=f"Failed to create payment intent: {str(e)}"
-        ) from e
-
-
-@app.post("/api/v1/webhooks/stripe")
-async def stripe_webhook(request: Request):
-    """Stripe webhook endpoint for payment confirmations."""
-    from .billing import _ensure_stripe, _stripe_mod, _webhook_secret
-
-    if not _ensure_stripe():
-        raise HTTPException(status_code=503, detail="Stripe integration not configured")
-
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-
-    if not sig_header:
-        raise HTTPException(status_code=400, detail="Missing stripe-signature header")
-
-    try:
-        event = _stripe_mod.Webhook.construct_event(payload, sig_header, _webhook_secret())
-    except ValueError as e:
-        logger.error("Invalid Stripe webhook payload")
-        raise HTTPException(status_code=400, detail="Invalid payload") from e
-    except _stripe_mod.error.SignatureVerificationError as e:
-        logger.error("Invalid Stripe webhook signature")
-        raise HTTPException(status_code=400, detail="Invalid signature") from e
-
-    # Handle payment_intent.succeeded
-    if event["type"] == "payment_intent.succeeded":
-        payment_intent = event["data"]["object"]
-        account_id = payment_intent["metadata"].get("account_id")
-        amount = payment_intent["amount"] / 100.0  # Convert from cents
-
-        if account_id:
-            try:
-                create_transaction(
-                    account_store,
-                    transaction_store,
-                    account_id,
-                    amount=amount,
-                    tx_type="deposit",
-                    description="Stripe payment",
-                    reference_id=payment_intent["id"],
-                )
-                logger.info(
-                    f"Processed Stripe payment: ${amount:.2f} deposited to account {account_id}"
-                )
-            except Exception as e:
-                logger.error(f"Error processing Stripe payment: {e}")
-        else:
-            logger.warning(
-                f"Stripe payment intent {payment_intent['id']} has no account_id metadata"
-            )
-
-    return {"status": "ok"}
 
 
 # ==============================================================================
@@ -4933,7 +3584,6 @@ def _evaluate_deploy_request(
 
         reservation_by_agent: dict[str, object] = {}
         warm_required_agent_ids: set[str] = set()
-        filtered_candidates = candidates
         for agent in candidates:
             if any(_agent_matches_warm_target(agent, target) for target in enabled_warm_targets):
                 warm_required_agent_ids.add(agent.agent_id)
@@ -4942,16 +3592,10 @@ def _evaluate_deploy_request(
             reservation_by_agent = capacity_reservation_store.list_open_by_agent_ids(
                 list(warm_required_agent_ids)
             )
-            filtered_candidates = [
-                agent
-                for agent in candidates
-                if agent.agent_id not in warm_required_agent_ids
-                or agent.agent_id in reservation_by_agent
-            ]
 
-        filtered_candidates.sort(key=lambda a: 0 if a.status == "undeployed" else 1)
+        candidates.sort(key=lambda a: 0 if a.status == "undeployed" else 1)
 
-        for agent in filtered_candidates:
+        for agent in candidates:
             candidate_node_size = agent.node_size or ""
             version_obj = app_version_store.get_by_version(
                 app_name, app_version, candidate_node_size
@@ -4985,6 +3629,26 @@ def _evaluate_deploy_request(
             selected_version = version_obj
             if agent.agent_id in warm_required_agent_ids:
                 reservation = reservation_by_agent.get(agent.agent_id)
+                if reservation is None:
+                    if request.dry_run:
+                        issues.append(
+                            _deploy_issue(
+                                "WARM_RESERVATION_PENDING",
+                                (
+                                    "Agent is eligible but currently unreserved in a warm-capacity "
+                                    "pool; control plane will reserve it during deploy."
+                                ),
+                                agent=agent,
+                            )
+                        )
+                    else:
+                        reservation = capacity_reservation_store.create_open(
+                            agent_id=agent.agent_id,
+                            datacenter=(agent.datacenter or "").strip().lower(),
+                            node_size=(agent.node_size or "").strip().lower(),
+                            note="on-demand reservation during deploy placement",
+                        )
+                        reservation_by_agent[agent.agent_id] = reservation
                 if reservation is not None:
                     selected_reservation_id = reservation.reservation_id
             break
@@ -4997,20 +3661,6 @@ def _evaluate_deploy_request(
                         "No verified agents match the requested cloud/datacenter/size."
                     )
                     issues.append(_deploy_issue("NO_VERIFIED_CAPACITY", summary))
-                    return {
-                        "selected_agent": None,
-                        "selected_version": None,
-                        "selected_reservation_id": None,
-                        "issues": issues,
-                        "error_status": 503,
-                        "error_detail": summary,
-                    }
-                if candidates and not filtered_candidates:
-                    summary = (
-                        "No warm capacity available for deployment policy. "
-                        "All eligible agents are unreserved; wait for pool reconcile or scale up capacity."
-                    )
-                    issues.append(_deploy_issue("NO_WARM_CAPACITY", summary))
                     return {
                         "selected_agent": None,
                         "selected_version": None,
@@ -5125,6 +3775,7 @@ def _build_preflight_response(result: dict[str, object]) -> DeploymentPreflightR
 )
 async def preflight_deploy_app_version(name: str, version: str, request: DeployFromVersionRequest):
     """Dry-run deployment validation with structured placement/measurement issues."""
+    request = request.model_copy(update={"dry_run": True})
     result = _evaluate_deploy_request(name, version, request)
     return _build_preflight_response(result)
 
@@ -5245,381 +3896,16 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
         ) from e
 
 
-# ==============================================================================
-# SDK Trust Model API - Attestation, Proxy Discovery, and Service Proxying
-# ==============================================================================
-
-
-@app.get("/api/v1/attestation")
-async def get_control_plane_attestation(
-    nonce: str = Query(None, description="Nonce to include in attestation"),
-):
-    """Get the control plane's TDX attestation.
-
-    This endpoint allows clients to verify that the control plane is running
-    in a TDX trusted execution environment. The returned quote can be verified
-    using Intel Trust Authority or local TDX verification.
-
-    Args:
-        nonce: Optional nonce to include in the quote's report_data field
-               (used to prevent replay attacks)
-
-    Returns:
-        - quote_b64: Base64-encoded TDX quote
-        - measurements: Parsed TDX measurements from the quote
-        - nonce: Echoed nonce (if provided)
-    """
-    quote_result = generate_tdx_quote(nonce)
-    result = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "nonce": nonce,
-    }
-    if quote_result.error:
-        result["error"] = quote_result.error
-    else:
-        result["quote_b64"] = quote_result.quote_b64
-        result["measurements"] = quote_result.measurements
-    return result
-
-
-@app.get("/api/v1/proxy")
-async def get_proxy_endpoint():
-    """Get the proxy endpoint for routing service traffic."""
-    proxy_url = _get_proxy_url()
-    return {
-        "proxy_url": proxy_url,
-        "proxies": [proxy_url],
-        "note": "Route service requests through /proxy/{service_name}/{path}",
-    }
-
-
-@app.api_route(
-    "/proxy/{service_name}/{path:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
+register_misc_routes(
+    app,
+    get_proxy_url=_get_proxy_url,
+    generate_tdx_quote_fn=generate_tdx_quote,
+    get_or_404_fn=get_or_404,
+    agent_store=agent_store,
+    log_handler=_log_handler,
+    admin_tokens=_admin_tokens,
+    static_dir=STATIC_DIR,
 )
-async def proxy_service_request(
-    service_name: str,
-    path: str,
-    request: Request,
-):
-    """Proxy a request to a service through the control plane.
-
-    This endpoint routes requests to services via Cloudflare tunnels. The
-    control plane looks up the service by name, finds its tunnel hostname,
-    and forwards the request.
-
-    Trust model:
-    1. Client has verified CP attestation (via /api/v1/attestation)
-    2. Client routes traffic through this proxy
-    3. CP forwards to service via Cloudflare tunnel
-    4. Service is running in TDX with attested MRTD
-
-    Args:
-        service_name: Name of the target service
-        path: Path to forward to the service
-
-    Returns:
-        Response from the target service
-    """
-    return await proxy.proxy_request(service_name, path, request)
-
-
-# ==============================================================================
-# Agent and Workload Logging API
-# ==============================================================================
-
-
-@app.get("/api/v1/agents/{agent_id}/logs")
-async def get_agent_logs(
-    agent_id: str,
-    since: str = Query("5m", description="Logs since (e.g., '5m', '1h')"),
-    container: str | None = Query(None, description="Filter by container name"),
-):
-    """Get logs for a specific agent (pull model).
-
-    Fetches logs directly from the agent via its tunnel.
-    Returns logs from deployed containers.
-    """
-    agent = get_or_404(agent_store, agent_id, "Agent")
-
-    if not agent.hostname:
-        raise HTTPException(
-            status_code=400,
-            detail="Agent does not have a tunnel hostname - cannot pull logs",
-        )
-
-    try:
-        agent_url = f"https://{agent.hostname}/api/logs"
-        params = {"since": since}
-        if container:
-            params["container"] = container
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(agent_url, params=params)
-            response.raise_for_status()
-
-            # Verify we got JSON, not the workload response
-            content_type = response.headers.get("content-type", "")
-            if "application/json" not in content_type:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Agent returned non-JSON response (content-type: {content_type}). "
-                    "The tunnel may be routing to the workload instead of the agent API.",
-                )
-
-            try:
-                return response.json()
-            except Exception as e:
-                # Response body wasn't valid JSON
-                body_preview = response.text[:100] if response.text else "(empty)"
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Agent returned invalid JSON: {body_preview}. "
-                    "The tunnel may be routing to the workload instead of the agent API.",
-                ) from e
-
-    except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to reach agent at {agent.hostname}: {e}",
-        ) from e
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Agent returned error {e.response.status_code}: {e.response.text[:200]}",
-        ) from e
-
-
-@app.get("/api/v1/agents/{agent_id}/stats")
-async def get_agent_stats(agent_id: str):
-    """Get system stats for a specific agent (pull model).
-
-    Fetches stats directly from the agent via its tunnel.
-    Returns CPU, memory, disk, and network stats.
-    """
-    agent = get_or_404(agent_store, agent_id, "Agent")
-
-    if not agent.hostname:
-        raise HTTPException(
-            status_code=400,
-            detail="Agent does not have a tunnel hostname - cannot pull stats",
-        )
-
-    try:
-        agent_url = f"https://{agent.hostname}/api/stats"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(agent_url)
-            response.raise_for_status()
-
-            # Verify we got JSON, not the workload response
-            content_type = response.headers.get("content-type", "")
-            if "application/json" not in content_type:
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Agent returned non-JSON response (content-type: {content_type}). "
-                    "The tunnel may be routing to the workload instead of the agent API.",
-                )
-
-            try:
-                return response.json()
-            except Exception as e:
-                body_preview = response.text[:100] if response.text else "(empty)"
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Agent returned invalid JSON: {body_preview}. "
-                    "The tunnel may be routing to the workload instead of the agent API.",
-                ) from e
-
-    except httpx.RequestError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to reach agent at {agent.hostname}: {e}",
-        ) from e
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Agent returned error {e.response.status_code}: {e.response.text[:200]}",
-        ) from e
-
-
-@app.get("/api/v1/logs/control-plane")
-async def get_control_plane_logs(
-    lines: int = Query(100, description="Number of lines to return", le=1000),
-    min_level: str = Query("INFO", description="Minimum log level"),
-):
-    """Get recent control plane logs from in-memory buffer."""
-    level_num = getattr(logging, min_level.upper(), logging.INFO)
-    filtered = [
-        rec for rec in _log_handler.records if getattr(logging, rec["level"], 0) >= level_num
-    ]
-    return {"logs": filtered[-lines:], "total": len(filtered)}
-
-
-@app.get("/api/v1/logs/containers")
-async def get_container_logs(
-    since: str = Query("5m", description="Logs since (e.g., '5m', '1h')"),
-    container: str | None = Query(None, description="Filter by container name"),
-    lines: int = Query(200, description="Max lines per container", le=1000),
-):
-    """Get Docker container logs from the host via mounted docker socket.
-
-    Returns logs from running containers. Requires docker.sock to be mounted.
-    Gracefully returns empty if the docker CLI is unavailable.
-    """
-    import shutil
-
-    if not shutil.which("docker"):
-        return {"logs": [], "count": 0, "error": "docker CLI not available"}
-
-    # List running containers
-    try:
-        ps_proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "ps",
-            "--format",
-            "{{.Names}}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        ps_stdout, ps_stderr = await asyncio.wait_for(ps_proc.communicate(), timeout=10)
-    except (asyncio.TimeoutError, OSError) as e:
-        return {"logs": [], "count": 0, "error": f"Failed to list containers: {e}"}
-
-    if ps_proc.returncode != 0:
-        err = ps_stderr.decode(errors="replace").strip()
-        return {"logs": [], "count": 0, "error": f"docker ps failed: {err}"}
-
-    container_names = [n for n in ps_stdout.decode().strip().split("\n") if n]
-    if container and container_names:
-        container_names = [n for n in container_names if container in n]
-
-    all_logs = []
-    for name in container_names:
-        try:
-            log_proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "logs",
-                "--since",
-                since,
-                "--tail",
-                str(lines),
-                name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            log_stdout, _ = await asyncio.wait_for(log_proc.communicate(), timeout=10)
-            for line in log_stdout.decode(errors="replace").strip().split("\n"):
-                if line:
-                    all_logs.append({"container": name, "line": line})
-        except (asyncio.TimeoutError, OSError):
-            all_logs.append({"container": name, "line": "[error fetching logs]"})
-
-    return {"logs": all_logs, "count": len(all_logs)}
-
-
-@app.get("/api/v1/logs/export")
-async def export_logs(
-    since: str = Query("1h", description="Container logs since (e.g., '5m', '1h')"),
-    min_level: str = Query("DEBUG", description="Min level for control-plane logs"),
-):
-    """Export control plane + container logs as a zip file."""
-    import io
-    import zipfile
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Control-plane logs from in-memory buffer
-        level_num = getattr(logging, min_level.upper(), logging.DEBUG)
-        filtered = [
-            rec for rec in _log_handler.records if getattr(logging, rec["level"], 0) >= level_num
-        ]
-        cp_lines = [
-            f"{rec['timestamp']} {rec['level']:7s} [{rec['logger']}] {rec['message']}"
-            for rec in filtered
-        ]
-        zf.writestr("control-plane.log", "\n".join(cp_lines))
-
-        # Container logs via docker CLI
-        container_lines: list[str] = []
-        import shutil
-
-        if shutil.which("docker"):
-            try:
-                ps_proc = await asyncio.create_subprocess_exec(
-                    "docker",
-                    "ps",
-                    "--format",
-                    "{{.Names}}",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                ps_stdout, _ = await asyncio.wait_for(ps_proc.communicate(), timeout=10)
-                container_names = [n for n in ps_stdout.decode().strip().split("\n") if n]
-
-                for name in container_names:
-                    try:
-                        log_proc = await asyncio.create_subprocess_exec(
-                            "docker",
-                            "logs",
-                            "--since",
-                            since,
-                            name,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.STDOUT,
-                        )
-                        log_stdout, _ = await asyncio.wait_for(log_proc.communicate(), timeout=10)
-                        for line in log_stdout.decode(errors="replace").strip().split("\n"):
-                            if line:
-                                container_lines.append(f"[{name}] {line}")
-                    except (asyncio.TimeoutError, OSError):
-                        container_lines.append(f"[{name}] [error fetching logs]")
-            except (asyncio.TimeoutError, OSError):
-                container_lines.append("[error] failed to list containers")
-        else:
-            container_lines.append("[info] docker CLI not available")
-
-        zf.writestr("containers.log", "\n".join(container_lines))
-
-    buf.seek(0)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return StreamingResponse(
-        buf,
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="easyenclave-logs-{ts}.zip"'},
-    )
-
-
-# ==============================================================================
-# Admin Authentication and Dashboard
-# ==============================================================================
-
-
-@app.post("/admin/logout")
-async def admin_logout(authorization: str | None = Header(None)):
-    """Invalidate admin session token."""
-    if authorization and authorization.startswith("Bearer "):
-        token = authorization[7:]
-        _admin_tokens.discard(token)
-    return {"message": "Logged out"}
-
-
-@app.get("/admin")
-async def serve_admin():
-    """Serve the admin dashboard."""
-    admin_path = STATIC_DIR / "admin.html"
-    if admin_path.exists():
-        return FileResponse(admin_path)
-    raise HTTPException(status_code=404, detail="Admin page not found")
-
-
-# Serve static files and web GUI
-@app.get("/")
-async def serve_gui():
-    """Serve the web GUI."""
-    index_path = STATIC_DIR / "index.html"
-    if index_path.exists():
-        return FileResponse(index_path)
-    return {"message": "EasyEnclave Discovery Service", "docs": "/docs"}
 
 
 # Mount static files after routes to avoid conflicts

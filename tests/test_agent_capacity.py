@@ -7,7 +7,13 @@ from datetime import datetime, timedelta, timezone
 
 from app.auth import verify_admin_token
 from app.db_models import AdminSession, Agent, App, AppVersion
-from app.main import _ensure_default_gcp_tiny_capacity_target, app, reconcile_capacity_targets_once
+from app.main import (
+    _ensure_default_gcp_tiny_capacity_target,
+    _evaluate_deploy_request,
+    app,
+    reconcile_capacity_targets_once,
+)
+from app.models import DeployFromVersionRequest
 from app.settings import set_setting
 from app.storage import (
     agent_store,
@@ -253,7 +259,7 @@ def test_reconcile_once_creates_open_reservation_for_target():
     assert open_reservations[0].node_size == "tiny"
 
 
-def test_preflight_returns_no_warm_capacity_when_targets_enabled(client):
+def test_preflight_is_eligible_when_target_enabled_but_reservation_missing(client):
     agent = _mk_agent(
         vm_name="gcp-tiny-2",
         datacenter="gcp:us-central1-a",
@@ -292,8 +298,65 @@ def test_preflight_returns_no_warm_capacity_when_targets_enabled(client):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["eligible"] is False
-    assert any(issue["code"] == "NO_WARM_CAPACITY" for issue in data["issues"])
+    assert data["eligible"] is True
+    assert data["selected_agent_id"] == agent.agent_id
+    assert not any(issue["code"] == "NO_WARM_CAPACITY" for issue in data["issues"])
+    assert any(issue["code"] == "WARM_RESERVATION_PENDING" for issue in data["issues"])
+
+
+def test_deploy_evaluation_auto_creates_reservation_for_warm_target():
+    agent = _mk_agent(
+        vm_name="gcp-tiny-2-deploy",
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+    )
+    agent_store.register(agent)
+
+    app_store.register(App(name="hello-tdx"))
+    app_version_store.create(
+        AppVersion(
+            app_name="hello-tdx",
+            version="1.0.0",
+            node_size="tiny",
+            compose="services:\n  app:\n    image: hello:latest\n",
+            status="attested",
+            mrtd=agent.mrtd,
+            attestation={
+                "measurement_type": "agent_reference",
+                "node_size": "tiny",
+                "rtmrs": {f"rtmr{i}": str(i) * 96 for i in range(4)},
+            },
+        )
+    )
+    capacity_pool_target_store.upsert(
+        datacenter="gcp:us-central1-a",
+        node_size="tiny",
+        min_warm_count=1,
+        enabled=True,
+        dispatch=False,
+    )
+
+    result = _evaluate_deploy_request(
+        "hello-tdx",
+        "1.0.0",
+        DeployFromVersionRequest(
+            node_size="tiny",
+            allowed_datacenters=["gcp:us-central1-a"],
+            dry_run=False,
+        ),
+    )
+
+    assert result["error_status"] is None
+    selected_agent = result["selected_agent"]
+    assert isinstance(selected_agent, Agent)
+    assert selected_agent.agent_id == agent.agent_id
+    reservation_id = result["selected_reservation_id"]
+    assert isinstance(reservation_id, str)
+    open_reservations = capacity_reservation_store.list("open")
+    assert any(
+        r.reservation_id == reservation_id and r.agent_id == agent.agent_id
+        for r in open_reservations
+    )
 
 
 def test_preflight_ignores_unrelated_warm_targets(client):
