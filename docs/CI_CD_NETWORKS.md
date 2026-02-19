@@ -28,10 +28,11 @@ flowchart TD
 ### Staging
 
 - Trigger: `Staging Rollout` after `CI` success on `main` (or manual).
+- Trust level: **untrusted** (test-only network).
 - Auth policy: relaxed for iteration (`AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION=false`).
 - Attestation policy: enforce nonce, warn on RTMR/signature drift.
 - Billing policy: disabled (`BILLING_ENABLED=false`) and simulated requests.
-- Objective: low-cost integration confidence and developer validation.
+- Objective: low-cost integration confidence and developer validation. Do not treat staging as a trusted production boundary.
 
 ### Production
 

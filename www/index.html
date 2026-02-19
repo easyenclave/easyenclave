@@ -41,6 +41,17 @@
         </div>
     </header>
 
+    <section class="network-trust-note">
+        <div class="container">
+            <div class="network-trust-card">
+                <h2>Network Trust Policy</h2>
+                <p><strong>Staging network is untrusted.</strong> It exists for CI and integration testing only. Do not use staging for secrets, private production data, or trust-sensitive workloads.</p>
+                <p><strong>Production network is trusted.</strong> Production rollout is manual and runs strict attestation/auth policy before taking traffic.</p>
+                <p class="network-trust-link">See details: <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/CI_CD_NETWORKS.md" target="_blank">CI/CD Networks</a></p>
+            </div>
+        </div>
+    </section>
+
     <section id="app-store" class="app-store">
         <div class="container">
             <h2>How the App Store Works</h2>
