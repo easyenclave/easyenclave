@@ -221,6 +221,22 @@ _reg(
     "operational",
 )
 _reg(
+    "operational.capacity_fulfilled_grace_seconds",
+    "CAPACITY_FULFILLED_GRACE_SECONDS",
+    "1800",
+    False,
+    "Grace period (seconds) to treat fulfilled launch orders as pending capacity before re-dispatch",
+    "operational",
+)
+_reg(
+    "operational.gcp_stale_reap_interval_seconds",
+    "GCP_STALE_REAP_INTERVAL_SECONDS",
+    "60",
+    False,
+    "Seconds between CP-native stale GCP fulfilled-order VM cleanup passes",
+    "operational",
+)
+_reg(
     "operational.default_gcp_tiny_capacity_enabled",
     "DEFAULT_GCP_TINY_CAPACITY_ENABLED",
     "true",
