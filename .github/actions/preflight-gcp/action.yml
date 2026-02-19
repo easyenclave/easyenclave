@@ -167,11 +167,18 @@ runs:
           if [ "$probe_code" -ge 400 ]; then
             probe_resp="$(cat "$probe_body")"
             probe_detail="$(echo "$probe_resp" | jq -r '.detail // empty' 2>/dev/null || true)"
-            echo "::error::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
-            echo "::error::Refusing to auto-create a transient billing account when explicit credentials were provided."
-            echo "::error::Update CP_DEPLOYER_ACCOUNT_ID / CP_DEPLOYER_API_KEY for this control plane and retry."
-            rm -f "$probe_body"
-            exit 1
+            case "$probe_code" in
+              401|403|404)
+                echo "::warning::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
+                echo "::warning::Falling back to auto-created transient deployer billing account."
+                create_account
+                ;;
+              *)
+                echo "::error::Failed to validate provided billing credentials (HTTP $probe_code): ${probe_detail:-$probe_resp}"
+                rm -f "$probe_body"
+                exit 1
+                ;;
+            esac
           else
             echo "Using provided billing account for GCP preflight capacity request."
           fi
