@@ -56,6 +56,21 @@ def _get_setting_or_default(key: str, default: str) -> str:
         return default
 
 
+def _parse_bool(raw: str, *, fallback: bool) -> bool:
+    value = (raw or "").strip().lower()
+    if not value:
+        return fallback
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return fallback
+
+
+def _billing_enabled() -> bool:
+    return _parse_bool(_get_setting_or_default("billing.enabled", "true"), fallback=True)
+
+
 def create_transaction(
     account_id: str,
     amount: float,
@@ -145,6 +160,9 @@ async def charge_deployment(deployment_id: str, charge_time: datetime) -> bool:
     Returns:
         True if charged successfully, False if insufficient funds
     """
+    if not _billing_enabled():
+        return True
+
     deployment = deployment_store.get(deployment_id)
     if not deployment:
         logger.warning(f"Deployment {deployment_id} not found")
@@ -340,6 +358,9 @@ async def background_hourly_charging():
 
     while True:
         try:
+            if not _billing_enabled():
+                await asyncio.sleep(300)
+                continue
             await asyncio.sleep(3600)  # Wait 1 hour
             logger.info("Running hourly charging...")
             await charge_all_active_deployments()
@@ -387,6 +408,9 @@ async def background_insufficient_funds_terminator():
 
     while True:
         try:
+            if not _billing_enabled():
+                await asyncio.sleep(300)
+                continue
             await asyncio.sleep(60)  # Check every minute
 
             # Find deployments marked for termination

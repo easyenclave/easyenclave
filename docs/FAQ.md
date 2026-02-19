@@ -376,37 +376,31 @@ curl -X POST https://app.easyenclave.com/api/v1/apps/myapp/versions/v1.0.0/deplo
 
 The control plane selects the agent automatically from verified healthy capacity. Use `agent_id` only for controlled upgrade or recovery workflows.
 
-**See full guide:** main README deployment examples and `.github/workflows/deploy-examples.yml`.
+**See full guide:** main README deployment examples and `.github/workflows/staging-rollout.yml`.
 
 ### How does the measuring enclave work?
 
 **Problem:** Docker image tags are mutable (`:latest` changes)
 
-**Solution:** Measurer apps resolve tags to immutable digests and return per-size measurements
+**Current solution:** The control plane resolves tags to immutable digests and stores per-size trusted measurements.
 
 ```
 1. You publish: myapp:v1.0.0 (with optional `node_size`)
    ↓
-2. Control plane routes to measurer app:
-   measuring-enclave or measuring-enclave-<node_size>
-   ↓
-3. Measurer resolves:
+2. Control plane resolves:
    myapp:v1.0.0 → sha256:abc123... (immutable)
    ↓
-4. Compute trusted values for that size
+3. Compute trusted values for that size
    ↓
-5. Store measurement on app version (scoped by node_size)
+4. Store measurement on app version (scoped by node_size)
    ↓
-6. Scheduler only deploys to agents with matching node_size + measurement
+5. Scheduler only deploys to agents with matching node_size + measurement
 ```
 
 **Security benefits:**
 - ✅ Tag updates don't break attestation
 - ✅ Workers verify exact image + size profile
-- ✅ Measurer runs as an attested app on verified tiny TDX agents (bare metal or GCP)
 - ✅ Unmeasured versions are blocked from deployment
-
-**See:** `apps/measuring-enclave/` for implementation
 
 ### Can I run EasyEnclave on non-TDX hardware?
 

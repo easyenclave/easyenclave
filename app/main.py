@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import collections
+import hashlib
+import hmac
+import json
 import logging
 import os
 import re
 import secrets
+import urllib.parse
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -60,6 +65,7 @@ from .models import (
     AgentCapacityTarget,
     AgentCapacityTargetResult,
     AgentChallengeResponse,
+    AgentConsoleAccessResponse,
     AgentDeployedRequest,
     AgentHeartbeatRequest,
     AgentListResponse,
@@ -102,6 +108,7 @@ from .models import (
     MeasurementCallbackRequest,
     SetAgentOwnerRequest,
 )
+from .oauth import is_github_oauth_configured
 from .pricing import calculate_deployment_cost_per_hour
 from .provisioner import (
     dispatch_external_cleanup,
@@ -180,11 +187,201 @@ _agent_last_attestation: dict[str, datetime] = {}
 _NODE_SIZE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _DATACENTER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}:[a-z0-9][a-z0-9._-]{0,95}$")
 _PRODUCTION_ENV_NAMES = {"prod", "production"}
+_cp_attestation_capability: bool | None = None
 
 
 def _mint_agent_api_secret() -> str:
     """Mint a per-agent shared secret for CP<->agent control APIs."""
     return secrets.token_urlsafe(48)
+
+
+def _b64url_no_pad(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _cp_to_agent_attestation_mode() -> str:
+    mode = (get_setting("operational.cp_to_agent_attestation_mode") or "").strip().lower()
+    if mode in {"required", "optional", "disabled"}:
+        return mode
+    return "optional"
+
+
+def _cp_can_generate_attestation_quote() -> bool:
+    """Return whether this control plane can mint TDX quotes."""
+    global _cp_attestation_capability
+    if _cp_attestation_capability is not None:
+        return _cp_attestation_capability
+
+    probe = generate_tdx_quote(nonce="easyenclave-cp-probe")
+    _cp_attestation_capability = bool(probe.quote_b64 and not probe.error)
+    if not _cp_attestation_capability:
+        logger.warning(
+            "CP->agent attestation unavailable on this control plane (%s)",
+            probe.error or "no quote available",
+        )
+    return _cp_attestation_capability
+
+
+async def _build_cp_attestation_headers(
+    client: httpx.AsyncClient,
+    *,
+    hostname: str,
+    agent_api_secret: str | None,
+) -> dict[str, str]:
+    """Build control-plane attestation headers for CP->agent control requests."""
+    mode = _cp_to_agent_attestation_mode()
+    if mode == "disabled":
+        return {}
+
+    if not _cp_can_generate_attestation_quote():
+        if mode == "optional":
+            return {}
+        raise HTTPException(
+            status_code=503,
+            detail="CP->agent attestation required but control plane cannot mint TDX quotes",
+        )
+
+    challenge_headers: dict[str, str] = {}
+    if agent_api_secret:
+        challenge_headers["X-Agent-Secret"] = agent_api_secret
+
+    challenge_url = f"https://{hostname}/api/control/challenge"
+    try:
+        challenge_response = await client.get(challenge_url, headers=challenge_headers)
+    except httpx.RequestError as exc:
+        if mode == "optional":
+            logger.warning("Skipping CP->agent attestation challenge for %s: %s", hostname, exc)
+            return {}
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed CP->agent attestation challenge for {hostname}: {exc}",
+        ) from exc
+
+    if challenge_response.status_code >= 400:
+        detail = challenge_response.text[:240]
+        if mode == "optional":
+            logger.warning(
+                "Skipping CP->agent attestation; challenge endpoint rejected request for %s: "
+                "HTTP %s %s",
+                hostname,
+                challenge_response.status_code,
+                detail,
+            )
+            return {}
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "CP->agent attestation challenge failed "
+                f"(HTTP {challenge_response.status_code}): {detail}"
+            ),
+        )
+
+    try:
+        challenge = challenge_response.json()
+    except ValueError as exc:
+        if mode == "optional":
+            logger.warning(
+                "Skipping CP->agent attestation; invalid challenge JSON from %s",
+                hostname,
+            )
+            return {}
+        raise HTTPException(
+            status_code=502, detail="Invalid CP->agent challenge response JSON"
+        ) from exc
+
+    nonce = str(challenge.get("nonce") or "").strip()
+    if not nonce:
+        if mode == "optional":
+            logger.warning("Skipping CP->agent attestation; empty nonce from %s", hostname)
+            return {}
+        raise HTTPException(status_code=502, detail="CP->agent challenge did not include nonce")
+
+    quote = generate_tdx_quote(nonce=nonce)
+    if quote.error or not quote.quote_b64:
+        if mode == "optional":
+            logger.warning(
+                "Skipping CP->agent attestation; failed to mint quote for %s: %s",
+                hostname,
+                quote.error or "unknown error",
+            )
+            return {}
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to mint CP attestation quote: {quote.error or 'unknown error'}",
+        )
+
+    envelope = {
+        "nonce": nonce,
+        "quote_b64": quote.quote_b64,
+        "mrtd": (quote.measurements or {}).get("mrtd"),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    encoded = _b64url_no_pad(json.dumps(envelope, separators=(",", ":")).encode("utf-8"))
+    return {"X-CP-Attestation": encoded}
+
+
+def _mint_agent_console_relay_token(
+    *,
+    agent_id: str,
+    agent_api_secret: str,
+    session: AdminSession,
+    ttl_seconds: int,
+) -> tuple[str, datetime]:
+    ttl = max(60, min(3600, int(ttl_seconds)))
+    issued_at = int(datetime.now(timezone.utc).timestamp())
+    expires_at = issued_at + ttl
+
+    payload = {
+        "v": 1,
+        "sub": "agent-admin",
+        "agent_id": agent_id,
+        "iat": issued_at,
+        "exp": expires_at,
+        "jti": secrets.token_urlsafe(12),
+        "auth_method": session.auth_method or "unknown",
+        "github_login": session.github_login or "",
+        "github_orgs": session.github_orgs or [],
+        "is_admin": is_admin_session(session),
+    }
+    payload_b64 = _b64url_no_pad(
+        json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    )
+    sig = hmac.new(agent_api_secret.encode("utf-8"), payload_b64.encode("ascii"), hashlib.sha256)
+    token = f"eea1.{payload_b64}.{_b64url_no_pad(sig.digest())}"
+    return token, datetime.fromtimestamp(expires_at, timezone.utc)
+
+
+def _mint_agent_console_access_response(
+    *,
+    agent: Agent,
+    session: AdminSession,
+    ttl_seconds: int,
+) -> AgentConsoleAccessResponse:
+    if not agent.hostname:
+        raise HTTPException(status_code=400, detail="Agent has no tunnel hostname")
+
+    agent_api_secret = agent_control_credential_store.get_secret(agent.agent_id)
+    if not agent_api_secret:
+        raise HTTPException(
+            status_code=409,
+            detail="Agent does not have a control credential; ask agent to re-register",
+        )
+
+    token, expires_at = _mint_agent_console_relay_token(
+        agent_id=agent.agent_id,
+        agent_api_secret=agent_api_secret,
+        session=session,
+        ttl_seconds=ttl_seconds,
+    )
+    console_url = f"https://{agent.hostname}/admin?token={urllib.parse.quote(token, safe='')}"
+    return AgentConsoleAccessResponse(
+        agent_id=agent.agent_id,
+        hostname=agent.hostname,
+        console_url=console_url,
+        token=token,
+        expires_at=expires_at.isoformat(),
+        auth_mode="cp_relay",
+    )
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -243,16 +440,6 @@ def _password_login_allowed() -> bool:
         fallback=False,
     )
     return allow_in_prod
-
-
-def _github_oauth_fully_configured() -> bool:
-    return all(
-        [
-            bool(get_setting("github_oauth.client_id").strip()),
-            bool(get_setting("github_oauth.client_secret").strip()),
-            bool(get_setting("github_oauth.redirect_uri").strip()),
-        ]
-    )
 
 
 def require_admin_session(session: AdminSession = Depends(verify_admin_token)) -> AdminSession:
@@ -709,7 +896,7 @@ def validate_environment():
     )
 
     # Admin authentication - enforce GitHub OAuth policy in production.
-    github_oauth_ready = _github_oauth_fully_configured()
+    github_oauth_ready = is_github_oauth_configured()
     if in_production and require_github_in_prod and not github_oauth_ready:
         raise RuntimeError(
             "Production mode requires GitHub OAuth. Configure "
@@ -2638,6 +2825,13 @@ async def undeploy_agent(agent_id: str, _admin: AdminSession = Depends(require_a
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
+            headers.update(
+                await _build_cp_attestation_headers(
+                    client,
+                    hostname=agent.hostname,
+                    agent_api_secret=agent_api_secret,
+                )
+            )
             response = await client.post(f"https://{agent.hostname}/api/undeploy", headers=headers)
     except httpx.RequestError as exc:
         raise HTTPException(
@@ -2676,6 +2870,22 @@ async def set_agent_owner(
         f"Agent {agent_id} owner set to {request.github_owner!r} by {session.github_login or 'admin'}"
     )
     return {"agent_id": agent_id, "github_owner": request.github_owner}
+
+
+@app.post("/api/v1/agents/{agent_id}/console-access", response_model=AgentConsoleAccessResponse)
+async def mint_agent_console_access(
+    agent_id: str,
+    ttl_seconds: int = Query(900, ge=60, le=3600),
+    session: AdminSession = Depends(verify_admin_token),
+):
+    """Mint a short-lived CP-signed agent console token for admin/owner access."""
+    agent = get_or_404(agent_store, agent_id, "Agent")
+    require_owner_or_admin(session, agent)
+    return _mint_agent_console_access_response(
+        agent=agent,
+        session=session,
+        ttl_seconds=ttl_seconds,
+    )
 
 
 # ==============================================================================
@@ -2729,6 +2939,25 @@ async def reset_my_agent(agent_id: str, session: AdminSession = Depends(verify_a
             raise HTTPException(status_code=502, detail=f"Failed to create tunnel: {e}") from e
 
     return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
+
+
+@app.post(
+    "/api/v1/me/agents/{agent_id}/console-access",
+    response_model=AgentConsoleAccessResponse,
+)
+async def mint_my_agent_console_access(
+    agent_id: str,
+    ttl_seconds: int = Query(900, ge=60, le=3600),
+    session: AdminSession = Depends(verify_admin_token),
+):
+    """Mint a short-lived CP-signed token for an owned agent console."""
+    agent = get_or_404(agent_store, agent_id, "Agent")
+    require_owner_or_admin(session, agent)
+    return _mint_agent_console_access_response(
+        agent=agent,
+        session=session,
+        ttl_seconds=ttl_seconds,
+    )
 
 
 @app.get("/api/v1/me/deployments")
@@ -3970,6 +4199,13 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
                 selected_agent.agent_id,
             )
         async with httpx.AsyncClient(timeout=30.0) as client:
+            headers.update(
+                await _build_cp_attestation_headers(
+                    client,
+                    hostname=selected_agent.hostname,
+                    agent_api_secret=agent_api_secret,
+                )
+            )
             response = await client.post(
                 agent_url,
                 headers=headers,
@@ -4001,6 +4237,9 @@ async def deploy_app_version(name: str, version: str, request: DeployFromVersion
                 status_code=502,
                 detail=f"Agent rejected deployment: {error_detail}",
             )
+    except HTTPException as e:
+        deployment_store.complete(deployment_id, status="failed", error=str(e.detail))
+        raise
     except httpx.RequestError as e:
         deployment_store.complete(deployment_id, status="failed", error=str(e))
         logger.error(f"Failed to reach agent: {e}")

@@ -1,6 +1,10 @@
 # CI for EasyEnclave
 #
-# This workflow runs linting, tests, and deploys to the TDX runner.
+# This workflow is intentionally non-mutating:
+# - lint + tests
+# - image build (+ push/sign on main)
+#
+# Network/bootstrap mutations live in dedicated rollout workflows.
 
 name: CI
 
@@ -35,252 +39,11 @@ on:
       - "pyproject.toml"
   workflow_dispatch: {}
 
-# This workflow mutates the shared control plane and the self-hosted TDX runner.
-# Prefer the newest run and cancel older queued/in-progress runs to avoid deadlocks
-# with job-level concurrency.
 concurrency:
-  group: easyenclave-shared-control-plane
+  group: easyenclave-ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  cleanup-tdx-runner:
-    name: Cleanup - Local TDX VMs
-    runs-on: [self-hosted, tdx]
-    # Avoid running destructive cleanup on PRs from forks.
-    if: github.event_name != 'pull_request'
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Local VM inventory (before)
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "=== virsh list --all ==="
-          virsh list --all || true
-          echo ""
-          echo "=== tdx_cli vm list ==="
-          python3 infra/tdx_cli.py vm list || true
-          echo ""
-          echo "=== /var/tmp/tdvirsh disk usage ==="
-          sudo du -sh /var/tmp/tdvirsh 2>/dev/null || du -sh /var/tmp/tdvirsh 2>/dev/null || true
-
-      - name: Delete all existing EasyEnclave TDX VMs
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 infra/tdx_cli.py vm delete all || true
-
-          # Extra safety: measurement VMs are always safe to delete and sometimes leak on timeouts.
-          if command -v virsh >/dev/null 2>&1; then
-            for d in $(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
-              [ -n "$d" ] || continue
-              virsh destroy "$d" >/dev/null 2>&1 || true
-              virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
-            done
-          fi
-
-      - name: Local VM inventory (after)
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "=== virsh list --all ==="
-          virsh list --all || true
-          echo ""
-          echo "=== tdx_cli vm list ==="
-          python3 infra/tdx_cli.py vm list || true
-
-  # Builds the verity image and measures TDX baselines used to trust freshly booted agents.
-  # This is intentionally tied to CI bootstrap runs (not just launcher.py changes), because
-  # each CI run brings up a fresh control plane/agent set and needs a baseline to verify them.
-  # We already skip this entire path for pull_request runs to keep PR CI fast.
-  measure-trusted-values:
-    name: Build & Measure Agent Baseline (tiny)
-    runs-on: [self-hosted, tdx]
-    if: github.event_name != 'pull_request'
-    needs: [cleanup-tdx-runner]
-    permissions:
-      contents: read
-    env:
-      # Infra + trust.
-      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-      # Optional: allow CP-native provisioning to inject ITA keys into provisioned agent VMs.
-      EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Validate required secrets
-        run: |
-          set -euo pipefail
-          for v in INTEL_API_KEY; do
-            if [ -z "${!v:-}" ]; then
-              echo "::error::Missing required secret/env: $v"
-              exit 1
-            fi
-          done
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Build verity image and measure tiny baseline
-        id: measure
-        env:
-          MEASURE_SIZES: tiny
-        run: ./scripts/ci-build-measure.sh
-
-      - name: Export measured baseline to job outputs
-        id: out
-        shell: bash
-        run: |
-          set -euo pipefail
-          {
-            # IMPORTANT: These outputs are JSON strings that include double quotes.
-            # If we wrap the echo argument in double quotes, bash will treat those
-            # embedded quotes as syntax and the output will be mangled into
-            # non-JSON like {tiny:...}. Use single quotes so JSON is preserved.
-            echo 'mrtds=${{ steps.measure.outputs.mrtds }}'
-            echo 'mrtds_by_size=${{ steps.measure.outputs.mrtds_by_size }}'
-            echo 'rtmrs=${{ steps.measure.outputs.rtmrs }}'
-            echo 'rtmrs_by_size=${{ steps.measure.outputs.rtmrs_by_size }}'
-          } >> "$GITHUB_OUTPUT"
-
-    outputs:
-      mrtds: ${{ steps.out.outputs.mrtds }}
-      mrtds_by_size: ${{ steps.out.outputs.mrtds_by_size }}
-      rtmrs: ${{ steps.out.outputs.rtmrs }}
-      rtmrs_by_size: ${{ steps.out.outputs.rtmrs_by_size }}
-
-  bootstrap-control-plane:
-    name: Bootstrap Control Plane
-    runs-on: [self-hosted, tdx]
-    if: github.event_name != 'pull_request'
-    # Everything can run in parallel except launching the CP VM; this must wait for:
-    # 1) docker images for this SHA to be pushed, and
-    # 2) measured trusted values from the TDX runner.
-    needs: [docker, measure-trusted-values]
-    permissions:
-      contents: read
-    env:
-      # Coordination metadata (exposed by /health).
-      EASYENCLAVE_BOOT_ID: ci-${{ github.run_id }}-${{ github.run_attempt }}
-      EASYENCLAVE_GIT_SHA: ${{ github.sha }}
-
-      # Infra + trust.
-      INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
-      # Optional: allow CP-native provisioning to inject ITA keys into provisioned agent VMs.
-      EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-
-      # Cloudflare (public endpoint for https://app.easyenclave.com).
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-
-      # GitHub OAuth (admin login + deployer identity).
-      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
-      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
-      GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }}
-      ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
-
-      # Stripe (optional billing).
-      STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-      STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
-
-      # Optional (but recommended for CI automation): enable password admin login.
-      ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-
-      # Bootstrap sizes/capacity.
-      CP_BOOTSTRAP_SIZES: tiny
-      # Total tiny capacity on bootstrap = 3 (1 bootstrap measurer + 2 additional).
-      NUM_TINY_AGENTS: "2"
-      NUM_STANDARD_AGENTS: "0"
-      NUM_LLM_AGENTS: "0"
-
-      # Boot the exact revision built in this CI run.
-      CONTROL_PLANE_IMAGE: ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          # Preserve infra/image/output produced by measure-trusted-values so tdx_cli can
-          # launch VMs without rebuilding (it defaults to infra/image/output).
-          clean: false
-
-      - name: Validate required secrets
-        run: |
-          set -euo pipefail
-          for v in INTEL_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
-            if [ -z "${!v:-}" ]; then
-              echo "::error::Missing required secret/env: $v"
-              exit 1
-            fi
-          done
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Ensure verity artifacts exist
-        shell: bash
-        run: |
-          set -euo pipefail
-          need_build=0
-          for f in easyenclave.vmlinuz easyenclave.initrd easyenclave.root.raw easyenclave.cmdline; do
-            if [ ! -f "infra/image/output/$f" ]; then
-              need_build=1
-            fi
-          done
-
-          if [ "$need_build" -eq 1 ]; then
-            echo "Verity artifacts missing; building infra/image/output..."
-            # mkosi needs unprivileged user namespaces
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-            (cd infra/image && nix develop --command bash -lc 'make build')
-          fi
-
-      - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import os
-          import bcrypt
-          pw = os.environ.get("ADMIN_PASSWORD", "").encode()
-          if not pw:
-            raise SystemExit("ADMIN_PASSWORD missing")
-          hashed = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-            f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
-          PY
-
-      - name: Cleanup leaked measurement VMs (best effort)
-        run: |
-          set -euo pipefail
-          if command -v virsh >/dev/null 2>&1; then
-            for d in $(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
-              [ -n "$d" ] || continue
-              virsh destroy "$d" >/dev/null 2>&1 || true
-              virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
-            done
-          fi
-
-      - name: Deploy control plane + bootstrap agents/apps
-        env:
-          TRUSTED_AGENT_MRTDS: ${{ needs.measure-trusted-values.outputs.mrtds }}
-          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
-          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ needs.measure-trusted-values.outputs.mrtds_by_size }}'
-          TRUSTED_AGENT_RTMRS: '${{ needs.measure-trusted-values.outputs.rtmrs }}'
-          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ needs.measure-trusted-values.outputs.rtmrs_by_size }}'
-        run: ./scripts/ci-deploy.sh
-
   test:
     runs-on: ubuntu-latest
 
@@ -341,19 +104,10 @@ jobs:
 
       - name: Test Docker image
         run: |
-          # Start the container
           docker run -d --name easyenclave-test -p 8080:8080 easyenclave:test
-
-          # Wait for startup
           sleep 5
-
-          # Test health endpoint
           curl -f http://localhost:8080/health || exit 1
-
-          # Test API endpoint
           curl -f http://localhost:8080/api/v1/apps || exit 1
-
-          # Cleanup
           docker stop easyenclave-test
           docker rm easyenclave-test
 
@@ -389,7 +143,6 @@ jobs:
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "digest=$DIGEST_REF" >> "$GITHUB_OUTPUT"
 
-          # Make package public (control plane VM needs access without GHCR credentials)
           PACKAGE_NAME="${{ github.event.repository.name }}%2Fcontrol-plane"
           gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
             -f visibility=public || echo "::warning::Could not set package visibility to public"

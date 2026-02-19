@@ -1,0 +1,89 @@
+# Production Rollout
+#
+# Manual strict release pipeline.
+#
+# Production profile:
+# - strict attestation policy
+# - billing enabled (no simulation)
+# - optional builtin deploy example verification
+
+name: Production Rollout
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Production control plane URL"
+        required: false
+        default: ""
+      source_ref:
+        description: "Git ref to checkout for deploy examples"
+        required: false
+        default: ""
+      control_plane_image:
+        description: "Control plane image override"
+        required: false
+        default: ""
+      expected_git_sha:
+        description: "Expected git SHA in /health (optional)"
+        required: false
+        default: ""
+      run_builtin_examples:
+        description: "Run builtin deploy examples after rollout"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: easyenclave-production-rollout
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: Bootstrap production control plane
+    uses: ./.github/workflows/bootstrap-control-plane.yml
+    secrets: inherit
+    with:
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:latest', github.repository) }}
+      cp_bootstrap_sizes: tiny,llm
+      num_tiny_agents: '2'
+      num_standard_agents: '0'
+      num_llm_agents: '1'
+      easyenclave_domain: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+      easyenclave_env: production
+      tcb_enforcement_mode: strict
+      allowed_tcb_statuses: UpToDate
+      nonce_enforcement_mode: required
+      nonce_ttl_seconds: '300'
+      rtmr_enforcement_mode: strict
+      signature_verification_mode: strict
+      cp_to_agent_attestation_mode: required
+      auth_require_github_oauth_in_production: ${{ 'true' }}
+      password_login_enabled: ${{ 'true' }}
+      auth_allow_password_login_in_production: ${{ 'false' }}
+      billing_enabled: ${{ 'true' }}
+      billing_capacity_request_dev_simulation: ${{ 'false' }}
+      billing_platform_account_id: ${{ vars.BILLING_PLATFORM_ACCOUNT_ID || '' }}
+      billing_contributor_pool_bps: ${{ vars.BILLING_CONTRIBUTOR_POOL_BPS || '5000' }}
+
+  deploy-baremetal:
+    name: Builtin deploy examples (baremetal)
+    if: github.event.inputs.run_builtin_examples == 'true'
+    needs: [bootstrap]
+    uses: ./.github/workflows/deploy-examples.yml
+    secrets: inherit
+    with:
+      cp_url: ${{ github.event.inputs.cp_url || vars.PRODUCTION_CP_URL || 'https://app.easyenclave.com' }}
+      cp_expected_git_sha: ${{ github.event.inputs.expected_git_sha || github.sha }}
+      source_ref: ${{ github.event.inputs.source_ref || github.sha }}
+
+  deploy-gcp:
+    name: Builtin deploy examples (gcp)
+    if: github.event.inputs.run_builtin_examples == 'true'
+    needs: [bootstrap]
+    uses: ./.github/workflows/deploy-examples-gcp.yml
+    secrets: inherit
+    with:
+      cp_url: ${{ github.event.inputs.cp_url || vars.PRODUCTION_CP_URL || 'https://app.easyenclave.com' }}
+      cp_expected_git_sha: ${{ github.event.inputs.expected_git_sha || github.sha }}
+      source_ref: ${{ github.event.inputs.source_ref || github.sha }}

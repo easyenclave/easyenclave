@@ -10,7 +10,7 @@ from app.auth import (
     require_owner_or_admin,
 )
 from app.db_models import AdminSession, Agent
-from app.storage import admin_session_store, agent_store
+from app.storage import admin_session_store, agent_control_credential_store, agent_store
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -292,6 +292,54 @@ class TestOwnerRoutes:
         )
         assert resp.status_code == 403
 
+    def test_my_agent_console_access_success(self, client):
+        agent = _make_agent("vm-console-owned", github_owner="alice")
+        agent_store.update_tunnel_info(
+            agent.agent_id,
+            tunnel_id="tunnel-123",
+            hostname="agent-owned.easyenclave.com",
+            tunnel_token="token",
+        )
+        agent_control_credential_store.upsert_secret(agent.agent_id, "agent-secret")
+        os.environ["ADMIN_GITHUB_LOGINS"] = ""
+        _, token = _make_session(
+            auth_method="github_oauth",
+            github_login="alice",
+        )
+
+        resp = client.post(
+            f"/api/v1/me/agents/{agent.agent_id}/console-access",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["agent_id"] == agent.agent_id
+        assert data["hostname"] == "agent-owned.easyenclave.com"
+        assert data["auth_mode"] == "cp_relay"
+        assert data["console_url"].startswith("https://agent-owned.easyenclave.com/admin?token=")
+        assert data["token"].startswith("eea1.")
+
+    def test_my_agent_console_access_403(self, client):
+        agent = _make_agent("vm-console-other", github_owner="bob")
+        agent_store.update_tunnel_info(
+            agent.agent_id,
+            tunnel_id="tunnel-456",
+            hostname="agent-other.easyenclave.com",
+            tunnel_token="token",
+        )
+        agent_control_credential_store.upsert_secret(agent.agent_id, "agent-secret")
+        os.environ["ADMIN_GITHUB_LOGINS"] = ""
+        _, token = _make_session(
+            auth_method="github_oauth",
+            github_login="alice",
+        )
+
+        resp = client.post(
+            f"/api/v1/me/agents/{agent.agent_id}/console-access",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+
 
 class TestPatchOwnerRoute:
     def test_admin_can_set_owner(self, client):
@@ -323,6 +371,26 @@ class TestPatchOwnerRoute:
             headers={"Authorization": f"Bearer {token}"},
         )
         assert resp.status_code == 403
+
+    def test_admin_can_mint_console_access(self, client):
+        agent = _make_agent("vm-console-admin", github_owner=None)
+        agent_store.update_tunnel_info(
+            agent.agent_id,
+            tunnel_id="tunnel-789",
+            hostname="agent-admin.easyenclave.com",
+            tunnel_token="token",
+        )
+        agent_control_credential_store.upsert_secret(agent.agent_id, "agent-secret")
+        _, token = _make_session(auth_method="password")
+
+        resp = client.post(
+            f"/api/v1/agents/{agent.agent_id}/console-access",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["hostname"] == "agent-admin.easyenclave.com"
+        assert data["token"].startswith("eea1.")
 
 
 class TestAuthMeRoute:

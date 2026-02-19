@@ -1,11 +1,96 @@
-# Bootstrap Control Plane (manual)
+# Bootstrap Control Plane
 #
-# This is intentionally separate from CI to keep CI fast and to avoid tying
-# control-plane uptime to every push.
+# Reusable network bootstrap for staging/production profiles.
 
 name: Bootstrap Control Plane
 
 on:
+  workflow_call:
+    inputs:
+      control_plane_image:
+        required: false
+        type: string
+        default: ""
+      cp_bootstrap_sizes:
+        required: false
+        type: string
+        default: "tiny"
+      num_tiny_agents:
+        required: false
+        type: string
+        default: "2"
+      num_standard_agents:
+        required: false
+        type: string
+        default: "0"
+      num_llm_agents:
+        required: false
+        type: string
+        default: "0"
+      easyenclave_domain:
+        required: false
+        type: string
+        default: "easyenclave.com"
+      easyenclave_env:
+        required: false
+        type: string
+        default: "staging"
+      tcb_enforcement_mode:
+        required: false
+        type: string
+        default: "warn"
+      allowed_tcb_statuses:
+        required: false
+        type: string
+        default: "UpToDate"
+      nonce_enforcement_mode:
+        required: false
+        type: string
+        default: "required"
+      nonce_ttl_seconds:
+        required: false
+        type: string
+        default: "300"
+      rtmr_enforcement_mode:
+        required: false
+        type: string
+        default: "warn"
+      signature_verification_mode:
+        required: false
+        type: string
+        default: "warn"
+      cp_to_agent_attestation_mode:
+        required: false
+        type: string
+        default: "optional"
+      auth_require_github_oauth_in_production:
+        required: false
+        type: string
+        default: "true"
+      password_login_enabled:
+        required: false
+        type: string
+        default: "true"
+      auth_allow_password_login_in_production:
+        required: false
+        type: string
+        default: "false"
+      billing_enabled:
+        required: false
+        type: string
+        default: "true"
+      billing_capacity_request_dev_simulation:
+        required: false
+        type: string
+        default: "true"
+      billing_platform_account_id:
+        required: false
+        type: string
+        default: ""
+      billing_contributor_pool_bps:
+        required: false
+        type: string
+        default: "5000"
   workflow_dispatch:
     inputs:
       control_plane_image:
@@ -13,11 +98,11 @@ on:
         required: false
         default: ""
       cp_bootstrap_sizes:
-        description: "Comma-separated measurer bootstrap sizes for tdx_cli control-plane new"
+        description: "Comma-separated bootstrap sizes trusted at bring-up"
         required: false
         default: "tiny"
       num_tiny_agents:
-        description: "Additional tiny agents to launch (beyond bootstrap measurers)"
+        description: "Additional tiny agents to launch"
         required: false
         default: "2"
       num_standard_agents:
@@ -28,10 +113,73 @@ on:
         description: "Additional llm agents to launch"
         required: false
         default: "0"
+      easyenclave_domain:
+        description: "Control-plane DNS domain"
+        required: false
+        default: "easyenclave.com"
+      easyenclave_env:
+        description: "Environment profile (staging|production)"
+        required: false
+        default: "staging"
+      tcb_enforcement_mode:
+        description: "TCB enforcement mode"
+        required: false
+        default: "warn"
+      allowed_tcb_statuses:
+        description: "Allowed attester TCB statuses"
+        required: false
+        default: "UpToDate"
+      nonce_enforcement_mode:
+        description: "Nonce enforcement mode"
+        required: false
+        default: "required"
+      nonce_ttl_seconds:
+        description: "Nonce TTL in seconds"
+        required: false
+        default: "300"
+      rtmr_enforcement_mode:
+        description: "RTMR enforcement mode"
+        required: false
+        default: "warn"
+      signature_verification_mode:
+        description: "Signature verification mode"
+        required: false
+        default: "warn"
+      cp_to_agent_attestation_mode:
+        description: "CP->agent attestation mode"
+        required: false
+        default: "optional"
+      auth_require_github_oauth_in_production:
+        description: "Require GitHub OAuth in production"
+        required: false
+        default: "true"
+      password_login_enabled:
+        description: "Enable password login"
+        required: false
+        default: "true"
+      auth_allow_password_login_in_production:
+        description: "Allow password login in production"
+        required: false
+        default: "false"
+      billing_enabled:
+        description: "Enable billing"
+        required: false
+        default: "true"
+      billing_capacity_request_dev_simulation:
+        description: "Simulate billing transactions"
+        required: false
+        default: "true"
+      billing_platform_account_id:
+        description: "Platform account id for revenue share"
+        required: false
+        default: ""
+      billing_contributor_pool_bps:
+        description: "Contributor pool basis points"
+        required: false
+        default: "5000"
 
 concurrency:
-  # Serialize workflows that mutate the shared control plane to avoid overlap with Builtin Deploy Examples.
-  group: easyenclave-shared-control-plane
+  group: easyenclave-${{ inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'shared' }}-control-plane
   cancel-in-progress: false
 
 jobs:
@@ -41,52 +189,62 @@ jobs:
       contents: read
 
     env:
-      # Coordination metadata (exposed by /health). Used by deploy-example workflows to
-      # confirm the shared control plane is running the revision under test.
-      EASYENCLAVE_BOOT_ID: manual-${{ github.run_id }}-${{ github.run_attempt }}
+      EASYENCLAVE_BOOT_ID: bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
       EASYENCLAVE_GIT_SHA: ${{ github.sha }}
 
       # Infra + trust.
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      # Optional: enable CP-native provisioning (GCP capacity fulfillment) to inject ITA keys into provisioned agent VMs.
       EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
 
       # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
 
-      # Cloudflare (public endpoint for https://app.easyenclave.com).
+      # Cloudflare (public endpoint for app.<domain>).
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      EASYENCLAVE_DOMAIN: ${{ inputs.easyenclave_domain || github.event.inputs.easyenclave_domain || 'easyenclave.com' }}
 
       # GitHub OAuth (admin login + deployer identity).
-      # Note: GitHub blocks secret names starting with `GITHUB_`, so we store them as EE_GITHUB_*.
       GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
       GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
-      # Optional (defaults to https://app.easyenclave.com/auth/github/callback inside the CP if unset).
       GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }}
-
-      # Admin allowlist for GitHub OAuth (comma-separated logins).
       ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
 
       # Stripe (optional billing).
       STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
       STRIPE_WEBHOOK_SECRET: ${{ secrets.STRIPE_WEBHOOK_SECRET }}
 
-      # Optional: provide a password admin login for convenience (GitHub OAuth is preferred).
+      # Required for CI/bootstrap automation that performs admin-only control-plane actions.
       ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       # Deployer settings.
-      CP_BOOTSTRAP_SIZES: ${{ github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
-      NUM_TINY_AGENTS: ${{ github.event.inputs.num_tiny_agents || '2' }}
-      NUM_STANDARD_AGENTS: ${{ github.event.inputs.num_standard_agents || '0' }}
-      NUM_LLM_AGENTS: ${{ github.event.inputs.num_llm_agents || '0' }}
+      CP_BOOTSTRAP_SIZES: ${{ inputs.cp_bootstrap_sizes || github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
+      NUM_TINY_AGENTS: ${{ inputs.num_tiny_agents || github.event.inputs.num_tiny_agents || '2' }}
+      NUM_STANDARD_AGENTS: ${{ inputs.num_standard_agents || github.event.inputs.num_standard_agents || '0' }}
+      NUM_LLM_AGENTS: ${{ inputs.num_llm_agents || github.event.inputs.num_llm_agents || '0' }}
 
-      # Manual bootstraps default to :latest (upgrade-by-default). CI pins to :sha.
-      CONTROL_PLANE_IMAGE: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:latest', github.repository) }}
-      # Control plane measures app versions directly; measurer image is no longer required.
+      # Workflow_call rollouts pin image explicitly; manual default remains :latest.
+      CONTROL_PLANE_IMAGE: ${{ inputs.control_plane_image || github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:latest', github.repository) }}
+
+      # Runtime policy profile.
+      EASYENCLAVE_ENV: ${{ inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging' }}
+      TCB_ENFORCEMENT_MODE: ${{ inputs.tcb_enforcement_mode || github.event.inputs.tcb_enforcement_mode || 'warn' }}
+      ALLOWED_TCB_STATUSES: ${{ inputs.allowed_tcb_statuses || github.event.inputs.allowed_tcb_statuses || 'UpToDate' }}
+      NONCE_ENFORCEMENT_MODE: ${{ inputs.nonce_enforcement_mode || github.event.inputs.nonce_enforcement_mode || 'required' }}
+      NONCE_TTL_SECONDS: ${{ inputs.nonce_ttl_seconds || github.event.inputs.nonce_ttl_seconds || '300' }}
+      RTMR_ENFORCEMENT_MODE: ${{ inputs.rtmr_enforcement_mode || github.event.inputs.rtmr_enforcement_mode || 'warn' }}
+      SIGNATURE_VERIFICATION_MODE: ${{ inputs.signature_verification_mode || github.event.inputs.signature_verification_mode || 'warn' }}
+      CP_TO_AGENT_ATTESTATION_MODE: ${{ inputs.cp_to_agent_attestation_mode || github.event.inputs.cp_to_agent_attestation_mode || 'optional' }}
+      AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION: ${{ inputs.auth_require_github_oauth_in_production || github.event.inputs.auth_require_github_oauth_in_production || 'true' }}
+      PASSWORD_LOGIN_ENABLED: ${{ inputs.password_login_enabled || github.event.inputs.password_login_enabled || 'true' }}
+      AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION: ${{ inputs.auth_allow_password_login_in_production || github.event.inputs.auth_allow_password_login_in_production || 'false' }}
+      BILLING_ENABLED: ${{ inputs.billing_enabled || github.event.inputs.billing_enabled || 'true' }}
+      BILLING_CAPACITY_REQUEST_DEV_SIMULATION: ${{ inputs.billing_capacity_request_dev_simulation || github.event.inputs.billing_capacity_request_dev_simulation || 'true' }}
+      BILLING_PLATFORM_ACCOUNT_ID: ${{ inputs.billing_platform_account_id || github.event.inputs.billing_platform_account_id || secrets.BILLING_PLATFORM_ACCOUNT_ID || '' }}
+      BILLING_CONTRIBUTOR_POOL_BPS: ${{ inputs.billing_contributor_pool_bps || github.event.inputs.billing_contributor_pool_bps || '5000' }}
 
     steps:
       - name: Checkout
@@ -95,7 +253,7 @@ jobs:
       - name: Validate required secrets
         run: |
           set -euo pipefail
-          for v in ITA_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
+          for v in ITA_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID ADMIN_PASSWORD; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required secret/env: $v"
               exit 1
@@ -108,10 +266,6 @@ jobs:
       - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
         run: |
           set -euo pipefail
-          if [ -z "${ADMIN_PASSWORD:-}" ]; then
-            echo "ADMIN_PASSWORD not set; skipping password-login configuration."
-            exit 0
-          fi
           python3 - <<'PY'
           import os
           import bcrypt
@@ -119,7 +273,6 @@ jobs:
           if not pw:
             raise SystemExit("ADMIN_PASSWORD missing")
           hashed = bcrypt.hashpw(pw, bcrypt.gensalt()).decode()
-          # Write to GITHUB_ENV without printing the value to logs.
           with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
             f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
           PY
@@ -138,13 +291,12 @@ jobs:
       - name: Build and measure trusted values (bootstrap sizes)
         id: measure
         env:
-          MEASURE_SIZES: ${{ github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
+          MEASURE_SIZES: ${{ env.CP_BOOTSTRAP_SIZES }}
         run: ./scripts/ci-build-measure.sh
 
       - name: Deploy control plane + bootstrap agents/apps
         env:
           TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
-          # Quote JSON-like strings to prevent YAML from parsing them as flow mappings.
           TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.measure.outputs.mrtds_by_size }}'
           TRUSTED_AGENT_RTMRS: '${{ steps.measure.outputs.rtmrs }}'
           TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.measure.outputs.rtmrs_by_size }}'

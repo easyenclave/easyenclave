@@ -189,6 +189,14 @@ _reg(
     "operational",
 )
 _reg(
+    "operational.cp_to_agent_attestation_mode",
+    "CP_TO_AGENT_ATTESTATION_MODE",
+    "optional",
+    False,
+    "Control-plane to agent control-channel attestation mode: required, optional, or disabled",
+    "operational",
+)
+_reg(
     "operational.agent_stale_hours",
     "AGENT_STALE_HOURS",
     "24",
@@ -354,6 +362,14 @@ _reg(
 )
 
 # Billing
+_reg(
+    "billing.enabled",
+    "BILLING_ENABLED",
+    "true",
+    False,
+    "Enable billing charges and revenue distribution",
+    "operational",
+)
 _reg(
     "billing.contributor_pool_bps",
     "BILLING_CONTRIBUTOR_POOL_BPS",

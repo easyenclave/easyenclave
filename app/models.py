@@ -143,6 +143,17 @@ class AgentListResponse(BaseModel):
     total: int
 
 
+class AgentConsoleAccessResponse(BaseModel):
+    """Response for CP-issued agent console access."""
+
+    agent_id: str
+    hostname: str
+    console_url: str
+    token: str
+    expires_at: str
+    auth_mode: str = "cp_relay"
+
+
 class AgentCapacityTarget(BaseModel):
     """Desired minimum capacity for a datacenter/node-size pool."""
 

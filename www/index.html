@@ -79,7 +79,7 @@
                         </svg>
                     </div>
                     <h3>Automated Measurement</h3>
-                    <p>The control plane routes each version to an attested measurer app (<code>measuring-enclave</code> or a size variant). It resolves tags to immutable SHA256 digests and records per-size trusted values before deploy.</p>
+                    <p>The control plane resolves each version to immutable SHA256 digests, applies signature policy, and records per-size trusted values before deploy.</p>
                 </div>
                 <div class="flow-arrow">&#8594;</div>
                 <div class="flow-step">
@@ -104,7 +104,7 @@
                 </div>
                 <div class="benefit">
                     <h4>No Direct Deploys</h4>
-                    <p>All deployments go through the catalog. No way to deploy untracked code — <a href="https://github.com/easyenclave/easyenclave/blob/main/.github/workflows/deploy-examples.yml" target="_blank">tested on every push</a>.</p>
+                    <p>All deployments go through the catalog. No way to deploy untracked code — <a href="https://github.com/easyenclave/easyenclave/blob/main/.github/workflows/staging-rollout.yml" target="_blank">validated on every main rollout</a>.</p>
                 </div>
             </div>
         </div>
@@ -681,6 +681,7 @@ print(response.json())</code></pre>
                     <a href="https://app.easyenclave.com" class="btn btn-primary btn-large">Open App Store</a>
                     <a href="https://app.easyenclave.com/docs" class="btn btn-secondary btn-large">API Documentation</a>
                     <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/ARCHITECTURE.md" class="btn btn-secondary btn-large" target="_blank">Architecture Docs</a>
+                    <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/CI_CD_NETWORKS.md" class="btn btn-secondary btn-large" target="_blank">CI/CD Network Docs</a>
                     <a href="https://github.com/easyenclave/easyenclave/tree/main/examples" class="btn btn-secondary btn-large">View Examples</a>
                 </div>
             </div>
@@ -704,6 +705,7 @@ print(response.json())</code></pre>
                         <h4>Resources</h4>
                         <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
                         <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+                        <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/CI_CD_NETWORKS.md">CI/CD Networks</a>
                         <a href="https://github.com/easyenclave/easyenclave/tree/main/examples">Examples</a>
                     </div>
                 </div>

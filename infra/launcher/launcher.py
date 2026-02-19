@@ -18,10 +18,12 @@ The mode is determined by config.json provisioned via cloud-init.
 
 import base64
 import hashlib
+import hmac
 import http.server
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import socketserver
@@ -117,6 +119,11 @@ else:
 
     ADMIN_PASSWORD = _secrets.token_urlsafe(16)
     _generated_agent_password = ADMIN_PASSWORD
+AGENT_ADMIN_AUTH_MODE = (
+    os.environ.get("AGENT_ADMIN_AUTH_MODE", "hybrid").strip().lower() or "hybrid"
+)
+if AGENT_ADMIN_AUTH_MODE not in {"password", "cp", "hybrid"}:
+    AGENT_ADMIN_AUTH_MODE = "hybrid"
 
 # Paths — detect verity image (data disk at /data) vs legacy image
 _DATA_MOUNT = Path("/data")
@@ -180,11 +187,22 @@ services:
       - TRUSTED_PROXY_RTMRS=${{TRUSTED_PROXY_RTMRS:-}}
       - TRUSTED_AGENT_RTMRS_BY_SIZE=${{TRUSTED_AGENT_RTMRS_BY_SIZE:-}}
       - TRUSTED_PROXY_RTMRS_BY_SIZE=${{TRUSTED_PROXY_RTMRS_BY_SIZE:-}}
+      - EASYENCLAVE_ENV=${{EASYENCLAVE_ENV:-}}
       - TCB_ENFORCEMENT_MODE=${{TCB_ENFORCEMENT_MODE:-warn}}
       - ALLOWED_TCB_STATUSES=${{ALLOWED_TCB_STATUSES:-UpToDate}}
       - NONCE_ENFORCEMENT_MODE=${{NONCE_ENFORCEMENT_MODE:-optional}}
       - NONCE_TTL_SECONDS=${{NONCE_TTL_SECONDS:-300}}
       - NONCE_LENGTH=${{NONCE_LENGTH:-32}}
+      - RTMR_ENFORCEMENT_MODE=${{RTMR_ENFORCEMENT_MODE:-warn}}
+      - SIGNATURE_VERIFICATION_MODE=${{SIGNATURE_VERIFICATION_MODE:-warn}}
+      - CP_TO_AGENT_ATTESTATION_MODE=${{CP_TO_AGENT_ATTESTATION_MODE:-optional}}
+      - AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION=${{AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION:-true}}
+      - PASSWORD_LOGIN_ENABLED=${{PASSWORD_LOGIN_ENABLED:-true}}
+      - AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION=${{AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION:-false}}
+      - BILLING_ENABLED=${{BILLING_ENABLED:-true}}
+      - BILLING_CAPACITY_REQUEST_DEV_SIMULATION=${{BILLING_CAPACITY_REQUEST_DEV_SIMULATION:-true}}
+      - BILLING_PLATFORM_ACCOUNT_ID=${{BILLING_PLATFORM_ACCOUNT_ID:-}}
+      - BILLING_CONTRIBUTOR_POOL_BPS=${{BILLING_CONTRIBUTOR_POOL_BPS:-5000}}
       - AGENT_ATTESTATION_INTERVAL=${{AGENT_ATTESTATION_INTERVAL:-3600}}
       - AGENT_STALE_HOURS=${{AGENT_STALE_HOURS:-24}}
       - ADMIN_PASSWORD_HASH=${{ADMIN_PASSWORD_HASH:-}}
@@ -293,11 +311,204 @@ def _cache_attestation(attestation: dict, source: str):
     _admin_state["attestation_updated_at"] = datetime.now(timezone.utc).isoformat()
 
 
+def _password_admin_enabled() -> bool:
+    return AGENT_ADMIN_AUTH_MODE in {"password", "hybrid"}
+
+
+def _cp_relay_admin_enabled() -> bool:
+    return AGENT_ADMIN_AUTH_MODE in {"cp", "hybrid"}
+
+
+def _b64url_decode_nopad(value: str) -> bytes:
+    padded = value + ("=" * ((4 - len(value) % 4) % 4))
+    return base64.urlsafe_b64decode(padded.encode("ascii"))
+
+
+def _decode_cp_relay_admin_token(token: str) -> dict | None:
+    """Decode and verify a CP-issued relay token using the per-agent shared secret."""
+    if not API_SECRET:
+        return None
+    parts = (token or "").split(".")
+    if len(parts) != 3 or parts[0] != "eea1":
+        return None
+    payload_b64 = parts[1]
+    sig_b64 = parts[2]
+    try:
+        expected_sig = hmac.new(
+            API_SECRET.encode("utf-8"),
+            payload_b64.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+        provided_sig = _b64url_decode_nopad(sig_b64)
+    except Exception:
+        return None
+    if not hmac.compare_digest(expected_sig, provided_sig):
+        return None
+    try:
+        payload = json.loads(_b64url_decode_nopad(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _verify_cp_relay_admin_token(token: str) -> bool:
+    payload = _decode_cp_relay_admin_token(token)
+    if not payload:
+        return False
+    if payload.get("sub") != "agent-admin":
+        return False
+    now = int(time.time())
+    exp = int(payload.get("exp") or 0)
+    if exp <= now:
+        return False
+    iat = int(payload.get("iat") or 0)
+    # Permit small clock skew.
+    if iat > now + 300:
+        return False
+    token_agent_id = str(payload.get("agent_id") or "")
+    local_agent_id = str(_admin_state.get("agent_id") or "")
+    if token_agent_id and local_agent_id and token_agent_id != local_agent_id:
+        return False
+    return True
+
+
+def _cleanup_cp_attestation_challenges() -> None:
+    now = time.time()
+    expired = [nonce for nonce, deadline in _cp_attestation_challenges.items() if deadline <= now]
+    for nonce in expired:
+        _cp_attestation_challenges.pop(nonce, None)
+
+
+def _issue_cp_attestation_challenge() -> str:
+    _cleanup_cp_attestation_challenges()
+    nonce = secrets.token_hex(32)
+    _cp_attestation_challenges[nonce] = time.time() + CP_ATTESTATION_CHALLENGE_TTL
+    return nonce
+
+
+def _consume_cp_attestation_challenge(nonce: str) -> bool:
+    _cleanup_cp_attestation_challenges()
+    if not nonce:
+        return False
+    deadline = _cp_attestation_challenges.pop(nonce, None)
+    if deadline is None:
+        return False
+    return deadline > time.time()
+
+
+def _load_trusted_cp_mrtds(config: dict | None = None) -> None:
+    """Load configured trusted CP MRTDs and optional pinned MRDT."""
+    global _trusted_cp_mrtds, _trusted_cp_mrtd_pin
+    config = config or {}
+    values: list[str] = []
+    for raw in (
+        os.environ.get("TRUSTED_PROXY_MRTDS", ""),
+        str(config.get("trusted_proxy_mrtds") or ""),
+    ):
+        if raw:
+            values.extend([v.strip().lower() for v in raw.split(",") if v.strip()])
+    _trusted_cp_mrtds = {v for v in values if re.fullmatch(r"[0-9a-f]{96}", v)}
+    _trusted_cp_mrtd_pin = ""
+    try:
+        if _cp_mrtd_pin_file.exists():
+            pin = _cp_mrtd_pin_file.read_text(encoding="utf-8").strip().lower()
+            if re.fullmatch(r"[0-9a-f]{96}", pin):
+                _trusted_cp_mrtd_pin = pin
+    except Exception as exc:
+        logger.warning("Failed reading pinned control-plane MRTD file: %s", exc)
+
+
+def _maybe_pin_cp_mrtd(mrtd: str) -> None:
+    global _trusted_cp_mrtd_pin
+    if _trusted_cp_mrtd_pin:
+        return
+    if not re.fullmatch(r"[0-9a-f]{96}", mrtd or ""):
+        return
+    try:
+        _cp_mrtd_pin_file.parent.mkdir(parents=True, exist_ok=True)
+        _cp_mrtd_pin_file.write_text(mrtd, encoding="utf-8")
+        _trusted_cp_mrtd_pin = mrtd
+        logger.info("Pinned control-plane MRTD for control channel: %s...", mrtd[:16])
+    except Exception as exc:
+        logger.warning("Failed to persist pinned control-plane MRTD: %s", exc)
+
+
+def _verify_control_plane_attestation_header(header_value: str) -> tuple[bool, str]:
+    """Verify CP nonce+quote attestation envelope sent on control requests."""
+    mode = CP_TO_AGENT_ATTESTATION_MODE
+    if mode == "disabled":
+        return True, "disabled"
+    if not header_value:
+        if mode == "optional":
+            return True, "optional-missing"
+        return False, "missing X-CP-Attestation"
+
+    try:
+        payload = json.loads(_b64url_decode_nopad(header_value).decode("utf-8"))
+    except Exception:
+        if mode == "optional":
+            return True, "optional-invalid"
+        return False, "invalid X-CP-Attestation encoding"
+
+    nonce = str((payload or {}).get("nonce") or "").strip().lower()
+    quote_b64 = str((payload or {}).get("quote_b64") or "").strip()
+    if not nonce or not quote_b64:
+        if mode == "optional":
+            return True, "optional-missing-fields"
+        return False, "X-CP-Attestation missing nonce/quote"
+    if not _consume_cp_attestation_challenge(nonce):
+        if mode == "optional":
+            return True, "optional-challenge-miss"
+        return False, "attestation challenge missing/expired"
+
+    parsed = parse_tdx_quote(quote_b64)
+    if parsed.get("error"):
+        if mode == "optional":
+            return True, "optional-quote-parse-failed"
+        return False, f"invalid CP quote: {parsed['error']}"
+
+    report_data = str(parsed.get("report_data") or "").strip().lower()
+    # CP writes nonce bytes into report_data; compare as hex prefix.
+    expected_report_prefix = nonce.encode("utf-8").hex()
+    if not report_data.startswith(expected_report_prefix):
+        if mode == "optional":
+            return True, "optional-nonce-mismatch"
+        return False, "CP quote report_data nonce mismatch"
+
+    mrtd = str(parsed.get("mrtd") or "").strip().lower()
+    if _trusted_cp_mrtds and mrtd not in _trusted_cp_mrtds:
+        if mode == "optional":
+            return True, "optional-untrusted-mrtd"
+        return False, "CP MRTD not in TRUSTED_PROXY_MRTDS"
+    if _trusted_cp_mrtd_pin and mrtd and mrtd != _trusted_cp_mrtd_pin:
+        if mode == "optional":
+            return True, "optional-pin-mismatch"
+        return False, "CP MRTD does not match pinned value"
+    if not _trusted_cp_mrtds and not _trusted_cp_mrtd_pin and mrtd:
+        _maybe_pin_cp_mrtd(mrtd)
+    return True, "verified"
+
+
 # Workload port for proxying
 WORKLOAD_PORT = int(os.environ.get("WORKLOAD_PORT", "8080"))
 
 # API authentication - control plane uses this secret to authenticate
 API_SECRET = os.environ.get("AGENT_API_SECRET", "")
+CP_TO_AGENT_ATTESTATION_MODE = (
+    os.environ.get("CP_TO_AGENT_ATTESTATION_MODE", "optional").strip().lower() or "optional"
+)
+if CP_TO_AGENT_ATTESTATION_MODE not in {"required", "optional", "disabled"}:
+    CP_TO_AGENT_ATTESTATION_MODE = "optional"
+CP_ATTESTATION_CHALLENGE_TTL = max(
+    30,
+    int(os.environ.get("CP_ATTESTATION_CHALLENGE_TTL", "180")),
+)
+_cp_attestation_challenges: dict[str, float] = {}
+_trusted_cp_mrtds: set[str] = set()
+_trusted_cp_mrtd_pin: str = ""
+_cp_mrtd_pin_file = CONTROL_PLANE_DIR / "trusted-control-plane-mrtd.txt"
 
 
 class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
@@ -356,9 +567,17 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         """Check admin authentication."""
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
-            token = auth[7:]
-            return token in _admin_tokens
+            token = auth[7:].strip()
+            if token in _admin_tokens:
+                return True
+            if _cp_relay_admin_enabled() and _verify_cp_relay_admin_token(token):
+                return True
         return False
+
+    def _check_cp_attestation(self) -> tuple[bool, str]:
+        """Check CP->agent attestation envelope for control-plane write requests."""
+        header_value = self.headers.get("X-CP-Attestation", "")
+        return _verify_control_plane_attestation_header(header_value)
 
     def _get_health(
         self,
@@ -571,9 +790,27 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(200, self._get_health(include_attestation=False))
             return
 
+        if path == "/api/control/challenge":
+            if not self._check_api_auth():
+                self._send_json(401, {"error": "Unauthorized"})
+                return
+            nonce = _issue_cp_attestation_challenge()
+            self._send_json(
+                200,
+                {
+                    "nonce": nonce,
+                    "ttl_seconds": CP_ATTESTATION_CHALLENGE_TTL,
+                    "issued_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            return
+
         if path == "/api/auth/methods":
-            result = {"password": True}
-            if _generated_agent_password:
+            result = {
+                "password": _password_admin_enabled(),
+                "cp_relay": _cp_relay_admin_enabled(),
+            }
+            if _generated_agent_password and _password_admin_enabled():
                 result["generated_password"] = _generated_agent_password
             self._send_json(200, result)
             return
@@ -627,6 +864,11 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
 
         # Admin login (no auth required)
         if path == "/api/login":
+            if not _password_admin_enabled():
+                self._send_json(
+                    403, {"error": "Password login disabled; use control-plane relay auth"}
+                )
+                return
             try:
                 data = json.loads(body)
                 if data.get("password") == ADMIN_PASSWORD:
@@ -677,6 +919,10 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
             if not self._check_api_auth():
                 self._send_json(401, {"error": "Unauthorized"})
                 return
+            verified, reason = self._check_cp_attestation()
+            if not verified:
+                self._send_json(401, {"error": f"Control-plane attestation required: {reason}"})
+                return
             try:
                 deployment = json.loads(body)
                 # Handle deployment in background thread
@@ -696,6 +942,10 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
         if path == "/api/undeploy":
             if not self._check_api_auth():
                 self._send_json(401, {"error": "Unauthorized"})
+                return
+            verified, reason = self._check_cp_attestation()
+            if not verified:
+                self._send_json(401, {"error": f"Control-plane attestation required: {reason}"})
                 return
             try:
                 self._handle_undeploy()
@@ -2017,6 +2267,8 @@ def run_control_plane_mode(config: dict):
         env["CLOUDFLARE_ZONE_ID"] = config["cloudflare_zone_id"]
     if config.get("easyenclave_domain"):
         env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
+    if config.get("easyenclave_env"):
+        env["EASYENCLAVE_ENV"] = config["easyenclave_env"]
     if config.get("easyenclave_boot_id"):
         env["EASYENCLAVE_BOOT_ID"] = config["easyenclave_boot_id"]
     if config.get("easyenclave_git_sha"):
@@ -2065,6 +2317,40 @@ def run_control_plane_mode(config: dict):
         env["TRUSTED_AGENT_RTMRS_BY_SIZE"] = config["trusted_agent_rtmrs_by_size"]
     if config.get("trusted_proxy_rtmrs_by_size"):
         env["TRUSTED_PROXY_RTMRS_BY_SIZE"] = config["trusted_proxy_rtmrs_by_size"]
+    if config.get("tcb_enforcement_mode"):
+        env["TCB_ENFORCEMENT_MODE"] = config["tcb_enforcement_mode"]
+    if config.get("allowed_tcb_statuses"):
+        env["ALLOWED_TCB_STATUSES"] = config["allowed_tcb_statuses"]
+    if config.get("nonce_enforcement_mode"):
+        env["NONCE_ENFORCEMENT_MODE"] = config["nonce_enforcement_mode"]
+    if config.get("nonce_ttl_seconds"):
+        env["NONCE_TTL_SECONDS"] = str(config["nonce_ttl_seconds"])
+    if config.get("rtmr_enforcement_mode"):
+        env["RTMR_ENFORCEMENT_MODE"] = config["rtmr_enforcement_mode"]
+    if config.get("signature_verification_mode"):
+        env["SIGNATURE_VERIFICATION_MODE"] = config["signature_verification_mode"]
+    if config.get("cp_to_agent_attestation_mode"):
+        env["CP_TO_AGENT_ATTESTATION_MODE"] = config["cp_to_agent_attestation_mode"]
+    if config.get("auth_require_github_oauth_in_production"):
+        env["AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION"] = config[
+            "auth_require_github_oauth_in_production"
+        ]
+    if config.get("password_login_enabled"):
+        env["PASSWORD_LOGIN_ENABLED"] = config["password_login_enabled"]
+    if config.get("auth_allow_password_login_in_production"):
+        env["AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION"] = config[
+            "auth_allow_password_login_in_production"
+        ]
+    if config.get("billing_enabled"):
+        env["BILLING_ENABLED"] = config["billing_enabled"]
+    if config.get("billing_capacity_request_dev_simulation"):
+        env["BILLING_CAPACITY_REQUEST_DEV_SIMULATION"] = config[
+            "billing_capacity_request_dev_simulation"
+        ]
+    if config.get("billing_platform_account_id"):
+        env["BILLING_PLATFORM_ACCOUNT_ID"] = config["billing_platform_account_id"]
+    if config.get("billing_contributor_pool_bps"):
+        env["BILLING_CONTRIBUTOR_POOL_BPS"] = str(config["billing_contributor_pool_bps"])
     if config.get("admin_password_hash"):
         env["ADMIN_PASSWORD_HASH"] = config["admin_password_hash"]
 
@@ -2238,11 +2524,18 @@ def run_agent_mode(config: dict):
     Args:
         config: Launcher config (may contain control_plane_url override)
     """
-    global API_SECRET, CONTROL_PLANE_URL
+    global AGENT_ADMIN_AUTH_MODE, API_SECRET, CONTROL_PLANE_URL, CP_TO_AGENT_ATTESTATION_MODE
 
     # Override control plane URL if specified in config
     if config.get("control_plane_url"):
         CONTROL_PLANE_URL = config["control_plane_url"]
+    config_admin_mode = str(config.get("agent_admin_auth_mode") or "").strip().lower()
+    if config_admin_mode in {"password", "cp", "hybrid"}:
+        AGENT_ADMIN_AUTH_MODE = config_admin_mode
+    config_cp_mode = str(config.get("cp_to_agent_attestation_mode") or "").strip().lower()
+    if config_cp_mode in {"required", "optional", "disabled"}:
+        CP_TO_AGENT_ATTESTATION_MODE = config_cp_mode
+    _load_trusted_cp_mrtds(config)
 
     # Intentionally do not export any ITA key into the process environment here.
     # generate_initial_attestation reads it from launcher config or env when needed.
@@ -2251,6 +2544,11 @@ def run_agent_mode(config: dict):
 
     logger.info("Starting in AGENT mode (push/pull)")
     logger.info(f"Control plane: {CONTROL_PLANE_URL}")
+    logger.info(
+        "Agent admin auth mode: %s | CP->agent attestation mode: %s",
+        AGENT_ADMIN_AUTH_MODE,
+        CP_TO_AGENT_ATTESTATION_MODE,
+    )
 
     vm_name = get_vm_name()
     logger.info(f"VM name: {vm_name}")

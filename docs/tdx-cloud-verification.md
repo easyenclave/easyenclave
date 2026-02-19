@@ -35,10 +35,10 @@ DC_AZURE="azure:eastus2-1" \
 ## GitHub workflow
 Use `Verify TDX Clouds` (`.github/workflows/verify-tdx-clouds.yml`) via `workflow_dispatch`.
 
-For GCP deploy smoke, use
-`Builtin Deploy Examples (GCP)` (`.github/workflows/deploy-examples-gcp.yml`).
-It requests capacity from the control plane, deploys examples to GCP-only
-eligible agents, and runs the smoke tests.
+For full staged smoke validation, use `Staging Rollout`
+(`.github/workflows/staging-rollout.yml`), which runs builtin deploy examples
+for baremetal and GCP in parallel. `Builtin Deploy Examples (GCP)`
+(`.github/workflows/deploy-examples-gcp.yml`) remains available as a reusable/manual component.
 
 ## Credential plan for cloud agent bring-up
 Required repository secrets for CP-driven bring-up workflows:

@@ -21,6 +21,11 @@ def _redirect_uri() -> str:
     return get_setting("github_oauth.redirect_uri")
 
 
+def is_github_oauth_configured() -> bool:
+    """Return whether all GitHub OAuth settings are configured."""
+    return bool(_client_id() and _client_secret() and _redirect_uri())
+
+
 # GitHub OAuth URLs
 GITHUB_AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"

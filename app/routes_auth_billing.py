@@ -31,6 +31,7 @@ from .models import (
     TransactionListResponse,
     TransactionResponse,
 )
+from .oauth import is_github_oauth_configured
 
 RATE_CARD: dict[str, float] = {
     "cpu_per_vcpu_hr": 0.04,
@@ -118,7 +119,7 @@ def register_auth_billing_routes(
     async def auth_methods():
         """Return which login methods are available (public, no auth required)."""
         password_enabled = bool(password_login_allowed_fn() and get_admin_password_hash_fn())
-        github_enabled = _github_oauth_fully_configured()
+        github_enabled = is_github_oauth_configured()
         result = {"password": password_enabled, "github": github_enabled}
         generated_password = generated_admin_password_fn()
         if password_enabled and generated_password:
@@ -482,16 +483,32 @@ def register_auth_billing_routes(
             * float(request.months),
             2,
         )
+        billing_enabled = parse_bool_setting_fn(
+            get_setting_fn("billing.enabled"),
+            fallback=True,
+        )
         simulated_payment = parse_bool_setting_fn(
             get_setting_fn("billing.capacity_request_dev_simulation"),
             fallback=True,
         )
+        if not billing_enabled:
+            simulated_payment = True
 
         description = (
             f"Warm capacity {datacenter}/{node_size} x{request.min_warm_count} "
             f"for {request.months} month(s)"
         )
-        if simulated_payment:
+        if not billing_enabled:
+            txn = create_transaction_fn(
+                account_store,
+                transaction_store,
+                account_id,
+                amount=0.0,
+                tx_type="charge",
+                description=f"[BILLING_DISABLED ${charged_amount_usd:.2f}] {description}",
+                reference_id=request_id,
+            )
+        elif simulated_payment:
             txn = create_transaction_fn(
                 account_store,
                 transaction_store,
@@ -714,10 +731,3 @@ def register_auth_billing_routes(
                 )
 
         return {"status": "ok"}
-
-
-def _github_oauth_fully_configured() -> bool:
-    """Local helper to avoid importing from app.main and creating cycles."""
-    from .oauth import _client_id, _client_secret, _redirect_uri
-
-    return bool(_client_id() and _client_secret() and _redirect_uri())

@@ -1,0 +1,84 @@
+# Staging Rollout
+#
+# Canonical staging network pipeline:
+# 1) Bootstrap staging control plane from latest CI image on main
+# 2) Run builtin deploy examples in parallel (baremetal + gcp)
+#
+# Staging profile is intentionally no-cost:
+# - billing disabled
+# - billing simulation enabled
+
+name: Staging Rollout
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Staging control plane URL"
+        required: false
+        default: ""
+      source_ref:
+        description: "Git ref to checkout for deploy examples"
+        required: false
+        default: ""
+      control_plane_image:
+        description: "Control plane image override"
+        required: false
+        default: ""
+
+concurrency:
+  group: easyenclave-staging-rollout
+  cancel-in-progress: true
+
+jobs:
+  bootstrap:
+    name: Bootstrap staging control plane
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    uses: ./.github/workflows/bootstrap-control-plane.yml
+    secrets: inherit
+    with:
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, github.event.workflow_run.head_sha || github.sha) }}
+      cp_bootstrap_sizes: tiny,llm
+      num_tiny_agents: '2'
+      num_standard_agents: '0'
+      num_llm_agents: '1'
+      easyenclave_domain: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+      easyenclave_env: staging
+      tcb_enforcement_mode: warn
+      allowed_tcb_statuses: UpToDate
+      nonce_enforcement_mode: required
+      nonce_ttl_seconds: '300'
+      rtmr_enforcement_mode: warn
+      signature_verification_mode: warn
+      cp_to_agent_attestation_mode: optional
+      auth_require_github_oauth_in_production: ${{ 'false' }}
+      password_login_enabled: ${{ 'true' }}
+      auth_allow_password_login_in_production: ${{ 'true' }}
+      billing_enabled: ${{ 'false' }}
+      billing_capacity_request_dev_simulation: ${{ 'true' }}
+      billing_platform_account_id: ''
+      billing_contributor_pool_bps: '0'
+
+  deploy-baremetal:
+    name: Builtin deploy examples (baremetal)
+    needs: [bootstrap]
+    uses: ./.github/workflows/deploy-examples.yml
+    secrets: inherit
+    with:
+      cp_url: ${{ github.event.inputs.cp_url || vars.STAGING_CP_URL || 'https://app.easyenclave.com' }}
+      cp_expected_git_sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+      source_ref: ${{ github.event.inputs.source_ref || github.event.workflow_run.head_sha || github.sha }}
+
+  deploy-gcp:
+    name: Builtin deploy examples (gcp)
+    needs: [bootstrap]
+    uses: ./.github/workflows/deploy-examples-gcp.yml
+    secrets: inherit
+    with:
+      cp_url: ${{ github.event.inputs.cp_url || vars.STAGING_CP_URL || 'https://app.easyenclave.com' }}
+      cp_expected_git_sha: ${{ github.event.workflow_run.head_sha || github.sha }}
+      source_ref: ${{ github.event.inputs.source_ref || github.event.workflow_run.head_sha || github.sha }}

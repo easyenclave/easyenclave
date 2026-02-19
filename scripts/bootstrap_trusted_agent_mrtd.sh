@@ -11,7 +11,7 @@
 #
 # Optional env:
 #   ADMIN_TOKEN      Bearer token for /api/v1/admin/*
-#   ADMIN_PASSWORD   Admin password for /admin/login (falls back to /auth/methods generated_password)
+#   ADMIN_PASSWORD   Admin password for /admin/login
 #   NOTE             Optional note string stored with the baseline (default: ci:<node_size>)
 set -euo pipefail
 
@@ -83,13 +83,7 @@ if [ -z "$admin_token" ] && [ -n "${ADMIN_PASSWORD:-}" ]; then
   admin_token="$(login_with_password "${ADMIN_PASSWORD}" || true)"
 fi
 if [ -z "$admin_token" ]; then
-  generated_pw="$(curl -sSf "${CP_URL}/auth/methods" | jq -r '.generated_password // empty' || true)"
-  if [ -n "$generated_pw" ]; then
-    admin_token="$(login_with_password "$generated_pw" || true)"
-  fi
-fi
-if [ -z "$admin_token" ]; then
-  echo "::error::Unable to obtain admin token (set ADMIN_TOKEN or provide ADMIN_PASSWORD / generated_password)."
+  echo "::error::Unable to obtain admin token (set ADMIN_TOKEN or ADMIN_PASSWORD from GitHub deployment secrets)."
   exit 1
 fi
 echo "::add-mask::${admin_token}"

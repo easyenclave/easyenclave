@@ -1,15 +1,40 @@
 # Builtin Deploy Examples (GCP)
 #
-# Runs after CI succeeds, in parallel with Builtin Deploy Examples.
+# Canonical GCP example workflow:
+# - hello-tdx on tiny
+# - private-llm on llm (OpenAI-compatible smoke test)
 
 name: Builtin Deploy Examples (GCP)
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
-  workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      cp_url:
+        required: false
+        type: string
+        default: "https://app.easyenclave.com"
+      cp_expected_git_sha:
+        required: false
+        type: string
+        default: ""
+      source_ref:
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Control plane URL"
+        required: false
+        default: "https://app.easyenclave.com"
+      cp_expected_git_sha:
+        description: "Expected control-plane git SHA from /health (optional)"
+        required: false
+        default: ""
+      source_ref:
+        description: "Git ref to checkout"
+        required: false
+        default: ""
 
 concurrency:
   # Keep one GCP deploy-example run at a time; allow baremetal/default workflow to run in parallel.
@@ -18,18 +43,17 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CP_URL: https://app.easyenclave.com
-  CP_EXPECTED_GIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  CP_URL: ${{ inputs.cp_url || github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+  CP_EXPECTED_GIT_SHA: ${{ inputs.cp_expected_git_sha || github.event.inputs.cp_expected_git_sha || '' }}
 
 jobs:
   deploy-hello-tdx-gcp:
     name: Deploy Hello TDX (gcp)
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
       - name: Wait for control plane bootstrap (git_sha match)
         shell: bash
@@ -39,6 +63,12 @@ jobs:
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
+            if [ -z "${CP_EXPECTED_GIT_SHA:-}" ]; then
+              if [ -n "${body:-}" ]; then
+                echo "Control plane ready (git_sha check skipped)"
+                break
+              fi
+            fi
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
             if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
               echo "Control plane ready: git_sha=$sha"
@@ -55,28 +85,29 @@ jobs:
           done
 
       - name: Validate required secrets for GCP deploy
+        id: cfg_hello
         shell: bash
         env:
-          CP_DEPLOYER_ACCOUNT_ID: ${{ secrets.CP_DEPLOYER_ACCOUNT_ID }}
-          CP_DEPLOYER_API_KEY: ${{ secrets.CP_DEPLOYER_API_KEY }}
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           missing=0
-          for v in CP_DEPLOYER_ACCOUNT_ID CP_DEPLOYER_API_KEY GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY AGENT_ADMIN_PASSWORD; do
+          for v in AGENT_ADMIN_PASSWORD CP_ADMIN_PASSWORD; do
             if [ -z "${!v:-}" ]; then
               echo "::warning::Missing secret: $v"
               missing=1
             fi
           done
           if [ "$missing" -ne 0 ]; then
-            echo "::notice::GCP deploy is not configured; skipping."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GCP hello deploy is not configured; skipping job actions."
             exit 0
           fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Ensure app exists (idempotent)
+        if: steps.cfg_hello.outputs.configured == 'true'
         uses: ./.github/actions/register-app
         with:
           name: hello-tdx
@@ -84,6 +115,7 @@ jobs:
           control_plane_url: ${{ env.CP_URL }}
 
       - name: Deploy to EasyEnclave (GCP)
+        if: steps.cfg_hello.outputs.configured == 'true'
         uses: ./.github/actions/gcp-deploy-example
         with:
           app_name: hello-tdx
@@ -105,11 +137,10 @@ jobs:
   deploy-private-llm-gcp:
     name: Deploy Private LLM (gcp)
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
       - name: Wait for control plane bootstrap (git_sha match)
         shell: bash
@@ -119,6 +150,12 @@ jobs:
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
+            if [ -z "${CP_EXPECTED_GIT_SHA:-}" ]; then
+              if [ -n "${body:-}" ]; then
+                echo "Control plane ready (git_sha check skipped)"
+                break
+              fi
+            fi
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
             if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
               echo "Control plane ready: git_sha=$sha"
@@ -135,30 +172,32 @@ jobs:
           done
 
       - name: Validate required secrets for GCP LLM deploy
+        id: cfg_llm
         shell: bash
         env:
-          CP_DEPLOYER_ACCOUNT_ID: ${{ secrets.CP_DEPLOYER_ACCOUNT_ID }}
-          CP_DEPLOYER_API_KEY: ${{ secrets.CP_DEPLOYER_API_KEY }}
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          # Agent admin password (set on deployed nodes for local admin UI auth).
           AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
+          # Control-plane admin auth (used for trusted MRTD writes / cleanup APIs).
           CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
           CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           missing=0
-          for v in CP_DEPLOYER_ACCOUNT_ID CP_DEPLOYER_API_KEY GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY AGENT_ADMIN_PASSWORD; do
+          for v in AGENT_ADMIN_PASSWORD CP_ADMIN_PASSWORD; do
             if [ -z "${!v:-}" ]; then
               echo "::warning::Missing secret: $v"
               missing=1
             fi
           done
           if [ "$missing" -ne 0 ]; then
-            echo "::notice::GCP LLM deploy is not configured; skipping."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::GCP private-llm deploy is not configured; skipping job actions."
             exit 0
           fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Resolve GCP datacenter target (llm)
+        if: steps.cfg_llm.outputs.configured == 'true'
         id: target
         shell: bash
         run: |
@@ -176,6 +215,7 @@ jobs:
           echo "Resolved datacenter: $dc"
 
       - name: Ensure GCP llm capacity for private-llm
+        if: steps.cfg_llm.outputs.configured == 'true'
         id: preflight_llm
         uses: ./.github/actions/preflight-gcp
         with:
@@ -193,6 +233,7 @@ jobs:
           cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       - name: Ensure app exists (idempotent)
+        if: steps.cfg_llm.outputs.configured == 'true'
         uses: ./.github/actions/register-app
         with:
           name: private-llm
@@ -200,6 +241,7 @@ jobs:
           control_plane_url: ${{ env.CP_URL }}
 
       - name: Deploy to EasyEnclave (GCP)
+        if: steps.cfg_llm.outputs.configured == 'true'
         id: deploy
         uses: ./.github/actions/gcp-deploy-example
         with:
@@ -220,14 +262,17 @@ jobs:
           cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       - name: Set up Python
+        if: steps.cfg_llm.outputs.configured == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install SDK and OpenAI client
+        if: steps.cfg_llm.outputs.configured == 'true'
         run: pip install ./sdk/ openai
 
       - name: Smoke test private-llm (OpenAI-compatible)
+        if: steps.cfg_llm.outputs.configured == 'true'
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: ${{ env.CP_URL }}
@@ -235,7 +280,7 @@ jobs:
 
       - name: Resolve admin token for LLM teardown
         id: teardown_auth
-        if: always() && steps.deploy.outcome == 'success'
+        if: always() && steps.cfg_llm.outputs.configured == 'true' && steps.deploy.outcome == 'success'
         shell: bash
         env:
           CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
@@ -248,22 +293,15 @@ jobs:
             token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
           fi
           if [ -z "$token" ]; then
-            generated_pw="$(curl -sS "$CP_URL/api/auth/methods" | jq -r '.generated_password // empty' 2>/dev/null || true)"
-            if [ -n "$generated_pw" ]; then
-              payload="$(jq -cn --arg p "$generated_pw" '{password: $p}')"
-              token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
-            fi
+            echo "::error::Could not resolve admin token for teardown (set CP_ADMIN_TOKEN or CP_ADMIN_PASSWORD)."
+            exit 1
           fi
-          if [ -n "$token" ]; then
-            echo "::add-mask::$token"
-            echo "admin_token=$token" >> "$GITHUB_OUTPUT"
-            echo "Resolved admin token for teardown."
-          else
-            echo "::warning::Could not resolve admin token for teardown; skipping destructive cleanup."
-          fi
+          echo "::add-mask::$token"
+          echo "admin_token=$token" >> "$GITHUB_OUTPUT"
+          echo "Resolved admin token for teardown."
 
       - name: Teardown private-llm GCP deployment and capacity
-        if: always() && steps.deploy.outcome == 'success'
+        if: always() && steps.cfg_llm.outputs.configured == 'true' && steps.deploy.outcome == 'success'
         shell: bash
         env:
           ADMIN_TOKEN: ${{ steps.teardown_auth.outputs.admin_token }}

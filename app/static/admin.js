@@ -1491,6 +1491,7 @@ async function loadAgents() {
                             ${isAdmin ? `<td>${agent.github_owner ? `<code>${agent.github_owner}</code>` : '<span style="color:#666">none</span>'} <button class="btn-small btn-secondary" onclick="setAgentOwner('${agent.agent_id}', '${agent.github_owner || ''}')">Set</button></td>` : ''}
                             <td>${agent.hostname ? `<a href="https://${agent.hostname}" target="_blank">${agent.hostname}</a>` : 'No tunnel'}</td>
                             <td class="action-buttons">
+                                ${agent.hostname ? `<button class="btn-small btn-primary" onclick="openAgentConsole('${agent.agent_id}')">Console</button>` : ''}
                                 ${agent.hostname ? `<button class="btn-small btn-info" onclick="showAgentDetails('${agent.agent_id}', '${agent.vm_name}')">Details</button>` : ''}
                                 <button class="btn-small btn-secondary" onclick="resetAgent('${agent.agent_id}')">Reset</button>
                                 ${isAdmin ? `<button class="btn-small btn-danger" onclick="deleteAgent('${agent.agent_id}')">Delete</button>` : ''}
@@ -1568,6 +1569,22 @@ async function setAgentOwner(agentId, currentOwner) {
         }
     } catch (error) {
         alert('Error: ' + error.message);
+    }
+}
+
+async function openAgentConsole(agentId) {
+    try {
+        const base = isAdmin ? '/api/v1/agents' : '/api/v1/me/agents';
+        const data = await adminFetchJSON(`${base}/${agentId}/console-access`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+        });
+        if (!data || !data.console_url) {
+            throw new Error('Missing console URL');
+        }
+        window.open(data.console_url, '_blank', 'noopener');
+    } catch (error) {
+        alert('Failed to open agent console: ' + error.message);
     }
 }
 

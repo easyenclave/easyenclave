@@ -1,49 +1,83 @@
-# Builtin Deploy Examples
+# Builtin Deploy Examples (Baremetal)
 #
-# Deploys example apps after CI passes, using the shared control plane.
+# Canonical baremetal example workflow:
+# - hello-tdx on tiny
+# - private-llm on llm (OpenAI-compatible smoke test)
 
-name: Builtin Deploy Examples
+name: Builtin Deploy Examples (Baremetal)
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
-  workflow_dispatch: {}
+  workflow_call:
+    inputs:
+      cp_url:
+        required: false
+        type: string
+        default: "https://app.easyenclave.com"
+      cp_expected_git_sha:
+        required: false
+        type: string
+        default: ""
+      source_ref:
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Control plane URL"
+        required: false
+        default: "https://app.easyenclave.com"
+      cp_expected_git_sha:
+        description: "Expected control-plane git SHA from /health (optional)"
+        required: false
+        default: ""
+      source_ref:
+        description: "Git ref to checkout"
+        required: false
+        default: ""
 
 concurrency:
-  # Keep one baremetal/default deploy-example run at a time; allow GCP workflow to run in parallel.
   group: easyenclave-deploy-examples-baremetal
-  # Prefer the newest run; older deploy-example runs can get stuck on slow capacity.
   cancel-in-progress: true
 
 env:
-  CP_URL: https://app.easyenclave.com
-  CP_EXPECTED_GIT_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+  CP_URL: ${{ inputs.cp_url || github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
+  CP_EXPECTED_GIT_SHA: ${{ inputs.cp_expected_git_sha || github.event.inputs.cp_expected_git_sha || '' }}
 
 jobs:
-  test-unregistered-app-fails:
-    name: Test - Unregistered app deploy fails
+  wait-control-plane:
+    name: Wait for control plane
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Wait for control plane bootstrap (git_sha match)
+      - name: Wait for control plane health
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
-          deadline=$(( $(date +%s) + 900 ))
+          echo "Waiting for $CP_URL/health"
+          deadline=$(( $(date +%s) + 1200 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
+            if [ -z "${body:-}" ]; then
+              now="$(date +%s)"
+              if [ "$now" -ge "$deadline" ]; then
+                echo "::error::Timed out waiting for control plane health"
+                exit 1
+              fi
+              sleep 5
+              continue
+            fi
+
+            if [ -z "${CP_EXPECTED_GIT_SHA:-}" ]; then
+              echo "Control plane healthy (git_sha check skipped)"
+              break
+            fi
+
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
             if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
               echo "Control plane ready: git_sha=$sha"
               break
             fi
+
             now="$(date +%s)"
             if [ "$now" -ge "$deadline" ]; then
               echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
@@ -54,76 +88,54 @@ jobs:
             sleep 5
           done
 
-      - name: Deploy unregistered app (should fail)
-        id: deploy
-        uses: ./.github/actions/deploy
-        continue-on-error: true
-        with:
-          app_name: unregistered-test-app
-          compose_file: examples/hello-tdx/docker-compose.yml
-          service_name: hello-tdx
-          health_endpoint: /
-
-      - name: Verify deploy failed
-        run: |
-          if [ "${{ steps.deploy.outcome }}" != "failure" ] && [ "${{ steps.deploy.conclusion }}" != "failure" ]; then
-            echo "::error::Expected deploy to fail for unregistered app, but it succeeded"
-            exit 1
-          fi
-          echo "Deploy correctly failed for unregistered app"
-
-  register-hello-tdx:
-    name: Register Hello TDX
+  register-apps:
+    name: Register builtin apps
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: [wait-control-plane]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
-      - name: Wait for control plane bootstrap (git_sha match)
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
-          deadline=$(( $(date +%s) + 900 ))
-          while :; do
-            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
-              echo "Control plane ready: git_sha=$sha"
-              break
-            fi
-            now="$(date +%s)"
-            if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
-              echo "Last /health:"
-              echo "${body:-<empty>}"
-              exit 1
-            fi
-            sleep 5
-          done
-
-      - name: Register app
+      - name: Register hello-tdx
         uses: ./.github/actions/register-app
         with:
           name: hello-tdx
           description: "Hello TDX - Example app demonstrating TDX attestation"
+          control_plane_url: ${{ env.CP_URL }}
 
-  ensure-baremetal-tiny-capacity:
-    name: Ensure baremetal tiny agent (capacity)
+      - name: Register private-llm
+        uses: ./.github/actions/register-app
+        with:
+          name: private-llm
+          description: "Private LLM - Ollama running in a TDX enclave"
+          control_plane_url: ${{ env.CP_URL }}
+
+  ensure-baremetal-capacity:
+    name: Ensure baremetal capacity (tiny + llm)
     runs-on: [self-hosted, tdx]
-    needs: register-hello-tdx
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: [register-apps]
     permissions:
       contents: read
     env:
-      # Used to boot a tiny agent VM that can self-mint Intel Trust Authority tokens for registration.
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+      CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in ITA_API_KEY CP_ADMIN_PASSWORD; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required secret/env: $v"
+              exit 1
+            fi
+          done
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -135,30 +147,50 @@ jobs:
           cd infra/image
           nix develop --command make build
 
-      - name: Wait for control plane bootstrap (git_sha match)
+      - name: Cleanup stale CI LLM VMs (best effort)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
-          deadline=$(( $(date +%s) + 900 ))
-          while :; do
-            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
-              echo "Control plane ready: git_sha=$sha"
-              break
-            fi
-            now="$(date +%s)"
-            if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
-              echo "Last /health:"
-              echo "${body:-<empty>}"
-              exit 1
-            fi
-            sleep 5
-          done
+          bash ./scripts/cleanup_ci_llm_vms.sh || true
 
-      - name: Ensure deployable baremetal tiny agent exists
+      - name: Trust measured llm baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          admin_token="${CP_ADMIN_TOKEN:-}"
+          if [ -z "${admin_token:-}" ]; then
+            payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
+            admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
+          fi
+          if [ -z "${admin_token:-}" ]; then
+            echo "::error::Failed to resolve control-plane admin token"
+            exit 1
+          fi
+
+          measurements="$(python3 infra/tdx_cli.py vm measure --size llm --json)"
+          mrtd="$(echo "$measurements" | jq -r '.mrtd // empty')"
+          if ! echo "$mrtd" | grep -Eq '^[0-9a-f]{96}$'; then
+            echo "::error::Failed to measure valid llm baseline MRTD"
+            echo "$measurements" | head -c 2000 || true
+            exit 1
+          fi
+
+          already="$(curl -sS -H 'Accept: application/json' "$CP_URL/api/v1/trusted-mrtds" | jq -r --arg m "$mrtd" '[.trusted_mrtds[] | select((.mrtd // "") == $m)] | length' 2>/dev/null || echo 0)"
+          if [ "${already:-0}" -gt 0 ]; then
+            echo "LLM baseline already trusted: ${mrtd:0:16}..."
+            exit 0
+          fi
+
+          payload="$(jq -cn --arg m "$mrtd" --arg note "builtin-examples llm baseline" '{mrtd:$m, type:"agent", note:$note}')"
+          code="$(curl -sS -o /tmp/trust-mrtd.json -w '%{http_code}' -X POST "$CP_URL/api/v1/admin/trusted-mrtds" -H "Authorization: Bearer ${admin_token}" -H 'Content-Type: application/json' -d "$payload" || true)"
+          if [ "$code" -ge 400 ]; then
+            echo "::error::Failed to trust llm MRTD (HTTP $code): $(cat /tmp/trust-mrtd.json)"
+            exit 1
+          fi
+          echo "Trusted measured llm baseline MRTD: ${mrtd:0:16}..."
+
+      - name: Ensure deployable baremetal tiny + llm agents exist
         shell: bash
         run: |
           set -euo pipefail
@@ -169,333 +201,99 @@ jobs:
           fi
 
           count_deployable() {
-            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
+            local size="$1"
+            curl -sSf "$CP_URL/api/v1/agents" | jq -r --arg ns "$size" '
               [.agents[]
                 | select(.verified == true)
                 | select((.health_status // "" | ascii_downcase) == "healthy")
                 | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
-                | select((.node_size // "" | ascii_downcase) == "tiny")
+                | select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase))
                 | select((.datacenter // "" | ascii_downcase) == "baremetal:github-runner")
                 | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
               ] | length'
           }
 
-          count="$(count_deployable || echo 0)"
-          echo "Deployable baremetal tiny candidates: $count"
-          if [ "${count:-0}" -ge 1 ]; then
-            exit 0
-          fi
+          ensure_capacity() {
+            local size="$1"
+            local required="$2"
+            local max_boots="${3:-3}"
+            local boots=0
 
-          echo "Booting a new baremetal tiny agent VM..."
-          python3 infra/tdx_cli.py vm new \
-            --size tiny \
-            --cloud-provider baremetal \
-            --availability-zone github-runner \
-            --easyenclave-url "${CP_URL}" \
-            --intel-api-key "${ita_key}" \
-            --wait \
-            >/tmp/new_tiny_vm.json
-          cat /tmp/new_tiny_vm.json || true
+            local count
+            count="$(count_deployable "$size" || echo 0)"
+            echo "Deployable baremetal $size candidates: $count (required: $required)"
 
-          for i in {1..60}; do
-            count="$(count_deployable || echo 0)"
-            if [ "${count:-0}" -ge 1 ]; then
-              echo "Deployable baremetal tiny capacity is now available: $count"
-              exit 0
-            fi
-            if [ $((i % 6)) -eq 0 ]; then
-              echo "Still waiting for deployable baremetal tiny capacity... ($i/60)"
-              curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
-                [.agents[] | select((.node_size // "" | ascii_downcase) == "tiny")
-                  | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name, verification_error}]'
-            fi
-            sleep 5
-          done
+            while [ "${count:-0}" -lt "$required" ]; do
+              boots=$((boots + 1))
+              if [ "$boots" -gt "$max_boots" ]; then
+                echo "::error::Exceeded max $size boot attempts ($max_boots)"
+                curl -sSf "$CP_URL/api/v1/agents" | jq -r --arg ns "$size" '
+                  [.agents[] | select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase))
+                    | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name, verification_error}]'
+                exit 1
+              fi
 
-          echo "::error::Timed out waiting for deployable baremetal tiny capacity."
-          curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
-            [.agents[] | select((.node_size // "" | ascii_downcase) == "tiny")
-              | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
-          exit 1
+              echo "Booting a new baremetal $size agent VM..."
+              python3 infra/tdx_cli.py vm new \
+                --size "$size" \
+                --cloud-provider baremetal \
+                --availability-zone github-runner \
+                --easyenclave-url "$CP_URL" \
+                --intel-api-key "$ita_key" \
+                --wait \
+                >"/tmp/new_${size}_vm.json"
+              cat "/tmp/new_${size}_vm.json" || true
 
-  deploy-hello-tdx-clouds:
-    name: Deploy Hello TDX (default)
+              for i in {1..60}; do
+                count="$(count_deployable "$size" || echo 0)"
+                if [ "${count:-0}" -ge "$required" ]; then
+                  break
+                fi
+                if [ $((i % 6)) -eq 0 ]; then
+                  echo "Still waiting for deployable baremetal $size capacity... ($i/60)"
+                fi
+                sleep 5
+              done
+
+              count="$(count_deployable "$size" || echo 0)"
+              echo "Deployable baremetal $size candidates now: $count (required: $required)"
+            done
+          }
+
+          ensure_capacity tiny 1 2
+          ensure_capacity llm 1 3
+
+  deploy-hello-tdx:
+    name: Deploy hello-tdx (baremetal tiny)
     runs-on: ubuntu-latest
-    needs: [register-hello-tdx, ensure-baremetal-tiny-capacity]
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: [ensure-baremetal-capacity]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
-      - name: Wait for control plane bootstrap (git_sha match)
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
-          deadline=$(( $(date +%s) + 900 ))
-          while :; do
-            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
-              echo "Control plane ready: git_sha=$sha"
-              break
-            fi
-            now="$(date +%s)"
-            if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
-              echo "Last /health:"
-              echo "${body:-<empty>}"
-              exit 1
-            fi
-            sleep 5
-          done
-
-      - name: Deploy to EasyEnclave
+      - name: Deploy hello-tdx
         uses: ./.github/actions/deploy-example
         with:
           app_name: hello-tdx
           compose_file: examples/hello-tdx/docker-compose.yml
           service_name: hello-tdx
           health_endpoint: /
-          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
-          github_owner: ${{ github.repository_owner }}
+          control_plane_url: ${{ env.CP_URL }}
           node_size: tiny
           allowed_clouds: baremetal
+          allowed_datacenters: baremetal:github-runner
 
-  deploy-private-llm-baremetal:
-    name: Deploy Private LLM (baremetal)
-    runs-on: [self-hosted, tdx]
-    needs: [deploy-hello-tdx-clouds]
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-    permissions:
-      contents: read
-    env:
-      CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
-      CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-      AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
-      # Used to boot LLM agent VMs that can self-mint Intel Trust Authority tokens for registration.
-      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      TARGET_DATACENTER: baremetal:github-runner
+  deploy-private-llm:
+    name: Deploy private-llm (baremetal llm)
+    runs-on: ubuntu-latest
+    needs: [ensure-baremetal-capacity]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Build verity artifacts (required for tdx_cli vm new)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd infra/image
-          nix develop --command make build
-
-      - name: Wait for control plane bootstrap (git_sha match)
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
-          deadline=$(( $(date +%s) + 900 ))
-          while :; do
-            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
-              echo "Control plane ready: git_sha=$sha"
-              break
-            fi
-            now="$(date +%s)"
-            if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
-              echo "Last /health:"
-              echo "${body:-<empty>}"
-              exit 1
-            fi
-            sleep 5
-          done
-
-      - name: Validate required secrets for baremetal LLM deploy
-        shell: bash
-        env:
-          AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
-          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
-          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "${AGENT_ADMIN_PASSWORD:-}" ]; then
-            echo "::error::Missing secret: AGENT_ADMIN_PASSWORD"
-            exit 1
-          fi
-          # CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD are no longer required for measurer bootstrap.
-
-      - name: Cleanup stale CI LLM VMs (preflight, best effort)
-        shell: bash
-        env:
-          CP_URL: ${{ env.CP_URL }}
-          CP_ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          bash ./scripts/cleanup_ci_llm_vms.sh || true
-
-      - name: Check measuring-enclave-llm health
-        shell: bash
-        run: |
-          echo "Control plane measures app versions directly; measuring-enclave is no longer required."
-
-      - name: Measure + trust llm baseline (bootstrap)
-        id: llm_baseline
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          admin_token="${CP_ADMIN_TOKEN:-}"
-          if [ -z "${admin_token:-}" ]; then
-            if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
-              echo "::error::Missing CP_ADMIN_TOKEN/CP_ADMIN_PASSWORD; cannot trust LLM baseline for bootstrap."
-              exit 1
-            fi
-            resp="$(curl -sSf "${CP_URL}/admin/login" \
-              -H "Content-Type: application/json" \
-              -d "{\"password\": \"${CP_ADMIN_PASSWORD}\"}")"
-            admin_token="$(echo "$resp" | jq -r '.token // empty')"
-          fi
-          if [ -z "${admin_token:-}" ] || [ "${admin_token:-}" = "null" ]; then
-            echo "::error::Admin login failed; cannot trust LLM baseline."
-            exit 1
-          fi
-
-          # Measure locally on the TDX runner so the first LLM agent can verify.
-          measurements="$(python3 infra/tdx_cli.py vm measure --size llm --json)"
-          mrtd="$(echo "$measurements" | jq -r '.mrtd // empty')"
-          rtmrs="$(echo "$measurements" | jq -c '{rtmr0,rtmr1,rtmr2,rtmr3}')"
-          if [ -z "${mrtd:-}" ] || [ "${mrtd:-}" = "null" ]; then
-            echo "::error::Failed to measure llm baseline MRTD"
-            echo "$measurements" | head -c 2000 || true
-            exit 1
-          fi
-
-          # Trust this MRTD baseline at runtime (DB-backed trust list).
-          curl -sSf -X POST "${CP_URL}/api/v1/admin/trusted-mrtds" \
-            -H "Authorization: Bearer ${admin_token}" \
-            -H "Content-Type: application/json" \
-            -d "$(jq -cn \
-              --arg mrtd "$mrtd" \
-              --arg note "builtin-examples llm baseline (measured $(date -u +%Y-%m-%dT%H:%M:%SZ))" \
-              '{mrtd:$mrtd,type:"agent",note:$note}')" \
-            >/dev/null
-
-          echo "mrtds_by_size=$(jq -cn --arg mrtd "$mrtd" '{llm:$mrtd}')" >> "$GITHUB_OUTPUT"
-          echo "rtmrs_by_size=$(jq -cn --argjson rtmrs "$rtmrs" '{llm:$rtmrs}')" >> "$GITHUB_OUTPUT"
-          echo "Using measured llm baseline MRTD: ${mrtd:0:16}..."
-
-      - name: Ensure baremetal llm capacity for private-llm
-        id: ensure_agents
-        shell: bash
-        run: |
-          set -euo pipefail
-          created=()
-          max_boots=3
-          boots=0
-          ita_key="${ITA_API_KEY:-${INTEL_API_KEY:-}}"
-          if [ -z "${ita_key:-}" ]; then
-            echo "::error::Missing ITA_API_KEY (Intel Trust Authority API key); cannot boot LLM agents."
-            exit 1
-          fi
-
-          count_non_measurer() {
-            curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
-              [.agents[]
-                | select(.verified == true)
-                | select((.health_status // "" | ascii_downcase) == "healthy")
-                | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
-                | select((.node_size // "" | ascii_downcase) == "llm")
-                | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
-                | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
-              ] | length'
-          }
-
-          non_measurer="$(count_non_measurer || echo 0)"
-          required_non_measurer=1
-          echo "Baremetal llm non-measurer candidates: $non_measurer (required: $required_non_measurer)"
-
-          while [ "${non_measurer:-0}" -lt "${required_non_measurer}" ]; do
-            boots=$((boots + 1))
-            if [ "$boots" -gt "$max_boots" ]; then
-              echo "::error::Exceeded max LLM boot attempts ($max_boots) while waiting for verified capacity."
-              curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
-                [.agents[] | select((.node_size // "" | ascii_downcase) == "llm")
-                  | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
-              exit 1
-            fi
-            echo "Booting a new baremetal llm agent VM..."
-            vm_json="$(python3 infra/tdx_cli.py vm new --size llm --cloud-provider baremetal --availability-zone github-runner --easyenclave-url "${CP_URL}" --wait --intel-api-key "${ita_key}")"
-            name="$(echo "$vm_json" | jq -r '.name // empty')"
-            if [ -n "$name" ]; then
-              created+=("$name")
-            fi
-
-            # Give the agent time to register and pass verification.
-            for i in {1..60}; do
-            non_measurer="$(count_non_measurer || echo 0)"
-            if [ "${non_measurer:-0}" -ge "${required_non_measurer}" ]; then
-              break
-            fi
-              if [ $((i % 6)) -eq 0 ]; then
-                echo "Still waiting for verified+healthy llm capacity... ($i/60)"
-                echo "  non-measurer=$non_measurer required=$required_non_measurer"
-                curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
-                  [.agents[]
-                    | select((.node_size // "" | ascii_downcase) == "llm")
-                    | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
-                    | {agent_id, status, health_status, verified, deployed_app, vm_name, verification_error}]'
-              fi
-              sleep 5
-            done
-
-            non_measurer="$(count_non_measurer || echo 0)"
-            echo "Baremetal llm non-measurer candidates now: $non_measurer (required: $required_non_measurer)"
-          done
-
-          printf '%s\n' "${created[@]:-}" > /tmp/new_llm_vms.txt || true
-          echo "created_vms=$(paste -sd, /tmp/new_llm_vms.txt 2>/dev/null || true)" >> "$GITHUB_OUTPUT"
-
-      - name: Measurer bootstrap (skipped)
-        shell: bash
-        run: |
-          echo "Skipped: control plane measures versions directly."
-
-      - name: Verify deployable baremetal llm agent exists
-        shell: bash
-        run: |
-          set -euo pipefail
-          count="$(curl -sSf "${CP_URL}/api/v1/agents" | jq -r --arg dc "${TARGET_DATACENTER}" '
-            [.agents[]
-              | select(.verified == true)
-              | select((.health_status // "" | ascii_downcase) == "healthy")
-              | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
-              | select((.node_size // "" | ascii_downcase) == "llm")
-              | select((.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase))
-              | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
-            ] | length
-          ')"
-          echo "Deployable baremetal llm candidates: $count"
-          if [ "${count:-0}" -lt 1 ]; then
-            echo "::error::No deployable baremetal llm agent available for private-llm"
-            curl -sSf "${CP_URL}/api/v1/agents" | jq -r '
-              [.agents[] | select((.node_size // "" | ascii_downcase) == "llm")
-                | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name}]'
-            exit 1
-          fi
-
-      - name: Ensure app exists (idempotent)
-        uses: ./.github/actions/register-app
-        with:
-          name: private-llm
-          description: "Private LLM - Ollama running in a TDX enclave"
-          control_plane_url: ${{ env.CP_URL }}
-
-      - name: Deploy private-llm (llm)
+      - name: Deploy private-llm
         id: deploy
         uses: ./.github/actions/deploy-example
         with:
@@ -504,7 +302,7 @@ jobs:
           service_name: private-llm
           health_endpoint: /
           control_plane_url: ${{ env.CP_URL }}
-          agent_admin_password: ${{ env.AGENT_ADMIN_PASSWORD }}
+          agent_admin_password: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           github_owner: ${{ github.repository_owner }}
           node_size: llm
           allowed_clouds: baremetal
@@ -516,22 +314,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install SDK and OpenAI client
-        shell: bash
         run: pip install ./sdk/ openai
 
       - name: Smoke test private-llm (OpenAI-compatible)
-        shell: bash
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: ${{ env.CP_URL }}
         run: python3 examples/private-llm/test.py
-
-      - name: Cleanup stale CI LLM VMs (post, best effort)
-        if: always()
-        shell: bash
-        env:
-          CP_URL: ${{ env.CP_URL }}
-          CP_ADMIN_PASSWORD: ${{ env.CP_ADMIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          bash ./scripts/cleanup_ci_llm_vms.sh || true

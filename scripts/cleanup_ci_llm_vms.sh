@@ -42,18 +42,12 @@ login_with_password() {
   return 0
 }
 
-ADMIN_TOKEN=""
-if [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
+ADMIN_TOKEN="$(echo "${CP_ADMIN_TOKEN:-}" | xargs || true)"
+if [ -z "$ADMIN_TOKEN" ] && [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
   ADMIN_TOKEN="$(login_with_password "${CP_ADMIN_PASSWORD}" || true)"
 fi
 if [ -z "$ADMIN_TOKEN" ]; then
-  generated_pw="$(curl -sSf "${CP_URL}/auth/methods" | jq -r '.generated_password // empty' || true)"
-  if [ -n "$generated_pw" ]; then
-    ADMIN_TOKEN="$(login_with_password "$generated_pw" || true)"
-  fi
-fi
-if [ -z "$ADMIN_TOKEN" ]; then
-  echo "::warning::Could not obtain admin token; VM deletion will skip explicit CP agent delete"
+  echo "::warning::Could not obtain admin token (set CP_ADMIN_TOKEN or CP_ADMIN_PASSWORD); VM deletion will skip explicit CP agent delete"
 fi
 
 mapfile -t local_vms < <(python3 infra/tdx_cli.py vm list | sed '/^\s*$/d')

@@ -454,10 +454,27 @@
 
     <script>
         let token = sessionStorage.getItem("agentToken");
+        const params = new URLSearchParams(window.location.search);
+        const relayToken = params.get("token");
+        if (relayToken) {
+            token = relayToken;
+            sessionStorage.setItem("agentToken", relayToken);
+            const cleanUrl = window.location.pathname + window.location.hash;
+            window.history.replaceState({}, document.title, cleanUrl);
+        }
         if (token) {
             showDashboard();
         } else {
             fetch("/api/auth/methods").then(r => r.json()).then(m => {
+                if (!m.password && m.cp_relay) {
+                    const err = document.getElementById("loginError");
+                    err.textContent = "Password login is disabled. Open this console from the EasyEnclave control plane.";
+                    err.style.display = "block";
+                    err.style.color = "#0f766e";
+                    err.style.background = "#ccfbf1";
+                    err.style.borderColor = "#99f6e4";
+                    return;
+                }
                 if (m.generated_password) {
                     document.getElementById("password").value = m.generated_password;
                     const err = document.getElementById("loginError");

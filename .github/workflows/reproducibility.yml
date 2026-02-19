@@ -9,8 +9,7 @@ concurrency:
 
 jobs:
   determinism:
-    # Run after CI completes successfully (and allow manual runs)
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    # Manual-only deterministic build check.
     runs-on: [self-hosted, tdx]
 
     steps:

@@ -32,7 +32,7 @@ A confidential discovery service for TDX-attested applications. EasyEnclave enab
 - AMD SEV-SNP - 🔜 Coming soon
 - ARM CCA - 🔜 Planned
 
-**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for security and deployment Q&A, [docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md) for reproducibility verification (two clean builds per check; any artifact or measurement drift fails), and [docs/CAPACITY_LAUNCHER.md](docs/CAPACITY_LAUNCHER.md) for CP launch-order workers.
+**Learn more:** See [docs/FAQ.md](docs/FAQ.md) for security and deployment Q&A, [docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md) for reproducibility verification (two clean builds per check; any artifact or measurement drift fails), [docs/CAPACITY_LAUNCHER.md](docs/CAPACITY_LAUNCHER.md) for CP launch-order workers, and [docs/CI_CD_NETWORKS.md](docs/CI_CD_NETWORKS.md) for staging/production rollout policy.
 
 ### What is Intel TDX?
 
@@ -137,11 +137,11 @@ Access the service at:
 Use the GitHub Actions workflows to deploy to TDX VMs:
 
 ```bash
-# Bootstrap the full infrastructure (control plane + agents)
-gh workflow run bootstrap.yml -f action=bootstrap-all
+# Roll out staging network (latest main, no-cost profile)
+gh workflow run staging-rollout.yml
 
-# Or deploy just the private-llm demo (uses existing infrastructure)
-gh workflow run deploy.yml
+# Roll out production network (strict attestation, billing enabled)
+gh workflow run production-rollout.yml
 ```
 
 See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LLM example.
@@ -150,8 +150,13 @@ See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LL
 
 | Workflow | Trigger | Description |
 |----------|---------|-------------|
-| `bootstrap.yml` | Manual | Bootstrap infrastructure: control plane, agents, trusted MRTDs |
-| `deploy.yml` | Push to main | Auto-deploy private-llm demo to existing infrastructure |
+| `CI` (`test.yml`) | Push/PR/manual | Lint, test, and build/sign container image (non-mutating) |
+| `PR Staging Checks` | Pull request | No-cost staging readiness checks + workflow policy checks |
+| `Staging Rollout` | CI success on `main`/manual | Bootstrap staging CP and run builtin deploy examples (baremetal + gcp in parallel) |
+| `Production Rollout` | Manual | Strict production rollout (full attestation policy + billing enabled) |
+| `Bootstrap Control Plane` | Manual/reusable | Reusable control-plane bootstrap component used by rollout workflows |
+| `Builtin Deploy Examples (Baremetal)` | Manual/reusable | Deploy `hello-tdx` + `private-llm` (OpenAI-compatible smoke) on baremetal |
+| `Builtin Deploy Examples (GCP)` | Manual/reusable | Deploy `hello-tdx` + `private-llm` (OpenAI-compatible smoke) on gcp |
 
 #### Placement and Measurement Model
 
@@ -161,23 +166,11 @@ See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LL
 - Version measurement is performed directly in the control plane (no dedicated measurer deployment).
 - Capacity shortfall creates CP launch orders; launcher workers fulfill orders with launcher-scoped API keys.
 
-#### Bootstrap Actions
+#### Manual Bootstrap Component
 
 ```bash
-# Full bootstrap: control plane + agents
-gh workflow run bootstrap.yml -f action=bootstrap-all -f agent_count=2
-
-# Launch control plane only
-gh workflow run bootstrap.yml -f action=control-plane-only
-
-# Add more agents to existing control plane
-gh workflow run bootstrap.yml -f action=add-agents -f agent_count=3
-
-# Trust a new VM image MRTD
-gh workflow run bootstrap.yml -f action=add-trusted-mrtd -f mrtd="91eb2b44..."
-
-# Clean up all VMs
-gh workflow run bootstrap.yml -f action=cleanup-vms
+# Bring up control plane + agents with explicit profile inputs
+gh workflow run bootstrap-control-plane.yml
 ```
 
 ## API Endpoints
@@ -504,6 +497,7 @@ Run language models with privacy protection in TDX.
 ## Documentation
 
 - **[Architecture](docs/ARCHITECTURE.md)** - System design, deploy flow, and measurement flow diagrams
+- **[CI/CD Networks](docs/CI_CD_NETWORKS.md)** - Staging vs production rollout plan and workflow graph
 - **[FAQ](docs/FAQ.md)** - Security, deployment guides, and additional Q&A
 - **[GitHub OAuth Setup](docs/GITHUB_OAUTH.md)** - Admin authentication configuration
 - **[SDK Documentation](sdk/README.md)** - Python client library

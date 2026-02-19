@@ -455,6 +455,7 @@ class TDXManager:
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
             "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
+            "easyenclave_env": os.environ.get("EASYENCLAVE_ENV"),
             # Optional: passed through to the control plane to enable CP-native provisioning to inject
             # an ITA API key into provisioned agent VMs (EE_AGENT_ITA_API_KEY).
             "ee_agent_ita_api_key": os.environ.get("EE_AGENT_ITA_API_KEY") or "",
@@ -477,6 +478,26 @@ class TDXManager:
             "trusted_proxy_rtmrs": os.environ.get("TRUSTED_PROXY_RTMRS"),
             "trusted_agent_rtmrs_by_size": os.environ.get("TRUSTED_AGENT_RTMRS_BY_SIZE"),
             "trusted_proxy_rtmrs_by_size": os.environ.get("TRUSTED_PROXY_RTMRS_BY_SIZE"),
+            "tcb_enforcement_mode": os.environ.get("TCB_ENFORCEMENT_MODE"),
+            "allowed_tcb_statuses": os.environ.get("ALLOWED_TCB_STATUSES"),
+            "nonce_enforcement_mode": os.environ.get("NONCE_ENFORCEMENT_MODE"),
+            "nonce_ttl_seconds": os.environ.get("NONCE_TTL_SECONDS"),
+            "rtmr_enforcement_mode": os.environ.get("RTMR_ENFORCEMENT_MODE"),
+            "signature_verification_mode": os.environ.get("SIGNATURE_VERIFICATION_MODE"),
+            "cp_to_agent_attestation_mode": os.environ.get("CP_TO_AGENT_ATTESTATION_MODE"),
+            "auth_require_github_oauth_in_production": os.environ.get(
+                "AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION"
+            ),
+            "password_login_enabled": os.environ.get("PASSWORD_LOGIN_ENABLED"),
+            "auth_allow_password_login_in_production": os.environ.get(
+                "AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION"
+            ),
+            "billing_enabled": os.environ.get("BILLING_ENABLED"),
+            "billing_capacity_request_dev_simulation": os.environ.get(
+                "BILLING_CAPACITY_REQUEST_DEV_SIMULATION"
+            ),
+            "billing_platform_account_id": os.environ.get("BILLING_PLATFORM_ACCOUNT_ID"),
+            "billing_contributor_pool_bps": os.environ.get("BILLING_CONTRIBUTOR_POOL_BPS"),
             # Admin password hash for control plane dashboard
             "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH"),
         }
@@ -1197,6 +1218,23 @@ To start a new EasyEnclave network:
                                 "control_plane_url": url,
                                 "vm_id": bootstrap_vm_id,
                             }
+                            env_agent_mode = (
+                                (os.environ.get("AGENT_ADMIN_AUTH_MODE") or "").strip().lower()
+                            )
+                            if env_agent_mode in {"password", "cp", "hybrid"}:
+                                bootstrap_config["agent_admin_auth_mode"] = env_agent_mode
+                            env_cp_mode = (
+                                (os.environ.get("CP_TO_AGENT_ATTESTATION_MODE") or "")
+                                .strip()
+                                .lower()
+                            )
+                            if env_cp_mode in {"required", "optional", "disabled"}:
+                                bootstrap_config["cp_to_agent_attestation_mode"] = env_cp_mode
+                            trusted_proxy_mrtds = (
+                                os.environ.get("TRUSTED_PROXY_MRTDS") or ""
+                            ).strip()
+                            if trusted_proxy_mrtds:
+                                bootstrap_config["trusted_proxy_mrtds"] = trusted_proxy_mrtds
                             if datacenter:
                                 bootstrap_config["datacenter"] = datacenter
                             else:
@@ -1273,6 +1311,15 @@ To start a new EasyEnclave network:
                 # Agents mint Intel Trust Authority tokens directly (requires ITA_API_KEY).
                 if args.intel_api_key:
                     config["intel_api_key"] = args.intel_api_key
+                env_agent_mode = (os.environ.get("AGENT_ADMIN_AUTH_MODE") or "").strip().lower()
+                if env_agent_mode in {"password", "cp", "hybrid"}:
+                    config["agent_admin_auth_mode"] = env_agent_mode
+                env_cp_mode = (os.environ.get("CP_TO_AGENT_ATTESTATION_MODE") or "").strip().lower()
+                if env_cp_mode in {"required", "optional", "disabled"}:
+                    config["cp_to_agent_attestation_mode"] = env_cp_mode
+                trusted_proxy_mrtds = (os.environ.get("TRUSTED_PROXY_MRTDS") or "").strip()
+                if trusted_proxy_mrtds:
+                    config["trusted_proxy_mrtds"] = trusted_proxy_mrtds
                 if args.cloud_provider:
                     config["cloud_provider"] = args.cloud_provider
                 if args.availability_zone:

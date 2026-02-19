@@ -59,13 +59,11 @@ sequenceDiagram
 sequenceDiagram
     participant CI as Publish Workflow
     participant CP as Control Plane
-    participant M as Measuring Enclave / Measurer Agent
 
     CI->>CP: POST /apps/{app}/versions
     CP->>CP: status=pending
-    CP->>M: dispatch measurement job
-    M->>M: resolve image tags to immutable digests
-    M-->>CP: callback with MRTD/RTMRs + compose hash
+    CP->>CP: resolve image tags to immutable digests
+    CP->>CP: apply signature policy + attestation checks
     CP->>CP: persist trusted values, status=attested/rejected
 ```
 
@@ -88,10 +86,15 @@ sequenceDiagram
 ## 5) Key Flows and References
 
 - Deploy example workflows:
-  - `.github/workflows/deploy-examples.yml`
-  - `.github/workflows/deploy-examples-gcp.yml`
+  - `.github/workflows/staging-rollout.yml`
+  - `.github/workflows/production-rollout.yml`
+  - Reusable components:
+    - `.github/workflows/deploy-examples.yml`
+    - `.github/workflows/deploy-examples-gcp.yml`
 - Deploy action internals:
   - `.github/actions/deploy/action.yml`
   - `scripts/deploy_action.sh`
 - Capacity launcher docs:
   - `docs/CAPACITY_LAUNCHER.md`
+- CI/CD network docs:
+  - `docs/CI_CD_NETWORKS.md`
