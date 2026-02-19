@@ -13,14 +13,14 @@ This document defines the canonical CI/CD split for EasyEnclave networks.
 
 ```mermaid
 flowchart TD
-    PR[Pull Request] --> PRCHK[PR Staging Checks]
-    MAIN[Push main] --> CI[CI (lint/test/image)]
-    CI --> STG[Staging Rollout]
-    STG --> BM[Builtin Deploy Examples (Baremetal)]
-    STG --> GCP[Builtin Deploy Examples (GCP)]
-    REL[Manual release] --> PROD[Production Rollout]
-    PROD --> PBM[Builtin Deploy Examples (Baremetal)]
-    PROD --> PGCP[Builtin Deploy Examples (GCP)]
+    PR["Pull Request"] --> PRCHK["PR Staging Checks"]
+    MAIN["Push main"] --> CI["CI lint test image"]
+    CI --> STG["Staging Rollout"]
+    STG --> BM["Builtin Deploy Examples Baremetal"]
+    STG --> GCP["Builtin Deploy Examples GCP"]
+    REL["Manual release"] --> PROD["Production Rollout"]
+    PROD --> PBM["Builtin Deploy Examples Baremetal"]
+    PROD --> PGCP["Builtin Deploy Examples GCP"]
 ```
 
 ## Environment Profiles
