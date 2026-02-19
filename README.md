@@ -381,7 +381,6 @@ easyenclave/
 │   └── measuring-enclave/  # Image digest resolution service
 ├── docs/
 │   └── GITHUB_OAUTH.md  # OAuth setup documentation
-├── alembic/             # Database migrations
 ├── tests/               # Unit tests
 ├── Dockerfile
 ├── docker-compose.yml

@@ -35,10 +35,10 @@ DC_AZURE="azure:eastus2-1" \
 ## GitHub workflow
 Use `Verify TDX Clouds` (`.github/workflows/verify-tdx-clouds.yml`) via `workflow_dispatch`.
 
-For GCP LLM bring-up + deploy smoke, use
-`GCP Bootstrap LLM` (`.github/workflows/gcp-bootstrap-llm.yml`).
-It requests capacity from the control plane, deploys `private-llm` to GCP-only
-eligible agents, and runs the example smoke test.
+For GCP deploy smoke, use
+`Builtin Deploy Examples (GCP)` (`.github/workflows/deploy-examples-gcp.yml`).
+It requests capacity from the control plane, deploys examples to GCP-only
+eligible agents, and runs the smoke tests.
 
 ## Credential plan for cloud agent bring-up
 Required repository secrets for CP-driven bring-up workflows:

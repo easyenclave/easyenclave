@@ -239,7 +239,7 @@ _reg(
 _reg(
     "operational.default_gcp_tiny_capacity_enabled",
     "DEFAULT_GCP_TINY_CAPACITY_ENABLED",
-    "true",
+    "false",
     False,
     "Keep a default warm pool target for tiny nodes in GCP",
     "operational",
@@ -255,7 +255,7 @@ _reg(
 _reg(
     "operational.default_gcp_tiny_capacity_count",
     "DEFAULT_GCP_TINY_CAPACITY_COUNT",
-    "1",
+    "0",
     False,
     "Minimum warm tiny agents kept for the default GCP datacenter",
     "operational",
@@ -263,7 +263,7 @@ _reg(
 _reg(
     "operational.default_gcp_tiny_capacity_dispatch",
     "DEFAULT_GCP_TINY_CAPACITY_DISPATCH",
-    "true",
+    "false",
     False,
     "If true, dispatch external provisioning for default warm tiny GCP capacity",
     "operational",

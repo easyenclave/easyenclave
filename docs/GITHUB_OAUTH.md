@@ -40,13 +40,13 @@ export GITHUB_OAUTH_CLIENT_SECRET=your_client_secret_here
 export GITHUB_OAUTH_REDIRECT_URI=http://localhost:8000/auth/github/callback
 ```
 
-### 3. Run Database Migration
+### 3. Restart Control Plane
 
 ```bash
-python3 -m alembic upgrade head
+docker compose up -d --build
 ```
 
-This adds GitHub OAuth fields to the `admin_sessions` and `accounts` tables.
+The control plane initializes schema directly at startup.
 
 ## Usage
 

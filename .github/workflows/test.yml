@@ -7,8 +7,32 @@ name: CI
 on:
   push:
     branches: [main]
+    paths:
+      - "app/**"
+      - "infra/**"
+      - "scripts/**"
+      - "tests/**"
+      - "sdk/**"
+      - ".github/actions/**"
+      - ".github/workflows/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "requirements.txt"
+      - "pyproject.toml"
   pull_request:
     branches: [main]
+    paths:
+      - "app/**"
+      - "infra/**"
+      - "scripts/**"
+      - "tests/**"
+      - "sdk/**"
+      - ".github/actions/**"
+      - ".github/workflows/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "requirements.txt"
+      - "pyproject.toml"
   workflow_dispatch: {}
 
 # This workflow mutates the shared control plane and the self-hosted TDX runner.

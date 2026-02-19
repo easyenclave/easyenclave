@@ -6,7 +6,6 @@ launcher API key, provisions capacity, and reports fulfillment status.
 
 Supported providers:
 - baremetal: launches local TDX VMs via infra/tdx_cli.py
-- gcp: optional, launches confidential VMs via scripts/cloud_provisioner.py
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ def _tail(value: str, limit: int = 12000) -> str:
     """Return the last `limit` characters without whitespace compaction.
 
     GitHub Actions log rendering can truncate very long single-line messages;
-    preserving newlines makes the actionable gcloud error show up reliably.
+    preserving newlines keeps actionable command errors visible.
     """
     raw = value or ""
     if len(raw) <= limit:
@@ -68,12 +67,6 @@ class WorkerConfig:
     supported_providers: set[str]
     one_shot: bool
     max_orders: int
-    gcp_project: str
-    gcp_machine_type_default: str
-    gcp_machine_type_tiny: str
-    gcp_machine_type_standard: str
-    gcp_machine_type_llm: str
-    name_prefix: str
 
 
 class ControlPlaneClient:
@@ -153,17 +146,6 @@ def _parse_datacenter(datacenter: str) -> tuple[str, str]:
     return provider, location
 
 
-def _gcp_machine_type_for_size(config: WorkerConfig, node_size: str) -> str:
-    size = (node_size or "").strip().lower()
-    if size == "tiny":
-        return config.gcp_machine_type_tiny or config.gcp_machine_type_default
-    if size == "standard":
-        return config.gcp_machine_type_standard or config.gcp_machine_type_default
-    if size == "llm":
-        return config.gcp_machine_type_llm or config.gcp_machine_type_default
-    return config.gcp_machine_type_default
-
-
 def _launch_baremetal(config: WorkerConfig, *, order: dict[str, Any], location: str) -> str:
     node_size = str(order.get("node_size") or "").strip().lower()
     if not node_size:
@@ -202,62 +184,6 @@ def _launch_baremetal(config: WorkerConfig, *, order: dict[str, Any], location: 
     return vm_name
 
 
-def _launch_gcp(config: WorkerConfig, *, order: dict[str, Any], location: str, datacenter: str) -> str:
-    if not config.gcp_project:
-        raise RuntimeError("GCP launch requested but LAUNCHER_GCP_PROJECT is not set")
-
-    node_size = str(order.get("node_size") or "").strip().lower()
-    if not node_size:
-        raise RuntimeError("Order missing node_size")
-
-    machine_type = _gcp_machine_type_for_size(config, node_size)
-    cmd = [
-        "python3",
-        "scripts/cloud_provisioner.py",
-        "provision",
-        "--provider",
-        "gcp",
-        "--run-id",
-        str(order.get("order_id") or "order"),
-        "--name-prefix",
-        config.name_prefix,
-        "--cp-url",
-        config.cp_url,
-        "--intel-api-key",
-        config.intel_api_key,
-        "--node-size",
-        node_size,
-        "--gcp-project",
-        config.gcp_project,
-        "--gcp-zone",
-        location,
-        "--gcp-machine-type",
-        machine_type,
-        "--gcp-count",
-        "1",
-        "--gcp-datacenter",
-        datacenter,
-    ]
-    result = _run(cmd)
-    if result.returncode != 0:
-        stderr = _truncate(result.stderr or "")
-        stdout = _truncate(result.stdout or "")
-        detail = stderr or stdout or f"exit={result.returncode}"
-        raise RuntimeError(f"gcp launch failed: {detail}")
-
-    payload = _parse_json_output(result.stdout or "")
-    if not isinstance(payload, dict):
-        raise RuntimeError("gcp launch returned invalid JSON output")
-    resources = payload.get("resources")
-    if not isinstance(resources, list) or not resources:
-        raise RuntimeError("gcp launch returned no resources")
-    first = resources[0] if isinstance(resources[0], dict) else {}
-    vm_name = str(first.get("name") or first.get("resource_id") or "").strip()
-    if not vm_name:
-        raise RuntimeError("gcp launch did not return VM name")
-    return vm_name
-
-
 def _launch_for_order(config: WorkerConfig, order: dict[str, Any]) -> str:
     datacenter = str(order.get("datacenter") or "").strip().lower()
     provider, location = _parse_datacenter(datacenter)
@@ -268,7 +194,9 @@ def _launch_for_order(config: WorkerConfig, order: dict[str, Any]) -> str:
     if provider == "baremetal":
         return _launch_baremetal(config, order=order, location=location)
     if provider == "gcp":
-        return _launch_gcp(config, order=order, location=location, datacenter=datacenter)
+        raise RuntimeError(
+            "GCP launch orders must be fulfilled by the control plane native fulfiller"
+        )
     raise RuntimeError(f"Unsupported provider '{provider}'")
 
 
@@ -299,12 +227,6 @@ def _load_config(args: argparse.Namespace) -> WorkerConfig:
         supported_providers=providers,
         one_shot=bool(args.one_shot),
         max_orders=max(0, int(args.max_orders)),
-        gcp_project=(args.gcp_project or "").strip(),
-        gcp_machine_type_default=(args.gcp_machine_type_default or "").strip(),
-        gcp_machine_type_tiny=(args.gcp_machine_type_tiny or "").strip(),
-        gcp_machine_type_standard=(args.gcp_machine_type_standard or "").strip(),
-        gcp_machine_type_llm=(args.gcp_machine_type_llm or "").strip(),
-        name_prefix=(args.name_prefix or "easyenclave-agent").strip(),
     )
 
 
@@ -328,12 +250,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--providers",
         default=os.environ.get("LAUNCHER_PROVIDERS", "baremetal"),
-        help="Comma-separated providers enabled on this worker (baremetal,gcp)",
+        help="Comma-separated providers enabled on this worker (baremetal)",
     )
     parser.add_argument(
         "--datacenter",
         default=os.environ.get("LAUNCHER_DATACENTER", ""),
-        help="Optional claim filter (e.g., gcp:us-central1-a)",
+        help="Optional claim filter (e.g., baremetal:github-runner)",
     )
     parser.add_argument(
         "--node-size",
@@ -356,31 +278,6 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=int(os.environ.get("LAUNCHER_MAX_ORDERS", "0")),
         help="Stop after processing this many claimed orders (0 = unlimited)",
-    )
-    parser.add_argument(
-        "--name-prefix",
-        default=os.environ.get("LAUNCHER_NAME_PREFIX", "easyenclave-agent"),
-        help="Name prefix for cloud-provisioned VMs",
-    )
-
-    # GCP options
-    parser.add_argument("--gcp-project", default=os.environ.get("LAUNCHER_GCP_PROJECT", ""))
-    parser.add_argument(
-        "--gcp-machine-type-default",
-        default=os.environ.get("LAUNCHER_GCP_MACHINE_TYPE_DEFAULT", "c3-standard-4"),
-    )
-    parser.add_argument(
-        "--gcp-machine-type-tiny",
-        # Default to a known-good TDX-capable baseline; override with LAUNCHER_GCP_MACHINE_TYPE_TINY if needed.
-        default=os.environ.get("LAUNCHER_GCP_MACHINE_TYPE_TINY", "c3-standard-4"),
-    )
-    parser.add_argument(
-        "--gcp-machine-type-standard",
-        default=os.environ.get("LAUNCHER_GCP_MACHINE_TYPE_STANDARD", ""),
-    )
-    parser.add_argument(
-        "--gcp-machine-type-llm",
-        default=os.environ.get("LAUNCHER_GCP_MACHINE_TYPE_LLM", ""),
     )
     return parser
 
