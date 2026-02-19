@@ -503,6 +503,7 @@ Run language models with privacy protection in TDX.
 
 ## Documentation
 
+- **[Architecture](docs/ARCHITECTURE.md)** - System design, deploy flow, and measurement flow diagrams
 - **[FAQ](docs/FAQ.md)** - Security, deployment guides, and additional Q&A
 - **[GitHub OAuth Setup](docs/GITHUB_OAUTH.md)** - Admin authentication configuration
 - **[SDK Documentation](sdk/README.md)** - Python client library
