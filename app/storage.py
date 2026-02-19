@@ -196,6 +196,15 @@ class AgentStore:
             session.add(agent)
             return True
 
+    def set_current_deployment(self, agent_id: str, deployment_id: str | None) -> bool:
+        with get_db() as session:
+            agent = session.get(Agent, agent_id)
+            if not agent:
+                return False
+            agent.current_deployment_id = deployment_id
+            session.add(agent)
+            return True
+
     def list(self, filters: dict | None = None) -> list[Agent]:
         with get_db() as session:
             agents = list(session.exec(select(Agent)).all())

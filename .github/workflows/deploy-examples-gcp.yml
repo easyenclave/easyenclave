@@ -232,3 +232,106 @@ jobs:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: ${{ env.CP_URL }}
         run: python3 examples/private-llm/test.py
+
+      - name: Resolve admin token for LLM teardown
+        id: teardown_auth
+        if: always() && steps.deploy.outcome == 'success'
+        shell: bash
+        env:
+          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          token="$(echo "${CP_ADMIN_TOKEN:-}" | xargs)"
+          if [ -z "$token" ] && [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
+            payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
+            token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
+          fi
+          if [ -z "$token" ]; then
+            generated_pw="$(curl -sS "$CP_URL/api/auth/methods" | jq -r '.generated_password // empty' 2>/dev/null || true)"
+            if [ -n "$generated_pw" ]; then
+              payload="$(jq -cn --arg p "$generated_pw" '{password: $p}')"
+              token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
+            fi
+          fi
+          if [ -n "$token" ]; then
+            echo "::add-mask::$token"
+            echo "admin_token=$token" >> "$GITHUB_OUTPUT"
+            echo "Resolved admin token for teardown."
+          else
+            echo "::warning::Could not resolve admin token for teardown; skipping destructive cleanup."
+          fi
+
+      - name: Teardown private-llm GCP deployment and capacity
+        if: always() && steps.deploy.outcome == 'success'
+        shell: bash
+        env:
+          ADMIN_TOKEN: ${{ steps.teardown_auth.outputs.admin_token }}
+          AGENT_ID: ${{ steps.deploy.outputs.agent_id }}
+          GCP_DC: ${{ steps.target.outputs.datacenter }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AGENT_ID:-}" ]; then
+            echo "::warning::No deployed agent_id output; skipping teardown."
+            exit 0
+          fi
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "::warning::Missing admin token; cannot teardown deployed agent/capacity."
+            exit 0
+          fi
+          dc="$(echo "${GCP_DC:-gcp:us-central1-a}" | tr '[:upper:]' '[:lower:]' | xargs)"
+          echo "Teardown target: agent=$AGENT_ID datacenter=$dc node_size=llm"
+
+          undeploy_code="$(curl -sS -o /tmp/undeploy.json -w "%{http_code}" \
+            -X POST "$CP_URL/api/v1/agents/${AGENT_ID}/undeploy" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -H 'Accept: application/json' || true)"
+          if [ "$undeploy_code" -lt 400 ]; then
+            echo "Undeploy succeeded for agent ${AGENT_ID}."
+          else
+            echo "::warning::Undeploy failed (HTTP $undeploy_code): $(cat /tmp/undeploy.json)"
+          fi
+
+          cleanup_body="$(jq -cn --arg reason "ci:gcp-private-llm-post-test-teardown" '{dry_run:false, reason:$reason}')"
+          cleanup_code="$(curl -sS -o /tmp/cleanup-agent.json -w "%{http_code}" \
+            -X POST "$CP_URL/api/v1/admin/agents/${AGENT_ID}/cleanup" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d "$cleanup_body" || true)"
+          if [ "$cleanup_code" -lt 400 ]; then
+            echo "Agent cleanup succeeded for ${AGENT_ID}."
+          else
+            echo "::warning::Agent cleanup failed (HTTP $cleanup_code): $(cat /tmp/cleanup-agent.json)"
+          fi
+
+          target_code="$(curl -sS -o /tmp/cleanup-target.json -w "%{http_code}" \
+            -X DELETE "$CP_URL/api/v1/admin/agents/capacity/targets?datacenter=${dc}&node_size=llm" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -H 'Accept: application/json' || true)"
+          if [ "$target_code" -lt 400 ] || [ "$target_code" = "404" ]; then
+            echo "Capacity target cleanup complete for ${dc}/llm (HTTP ${target_code})."
+          else
+            echo "::warning::Capacity target cleanup failed (HTTP $target_code): $(cat /tmp/cleanup-target.json)"
+          fi
+
+          agents_json="$(curl -sS -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/json' "$CP_URL/api/v1/agents" || true)"
+          mapfile -t stale_ids < <(
+            echo "$agents_json" | jq -r --arg dc "$dc" '
+              [.agents[]?
+                | select((.verified // false) == false)
+                | select((.node_size // "" | ascii_downcase) == "llm")
+                | select((.datacenter // "" | ascii_downcase) == $dc)
+                | select((.vm_name // "") | startswith("ee-llm-"))
+                | .agent_id] | unique[]?' 2>/dev/null || true
+          )
+          if [ "${#stale_ids[@]}" -gt 0 ]; then
+            echo "Cleaning up ${#stale_ids[@]} unverified llm agent(s) in ${dc}..."
+            for stale_id in "${stale_ids[@]}"; do
+              curl -sS -X POST "$CP_URL/api/v1/admin/agents/${stale_id}/cleanup" \
+                -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+                -H 'Content-Type: application/json' \
+                -d "$cleanup_body" >/dev/null || true
+            done
+          else
+            echo "No unverified ee-llm-* agents found in ${dc}."
+          fi

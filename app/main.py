@@ -2589,6 +2589,7 @@ async def reset_agent(agent_id: str, _admin: AdminSession = Depends(require_admi
 
     # Reset status to undeployed
     agent_store.update_status(agent_id, "undeployed", None)
+    agent_store.set_current_deployment(agent_id, None)
     agent_store.update_attestation_status(agent_id, attestation_valid=True)
     agent_store.set_deployed_app(agent_id, None)
     logger.info(f"Reset agent {agent_id} to undeployed status")
@@ -2613,6 +2614,51 @@ async def reset_agent(agent_id: str, _admin: AdminSession = Depends(require_admi
             ) from e
 
     return {"status": "reset", "agent_id": agent_id, "tunnel_created": tunnel_created}
+
+
+@app.post("/api/v1/agents/{agent_id}/undeploy")
+async def undeploy_agent(agent_id: str, _admin: AdminSession = Depends(require_admin_session)):
+    """Undeploy workload on an agent via the agent API and reset CP state."""
+    agent = get_or_404(agent_store, agent_id, "Agent")
+    if not agent.hostname:
+        raise HTTPException(
+            status_code=400,
+            detail="Agent does not have a tunnel hostname - cannot call /api/undeploy",
+        )
+
+    agent_api_secret = agent_control_credential_store.get_secret(agent_id)
+    headers = {}
+    if agent_api_secret:
+        headers["X-Agent-Secret"] = agent_api_secret
+    else:
+        logger.warning(
+            "Agent %s has no control credential; undeploying without X-Agent-Secret (legacy compatibility)",
+            agent_id,
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(f"https://{agent.hostname}/api/undeploy", headers=headers)
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to reach agent at {agent.hostname}: {exc}",
+        ) from exc
+
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Agent undeploy failed: HTTP {response.status_code} {response.text[:240]}",
+        )
+
+    if agent.current_deployment_id:
+        deployment_store.complete(agent.current_deployment_id, status="undeployed")
+
+    agent_store.update_status(agent_id, "undeployed", None)
+    agent_store.set_current_deployment(agent_id, None)
+    agent_store.set_deployed_app(agent_id, None)
+    logger.info("Undeployed agent workload via CP proxy: agent=%s", agent_id)
+    return {"status": "undeployed", "agent_id": agent_id}
 
 
 @app.patch("/api/v1/agents/{agent_id}/owner")
@@ -2662,6 +2708,7 @@ async def reset_my_agent(agent_id: str, session: AdminSession = Depends(verify_a
     require_owner_or_admin(session, agent)
 
     agent_store.update_status(agent_id, "undeployed", None)
+    agent_store.set_current_deployment(agent_id, None)
     agent_store.update_attestation_status(agent_id, attestation_valid=True)
     agent_store.set_deployed_app(agent_id, None)
     logger.info(f"Owner {session.github_login} reset agent {agent_id}")

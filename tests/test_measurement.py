@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.auth import verify_admin_token
 from app.db_models import AdminSession, Agent
 from app.main import app
-from app.storage import agent_store, app_version_store
+from app.storage import agent_control_credential_store, agent_store, app_version_store
 
 
 # Mock admin token verification
@@ -656,6 +656,53 @@ class TestDeployMeasurementValidation:
         assert resp.status_code == 200
         assert resp.json()["deployment_id"]
         assert resp.json()["agent_id"] == agent.agent_id
+
+    def test_admin_undeploy_calls_agent_api_with_control_secret(self, client, admin_token):
+        agent = Agent(
+            vm_name="test-llm-undeploy",
+            attestation={"tdx": {"intel_ta_token": "fake.token"}},
+            mrtd="f" * 96,
+            verified=True,
+            hostname="agent-undeploy.easyenclave.com",
+            status="deployed",
+            health_status="healthy",
+            node_size="llm",
+            current_deployment_id="dep-undeploy-1",
+        )
+        agent_store.register(agent)
+        agent_control_credential_store.upsert_secret(agent.agent_id, "secret-123")
+
+        app.dependency_overrides[verify_admin_token] = mock_verify_admin_token
+        try:
+            with patch("app.main.httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_response = MagicMock()
+                mock_response.status_code = 200
+                mock_response.text = '{"status":"undeployed"}'
+                mock_client.post = AsyncMock(return_value=mock_response)
+                mock_ctx = AsyncMock()
+                mock_ctx.__aenter__.return_value = mock_client
+                mock_ctx.__aexit__.return_value = False
+                mock_client_cls.return_value = mock_ctx
+
+                resp = client.post(
+                    f"/api/v1/agents/{agent.agent_id}/undeploy",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "undeployed"
+        mock_client.post.assert_awaited_once_with(
+            f"https://{agent.hostname}/api/undeploy",
+            headers={"X-Agent-Secret": "secret-123"},
+        )
+
+        updated = agent_store.get(agent.agent_id)
+        assert updated is not None
+        assert updated.status == "undeployed"
+        assert updated.current_deployment_id is None
 
     def test_preflight_returns_structured_measurement_error(
         self, client, admin_token, sample_app, sample_compose, verified_llm_agent
