@@ -12,8 +12,8 @@ on:
   workflow_dispatch: {}
 
 concurrency:
-  # This workflow mutates the shared control plane (apps + deployments); do not overlap with other CP-mutating runs.
-  group: easyenclave-shared-control-plane
+  # Keep one baremetal/default deploy-example run at a time; allow GCP workflow to run in parallel.
+  group: easyenclave-deploy-examples-baremetal
   # Prefer the newest run; older deploy-example runs can get stuck on slow capacity.
   cancel-in-progress: true
 

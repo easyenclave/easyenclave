@@ -1,22 +1,19 @@
 # Builtin Deploy Examples (GCP)
 #
-# Runs after the local Builtin Deploy Examples workflow succeeds.
-#
-# Goal: keep "Builtin Deploy Examples" fast and local-only; run cloud provisioning/deploy as
-# a separate, follow-up workflow.
+# Runs after CI succeeds, in parallel with Builtin Deploy Examples.
 
 name: Builtin Deploy Examples (GCP)
 
 on:
   workflow_run:
-    workflows: [Builtin Deploy Examples]
+    workflows: [CI]
     types: [completed]
     branches: [main]
   workflow_dispatch: {}
 
 concurrency:
-  # This workflow mutates the shared control plane (apps + deployments); do not overlap with other CP-mutating runs.
-  group: easyenclave-shared-control-plane
+  # Keep one GCP deploy-example run at a time; allow baremetal/default workflow to run in parallel.
+  group: easyenclave-deploy-examples-gcp
   # Prefer the newest run; older deploy-example runs can get stuck on slow capacity.
   cancel-in-progress: true
 
