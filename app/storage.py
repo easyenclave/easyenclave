@@ -720,6 +720,44 @@ class CapacityLaunchOrderStore:
             rows = session.exec(stmt).all()
             return len(list(rows))
 
+    def count_recent_fulfilled_without_agent(
+        self,
+        *,
+        datacenter: str,
+        node_size: str = "",
+        account_id: str | None = None,
+        known_vm_names: set[str] | None = None,
+        now: datetime | None = None,
+        grace_seconds: int = 1800,
+    ) -> int:
+        normalized_datacenter = _normalize_pool_value(datacenter)
+        normalized_node_size = _normalize_pool_value(node_size)
+        normalized_account_id = (account_id or "").strip() or None
+        known = {v.strip().lower() for v in (known_vm_names or set()) if v and v.strip()}
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(seconds=max(60, grace_seconds))
+
+        with get_db() as session:
+            stmt = select(CapacityLaunchOrder).where(
+                CapacityLaunchOrder.datacenter == normalized_datacenter,
+                CapacityLaunchOrder.node_size == normalized_node_size,
+                CapacityLaunchOrder.status == "fulfilled",
+                CapacityLaunchOrder.fulfilled_at.is_not(None),
+                CapacityLaunchOrder.fulfilled_at >= cutoff,
+            )
+            if normalized_account_id:
+                stmt = stmt.where(CapacityLaunchOrder.account_id == normalized_account_id)
+            rows = list(session.exec(stmt).all())
+
+        pending = 0
+        for row in rows:
+            vm_name = (row.vm_name or "").strip().lower()
+            if not vm_name:
+                continue
+            if vm_name in known:
+                continue
+            pending += 1
+        return pending
+
     def create_open(
         self,
         *,

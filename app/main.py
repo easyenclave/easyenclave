@@ -1670,10 +1670,27 @@ async def reconcile_capacity_targets_once() -> dict[str, int]:
             continue
 
         reason = (target.reason or "").strip() or "capacity-pool-controller"
+        known_vm_names = {
+            (a.vm_name or "").strip().lower()
+            for a in agents
+            if (a.vm_name or "").strip()
+            and (a.datacenter or "").strip().lower() == target_datacenter
+            and (not target_node_size or (a.node_size or "").strip().lower() == target_node_size)
+        }
+        pending_fulfilled = capacity_launch_order_store.count_recent_fulfilled_without_agent(
+            datacenter=target_datacenter,
+            node_size=target_node_size,
+            known_vm_names=known_vm_names,
+            grace_seconds=get_setting_int(
+                "operational.capacity_fulfilled_grace_seconds",
+                fallback=1800,
+            ),
+        )
+        dispatch_shortfall = max(0, shortfall - pending_fulfilled)
         created_orders = capacity_launch_order_store.create_missing_for_shortfall(
             datacenter=target_datacenter,
             node_size=target_node_size,
-            shortfall=shortfall,
+            shortfall=dispatch_shortfall,
             reason=reason,
         )
         totals["dispatched"] += len(created_orders)
@@ -1707,6 +1724,104 @@ async def background_capacity_pool_controller():
         await asyncio.sleep(interval_seconds)
 
 
+def _utc_aware(dt: datetime | None) -> datetime:
+    if dt is None:
+        return datetime.fromtimestamp(0, tz=timezone.utc)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+async def reclaim_stale_fulfilled_gcp_orders(
+    *,
+    internal_launcher_id: str,
+    delete_gcp_instance,
+) -> int:
+    """Delete stale fulfilled GCP VMs that never produced a usable agent."""
+    now = datetime.now(timezone.utc)
+    grace_seconds = max(
+        300,
+        get_setting_int("operational.capacity_fulfilled_grace_seconds", fallback=1800),
+    )
+    stale_agent_hours = max(
+        1,
+        get_setting_int("operational.agent_stale_hours", fallback=24),
+    )
+    stale_agent_timeout = timedelta(hours=stale_agent_hours)
+    cutoff = now - timedelta(seconds=grace_seconds)
+
+    active_deploy_statuses = {"pending", "deploying", "running", "in_progress", "reassigning"}
+    active_agent_ids = {
+        (d.agent_id or "").strip()
+        for d in deployment_store.list()
+        if (d.status or "").strip().lower() in active_deploy_statuses
+    }
+    agents_by_vm = {
+        (a.vm_name or "").strip().lower(): a
+        for a in agent_store.list()
+        if (a.vm_name or "").strip()
+    }
+
+    reclaimed = 0
+    for order in capacity_launch_order_store.list("fulfilled"):
+        datacenter = (order.datacenter or "").strip().lower()
+        if datacenter != "gcp" and not datacenter.startswith("gcp:"):
+            continue
+
+        claimed_by = (order.claimed_by_account_id or "").strip()
+        if claimed_by and claimed_by != internal_launcher_id:
+            continue
+
+        vm_name = (order.vm_name or "").strip()
+        if not vm_name:
+            continue
+
+        fulfilled_at = _utc_aware(order.fulfilled_at or order.updated_at or order.created_at)
+        if fulfilled_at > cutoff:
+            continue
+
+        agent = agents_by_vm.get(vm_name.lower())
+        if agent:
+            if (agent.agent_id or "").strip() in active_agent_ids:
+                continue
+            heartbeat_ref = _utc_aware(
+                agent.last_heartbeat or agent.last_health_check or agent.updated_at
+            )
+            if now - heartbeat_ref < stale_agent_timeout:
+                continue
+
+        try:
+            deleted = await delete_gcp_instance(datacenter=datacenter, instance_name=vm_name)
+        except Exception as exc:
+            logger.warning(
+                "Failed stale GCP reclaim for order=%s vm=%s: %s",
+                order.order_id,
+                vm_name,
+                exc,
+            )
+            continue
+
+        capacity_launch_order_store.update_status(
+            order_id=order.order_id,
+            launcher_account_id=internal_launcher_id,
+            status="failed",
+            error="stale fulfilled order reclaimed; vm deleted or missing",
+        )
+
+        if agent and (agent.agent_id or "").strip() not in active_agent_ids:
+            agent_store.delete(agent.agent_id)
+
+        logger.warning(
+            "Reclaimed stale GCP capacity order=%s vm=%s deleted=%s",
+            order.order_id,
+            vm_name,
+            deleted,
+        )
+        reclaimed += 1
+
+    return reclaimed
+
+
 async def background_capacity_launch_order_fulfiller():
     """CP-native capacity fulfiller (currently: GCP).
 
@@ -1714,11 +1829,12 @@ async def background_capacity_launch_order_fulfiller():
     claim open GCP launch orders and provision instances directly via the
     Compute API (no external scripts, no gcloud).
     """
-    from app.gcp_capacity import GCPProvisionError, create_tdx_instance_for_order
+    from app.gcp_capacity import GCPProvisionError, create_tdx_instance_for_order, delete_instance
 
     internal_launcher_id = "cp-internal-launcher"
     poll_seconds = 5
     warned_missing_gcp_creds = False
+    last_reap_at = datetime.fromtimestamp(0, tz=timezone.utc)
     while True:
         try:
             # Avoid claiming and failing orders in a tight loop when the control plane
@@ -1734,6 +1850,23 @@ async def background_capacity_launch_order_fulfiller():
                     )
                 await asyncio.sleep(poll_seconds)
                 continue
+
+            reap_interval = max(
+                30,
+                get_setting_int("operational.gcp_stale_reap_interval_seconds", fallback=60),
+            )
+            now = datetime.now(timezone.utc)
+            if (now - last_reap_at).total_seconds() >= reap_interval:
+                reclaimed = await reclaim_stale_fulfilled_gcp_orders(
+                    internal_launcher_id=internal_launcher_id,
+                    delete_gcp_instance=delete_instance,
+                )
+                if reclaimed > 0:
+                    logger.warning(
+                        "Reclaimed %d stale fulfilled GCP order-backed VM(s)",
+                        reclaimed,
+                    )
+                last_reap_at = now
 
             # Find the oldest open GCP order.
             open_orders = capacity_launch_order_store.list("open")
@@ -2136,15 +2269,35 @@ async def reconcile_agent_capacity(
 
         if request.dispatch and shortfall > 0:
             order_scope_account_id = (request.account_id or "").strip() or None
+            known_vm_names = {
+                (a.vm_name or "").strip().lower()
+                for a in agents
+                if (a.vm_name or "").strip()
+                and (a.datacenter or "").strip().lower() == target_datacenter
+                and (
+                    not target_node_size or (a.node_size or "").strip().lower() == target_node_size
+                )
+            }
+            pending_fulfilled = capacity_launch_order_store.count_recent_fulfilled_without_agent(
+                datacenter=target_datacenter,
+                node_size=target_node_size,
+                account_id=order_scope_account_id,
+                known_vm_names=known_vm_names,
+                grace_seconds=get_setting_int(
+                    "operational.capacity_fulfilled_grace_seconds",
+                    fallback=1800,
+                ),
+            )
             in_flight_before = capacity_launch_order_store.count_in_flight(
                 datacenter=target_datacenter,
                 node_size=target_node_size,
                 account_id=order_scope_account_id,
             )
+            dispatch_shortfall = max(0, shortfall - pending_fulfilled)
             created_orders = capacity_launch_order_store.create_missing_for_shortfall(
                 datacenter=target_datacenter,
                 node_size=target_node_size,
-                shortfall=shortfall,
+                shortfall=dispatch_shortfall,
                 reason=reason,
                 account_id=order_scope_account_id,
             )
@@ -2153,22 +2306,28 @@ async def reconcile_agent_capacity(
                 node_size=target_node_size,
                 account_id=order_scope_account_id,
             )
-            dispatched = in_flight_after > 0
+            effective_pending = in_flight_after + pending_fulfilled
+            dispatched = effective_pending > 0
             status_code = 202 if dispatched else 200
             if created_orders:
                 detail = (
                     f"queued {len(created_orders)} launch order(s); "
-                    f"in_flight_before={in_flight_before}, in_flight_after={in_flight_after}"
+                    f"in_flight_before={in_flight_before}, in_flight_after={in_flight_after}, "
+                    f"pending_fulfilled_unregistered={pending_fulfilled}"
                 )
-            elif in_flight_after > 0:
-                detail = f"no new launch orders queued; existing in-flight orders={in_flight_after}"
+            elif effective_pending > 0:
+                detail = (
+                    "no new launch orders queued; "
+                    f"existing_in_flight={in_flight_after}, "
+                    f"pending_fulfilled_unregistered={pending_fulfilled}"
+                )
             else:
                 detail = "no launch orders available or queued"
             dispatch_results.append(
                 AgentCapacityDispatchResult(
                     datacenter=target_datacenter,
                     node_size=target_node_size,
-                    requested_count=shortfall,
+                    requested_count=dispatch_shortfall,
                     dispatched=dispatched,
                     status_code=status_code,
                     detail=detail,

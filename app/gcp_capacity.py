@@ -90,6 +90,16 @@ def _project_id_env() -> str:
     return (os.environ.get("GCP_PROJECT_ID") or "").strip()
 
 
+def _zone_from_datacenter(datacenter: str) -> str:
+    dc = (datacenter or "").strip().lower()
+    zone = ""
+    if dc.startswith("gcp:"):
+        zone = dc.split(":", 1)[1].strip()
+    if not zone:
+        zone = (os.environ.get("EE_GCP_DEFAULT_ZONE") or "us-central1-a").strip().lower()
+    return zone
+
+
 def _machine_type_for_size(node_size: str) -> str:
     # Back-compat: keep the old single-value API.
     return _machine_types_for_size(node_size)[0]
@@ -276,11 +286,7 @@ async def create_tdx_instance_for_order(
         raise GCPProvisionError("GCP_SERVICE_ACCOUNT_KEY is not set on the control plane")
 
     dc = (datacenter or "").strip().lower()
-    zone = ""
-    if dc.startswith("gcp:"):
-        zone = dc.split(":", 1)[1].strip()
-    if not zone:
-        zone = (os.environ.get("EE_GCP_DEFAULT_ZONE") or "us-central1-a").strip().lower()
+    zone = _zone_from_datacenter(dc)
     if not zone:
         raise GCPProvisionError(f"Invalid datacenter '{datacenter}' (missing zone)")
 
@@ -400,3 +406,79 @@ async def create_tdx_instance_for_order(
     raise GCPProvisionError(
         f"GCP instance insert failed for all machine types {machine_types!r}: {last_err or 'unknown error'}"
     )
+
+
+async def delete_instance(
+    *,
+    datacenter: str,
+    instance_name: str,
+) -> bool:
+    """Delete a GCP instance by name. Returns True if a delete was issued.
+
+    Returns False when the instance is already absent.
+    """
+    project_id = _project_id_env()
+    if not project_id:
+        raise GCPProvisionError("GCP_PROJECT_ID is not set on the control plane")
+    service_account_raw = _service_account_env()
+    if not service_account_raw:
+        raise GCPProvisionError("GCP_SERVICE_ACCOUNT_KEY is not set on the control plane")
+
+    name = (instance_name or "").strip().lower()
+    if not name:
+        raise GCPProvisionError("instance_name is required")
+
+    zone = _zone_from_datacenter(datacenter)
+    if not zone:
+        raise GCPProvisionError(f"Invalid datacenter '{datacenter}' (missing zone)")
+
+    service_account = _parse_service_account_info(service_account_raw)
+    token = await _oauth_access_token(service_account=service_account)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    base_url = (
+        f"https://compute.googleapis.com/compute/v1/projects/{_urlquote(project_id)}"
+        f"/zones/{_urlquote(zone)}/instances/{_urlquote(name)}"
+    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        get_resp = await client.get(base_url, headers=headers)
+        if get_resp.status_code == 404:
+            return False
+        if get_resp.status_code >= 400:
+            raise GCPProvisionError(
+                f"GCP instance lookup failed (HTTP {get_resp.status_code}): {(get_resp.text or '')[:240]}"
+            )
+
+        del_resp = await client.delete(base_url, headers=headers)
+
+    if del_resp.status_code == 404:
+        return False
+    if del_resp.status_code >= 400:
+        raise GCPProvisionError(
+            f"GCP instance delete failed (HTTP {del_resp.status_code}): {(del_resp.text or '')[:500]}"
+        )
+
+    op_name = str((del_resp.json() or {}).get("name") or "").strip()
+    if not op_name:
+        return True
+
+    op_url = (
+        f"https://compute.googleapis.com/compute/v1/projects/{_urlquote(project_id)}"
+        f"/zones/{_urlquote(zone)}/operations/{_urlquote(op_name)}"
+    )
+    deadline = _utc_now() + timedelta(seconds=120)
+    while _utc_now() < deadline:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            op_resp = await client.get(op_url, headers=headers)
+        if op_resp.status_code >= 400:
+            raise GCPProvisionError(
+                f"GCP delete op poll failed (HTTP {op_resp.status_code}): {(op_resp.text or '')[:240]}"
+            )
+        payload = op_resp.json() or {}
+        if str(payload.get("status") or "").upper() == "DONE":
+            err = payload.get("error")
+            if err:
+                raise GCPProvisionError(f"GCP delete op failed: {json.dumps(err)[:500]}")
+            return True
+        time.sleep(2)
+    return True
