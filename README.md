@@ -158,8 +158,7 @@ See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LL
 - Deploy requests should normally set `node_size` and optional datacenter filters; the control plane picks a verified healthy agent.
 - Direct `agent_id` targeting is reserved for controlled upgrade/recovery flows.
 - App versions are attested per `node_size` before deployment is allowed.
-- Measurement jobs are routed to `measuring-enclave` (default) or `measuring-enclave-<node_size>` variants.
-- Measurer capacity can run on verified tiny agents in either bare metal or GCP datacenters.
+- Version measurement is performed directly in the control plane (no dedicated measurer deployment).
 - Capacity shortfall creates CP launch orders; launcher workers fulfill orders with launcher-scoped API keys.
 
 #### Bootstrap Actions
@@ -187,11 +186,11 @@ gh workflow run bootstrap.yml -f action=cleanup-vms
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/api/v1/register` | Register a new service |
-| `GET` | `/api/v1/services` | List/search services |
-| `GET` | `/api/v1/services/{id}` | Get service details |
-| `DELETE` | `/api/v1/services/{id}` | Deregister a service |
-| `GET` | `/api/v1/services/{id}/verify` | Verify attestation |
+| `POST` | `/api/v1/apps` | Register an app |
+| `GET` | `/api/v1/apps` | List apps |
+| `POST` | `/api/v1/apps/{name}/versions` | Publish app version |
+| `POST` | `/api/v1/apps/{name}/versions/{version}/deploy/preflight` | Validate deploy request |
+| `POST` | `/api/v1/apps/{name}/versions/{version}/deploy` | Deploy app version |
 | `GET` | `/health` | Health check |
 | `GET` | `/` | Web GUI |
 | `GET` | `/admin` | Admin panel |
@@ -213,40 +212,38 @@ gh workflow run bootstrap.yml -f action=cleanup-vms
 | `POST` | `/api/v1/launchers/capacity/orders/claim` | Claim next order (launcher API key) |
 | `POST` | `/api/v1/launchers/capacity/orders/{order_id}` | Update order status (launcher API key) |
 
-### Register a Service
+### Register App + Publish Version
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/register \
+curl -X POST http://localhost:8080/api/v1/apps \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "my-service",
-    "description": "My TDX-attested service",
-    "endpoints": {
-      "prod": "https://my-service.example.com"
-    },
-    "source_repo": "https://github.com/org/my-service",
-    "tags": ["api", "production"],
-    "mrtd": "abc123..."
+    "name": "my-app",
+    "description": "My confidential app",
+    "source_repo": "org/my-app",
+    "tags": ["api", "production"]
   }'
 ```
 
-### Discover Services
+```bash
+curl -X POST http://localhost:8080/api/v1/apps/my-app/versions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": "20260219-001",
+    "compose": "<base64-docker-compose-yml>",
+    "node_size": "tiny"
+  }'
+```
+
+### Deploy Published Version
 
 ```bash
-# List all services
-curl http://localhost:8080/api/v1/services
-
-# Filter by name
-curl "http://localhost:8080/api/v1/services?name=my-service"
-
-# Filter by tags
-curl "http://localhost:8080/api/v1/services?tags=api,production"
-
-# Filter by environment
-curl "http://localhost:8080/api/v1/services?environment=prod"
-
-# Search
-curl "http://localhost:8080/api/v1/services?q=my-service"
+curl -X POST http://localhost:8080/api/v1/apps/my-app/versions/20260219-001/deploy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "node_size": "tiny",
+    "allowed_clouds": ["baremetal"]
+  }'
 ```
 
 ## Python SDK
@@ -377,8 +374,6 @@ easyenclave/
 ├── examples/
 │   ├── hello-tdx/       # Minimal HTTP server example
 │   └── private-llm/     # LLM in TDX (with SDK smoke test)
-├── apps/
-│   └── measuring-enclave/  # Image digest resolution service
 ├── docs/
 │   └── GITHUB_OAUTH.md  # OAuth setup documentation
 ├── tests/               # Unit tests

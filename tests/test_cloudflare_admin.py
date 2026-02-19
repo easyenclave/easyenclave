@@ -326,10 +326,18 @@ class TestCloudflareCleanup:
                 ):
                     with patch("app.main.cloudflare.delete_tunnel", delete_tunnel_mock):
                         with patch("app.main.cloudflare.delete_dns_record_by_id", delete_dns_mock):
-                            resp = client.post("/api/v1/admin/cloudflare/cleanup", headers=AUTH)
+                            resp = client.post(
+                                "/api/v1/admin/cleanup/orphans",
+                                headers=AUTH,
+                                json={
+                                    "dry_run": False,
+                                    "cloudflare": True,
+                                    "external_cloud": False,
+                                },
+                            )
 
         assert resp.status_code == 200
-        data = resp.json()
+        data = resp.json()["cloudflare"]
         assert data["tunnels_deleted"] == 1
         assert data["dns_deleted"] == 1
         assert data["tunnels_candidates"] == 1

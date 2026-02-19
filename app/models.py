@@ -457,6 +457,9 @@ class UnifiedOrphanCleanupRequest(BaseModel):
     dry_run: bool = True
     cloudflare: bool = True
     external_cloud: bool = True
+    external_only_orphaned: bool = True
+    external_providers: list[str] = Field(default_factory=list)
+    external_resource_ids: list[str] = Field(default_factory=list)
     reason: str = "admin-unified-orphan-cleanup"
 
 

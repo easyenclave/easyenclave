@@ -226,14 +226,19 @@ deploy_app() {
     exit 1
   fi
 
-  # Wait for healthy
+  # Wait for healthy deployed agent
   echo "Waiting for $app_name to become healthy..."
-  local healthy=0
+  local healthy_agents=0
   for i in {1..60}; do
-    local svc
-    svc=$(curl -sf "$CP_URL/api/v1/services?name=$app_name" 2>/dev/null || echo '{"services":[]}')
-    healthy=$(echo "$svc" | jq '[.services[] | select(.health_status == "healthy")] | length')
-    if [ "$healthy" -gt 0 ]; then
+    local agents_json
+    agents_json=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
+    healthy_agents="$(echo "$agents_json" | jq -r --arg app "$app_name" '
+      [.agents[]
+        | select((.deployed_app // "") == $app)
+        | select((.health_status // "" | ascii_downcase) == "healthy")
+      ] | length
+    ')"
+    if [ "${healthy_agents:-0}" -gt 0 ]; then
       echo "$app_name is healthy!"
       return 0
     fi
@@ -241,9 +246,6 @@ deploy_app() {
     sleep 5
   done
   echo "::error::$app_name not healthy after 5 minutes"
-  echo ""
-  echo "=== Debug: services?name=$app_name ==="
-  curl -sf "$CP_URL/api/v1/services?name=$app_name" 2>/dev/null | jq . || true
   echo ""
   echo "=== Debug: deployments (most recent 5 for app=$app_name) ==="
   curl -sf "$CP_URL/api/v1/deployments" 2>/dev/null | jq -r --arg app "$app_name" '

@@ -122,15 +122,11 @@ from .models import (
     ManualAttestRequest,
     MeasurementCallbackRequest,
     RateCardResponse,
-    Service,
-    ServiceListResponse,
-    ServiceRegistrationRequest,
     SetAgentOwnerRequest,
     TransactionListResponse,
     TransactionResponse,
     UnifiedOrphanCleanupRequest,
     UnifiedOrphanCleanupResponse,
-    VerificationResponse,
 )
 from .pricing import calculate_deployment_cost_per_hour
 from .provisioner import (
@@ -160,7 +156,6 @@ from .storage import (
     deployment_store,
     list_trusted_mrtds,
     load_trusted_mrtds,
-    store,
     transaction_store,
 )
 
@@ -195,9 +190,6 @@ logging.getLogger().addHandler(_log_handler)
 _admin_tokens: set[str] = set()
 # Auto-generated admin password (shown on login page when ADMIN_PASSWORD_HASH not set)
 _generated_admin_password: str | None = None
-
-# Health check interval in seconds
-HEALTH_CHECK_INTERVAL = 60
 
 # Agent health check settings
 AGENT_HEALTH_CHECK_INTERVAL = 30  # Check agents every 30 seconds
@@ -367,20 +359,6 @@ def _ensure_default_gcp_tiny_capacity_target() -> None:
         logger.warning(f"Failed to ensure default warm tiny capacity target: {exc}")
 
 
-async def check_service_health(service: Service) -> str:
-    """Check health of a single service. Returns health status."""
-    for _env, url in service.endpoints.items():
-        try:
-            health_url = url.rstrip("/") + "/health"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(health_url)
-                if response.status_code == 200:
-                    return "healthy"
-        except Exception:
-            continue
-    return "unhealthy"
-
-
 async def background_session_cleanup():
     """Background task to delete expired admin sessions."""
     while True:
@@ -403,27 +381,6 @@ async def background_nonce_cleanup():
             cleanup_expired_nonces()
         except Exception as e:
             logger.warning(f"Nonce cleanup error: {e}")
-
-
-async def background_health_checker():
-    """Background task to periodically check health of all services."""
-    while True:
-        try:
-            services = store.get_all_for_health_check()
-            for service in services:
-                try:
-                    status = await check_service_health(service)
-                    store.update(
-                        service.service_id,
-                        health_status=status,
-                        last_health_check=datetime.now(timezone.utc),
-                    )
-                except Exception as e:
-                    logger.warning(f"Health check failed for {service.name}: {e}")
-        except Exception as e:
-            logger.error(f"Background health checker error: {e}")
-
-        await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
 
 async def check_agent_health(
@@ -600,39 +557,6 @@ async def background_cp_attestation_refresher():
 
 
 MEASUREMENT_CHECK_INTERVAL = 30  # seconds
-
-
-async def send_measurement_request(measure_url: str, version: AppVersion, callback_base: str):
-    """Send a measurement request to the measuring enclave.
-
-    Raises on failure so the caller can avoid marking the version as attesting.
-    """
-    callback_url = callback_base.rstrip("/") + "/api/v1/internal/measurement-callback"
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            measure_url,
-            json={
-                "version_id": version.version_id,
-                "compose": version.compose,
-                "callback_url": callback_url,
-            },
-        )
-        resp.raise_for_status()
-        # Guardrail: ensure we're actually talking to the measurer, not a stale/misrouted endpoint.
-        # If we mark the version as "attesting" without a real measurer ack, it can get stuck forever.
-        try:
-            payload = resp.json()
-        except Exception as err:
-            body_preview = (resp.text or "")[:200]
-            raise RuntimeError(
-                f"Measurer returned non-JSON response (HTTP {resp.status_code}): {body_preview}"
-            ) from err
-        status = (payload.get("status") if isinstance(payload, dict) else None) or ""
-        if str(status).strip().lower() != "accepted":
-            raise RuntimeError(
-                f"Unexpected measurer response (expected status=accepted): {(resp.text or '')[:200]}"
-            )
-        logger.info(f"Sent measurement request for {version.app_name}@{version.version}")
 
 
 async def _measure_pending_version_locally(version: AppVersion) -> None:
@@ -939,8 +863,7 @@ async def lifespan(app: FastAPI):
     # Generate initial CP attestation
     _refresh_cp_attestation()
 
-    # Start background health checkers
-    service_health_task = asyncio.create_task(background_health_checker())
+    # Start background tasks
     agent_health_task = asyncio.create_task(background_agent_health_checker())
     attestation_task = asyncio.create_task(background_cp_attestation_refresher())
     measurement_task = asyncio.create_task(background_measurement_processor())
@@ -959,11 +882,10 @@ async def lifespan(app: FastAPI):
     capacity_fulfill_task = asyncio.create_task(background_capacity_launch_order_fulfiller())
 
     logger.info(
-        "Started background tasks (health checkers, measurement processor, billing, session cleanup, nonce cleanup, stale agent cleanup, capacity pool)"
+        "Started background tasks (measurement processor, billing, session cleanup, nonce cleanup, stale agent cleanup, capacity pool)"
     )
     yield
     # Shutdown
-    service_health_task.cancel()
     agent_health_task.cancel()
     attestation_task.cancel()
     measurement_task.cancel()
@@ -975,7 +897,6 @@ async def lifespan(app: FastAPI):
     capacity_pool_task.cancel()
     capacity_fulfill_task.cancel()
     for task in [
-        service_health_task,
         agent_health_task,
         attestation_task,
         measurement_task,
@@ -1041,129 +962,6 @@ async def health_check():
         gcp_capacity_fulfiller_enabled=(
             gcp_project_configured and gcp_service_account_key_configured
         ),
-    )
-
-
-# API v1 endpoints
-@app.post("/api/v1/register", response_model=Service)
-async def register_service(request: ServiceRegistrationRequest):
-    """Register a new service with the discovery service.
-
-    Requires:
-    - Valid MRTD (TDX measurement)
-    - Valid Intel Trust Authority token
-    - At least one endpoint
-
-    Note: We trust the agent's local health check. The agent has already verified
-    its identity via attestation (Intel TA + MRTD), so there's no security benefit
-    to doing an external health check from the control plane. Additionally, external
-    checks can fail due to DNS/tunnel propagation delays.
-    """
-    # Require attestation
-    if not request.mrtd:
-        raise HTTPException(status_code=400, detail="Registration requires MRTD (TDX measurement)")
-
-    if not request.intel_ta_token:
-        raise HTTPException(
-            status_code=400, detail="Registration requires Intel Trust Authority token"
-        )
-
-    # Verify at least one endpoint
-    if not request.endpoints:
-        raise HTTPException(status_code=400, detail="Registration requires at least one endpoint")
-
-    # Trust the agent's local health check - the agent already verified health
-    # before calling this endpoint, and we trust the agent via attestation
-    service = Service(
-        name=request.name,
-        description=request.description,
-        source_repo=request.source_repo,
-        source_commit=request.source_commit,
-        compose_hash=request.compose_hash,
-        endpoints=request.endpoints,
-        mrtd=request.mrtd,
-        attestation_json=request.attestation_json,
-        intel_ta_token=request.intel_ta_token,
-        tags=request.tags,
-        health_status="healthy",
-        last_health_check=datetime.now(timezone.utc),
-    )
-
-    # Upsert: update existing service with same name, or create new
-    service_id, is_new = store.upsert(service)
-
-    # Return the stored service (may have preserved service_id if updated)
-    stored_service = store.get(service_id)
-    logger.info(f"Service {'created' if is_new else 'updated'}: {service.name} ({service_id})")
-    return stored_service
-
-
-@app.get("/api/v1/services", response_model=ServiceListResponse)
-async def list_services(
-    name: str | None = Query(None, description="Filter by name (partial match)"),
-    tags: str | None = Query(None, description="Filter by tags (comma-separated)"),
-    environment: str | None = Query(None, description="Filter by environment"),
-    mrtd: str | None = Query(None, description="Filter by MRTD (exact match)"),
-    health_status: str | None = Query(None, description="Filter by health status"),
-    q: str | None = Query(None, description="Search query"),
-    include_down: bool = Query(
-        False, description="Include services that have been down for extended period"
-    ),
-):
-    """List all registered services with optional filters.
-
-    By default, services that have been unhealthy for more than 1 hour are hidden.
-    Use include_down=true to show all services.
-    """
-    # If search query provided, use search
-    if q:
-        services = store.search(q)
-        # Filter out timed-out services from search results too
-        if not include_down:
-            services = [s for s in services if not store._is_timed_out(s)]
-    else:
-        filters = build_filters(
-            name=name, tags=tags, environment=environment, mrtd=mrtd, health_status=health_status
-        )
-        services = store.list(filters, include_down=include_down)
-
-    return ServiceListResponse(services=services, total=len(services))
-
-
-@app.get("/api/v1/services/{service_id}", response_model=Service)
-async def get_service(service_id: str):
-    """Get details for a specific service."""
-    return get_or_404(store, service_id, "Service")
-
-
-@app.delete("/api/v1/services/{service_id}")
-async def delete_service(service_id: str):
-    """Deregister a service."""
-    from .crud import delete_or_404
-
-    return delete_or_404(store, service_id, "Service", "service_id")
-
-
-@app.get("/api/v1/services/{service_id}/verify", response_model=VerificationResponse)
-async def verify_service(service_id: str):
-    """Verify a service's attestation via Intel Trust Authority."""
-    service = get_or_404(store, service_id, "Service")
-
-    if not service.intel_ta_token:
-        return VerificationResponse(
-            service_id=service_id,
-            verified=False,
-            verification_time=datetime.now(timezone.utc),
-            error="Service has no Intel Trust Authority token",
-        )
-
-    result = await verify_attestation_token(service.intel_ta_token)
-    return VerificationResponse(
-        service_id=service_id,
-        verified=result["verified"],
-        verification_time=result["verification_time"],
-        details=result["details"],
-        error=result["error"],
     )
 
 
@@ -2696,37 +2494,6 @@ async def list_external_cloud_resources(
     )
 
 
-@app.post(
-    "/api/v1/admin/cloud/resources/cleanup",
-    response_model=ExternalCloudCleanupResponse,
-)
-async def cleanup_external_cloud_resources(
-    request: ExternalCloudCleanupRequest,
-    _admin: AdminSession = Depends(require_admin_session),
-):
-    """Dispatch Azure/GCP orphan cleanup through external provisioner webhook."""
-    configured, dispatched, status_code, detail, payload = await dispatch_external_cleanup(
-        request.model_dump()
-    )
-    if isinstance(payload.get("dispatched"), bool):
-        dispatched = dispatched and bool(payload.get("dispatched"))
-
-    response_detail = detail
-    if not response_detail and isinstance(payload.get("detail"), str):
-        response_detail = payload.get("detail")
-    if not response_detail and isinstance(payload.get("message"), str):
-        response_detail = payload.get("message")
-
-    return ExternalCloudCleanupResponse(
-        configured=configured,
-        dispatched=dispatched,
-        dry_run=request.dry_run,
-        requested_count=_extract_cleanup_requested_count(payload),
-        status_code=status_code,
-        detail=response_detail,
-    )
-
-
 @app.get("/api/v1/agents/{agent_id}", response_model=Agent)
 async def get_agent(agent_id: str):
     """Get details for a specific agent."""
@@ -3266,10 +3033,8 @@ async def cloudflare_delete_dns(
     return {"deleted": deleted, "record_id": record_id}
 
 
-@app.post("/api/v1/admin/cloudflare/cleanup")
 async def cloudflare_cleanup(
     request: CloudflareCleanupRequest | None = None,
-    _admin: AdminSession = Depends(require_admin_session),
 ) -> CloudflareCleanupResponse:
     """Bulk delete all orphaned tunnels and DNS records."""
     if not cloudflare.is_configured():
@@ -3370,7 +3135,6 @@ async def unified_orphan_cleanup(
             try:
                 cf_result = await cloudflare_cleanup(
                     CloudflareCleanupRequest(dry_run=request.dry_run),
-                    _admin=session,
                 )
             except Exception as exc:
                 detail_parts.append(f"Cloudflare cleanup failed: {exc}")
@@ -3391,9 +3155,9 @@ async def unified_orphan_cleanup(
                 ) = await dispatch_external_cleanup(
                     ExternalCloudCleanupRequest(
                         dry_run=request.dry_run,
-                        only_orphaned=True,
-                        providers=[],
-                        resource_ids=[],
+                        only_orphaned=request.external_only_orphaned,
+                        providers=request.external_providers,
+                        resource_ids=request.external_resource_ids,
                         reason=request.reason,
                     ).model_dump()
                 )

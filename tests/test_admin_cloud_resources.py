@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.auth import verify_admin_token
 from app.db_models import AdminSession, Agent
 from app.main import app
+from app.settings import delete_setting, invalidate_cache, set_setting
 from app.storage import agent_store
 
 
@@ -108,6 +109,9 @@ def test_external_inventory_cross_links_registered_agents(client: TestClient, mo
 
 
 def test_external_cleanup_dispatch(client: TestClient, monkeypatch):
+    set_setting("provisioner.cleanup_url", "https://provisioner.example.com/cleanup")
+    invalidate_cache()
+
     async def _fake_dispatch_external_cleanup(_request: dict):
         return (
             True,
@@ -124,18 +128,29 @@ def test_external_cleanup_dispatch(client: TestClient, monkeypatch):
     app.dependency_overrides[verify_admin_token] = _mock_verify_admin_token
     try:
         resp = client.post(
-            "/api/v1/admin/cloud/resources/cleanup",
+            "/api/v1/admin/cleanup/orphans",
             headers=AUTH,
-            json={"dry_run": False, "only_orphaned": True},
+            json={
+                "dry_run": False,
+                "cloudflare": False,
+                "external_cloud": True,
+                "external_only_orphaned": True,
+                "external_providers": [],
+                "external_resource_ids": [],
+            },
         )
     finally:
         app.dependency_overrides.clear()
+        delete_setting("provisioner.cleanup_url")
+        invalidate_cache()
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["configured"] is True
-    assert data["dispatched"] is True
+    assert data["external_cloud_configured"] is True
+    ext = data["external_cloud"]
+    assert ext["configured"] is True
+    assert ext["dispatched"] is True
     assert data["dry_run"] is False
-    assert data["requested_count"] == 4
-    assert data["status_code"] == 202
-    assert data["detail"] == "cleanup queued"
+    assert ext["requested_count"] == 4
+    assert ext["status_code"] == 202
+    assert ext["detail"] == "cleanup queued"

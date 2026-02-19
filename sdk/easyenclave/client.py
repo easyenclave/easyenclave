@@ -235,55 +235,11 @@ class EasyEnclaveClient:
         description: str = "",
         tags: list[str] | None = None,
     ) -> str:
-        """Register a service with EasyEnclave.
-
-        Args:
-            name: Human-readable service name
-            endpoints: Dict mapping environment names to URLs
-            attestation_json: Full attestation data
-            source_repo: GitHub repository URL
-            source_commit: Git commit SHA
-            compose_hash: SHA256 hash of docker-compose.yml
-            mrtd: TDX measurement
-            intel_ta_token: JWT from Intel Trust Authority
-            description: Service description
-            tags: Searchable tags
-
-        Returns:
-            service_id: Unique identifier for the registered service
-        """
-        payload = {
-            "name": name,
-            "description": description,
-            "endpoints": endpoints,
-            "tags": tags or [],
-        }
-
-        if source_repo:
-            payload["source_repo"] = source_repo
-        if source_commit:
-            payload["source_commit"] = source_commit
-        if compose_hash:
-            payload["compose_hash"] = compose_hash
-        if mrtd:
-            payload["mrtd"] = mrtd
-        if attestation_json:
-            payload["attestation_json"] = attestation_json
-        if intel_ta_token:
-            payload["intel_ta_token"] = intel_ta_token
-
-        try:
-            response = self._client.post(
-                f"{self.cp_url}/api/v1/register",
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["service_id"]
-        except httpx.HTTPStatusError as e:
-            raise EasyEnclaveError(f"Registration failed: {e.response.text}") from e
-        except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Registration request failed: {e}") from e
+        """Legacy API removed; use app catalog + version deploy endpoints."""
+        raise EasyEnclaveError(
+            "Legacy service registry API was removed. "
+            "Use app catalog endpoints (/api/v1/apps, /versions, /deploy)."
+        )
 
     def discover(
         self,
@@ -294,106 +250,32 @@ class EasyEnclaveClient:
         health_status: str | None = None,
         query: str | None = None,
     ) -> list[dict]:
-        """Find services matching criteria.
-
-        Args:
-            name: Filter by name (partial match)
-            tags: Filter by tags (any match)
-            environment: Filter by environment
-            mrtd: Filter by MRTD (exact match)
-            health_status: Filter by health status
-            query: Full-text search query
-
-        Returns:
-            List of service dictionaries
-        """
-        params = {}
-        if name:
-            params["name"] = name
-        if tags:
-            params["tags"] = ",".join(tags)
-        if environment:
-            params["environment"] = environment
-        if mrtd:
-            params["mrtd"] = mrtd
-        if health_status:
-            params["health_status"] = health_status
-        if query:
-            params["q"] = query
-
-        try:
-            response = self._client.get(
-                f"{self.cp_url}/api/v1/services",
-                params=params,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["services"]
-        except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Discovery request failed: {e}") from e
+        """Legacy API removed; use app catalog + version deploy endpoints."""
+        raise EasyEnclaveError(
+            "Legacy service discovery API was removed. "
+            "Use app catalog endpoints (/api/v1/apps, /versions, /deploy)."
+        )
 
     def get_service(self, service_id: str) -> dict:
-        """Get details for a specific service.
-
-        Args:
-            service_id: Unique identifier of the service
-
-        Returns:
-            Service details dictionary
-
-        Raises:
-            ServiceNotFoundError: If service not found
-        """
-        try:
-            response = self._client.get(f"{self.cp_url}/api/v1/services/{service_id}")
-            if response.status_code == 404:
-                raise ServiceNotFoundError(f"Service not found: {service_id}")
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Get service request failed: {e}") from e
+        """Legacy API removed; use app catalog + version deploy endpoints."""
+        raise EasyEnclaveError(
+            "Legacy service lookup API was removed. "
+            "Use app catalog endpoints (/api/v1/apps, /versions, /deploy)."
+        )
 
     def verify_service(self, service_id: str) -> dict:
-        """Verify a service's attestation via Intel Trust Authority.
-
-        Args:
-            service_id: Unique identifier of the service
-
-        Returns:
-            Verification result dictionary
-
-        Raises:
-            ServiceNotFoundError: If service not found
-        """
-        try:
-            response = self._client.get(f"{self.cp_url}/api/v1/services/{service_id}/verify")
-            if response.status_code == 404:
-                raise ServiceNotFoundError(f"Service not found: {service_id}")
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Verification request failed: {e}") from e
+        """Legacy API removed; use app catalog + version deploy endpoints."""
+        raise EasyEnclaveError(
+            "Legacy service verification API was removed. "
+            "Use app catalog endpoints (/api/v1/apps, /versions, /deploy)."
+        )
 
     def deregister(self, service_id: str) -> bool:
-        """Deregister a service.
-
-        Args:
-            service_id: Unique identifier of the service
-
-        Returns:
-            True if successfully deregistered
-
-        Raises:
-            ServiceNotFoundError: If service not found
-        """
-        try:
-            response = self._client.delete(f"{self.cp_url}/api/v1/services/{service_id}")
-            if response.status_code == 404:
-                raise ServiceNotFoundError(f"Service not found: {service_id}")
-            response.raise_for_status()
-            return True
-        except httpx.HTTPError as e:
-            raise EasyEnclaveError(f"Deregister request failed: {e}") from e
+        """Legacy API removed; use app catalog + version deploy endpoints."""
+        raise EasyEnclaveError(
+            "Legacy service deregistration API was removed. "
+            "Use app catalog endpoints (/api/v1/apps, /versions, /deploy)."
+        )
 
     # App catalog methods
 

@@ -351,7 +351,7 @@ jobs:
           curl -f http://localhost:8080/health || exit 1
 
           # Test API endpoint
-          curl -f http://localhost:8080/api/v1/services || exit 1
+          curl -f http://localhost:8080/api/v1/apps || exit 1
 
           # Cleanup
           docker stop easyenclave-test

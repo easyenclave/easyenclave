@@ -786,18 +786,12 @@ class AgentAPIHandler(http.server.BaseHTTPRequestHandler):
     def _notify_deployment_complete(self, deployment_id: str, attestation: dict, config: dict):
         """Notify control plane that deployment is complete."""
         try:
-            # Register service if configured
-            service_id = ""
-            if config.get("service_name"):
-                tunnel_hostname = _admin_state.get("hostname")
-                service_id = register_service(config, attestation, tunnel_hostname)
-
             # Notify control plane
             requests.post(
                 f"{CONTROL_PLANE_URL}/api/v1/agents/{_admin_state['agent_id']}/deployed",
                 json={
                     "deployment_id": deployment_id,
-                    "service_id": service_id,
+                    "service_id": "",
                     "attestation": attestation,
                 },
                 timeout=30,
@@ -1714,8 +1708,7 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
         Full attestation dict
     """
     write_status("attesting")
-    # Service registration requires an Intel TA token. Use the same minting path as agent
-    # registration, but skip nonce challenge (nonce binds to agent registration, not services).
+    # Use the same minting path as agent registration for workload attestation.
     attestation = generate_initial_attestation(
         config,
         vm_name=None,
@@ -1727,63 +1720,6 @@ def get_tdx_attestation(config: dict, health_status: dict) -> dict:
         "health_status": health_status.get("status", "unknown"),
     }
     return attestation
-
-
-def register_service(config: dict, attestation: dict, tunnel_hostname: str | None = None) -> str:
-    """Register service with EasyEnclave discovery.
-
-    Args:
-        config: Configuration dict with service_name, service_url, etc.
-        attestation: Attestation dict with TDX measurements
-        tunnel_hostname: Optional Cloudflare tunnel hostname (e.g., agent-xyz.easyenclave.com)
-
-    Returns:
-        Service ID from registration
-    """
-    service_name = config.get("service_name")
-
-    # Explicit service_url in config takes precedence over tunnel hostname
-    service_url = config.get("service_url")
-    if not service_url and tunnel_hostname:
-        service_url = f"https://{tunnel_hostname}"
-
-    if not service_name:
-        logger.info("No service_name - skipping registration")
-        return ""
-
-    if not service_url:
-        logger.info("No service_url or tunnel_hostname - skipping registration")
-        return ""
-
-    payload = {
-        "name": service_name,
-        "description": config.get("service_description", ""),
-        "endpoints": {"prod": service_url},
-        "source_repo": config.get("source_repo"),
-        "source_commit": config.get("source_commit"),
-        "compose_hash": compute_compose_hash(),
-        "tags": config.get("tags") or [],
-        "mrtd": attestation["tdx"]["measurements"].get("mrtd", ""),
-        "intel_ta_token": attestation["tdx"].get("intel_ta_token"),
-        # Full attestation is stored for debugging/verification.
-        "attestation_json": attestation,
-    }
-
-    logger.info(f"Registering service: {service_name} at {service_url}")
-
-    response = requests.post(
-        f"{CONTROL_PLANE_URL}/api/v1/register",
-        json=payload,
-        timeout=30,
-    )
-    if not response.ok:
-        logger.error(f"Service registration failed: {response.status_code} {response.text}")
-    response.raise_for_status()
-    result = response.json()
-
-    service_id = result.get("service_id", "")
-    logger.info(f"Registered service: {service_id}")
-    return service_id
 
 
 # ==============================================================================

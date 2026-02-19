@@ -8,7 +8,6 @@ from sdk.easyenclave.client import (
     EasyEnclaveClient,
     EasyEnclaveError,
     ServiceClient,
-    ServiceNotFoundError,
 )
 
 
@@ -62,198 +61,34 @@ class TestEasyEnclaveClient:
         with pytest.raises(EasyEnclaveError, match="unhealthy"):
             EasyEnclaveClient("http://localhost:8080", verify=False)
 
-    def test_register(self, mock_httpx):
-        """Test service registration."""
-        register_response = MagicMock()
-        register_response.json.return_value = {"service_id": "test-id"}
-        register_response.raise_for_status = MagicMock()
-        mock_httpx.post.return_value = register_response
-
+    def test_legacy_register_removed(self, mock_httpx):
         client = EasyEnclaveClient("http://localhost:8080", verify=False)
-        service_id = client.register(
-            name="test-service",
-            endpoints={"prod": "https://test.example.com"},
-            tags=["test"],
-        )
-
-        assert service_id == "test-id"
-        mock_httpx.post.assert_called_once()
-        call_args = mock_httpx.post.call_args
-        assert "/api/v1/register" in call_args[0][0]
+        with pytest.raises(EasyEnclaveError, match="Legacy service registry API was removed"):
+            client.register(name="test-service", endpoints={"prod": "https://test.example.com"})
         client.close()
 
-    def test_discover(self, mock_httpx):
-        """Test service discovery."""
-        discover_response = MagicMock()
-        discover_response.json.return_value = {
-            "services": [{"name": "service-1"}, {"name": "service-2"}]
-        }
-        discover_response.raise_for_status = MagicMock()
-
-        def get_side_effect(url, **kwargs):
-            if "/health" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"status": "healthy"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            elif "/api/v1/proxy" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"proxy_url": "http://localhost:8080"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            elif "/api/v1/services" in url:
-                return discover_response
-            else:
-                return discover_response
-
-        mock_httpx.get.side_effect = get_side_effect
-
+    def test_legacy_discover_removed(self, mock_httpx):
         client = EasyEnclaveClient("http://localhost:8080", verify=False)
-        services = client.discover()
-
-        assert len(services) == 2
+        with pytest.raises(EasyEnclaveError, match="Legacy service discovery API was removed"):
+            client.discover()
         client.close()
 
-    def test_discover_with_filters(self, mock_httpx):
-        """Test service discovery with filters."""
-        discover_response = MagicMock()
-        discover_response.json.return_value = {"services": [{"name": "filtered"}]}
-        discover_response.raise_for_status = MagicMock()
-
-        calls = []
-
-        def get_side_effect(url, **kwargs):
-            calls.append((url, kwargs))
-            if "/health" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"status": "healthy"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            elif "/api/v1/proxy" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"proxy_url": "http://localhost:8080"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            else:
-                return discover_response
-
-        mock_httpx.get.side_effect = get_side_effect
-
+    def test_legacy_get_service_removed(self, mock_httpx):
         client = EasyEnclaveClient("http://localhost:8080", verify=False)
-        client.discover(name="test", tags=["api"], environment="prod")
-
-        # Find the services call
-        services_call = None
-        for url, kwargs in calls:
-            if "/api/v1/services" in url:
-                services_call = (url, kwargs)
-                break
-
-        assert services_call is not None
-        params = services_call[1].get("params", {})
-        assert params["name"] == "test"
-        assert params["tags"] == "api"
-        assert params["environment"] == "prod"
+        with pytest.raises(EasyEnclaveError, match="Legacy service lookup API was removed"):
+            client.get_service("test-id")
         client.close()
 
-    def test_get_service(self, mock_httpx):
-        """Test getting a specific service."""
-        get_response = MagicMock()
-        get_response.json.return_value = {"service_id": "test-id", "name": "test"}
-        get_response.raise_for_status = MagicMock()
-        get_response.status_code = 200
-
-        def get_side_effect(url, **kwargs):
-            if "/health" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"status": "healthy"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            elif "/api/v1/proxy" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"proxy_url": "http://localhost:8080"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            else:
-                return get_response
-
-        mock_httpx.get.side_effect = get_side_effect
-
+    def test_legacy_verify_service_removed(self, mock_httpx):
         client = EasyEnclaveClient("http://localhost:8080", verify=False)
-        service = client.get_service("test-id")
-
-        assert service["service_id"] == "test-id"
+        with pytest.raises(EasyEnclaveError, match="Legacy service verification API was removed"):
+            client.verify_service("test-id")
         client.close()
 
-    def test_get_service_not_found(self, mock_httpx):
-        """Test getting a non-existent service."""
-        not_found_response = MagicMock()
-        not_found_response.status_code = 404
-
-        def get_side_effect(url, **kwargs):
-            if "/health" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"status": "healthy"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            elif "/api/v1/proxy" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"proxy_url": "http://localhost:8080"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            else:
-                return not_found_response
-
-        mock_httpx.get.side_effect = get_side_effect
-
+    def test_legacy_deregister_removed(self, mock_httpx):
         client = EasyEnclaveClient("http://localhost:8080", verify=False)
-        with pytest.raises(ServiceNotFoundError):
-            client.get_service("nonexistent")
-        client.close()
-
-    def test_verify_service(self, mock_httpx):
-        """Test verifying a service."""
-        verify_response = MagicMock()
-        verify_response.json.return_value = {"verified": True}
-        verify_response.raise_for_status = MagicMock()
-        verify_response.status_code = 200
-
-        def get_side_effect(url, **kwargs):
-            if "/health" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"status": "healthy"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            elif "/api/v1/proxy" in url:
-                resp = MagicMock()
-                resp.json.return_value = {"proxy_url": "http://localhost:8080"}
-                resp.raise_for_status = MagicMock()
-                return resp
-            else:
-                return verify_response
-
-        mock_httpx.get.side_effect = get_side_effect
-
-        client = EasyEnclaveClient("http://localhost:8080", verify=False)
-        result = client.verify_service("test-id")
-
-        assert result["verified"] is True
-        client.close()
-
-    def test_deregister(self, mock_httpx):
-        """Test deregistering a service."""
-        delete_response = MagicMock()
-        delete_response.json.return_value = {"status": "deleted"}
-        delete_response.raise_for_status = MagicMock()
-        delete_response.status_code = 200
-
-        mock_httpx.delete.return_value = delete_response
-
-        client = EasyEnclaveClient("http://localhost:8080", verify=False)
-        result = client.deregister("test-id")
-
-        assert result is True
-        mock_httpx.delete.assert_called_once()
+        with pytest.raises(EasyEnclaveError, match="Legacy service deregistration API was removed"):
+            client.deregister("test-id")
         client.close()
 
     def test_context_manager(self, mock_httpx):

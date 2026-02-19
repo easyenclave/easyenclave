@@ -972,26 +972,29 @@ async function externalCloudCleanupResources(resourceIds, dryRun) {
     if (!dryRun && !confirm('This will attempt to delete the cloud resource(s) via the provisioner cleanup webhook. Continue?')) return;
 
     try {
-        const result = await adminFetchJSON('/api/v1/admin/cloud/resources/cleanup', {
+        const result = await adminFetchJSON('/api/v1/admin/cleanup/orphans', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 dry_run: dryRun,
-                only_orphaned: false,
-                providers: [],
-                resource_ids: ids,
+                cloudflare: false,
+                external_cloud: true,
+                external_only_orphaned: false,
+                external_providers: [],
+                external_resource_ids: ids,
                 reason: `admin-cloud-resource-${dryRun ? 'dry-run' : 'cleanup'}`,
             }),
         });
 
-        if (!result.configured) {
+        if (!result.external_cloud_configured) {
             alert(`External cleanup is not configured: ${result.detail || 'set AGENT_PROVISIONER_CLEANUP_URL'}`);
             return;
         }
 
-        const statusText = result.dispatched ? 'dispatched' : 'failed';
+        const ext = result.external_cloud || {};
+        const statusText = ext.dispatched ? 'dispatched' : 'failed';
         const details = result.detail ? `\nDetail: ${result.detail}` : '';
-        alert(`External cleanup ${statusText} (${modeLabel}).\nRequested resources: ${result.requested_count || 0}${details}`);
+        alert(`External cleanup ${statusText} (${modeLabel}).\nRequested resources: ${ext.requested_count || 0}${details}`);
         await loadCloudResources();
     } catch (error) {
         alert('Error dispatching external cleanup: ' + error.message);
@@ -1004,26 +1007,29 @@ async function externalCloudCleanup(dryRun) {
     if (!dryRun && !confirm('This will delete orphaned Azure/GCP resources reported by the provisioner. Continue?')) return;
 
     try {
-        const result = await adminFetchJSON('/api/v1/admin/cloud/resources/cleanup', {
+        const result = await adminFetchJSON('/api/v1/admin/cleanup/orphans', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 dry_run: dryRun,
-                only_orphaned: true,
-                providers: [],
-                resource_ids: [],
+                cloudflare: false,
+                external_cloud: true,
+                external_only_orphaned: true,
+                external_providers: [],
+                external_resource_ids: [],
                 reason: `admin-cloud-${dryRun ? 'dry-run' : 'cleanup'}`,
             }),
         });
 
-        if (!result.configured) {
+        if (!result.external_cloud_configured) {
             alert(`External cleanup is not configured: ${result.detail || 'set AGENT_PROVISIONER_CLEANUP_URL'}`);
             return;
         }
 
-        const statusText = result.dispatched ? 'dispatched' : 'failed';
+        const ext = result.external_cloud || {};
+        const statusText = ext.dispatched ? 'dispatched' : 'failed';
         const details = result.detail ? `\nDetail: ${result.detail}` : '';
-        alert(`External cleanup ${statusText} (${modeLabel}).\nRequested resources: ${result.requested_count || 0}${details}`);
+        alert(`External cleanup ${statusText} (${modeLabel}).\nRequested resources: ${ext.requested_count || 0}${details}`);
         await loadCloudResources();
     } catch (error) {
         alert('Error dispatching external cleanup: ' + error.message);
@@ -1692,25 +1698,12 @@ async function loadMeasurements() {
 
         container.innerHTML = treeHtml + tableHtml;
 
-        // Async: check measurer health
+        // Control plane now measures directly; no measurer deployment required.
         for (const size of sizes) {
             const cleanSize = size.replace(/[^a-z0-9]/gi, '');
             const el = document.getElementById(`measurer-${cleanSize}`);
             if (!el) continue;
-            const measurerName = size === '(default)' ? 'measuring-enclave' : `measuring-enclave-${size}`;
-            try {
-                const services = await fetchJSON(`/api/v1/services?name=${measurerName}`);
-                const svc = services.services?.find(s => s.name === measurerName);
-                if (svc && svc.health_status === 'healthy') {
-                    el.innerHTML = '<span class="verified-badge">healthy</span>';
-                } else if (svc) {
-                    el.innerHTML = `<span class="unverified-badge">${svc.health_status}</span>`;
-                } else {
-                    el.innerHTML = '<span style="color:#999">not deployed</span>';
-                }
-            } catch {
-                el.innerHTML = '<span style="color:#999">unknown</span>';
-            }
+            el.innerHTML = '<span style="color:#999">cp-native</span>';
         }
     } catch (error) {
         container.innerHTML = `<div class="error">Error loading measurements: ${error.message}</div>`;
@@ -2389,18 +2382,28 @@ async function cloudflareCleanup(buttonEl) {
     const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
-        const result = await fetchJSON('/api/v1/admin/cloudflare/cleanup', {
+        const result = await fetchJSON('/api/v1/admin/cleanup/orphans', {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${adminToken}` },
+            headers: {
+                'Authorization': `Bearer ${adminToken}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                dry_run: false,
+                cloudflare: true,
+                external_cloud: false,
+                reason: 'admin-cloudflare-cleanup',
+            }),
             signal: controller.signal,
         });
+        const cf = result.cloudflare || {};
         const failedParts = [];
-        if (result.tunnels_failed > 0) failedParts.push(`${result.tunnels_failed} tunnel delete(s) failed`);
-        if (result.dns_failed > 0) failedParts.push(`${result.dns_failed} DNS delete(s) failed`);
+        if (cf.tunnels_failed > 0) failedParts.push(`${cf.tunnels_failed} tunnel delete(s) failed`);
+        if (cf.dns_failed > 0) failedParts.push(`${cf.dns_failed} DNS delete(s) failed`);
         const failedSummary = failedParts.length > 0 ? `\nWarnings: ${failedParts.join('; ')}` : '';
         alert(
-            `Cleanup complete: ${result.tunnels_deleted}/${result.tunnels_candidates} tunnels and ` +
-            `${result.dns_deleted}/${result.dns_candidates} DNS records deleted.${failedSummary}`
+            `Cleanup complete: ${cf.tunnels_deleted || 0}/${cf.tunnels_candidates || 0} tunnels and ` +
+            `${cf.dns_deleted || 0}/${cf.dns_candidates || 0} DNS records deleted.${failedSummary}`
         );
         loadCloudflare();
     } catch (error) {
