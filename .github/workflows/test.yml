@@ -66,8 +66,12 @@ jobs:
           echo "=== tdx_cli vm list ==="
           python3 infra/tdx_cli.py vm list || true
 
+  # Builds the verity image and measures TDX baselines used to trust freshly booted agents.
+  # This is intentionally tied to CI bootstrap runs (not just launcher.py changes), because
+  # each CI run brings up a fresh control plane/agent set and needs a baseline to verify them.
+  # We already skip this entire path for pull_request runs to keep PR CI fast.
   measure-trusted-values:
-    name: Measure Trusted Values (tiny)
+    name: Build & Measure Agent Baseline (tiny)
     runs-on: [self-hosted, tdx]
     if: github.event_name != 'pull_request'
     needs: [cleanup-tdx-runner]
@@ -100,13 +104,13 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
-      - name: Build and measure trusted values (tiny)
+      - name: Build verity image and measure tiny baseline
         id: measure
         env:
           MEASURE_SIZES: tiny
         run: ./scripts/ci-build-measure.sh
 
-      - name: Export trusted values to job outputs
+      - name: Export measured baseline to job outputs
         id: out
         shell: bash
         run: |
