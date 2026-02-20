@@ -203,13 +203,25 @@ keep_vms_json="$(jq -c \
 
 delete_vms_json="$(jq -cn \
   --slurpfile local "$local_entries_file" \
+  --slurpfile agents "$agents_file" \
+  --arg dc "$TARGET_DATACENTER" \
   --argjson keep "$keep_vms_json" '
+  def in_dc($a): (($a.datacenter // "" | ascii_downcase) == ($dc | ascii_downcase));
+
   (($local[0] // [])
+  | map(
+      . + {
+        agent: (
+          [ ($agents[0].agents // [])[] | select((.vm_name // "") == (.agent_vm_name // "")) ] | first // null
+        )
+      }
+    )
   | map(select(
-      (.domain // "") as $d
-      | ((.node_size // "" | ascii_downcase) == "llm")
-      and ($d != "")
-      and (($keep | index($d)) == null)
+      ((.node_size // "" | ascii_downcase) == "llm")
+      and ((.domain // "") != "")
+      and (.agent != null)
+      and in_dc(.agent)
+      and (($keep | index(.domain)) == null)
     ))
   | map(.domain)
   | unique
