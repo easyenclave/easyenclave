@@ -388,7 +388,7 @@ jobs:
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url || needs.bootstrap.outputs.cp_internal_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       # Temporarily skip strict git_sha gate for deploy examples; rollout already pins
       # release trust/image inputs and enforces policy during bootstrap.
       cp_expected_git_sha: ''
@@ -406,7 +406,7 @@ jobs:
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url || needs.bootstrap.outputs.cp_internal_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ''
       source_ref: ${{ needs.resolve.outputs.source_ref }}
       hello_tdx_image: ${{ needs.example-images.outputs.hello_tdx_image }}

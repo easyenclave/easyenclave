@@ -418,4 +418,90 @@ jobs:
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: ${{ env.CP_URL }}
-        run: python3 examples/private-llm/test.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import time
+
+          import httpx
+          import httpx as _httpx
+          from easyenclave import EasyEnclaveClient
+          from openai import OpenAI
+
+          MODEL = "smollm2:135m"
+          CHAT_PATH = "/v1/chat/completions"
+          CHAT_BODY = {
+              "model": MODEL,
+              "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+          }
+          TIMEOUT = 300
+          RETRY_INTERVAL = 15
+
+          service_url = os.environ["SERVICE_URL"].rstrip("/")
+          easyenclave_url = os.environ["EASYENCLAVE_URL"].rstrip("/")
+
+          def wait_ready(label, fn):
+              deadline = time.monotonic() + TIMEOUT
+              last_error = RuntimeError("unknown")
+              while True:
+                  try:
+                      content = fn()
+                      if content and content != "null":
+                          print(f"[{label}] OK: {content}")
+                          return
+                  except Exception as exc:
+                      last_error = exc
+                  if time.monotonic() >= deadline:
+                      raise RuntimeError(
+                          f"[{label}] FAIL: not ready after {TIMEOUT}s — {last_error}"
+                      )
+                  print(f"[{label}] Model not ready, retrying in {RETRY_INTERVAL}s...")
+                  time.sleep(RETRY_INTERVAL)
+
+          def extract_content(resp: httpx.Response) -> str:
+              data = resp.json()
+              return data["choices"][0]["message"]["content"]
+
+          def direct_call():
+              url = f"{service_url}{CHAT_PATH}"
+              with httpx.Client(timeout=60, headers={"user-agent": "EasyEnclave-Test/1.0"}) as c:
+                  resp = c.post(url, json=CHAT_BODY)
+                  resp.raise_for_status()
+                  return extract_content(resp)
+
+          ee = EasyEnclaveClient(easyenclave_url, verify=False)
+          llm = ee.service("private-llm")
+
+          def proxy_call():
+              resp = llm.post(CHAT_PATH, json=CHAT_BODY, timeout=60)
+              resp.raise_for_status()
+              return extract_content(resp)
+
+          def _strip_bot_headers(req: _httpx.Request):
+              req.headers["user-agent"] = "EasyEnclave-Test/1.0"
+              for key in [k for k in req.headers if k.lower().startswith("x-stainless-")]:
+                  del req.headers[key]
+
+          openai_client = OpenAI(
+              base_url=f"{llm.base_url.rstrip('/')}/v1",
+              api_key="unused",
+              http_client=_httpx.Client(
+                  verify=False,
+                  event_hooks={"request": [_strip_bot_headers]},
+              ),
+          )
+
+          def openai_call():
+              completion = openai_client.chat.completions.create(
+                  model=MODEL,
+                  messages=[{"role": "user", "content": "Say hello in one sentence."}],
+                  timeout=60,
+              )
+              return completion.choices[0].message.content or ""
+
+          wait_ready("direct", direct_call)
+          wait_ready("proxy", proxy_call)
+          wait_ready("openai", openai_call)
+          PY
