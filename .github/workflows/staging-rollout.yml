@@ -65,13 +65,31 @@ jobs:
           FORCE_IF_PRODUCTION_ACTIVE: ${{ github.event.inputs.force_if_production_active || 'false' }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
-          DEFAULT_NETWORK_NAME: ${{ vars.STAGING_NETWORK_NAME || 'staging' }}
+          DEFAULT_NETWORK_NAME: ${{ vars.STAGING_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          make_network_name() {
+            local seed="$1"
+            local hash adjective_idx noun_idx suffix
+            local -a adjectives=(trippy lucid nebula prism velvet cosmic solar ember aurora nova)
+            local -a nouns=(voyager horizon drifter comet pulse atlas relay beacon vertex spectrum)
+            hash="$(printf '%s' "$seed" | sha256sum | awk '{print $1}')"
+            adjective_idx=$((16#${hash:0:2} % ${#adjectives[@]}))
+            noun_idx=$((16#${hash:2:2} % ${#nouns[@]}))
+            suffix="${hash:4:6}"
+            printf '%s-%s-%s' "${adjectives[$adjective_idx]}" "${nouns[$noun_idx]}" "$suffix"
+          }
+
+          normalize_network_name() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
+          }
+
           source_ref="${INPUT_SOURCE_REF:-}"
           if [ -z "$source_ref" ]; then
             source_ref="${WORKFLOW_RUN_SHA:-${GITHUB_SHA}}"
@@ -83,7 +101,16 @@ jobs:
           fi
 
           domain="${DEFAULT_DOMAIN:-staging.easyenclave.com}"
-          network_name="${DEFAULT_NETWORK_NAME:-staging}"
+          network_name="$(normalize_network_name "${DEFAULT_NETWORK_NAME:-}")"
+          if [ -z "$network_name" ]; then
+            network_name="$(make_network_name "staging:${source_ref}:${expected_sha}")"
+          fi
+          network_name="$(normalize_network_name "$network_name")"
+          if [ -z "$network_name" ]; then
+            echo "::error::Failed to resolve staging network name"
+            exit 1
+          fi
+          network_name="${network_name:0:48}"
           cp_url="${INPUT_CP_URL:-}"
           if [ -z "$cp_url" ]; then
             cp_url="${DEFAULT_CP_URL:-}"
@@ -102,6 +129,7 @@ jobs:
             echo "::error::Set distinct vars: STAGING_CP_URL/STAGING_EASYENCLAVE_DOMAIN and PRODUCTION_CP_URL/PRODUCTION_EASYENCLAVE_DOMAIN."
             exit 1
           fi
+          echo "::notice::Resolved staging network name: ${network_name}"
 
           should_run="true"
           force="$(echo "${FORCE_IF_PRODUCTION_ACTIVE:-false}" | tr '[:upper:]' '[:lower:]')"

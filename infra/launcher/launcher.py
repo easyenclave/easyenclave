@@ -2064,7 +2064,12 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
     if not network_slug:
         network_slug = "network"
     tunnel_name = f"easyenclave-control-plane-{network_slug}"[:190]
-    hostname = f"app.{domain}"
+    canonical_hostname = f"{network_slug}.{domain}"
+    alias_hostname = f"app.{domain}"
+    hostnames: list[str] = []
+    for name in (canonical_hostname, alias_hostname):
+        if name and name not in hostnames:
+            hostnames.append(name)
 
     headers = {
         "Authorization": f"Bearer {api_token}",
@@ -2112,48 +2117,47 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
             logger.info(f"Created tunnel: {tunnel_id}")
 
         # Always (re)configure ingress to point this tunnel at the local control plane port.
-        logger.info(f"Configuring ingress for {hostname}")
+        logger.info(f"Configuring ingress for hostnames: {', '.join(hostnames)}")
+        ingress_rules = [
+            {"hostname": name, "service": f"http://127.0.0.1:{port}"} for name in hostnames
+        ]
+        ingress_rules.append({"service": "http_status:404"})
         config_resp = requests.put(
             f"{api_url}/accounts/{account_id}/cfd_tunnel/{tunnel_id}/configurations",
             headers=headers,
-            json={
-                "config": {
-                    "ingress": [
-                        {"hostname": hostname, "service": f"http://127.0.0.1:{port}"},
-                        {"service": "http_status:404"},
-                    ]
-                }
-            },
+            json={"config": {"ingress": ingress_rules}},
             timeout=30,
         )
         config_resp.raise_for_status()
 
-        # Ensure DNS record points at this tunnel. (Idempotent upsert.)
         desired_content = f"{tunnel_id}.cfargotunnel.com"
-        logger.info(f"Upserting DNS record for {hostname} -> {desired_content}")
-        existing_dns = requests.get(
-            f"{api_url}/zones/{zone_id}/dns_records",
-            headers=headers,
-            params={"type": "CNAME", "name": hostname},
-            timeout=30,
-        )
-        existing_dns.raise_for_status()
-        records = existing_dns.json().get("result") or []
-        if records:
-            record_id = records[0]["id"]
-            update_resp = requests.put(
-                f"{api_url}/zones/{zone_id}/dns_records/{record_id}",
+        # Ensure DNS records point at this tunnel. (Idempotent upsert.)
+        for hostname in hostnames:
+            logger.info(f"Upserting DNS record for {hostname} -> {desired_content}")
+            existing_dns = requests.get(
+                f"{api_url}/zones/{zone_id}/dns_records",
                 headers=headers,
-                json={
-                    "type": "CNAME",
-                    "name": hostname,
-                    "content": desired_content,
-                    "proxied": True,
-                },
+                params={"type": "CNAME", "name": hostname},
                 timeout=30,
             )
-            update_resp.raise_for_status()
-        else:
+            existing_dns.raise_for_status()
+            records = existing_dns.json().get("result") or []
+            if records:
+                record_id = records[0]["id"]
+                update_resp = requests.put(
+                    f"{api_url}/zones/{zone_id}/dns_records/{record_id}",
+                    headers=headers,
+                    json={
+                        "type": "CNAME",
+                        "name": hostname,
+                        "content": desired_content,
+                        "proxied": True,
+                    },
+                    timeout=30,
+                )
+                update_resp.raise_for_status()
+                continue
+
             create_dns = requests.post(
                 f"{api_url}/zones/{zone_id}/dns_records",
                 headers=headers,
@@ -2202,7 +2206,11 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
             stderr=None,
         )
         logger.info(f"Started cloudflared (PID: {proc.pid})")
-        logger.info(f"Control plane available at: https://{hostname}")
+        logger.info(
+            "Control plane canonical URL: https://%s (alias: https://%s)",
+            canonical_hostname,
+            alias_hostname,
+        )
         return proc
 
     except Exception as e:

@@ -429,7 +429,8 @@ class TDXManager:
         directly in the VM without needing to poll an external control plane.
 
         If Cloudflare environment variables are set, the control plane will
-        create a tunnel and be accessible at https://app.{domain}.
+        create a tunnel with a canonical network hostname and keep
+        https://app.{domain} as a stable alias.
 
         Environment variables for Cloudflare tunnel:
         - CLOUDFLARE_API_TOKEN: API token with Tunnel and DNS edit permissions
@@ -521,7 +522,12 @@ class TDXManager:
 
         # Add expected hostname if Cloudflare is configured
         if config.get("cloudflare_api_token"):
-            result["control_plane_hostname"] = f"app.{config['easyenclave_domain']}"
+            domain = config["easyenclave_domain"]
+            result["control_plane_hostname"] = f"app.{domain}"
+            network_name = (config.get("easyenclave_network_name") or "").strip().lower()
+            network_slug = re.sub(r"[^a-z0-9-]+", "-", network_name).strip("-")
+            if network_slug:
+                result["control_plane_network_hostname"] = f"{network_slug}.{domain}"
 
         return result
 
