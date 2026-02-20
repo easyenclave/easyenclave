@@ -245,9 +245,9 @@ jobs:
     permissions:
       contents: read
     outputs:
-      cp_url: ${{ steps.deploy.outputs.cp_url }}
-      cp_internal_url: ${{ steps.deploy.outputs.cp_internal_url }}
-      cp_public_url: ${{ steps.deploy.outputs.cp_public_url }}
+      cp_url: ${{ steps.cp_urls.outputs.cp_url }}
+      cp_internal_url: ${{ steps.cp_urls.outputs.cp_internal_url }}
+      cp_public_url: ${{ steps.cp_urls.outputs.cp_public_url }}
 
     env:
       EASYENCLAVE_BOOT_ID: bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
@@ -404,4 +404,53 @@ jobs:
           TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE || steps.measure.outputs.mrtds_by_size }}'
           TRUSTED_AGENT_RTMRS: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS || steps.measure.outputs.rtmrs }}'
           TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE || steps.measure.outputs.rtmrs_by_size }}'
-        run: ./scripts/ci-deploy.sh
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/ci-deploy.sh 2>&1 | tee /tmp/ci-deploy.log
+
+      - name: Normalize bootstrap control-plane URLs
+        id: cp_urls
+        shell: bash
+        env:
+          DEPLOY_CP_URL: ${{ steps.deploy.outputs.cp_url }}
+          DEPLOY_CP_INTERNAL_URL: ${{ steps.deploy.outputs.cp_internal_url }}
+          DEPLOY_CP_PUBLIC_URL: ${{ steps.deploy.outputs.cp_public_url }}
+        run: |
+          set -euo pipefail
+
+          cp_internal="$(echo "${DEPLOY_CP_INTERNAL_URL:-}" | xargs)"
+          cp_public="$(echo "${DEPLOY_CP_PUBLIC_URL:-}" | xargs)"
+          cp_url="$(echo "${DEPLOY_CP_URL:-}" | xargs)"
+
+          if [ -z "$cp_internal" ] && [ -f /tmp/ci-deploy.log ]; then
+            cp_internal="$(sed -n 's/^Agent registration URL: \(https\?:\/\/[^[:space:]]\+\).*/\1/p' /tmp/ci-deploy.log | tail -n1 | xargs || true)"
+          fi
+          if [ -z "$cp_internal" ] && [ -f /tmp/ci-deploy.log ]; then
+            cp_internal="$(sed -n 's/^Control plane URL: \(https\?:\/\/[^[:space:]]\+\).*/\1/p' /tmp/ci-deploy.log | tail -n1 | xargs || true)"
+          fi
+          if [ -z "$cp_public" ] && [ -f /tmp/ci-deploy.log ]; then
+            cp_public="$(sed -n 's/^Public URL is up: \(https\?:\/\/[^[:space:]]\+\).*/\1/p' /tmp/ci-deploy.log | tail -n1 | xargs || true)"
+          fi
+
+          if [ -z "$cp_url" ]; then
+            if [ -n "$cp_public" ]; then
+              cp_url="$cp_public"
+            else
+              cp_url="$cp_internal"
+            fi
+          fi
+
+          if [ -z "$cp_internal" ] || [ -z "$cp_url" ]; then
+            echo "::error::Could not resolve control-plane URLs from deploy step output or deploy logs."
+            if [ -f /tmp/ci-deploy.log ]; then
+              tail -n 120 /tmp/ci-deploy.log || true
+            fi
+            exit 1
+          fi
+
+          {
+            echo "cp_internal_url=$cp_internal"
+            echo "cp_public_url=$cp_public"
+            echo "cp_url=$cp_url"
+          } >> "$GITHUB_OUTPUT"
