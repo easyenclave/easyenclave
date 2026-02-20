@@ -276,7 +276,8 @@ jobs:
       password_login_enabled: ${{ 'true' }}
       auth_allow_password_login_in_production: ${{ 'false' }}
       billing_enabled: ${{ 'true' }}
-      billing_capacity_request_dev_simulation: ${{ 'false' }}
+      # CI rollouts use simulated billing capacity requests to avoid external account funding dependence.
+      billing_capacity_request_dev_simulation: ${{ 'true' }}
       billing_platform_account_id: ${{ vars.BILLING_PLATFORM_ACCOUNT_ID || '' }}
       billing_contributor_pool_bps: ${{ vars.BILLING_CONTRIBUTOR_POOL_BPS || '5000' }}
       use_precomputed_trusted_values: ${{ 'true' }}
