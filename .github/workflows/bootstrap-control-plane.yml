@@ -236,7 +236,7 @@ on:
         required: false
         default: "5000"
 concurrency:
-  group: easyenclave-${{ inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'shared' }}-control-plane
+  group: easyenclave-control-plane-shared-host
   cancel-in-progress: false
 
 jobs:
@@ -356,6 +356,7 @@ jobs:
           PY
 
       - name: Cleanup leaked measurement VMs (best effort)
+        if: ${{ vars.EASYENCLAVE_ENABLE_LEAKED_VM_CLEANUP == 'true' }}
         run: |
           set -euo pipefail
           if command -v virsh >/dev/null 2>&1; then

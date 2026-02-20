@@ -35,8 +35,8 @@ on:
         default: ""
 
 concurrency:
-  group: easyenclave-staging-rollout
-  cancel-in-progress: true
+  group: easyenclave-rollout-shared
+  cancel-in-progress: false
 
 jobs:
   resolve:
