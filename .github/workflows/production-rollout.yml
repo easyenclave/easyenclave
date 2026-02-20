@@ -39,8 +39,46 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  resolve:
+    name: Resolve production rollout config
+    runs-on: ubuntu-latest
+    outputs:
+      cp_url: ${{ steps.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ steps.resolve.outputs.cp_expected_git_sha }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      production_domain: ${{ steps.resolve.outputs.production_domain }}
+    steps:
+      - name: Resolve URLs and refs
+        id: resolve
+        shell: bash
+        env:
+          INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
+          INPUT_EXPECTED_SHA: ${{ github.event.inputs.expected_git_sha || '' }}
+          INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
+          DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+          DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
+        run: |
+          set -euo pipefail
+          source_ref="${INPUT_SOURCE_REF:-${GITHUB_SHA}}"
+          expected_sha="${INPUT_EXPECTED_SHA:-}"
+          domain="${DEFAULT_DOMAIN:-easyenclave.com}"
+          cp_url="${INPUT_CP_URL:-}"
+          if [ -z "$cp_url" ]; then
+            cp_url="${DEFAULT_CP_URL:-}"
+          fi
+          if [ -z "$cp_url" ]; then
+            cp_url="https://app.${domain}"
+          fi
+          {
+            echo "source_ref=${source_ref}"
+            echo "cp_expected_git_sha=${expected_sha}"
+            echo "production_domain=${domain}"
+            echo "cp_url=${cp_url}"
+          } >> "$GITHUB_OUTPUT"
+
   bootstrap:
     name: Bootstrap production control plane
+    needs: [resolve]
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
@@ -49,7 +87,7 @@ jobs:
       num_tiny_agents: '2'
       num_standard_agents: '0'
       num_llm_agents: '1'
-      easyenclave_domain: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+      easyenclave_domain: ${{ needs.resolve.outputs.production_domain }}
       easyenclave_env: production
       tcb_enforcement_mode: strict
       allowed_tcb_statuses: UpToDate
@@ -69,21 +107,21 @@ jobs:
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
     if: github.event.inputs.run_builtin_examples == 'true'
-    needs: [bootstrap]
+    needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
-      cp_url: ${{ github.event.inputs.cp_url || vars.PRODUCTION_CP_URL || 'https://app.easyenclave.com' }}
-      cp_expected_git_sha: ${{ github.event.inputs.expected_git_sha || github.sha }}
-      source_ref: ${{ github.event.inputs.source_ref || github.sha }}
+      cp_url: ${{ needs.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
     if: github.event.inputs.run_builtin_examples == 'true'
-    needs: [bootstrap]
+    needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
-      cp_url: ${{ github.event.inputs.cp_url || vars.PRODUCTION_CP_URL || 'https://app.easyenclave.com' }}
-      cp_expected_git_sha: ${{ github.event.inputs.expected_git_sha || github.sha }}
-      source_ref: ${{ github.event.inputs.source_ref || github.sha }}
+      cp_url: ${{ needs.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      source_ref: ${{ needs.resolve.outputs.source_ref }}

@@ -21,6 +21,10 @@ on:
         description: "Staging control plane URL"
         required: false
         default: ""
+      cp_expected_git_sha:
+        description: "Expected git SHA in /health (optional; empty skips check)"
+        required: false
+        default: ""
       source_ref:
         description: "Git ref to checkout for deploy examples"
         required: false
@@ -35,18 +39,66 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  resolve:
+    name: Resolve staging rollout config
+    runs-on: ubuntu-latest
+    outputs:
+      cp_url: ${{ steps.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ steps.resolve.outputs.cp_expected_git_sha }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      staging_domain: ${{ steps.resolve.outputs.staging_domain }}
+    steps:
+      - name: Resolve URLs and refs
+        id: resolve
+        shell: bash
+        env:
+          INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
+          INPUT_EXPECTED_SHA: ${{ github.event.inputs.cp_expected_git_sha || '' }}
+          INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+          DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+          DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
+        run: |
+          set -euo pipefail
+          source_ref="${INPUT_SOURCE_REF:-}"
+          if [ -z "$source_ref" ]; then
+            source_ref="${WORKFLOW_RUN_SHA:-${GITHUB_SHA}}"
+          fi
+
+          expected_sha="${INPUT_EXPECTED_SHA:-}"
+          if [ -z "$expected_sha" ] && [ -n "${WORKFLOW_RUN_SHA:-}" ]; then
+            expected_sha="${WORKFLOW_RUN_SHA}"
+          fi
+
+          domain="${DEFAULT_DOMAIN:-easyenclave.com}"
+          cp_url="${INPUT_CP_URL:-}"
+          if [ -z "$cp_url" ]; then
+            cp_url="${DEFAULT_CP_URL:-}"
+          fi
+          if [ -z "$cp_url" ]; then
+            cp_url="https://app.${domain}"
+          fi
+
+          {
+            echo "source_ref=${source_ref}"
+            echo "cp_expected_git_sha=${expected_sha}"
+            echo "staging_domain=${domain}"
+            echo "cp_url=${cp_url}"
+          } >> "$GITHUB_OUTPUT"
+
   bootstrap:
     name: Bootstrap staging control plane
+    needs: [resolve]
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
-      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, github.event.workflow_run.head_sha || github.sha) }}
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_ref) }}
       cp_bootstrap_sizes: tiny,llm
       num_tiny_agents: '2'
       num_standard_agents: '0'
       num_llm_agents: '1'
-      easyenclave_domain: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+      easyenclave_domain: ${{ needs.resolve.outputs.staging_domain }}
       easyenclave_env: staging
       tcb_enforcement_mode: warn
       allowed_tcb_statuses: UpToDate
@@ -65,20 +117,20 @@ jobs:
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
-    needs: [bootstrap]
+    needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
-      cp_url: ${{ github.event.inputs.cp_url || vars.STAGING_CP_URL || 'https://app.easyenclave.com' }}
-      cp_expected_git_sha: ${{ github.event.workflow_run.head_sha || github.sha }}
-      source_ref: ${{ github.event.inputs.source_ref || github.event.workflow_run.head_sha || github.sha }}
+      cp_url: ${{ needs.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
-    needs: [bootstrap]
+    needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
-      cp_url: ${{ github.event.inputs.cp_url || vars.STAGING_CP_URL || 'https://app.easyenclave.com' }}
-      cp_expected_git_sha: ${{ github.event.workflow_run.head_sha || github.sha }}
-      source_ref: ${{ github.event.inputs.source_ref || github.event.workflow_run.head_sha || github.sha }}
+      cp_url: ${{ needs.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
