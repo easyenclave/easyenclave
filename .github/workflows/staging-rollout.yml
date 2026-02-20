@@ -150,7 +150,14 @@ jobs:
                 "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=queued&per_page=100" \
                 | jq '[.workflow_runs[] | select(.name == "Production Rollout")] | length'
             )"
-            active_count=$((in_progress_count + queued_count))
+            pending_count="$(
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=pending&per_page=100" \
+                | jq '[.workflow_runs[] | select(.name == "Production Rollout")] | length'
+            )"
+            active_count=$((in_progress_count + queued_count + pending_count))
             if [ "$active_count" -gt 0 ]; then
               should_run="false"
               echo "::notice::Skipping staging rollout because production rollout is active/queued (${active_count})."
@@ -205,7 +212,7 @@ jobs:
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url || needs.bootstrap.outputs.cp_internal_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
 
@@ -215,6 +222,6 @@ jobs:
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url || needs.bootstrap.outputs.cp_internal_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
