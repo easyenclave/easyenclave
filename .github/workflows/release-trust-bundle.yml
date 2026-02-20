@@ -118,6 +118,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           VERSIONED_NAME: ${{ needs.build.outputs.bundle_name }}
         run: |
