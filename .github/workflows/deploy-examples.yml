@@ -37,7 +37,7 @@ on:
         default: ""
 
 concurrency:
-  group: easyenclave-deploy-examples-baremetal
+  group: easyenclave-deploy-examples-baremetal-${{ github.run_id }}
   cancel-in-progress: true
 
 env:

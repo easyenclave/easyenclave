@@ -38,7 +38,7 @@ on:
 
 concurrency:
   # Keep one GCP deploy-example run at a time; allow baremetal/default workflow to run in parallel.
-  group: easyenclave-deploy-examples-gcp
+  group: easyenclave-deploy-examples-gcp-${{ github.run_id }}
   # Prefer the newest run; older deploy-example runs can get stuck on slow capacity.
   cancel-in-progress: true
 
