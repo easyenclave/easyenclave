@@ -18,7 +18,6 @@ on:
       - "www/**"
       - ".github/actions/**"
       - ".github/workflows/**"
-      - "README.md"
       - "Dockerfile"
       - "docker-compose.yml"
       - "requirements.txt"
