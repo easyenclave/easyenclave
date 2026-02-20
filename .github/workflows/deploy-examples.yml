@@ -130,12 +130,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for v in ITA_API_KEY CP_ADMIN_PASSWORD; do
-            if [ -z "${!v:-}" ]; then
-              echo "::error::Missing required secret/env: $v"
-              exit 1
-            fi
-          done
+          if [ -z "${ITA_API_KEY:-}" ]; then
+            echo "::error::Missing required secret/env: ITA_API_KEY"
+            exit 1
+          fi
+          if [ -z "${CP_ADMIN_TOKEN:-}" ] && [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
+            echo "::warning::Neither CP_ADMIN_TOKEN nor CP_ADMIN_PASSWORD is set; baseline trust step can only pass if llm MRTD is already trusted."
+          fi
 
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
@@ -158,16 +159,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          admin_token="${CP_ADMIN_TOKEN:-}"
-          if [ -z "${admin_token:-}" ]; then
-            payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
-            admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
-          fi
-          if [ -z "${admin_token:-}" ]; then
-            echo "::error::Failed to resolve control-plane admin token"
-            exit 1
-          fi
-
           measurements="$(python3 infra/tdx_cli.py vm measure --size llm --json)"
           mrtd="$(echo "$measurements" | jq -r '.mrtd // empty')"
           if ! echo "$mrtd" | grep -Eq '^[0-9a-f]{96}$'; then
@@ -180,6 +171,17 @@ jobs:
           if [ "${already:-0}" -gt 0 ]; then
             echo "LLM baseline already trusted: ${mrtd:0:16}..."
             exit 0
+          fi
+
+          admin_token="${CP_ADMIN_TOKEN:-}"
+          if [ -z "${admin_token:-}" ] && [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
+            payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
+            admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
+          fi
+          if [ -z "${admin_token:-}" ]; then
+            echo "::error::LLM baseline ${mrtd:0:16}... is not trusted, and no admin token could be resolved (password login may be disabled)."
+            echo "::error::Set CP_ADMIN_TOKEN for CI, or preseed this MRTD in trusted values."
+            exit 1
           fi
 
           payload="$(jq -cn --arg m "$mrtd" --arg note "builtin-examples llm baseline" '{mrtd:$m, type:"agent", note:$note}')"
