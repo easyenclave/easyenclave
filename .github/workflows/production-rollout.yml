@@ -251,6 +251,7 @@ jobs:
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
       control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny,llm
       num_tiny_agents: '2'

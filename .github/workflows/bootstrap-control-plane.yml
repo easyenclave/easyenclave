@@ -7,6 +7,10 @@ name: Bootstrap Control Plane
 on:
   workflow_call:
     inputs:
+      source_ref:
+        required: false
+        type: string
+        default: ""
       control_plane_image:
         required: false
         type: string
@@ -143,6 +147,10 @@ on:
         value: ${{ jobs.bootstrap.outputs.cp_public_url }}
   workflow_dispatch:
     inputs:
+      source_ref:
+        description: "Git ref to checkout before bootstrap (tag/sha/branch)"
+        required: false
+        default: ""
       control_plane_image:
         description: "Control plane image ref override (default: :latest)"
         required: false
@@ -312,6 +320,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.ref }}
 
       - name: Validate required secrets
         run: |
