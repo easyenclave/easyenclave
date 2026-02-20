@@ -412,7 +412,58 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set +e
           ./scripts/ci-deploy.sh 2>&1 | tee /tmp/ci-deploy.log
+          ci_rc=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$ci_rc" -ne 0 ]; then
+            if grep -q "Not all agents verified after" /tmp/ci-deploy.log \
+              && grep -Eq "All [0-9]+ agents verified" /tmp/ci-deploy.log; then
+              echo "::warning::Ignoring transient post-loop verification regression from ci-deploy.sh; validating agent capacity directly."
+            else
+              exit "$ci_rc"
+            fi
+          fi
+
+          cp_for_check="$(sed -n 's/^Agent registration URL: \(https\?:\/\/[^[:space:]]\+\).*/\1/p' /tmp/ci-deploy.log | tail -n1 | xargs || true)"
+          if [ -z "$cp_for_check" ]; then
+            cp_for_check="$(sed -n 's/^Control plane URL: \(https\?:\/\/[^[:space:]]\+\).*/\1/p' /tmp/ci-deploy.log | tail -n1 | xargs || true)"
+          fi
+          if [ -z "$cp_for_check" ]; then
+            echo "::error::Could not resolve control-plane URL for post-bootstrap capacity check."
+            exit 1
+          fi
+
+          agents_json="$(curl -fsS "$cp_for_check/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')"
+          verified_count_for_size() {
+            local size="$1"
+            echo "$agents_json" | jq -r --arg s "$size" '
+              [.agents[]
+                | select(.verified == true)
+                | select((.node_size // "" | ascii_downcase) == ($s | ascii_downcase))
+                | select((.health_status // "" | ascii_downcase) == "healthy")
+              ] | length'
+          }
+
+          tiny_verified="$(verified_count_for_size tiny)"
+          standard_verified="$(verified_count_for_size standard)"
+          llm_verified="$(verified_count_for_size llm)"
+
+          if [ "${tiny_verified:-0}" -lt "${NUM_TINY_AGENTS:-0}" ]; then
+            echo "::error::Insufficient verified tiny agents after bootstrap: have ${tiny_verified:-0}, need ${NUM_TINY_AGENTS:-0}"
+            exit 1
+          fi
+          if [ "${standard_verified:-0}" -lt "${NUM_STANDARD_AGENTS:-0}" ]; then
+            echo "::error::Insufficient verified standard agents after bootstrap: have ${standard_verified:-0}, need ${NUM_STANDARD_AGENTS:-0}"
+            exit 1
+          fi
+          if [ "${llm_verified:-0}" -lt "${NUM_LLM_AGENTS:-0}" ]; then
+            echo "::error::Insufficient verified llm agents after bootstrap: have ${llm_verified:-0}, need ${NUM_LLM_AGENTS:-0}"
+            exit 1
+          fi
+
+          echo "Bootstrap capacity check passed: tiny=${tiny_verified} standard=${standard_verified} llm=${llm_verified}"
 
       - name: Normalize bootstrap control-plane URLs
         id: cp_urls
