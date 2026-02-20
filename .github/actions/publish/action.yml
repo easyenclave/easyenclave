@@ -36,6 +36,9 @@ inputs:
     default: ''
 
 outputs:
+  version:
+    description: 'The final published version string (may differ if conflict resolution was needed)'
+    value: ${{ steps.publish.outputs.version }}
   version_id:
     description: 'The published version ID'
     value: ${{ steps.publish.outputs.version_id }}
@@ -87,56 +90,62 @@ runs:
         fi
         COMPOSE_B64=$(base64 -w 0 "${{ inputs.compose_file }}")
 
-        # Build request JSON
-        REQUEST=$(jq -n \
-          --arg version "$VERSION" \
-          --arg compose "$COMPOSE_B64" \
-          --arg image_digest "${{ inputs.image_digest }}" \
-          --arg source_commit "$SOURCE_COMMIT" \
-          --arg source_tag "$SOURCE_TAG" \
-          --arg node_size "${{ inputs.node_size }}" \
-          '{
-            version: $version,
-            compose: $compose,
-            source_commit: $source_commit
-          }
-          + (if $image_digest != "" then {image_digest: $image_digest} else {} end)
-          + (if $source_tag != "" then {source_tag: $source_tag} else {} end)
-          + (if $node_size != "" then {node_size: $node_size} else {} end)')
+        # Always prefer a fresh version. If a conflict occurs, mint a new unique
+        # suffix and retry once instead of reusing an existing failed/stale version.
+        post_version() {
+          local req="$1"
+          local tmp
+          tmp="$(mktemp)"
+          http_code="$(
+            curl -sS -o "$tmp" -w "%{http_code}" \
+              -X POST "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions" \
+              -H "Content-Type: application/json" \
+              -d "$req"
+          )"
+          RESPONSE="$(cat "$tmp")"
+          rm -f "$tmp"
+        }
 
-        tmp="$(mktemp)"
-        http_code="$(
-          curl -sS -o "$tmp" -w "%{http_code}" \
-            -X POST "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions" \
-            -H "Content-Type: application/json" \
-            -d "$REQUEST"
-        )"
-        RESPONSE="$(cat "$tmp")"
-        rm -f "$tmp"
+        attempts=0
+        while :; do
+          REQUEST=$(jq -n \
+            --arg version "$VERSION" \
+            --arg compose "$COMPOSE_B64" \
+            --arg image_digest "${{ inputs.image_digest }}" \
+            --arg source_commit "$SOURCE_COMMIT" \
+            --arg source_tag "$SOURCE_TAG" \
+            --arg node_size "${{ inputs.node_size }}" \
+            '{
+              version: $version,
+              compose: $compose,
+              source_commit: $source_commit
+            }
+            + (if $image_digest != "" then {image_digest: $image_digest} else {} end)
+            + (if $source_tag != "" then {source_tag: $source_tag} else {} end)
+            + (if $node_size != "" then {node_size: $node_size} else {} end)')
 
-        # Idempotency: if the version already exists, fetch the existing record and continue.
-        #
-        # Some deployments return HTTP 409 Conflict, others may return 400 with a structured
-        # `detail` message. Treat both as an idempotent "already exists" case.
-        if [ "$http_code" -ge 400 ]; then
-          detail="$(echo "$RESPONSE" | jq -r '.detail // empty' 2>/dev/null || true)"
-          if echo "$detail" | grep -qi "already exists"; then
-            echo "::notice::Version already exists for ${{ inputs.app_name }}@$VERSION; reusing it"
-            qs=""
-            if [ -n "${{ inputs.node_size }}" ]; then
-              qs="?node_size=${{ inputs.node_size }}"
-            fi
-            RESPONSE="$(curl -sS "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}/versions/$VERSION${qs}")"
-          else
-            if [ -n "$detail" ]; then
-              echo "Error: $detail"
-            else
-              echo "Error: publish failed (HTTP $http_code)"
-              echo "$RESPONSE"
-            fi
-            exit 1
+          post_version "$REQUEST"
+          if [ "$http_code" -lt 400 ]; then
+            break
           fi
-        fi
+
+          detail="$(echo "$RESPONSE" | jq -r '.detail // empty' 2>/dev/null || true)"
+          if echo "$detail" | grep -qi "already exists" && [ "$attempts" -lt 1 ]; then
+            attempts=$((attempts + 1))
+            suffix="$(date -u +%Y%m%d%H%M%S)-$RANDOM"
+            VERSION="${VERSION}-${suffix}"
+            echo "::warning::Version already exists for ${{ inputs.app_name }}; retrying with fresh version $VERSION"
+            continue
+          fi
+
+          if [ -n "$detail" ]; then
+            echo "Error: $detail"
+          else
+            echo "Error: publish failed (HTTP $http_code)"
+            echo "$RESPONSE"
+          fi
+          exit 1
+        done
 
         # Extract outputs
         VERSION_ID=$(echo "$RESPONSE" | jq -r '.version_id')
@@ -144,6 +153,7 @@ runs:
         REJECTION_REASON=$(echo "$RESPONSE" | jq -r '.rejection_reason // empty')
         MRTD=$(echo "$RESPONSE" | jq -r '.mrtd // empty')
 
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "version_id=$VERSION_ID" >> $GITHUB_OUTPUT
         echo "status=$STATUS" >> $GITHUB_OUTPUT
         echo "rejection_reason=$REJECTION_REASON" >> $GITHUB_OUTPUT

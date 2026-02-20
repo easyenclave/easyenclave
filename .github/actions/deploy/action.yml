@@ -79,7 +79,7 @@ outputs:
     value: ${{ steps.health.outputs.service_url }}
   version:
     description: The published app version
-    value: ${{ steps.version.outputs.version }}
+    value: ${{ steps.publish.outputs.version }}
 
 runs:
   using: composite
@@ -145,7 +145,7 @@ runs:
       env:
         CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
         APP_NAME: ${{ inputs.app_name }}
-        VERSION: ${{ steps.version.outputs.version }}
+        VERSION: ${{ steps.publish.outputs.version }}
         INITIAL_STATUS: ${{ steps.publish.outputs.status }}
         NODE_SIZE: ${{ inputs.node_size }}
         ALLOWED_DATACENTERS: ${{ inputs.allowed_datacenters }}
@@ -160,7 +160,7 @@ runs:
       env:
         CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
         APP_NAME: ${{ inputs.app_name }}
-        VERSION: ${{ steps.version.outputs.version }}
+        VERSION: ${{ steps.publish.outputs.version }}
         SERVICE_NAME: ${{ inputs.service_name }}
         HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
         AGENT_ADMIN_PASSWORD: ${{ inputs.agent_admin_password }}
