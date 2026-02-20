@@ -306,7 +306,9 @@ jobs:
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
-    if: github.event.inputs.run_builtin_examples == 'true'
+    # GCP deploy examples are opt-in for production rollouts; enable via repo variable
+    # ENABLE_PRODUCTION_GCP_EXAMPLES=true once external billing/capacity is ready.
+    if: github.event.inputs.run_builtin_examples == 'true' && vars.ENABLE_PRODUCTION_GCP_EXAMPLES == 'true'
     needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
