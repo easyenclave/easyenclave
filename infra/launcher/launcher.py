@@ -2593,7 +2593,18 @@ def run_agent_mode(config: dict):
                 logger.error(f"Registration rejected (MRTD not trusted): {e.response.text}")
                 _admin_state["status"] = "rejected"
                 raise RuntimeError("Registration rejected: MRTD not trusted") from e
-            logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
+            detail = ""
+            if e.response is not None:
+                try:
+                    detail = (e.response.text or "").strip()
+                except Exception:
+                    detail = ""
+            if detail:
+                logger.warning(
+                    f"Registration failed (attempt {attempt + 1}/10): {e} detail={detail[:600]}"
+                )
+            else:
+                logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
         except Exception as e:
             logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
 

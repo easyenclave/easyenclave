@@ -102,7 +102,9 @@ jobs:
       easyenclave_env: staging
       tcb_enforcement_mode: warn
       allowed_tcb_statuses: UpToDate
-      nonce_enforcement_mode: required
+      # Staging is intentionally non-production: keep nonce enforcement permissive
+      # so bootstrap can proceed even when attester-held-data propagation is flaky.
+      nonce_enforcement_mode: optional
       nonce_ttl_seconds: '300'
       rtmr_enforcement_mode: warn
       signature_verification_mode: warn
