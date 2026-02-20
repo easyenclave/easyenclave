@@ -418,7 +418,9 @@ jobs:
           set -e
 
           if [ "$ci_rc" -ne 0 ]; then
-            if grep -q "Not all agents verified after" /tmp/ci-deploy.log \
+            if grep -q "No agents available (bootstrap=0 and additional requested=0)" /tmp/ci-deploy.log; then
+              echo "::warning::ci-deploy.sh skipped agent bootstrap capacity (expected for rollout profile); deploy workflows will provision capacity."
+            elif grep -q "Not all agents verified after" /tmp/ci-deploy.log \
               && grep -Eq "All [0-9]+ agents verified" /tmp/ci-deploy.log; then
               echo "::warning::Ignoring transient post-loop verification regression from ci-deploy.sh; validating agent capacity directly."
             else
