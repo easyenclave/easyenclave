@@ -2042,6 +2042,12 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
     account_id = config.get("cloudflare_account_id")
     zone_id = config.get("cloudflare_zone_id")
     domain = config.get("easyenclave_domain", "easyenclave.com")
+    network_name = (
+        config.get("easyenclave_network_name")
+        or config.get("easyenclave_env")
+        or domain
+        or "network"
+    )
 
     if not all([api_token, account_id, zone_id]):
         logger.info("Cloudflare credentials not configured, skipping tunnel setup")
@@ -2053,7 +2059,11 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
 
     import secrets
 
-    tunnel_name = "easyenclave-control-plane"
+    # Keep tunnel identity unique per network so staging/prod can share one Cloudflare account.
+    network_slug = re.sub(r"[^a-z0-9-]+", "-", str(network_name).lower()).strip("-")
+    if not network_slug:
+        network_slug = "network"
+    tunnel_name = f"easyenclave-control-plane-{network_slug}"[:190]
     hostname = f"app.{domain}"
 
     headers = {

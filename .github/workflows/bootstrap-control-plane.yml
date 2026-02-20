@@ -35,6 +35,10 @@ on:
         required: false
         type: string
         default: "easyenclave.com"
+      easyenclave_network_name:
+        required: false
+        type: string
+        default: ""
       easyenclave_env:
         required: false
         type: string
@@ -175,6 +179,10 @@ on:
         description: "Control-plane DNS domain"
         required: false
         default: "easyenclave.com"
+      easyenclave_network_name:
+        description: "Control-plane network name for tunnel identity isolation"
+        required: false
+        default: ""
       easyenclave_env:
         description: "Environment profile (staging|production)"
         required: false
@@ -261,18 +269,12 @@ jobs:
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
 
-      # Cloudflare credentials.
-      # Use env-specific secrets when present, with legacy shared-secret fallback.
-      CLOUDFLARE_API_TOKEN_LEGACY: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID_LEGACY: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID_LEGACY: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-      STAGING_CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
-      STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.STAGING_CLOUDFLARE_ACCOUNT_ID }}
-      STAGING_CLOUDFLARE_ZONE_ID: ${{ secrets.STAGING_CLOUDFLARE_ZONE_ID }}
-      PRODUCTION_CLOUDFLARE_API_TOKEN: ${{ secrets.PRODUCTION_CLOUDFLARE_API_TOKEN }}
-      PRODUCTION_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.PRODUCTION_CLOUDFLARE_ACCOUNT_ID }}
-      PRODUCTION_CLOUDFLARE_ZONE_ID: ${{ secrets.PRODUCTION_CLOUDFLARE_ZONE_ID }}
+      # Shared Cloudflare credentials; network separation is done by domain/hostname.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       EASYENCLAVE_DOMAIN: ${{ inputs.easyenclave_domain || github.event.inputs.easyenclave_domain || 'easyenclave.com' }}
+      EASYENCLAVE_NETWORK_NAME: ${{ inputs.easyenclave_network_name || github.event.inputs.easyenclave_network_name || '' }}
 
       # GitHub OAuth (admin login + deployer identity).
       GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
@@ -334,51 +336,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "EASYENCLAVE_GIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-
-      - name: Resolve Cloudflare credentials for environment
-        shell: bash
-        run: |
-          set -euo pipefail
-          env_name="$(echo "${EASYENCLAVE_ENV:-staging}" | tr '[:upper:]' '[:lower:]')"
-
-          has_full_set() {
-            [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -n "${3:-}" ]
-          }
-
-          profile="none"
-          cf_api_token=""
-          cf_account_id=""
-          cf_zone_id=""
-
-          if [ "$env_name" = "production" ] && has_full_set "${PRODUCTION_CLOUDFLARE_API_TOKEN:-}" "${PRODUCTION_CLOUDFLARE_ACCOUNT_ID:-}" "${PRODUCTION_CLOUDFLARE_ZONE_ID:-}"; then
-            profile="production"
-            cf_api_token="${PRODUCTION_CLOUDFLARE_API_TOKEN}"
-            cf_account_id="${PRODUCTION_CLOUDFLARE_ACCOUNT_ID}"
-            cf_zone_id="${PRODUCTION_CLOUDFLARE_ZONE_ID}"
-          elif [ "$env_name" = "staging" ] && has_full_set "${STAGING_CLOUDFLARE_API_TOKEN:-}" "${STAGING_CLOUDFLARE_ACCOUNT_ID:-}" "${STAGING_CLOUDFLARE_ZONE_ID:-}"; then
-            profile="staging"
-            cf_api_token="${STAGING_CLOUDFLARE_API_TOKEN}"
-            cf_account_id="${STAGING_CLOUDFLARE_ACCOUNT_ID}"
-            cf_zone_id="${STAGING_CLOUDFLARE_ZONE_ID}"
-          elif has_full_set "${CLOUDFLARE_API_TOKEN_LEGACY:-}" "${CLOUDFLARE_ACCOUNT_ID_LEGACY:-}" "${CLOUDFLARE_ZONE_ID_LEGACY:-}"; then
-            profile="legacy"
-            cf_api_token="${CLOUDFLARE_API_TOKEN_LEGACY}"
-            cf_account_id="${CLOUDFLARE_ACCOUNT_ID_LEGACY}"
-            cf_zone_id="${CLOUDFLARE_ZONE_ID_LEGACY}"
-            echo "::warning::Using legacy shared Cloudflare credentials for ${env_name}. Configure ${env_name^^}_CLOUDFLARE_* secrets to isolate staging/production resources."
-          else
-            echo "::error::Missing Cloudflare credentials for env '${env_name}'."
-            echo "::error::Set ${env_name^^}_CLOUDFLARE_API_TOKEN/${env_name^^}_CLOUDFLARE_ACCOUNT_ID/${env_name^^}_CLOUDFLARE_ZONE_ID, or legacy CLOUDFLARE_* secrets."
-            exit 1
-          fi
-
-          {
-            echo "CLOUDFLARE_API_TOKEN=${cf_api_token}"
-            echo "CLOUDFLARE_ACCOUNT_ID=${cf_account_id}"
-            echo "CLOUDFLARE_ZONE_ID=${cf_zone_id}"
-          } >> "$GITHUB_ENV"
-
-          echo "Using Cloudflare credential profile: ${profile} (env=${env_name})"
 
       - name: Validate required secrets
         run: |

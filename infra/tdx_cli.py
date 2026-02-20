@@ -436,6 +436,7 @@ class TDXManager:
         - CLOUDFLARE_ACCOUNT_ID: Cloudflare account ID
         - CLOUDFLARE_ZONE_ID: Zone ID for the domain
         - EASYENCLAVE_DOMAIN: Domain for hostnames (default: easyenclave.com)
+        - EASYENCLAVE_NETWORK_NAME: Optional network name used to isolate tunnel identity
 
         Args:
             image: Path to verity artifacts directory (auto-detected if not provided)
@@ -455,6 +456,7 @@ class TDXManager:
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),
             "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID"),
             "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
+            "easyenclave_network_name": os.environ.get("EASYENCLAVE_NETWORK_NAME", ""),
             "easyenclave_env": os.environ.get("EASYENCLAVE_ENV"),
             # Optional: passed through to the control plane to enable CP-native provisioning to inject
             # an ITA API key into provisioned agent VMs (EE_AGENT_ITA_API_KEY).

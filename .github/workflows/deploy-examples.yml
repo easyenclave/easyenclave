@@ -121,15 +121,9 @@ jobs:
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
       CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
       CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-      CLOUDFLARE_API_TOKEN_LEGACY: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID_LEGACY: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID_LEGACY: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-      STAGING_CLOUDFLARE_API_TOKEN: ${{ secrets.STAGING_CLOUDFLARE_API_TOKEN }}
-      STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.STAGING_CLOUDFLARE_ACCOUNT_ID }}
-      STAGING_CLOUDFLARE_ZONE_ID: ${{ secrets.STAGING_CLOUDFLARE_ZONE_ID }}
-      PRODUCTION_CLOUDFLARE_API_TOKEN: ${{ secrets.PRODUCTION_CLOUDFLARE_API_TOKEN }}
-      PRODUCTION_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.PRODUCTION_CLOUDFLARE_ACCOUNT_ID }}
-      PRODUCTION_CLOUDFLARE_ZONE_ID: ${{ secrets.PRODUCTION_CLOUDFLARE_ZONE_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -161,41 +155,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp_host="$(echo "$CP_URL" | sed -E 's#^[a-z]+://([^/:]+).*$#\1#')"
-          env_profile="production"
-          if echo "$cp_host" | grep -qi '^app\.staging\.' || echo "$cp_host" | grep -qi '^staging\.'; then
-            env_profile="staging"
-          fi
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
+            if [ -z "${!v:-}" ]; then
+              echo "::warning::Skipping Cloudflare cleanup: missing $v"
+              exit 0
+            fi
+          done
 
-          has_full_set() {
-            [ -n "${1:-}" ] && [ -n "${2:-}" ] && [ -n "${3:-}" ]
-          }
-
-          cf_api_token=""
-          cf_account_id=""
-          cf_zone_id=""
-
-          if [ "$env_profile" = "staging" ] && has_full_set "${STAGING_CLOUDFLARE_API_TOKEN:-}" "${STAGING_CLOUDFLARE_ACCOUNT_ID:-}" "${STAGING_CLOUDFLARE_ZONE_ID:-}"; then
-            cf_api_token="${STAGING_CLOUDFLARE_API_TOKEN}"
-            cf_account_id="${STAGING_CLOUDFLARE_ACCOUNT_ID}"
-            cf_zone_id="${STAGING_CLOUDFLARE_ZONE_ID}"
-          elif [ "$env_profile" = "production" ] && has_full_set "${PRODUCTION_CLOUDFLARE_API_TOKEN:-}" "${PRODUCTION_CLOUDFLARE_ACCOUNT_ID:-}" "${PRODUCTION_CLOUDFLARE_ZONE_ID:-}"; then
-            cf_api_token="${PRODUCTION_CLOUDFLARE_API_TOKEN}"
-            cf_account_id="${PRODUCTION_CLOUDFLARE_ACCOUNT_ID}"
-            cf_zone_id="${PRODUCTION_CLOUDFLARE_ZONE_ID}"
-          elif has_full_set "${CLOUDFLARE_API_TOKEN_LEGACY:-}" "${CLOUDFLARE_ACCOUNT_ID_LEGACY:-}" "${CLOUDFLARE_ZONE_ID_LEGACY:-}"; then
-            cf_api_token="${CLOUDFLARE_API_TOKEN_LEGACY}"
-            cf_account_id="${CLOUDFLARE_ACCOUNT_ID_LEGACY}"
-            cf_zone_id="${CLOUDFLARE_ZONE_ID_LEGACY}"
-            echo "::warning::Using legacy shared Cloudflare credentials for cleanup (host=${cp_host})."
-          else
-            echo "::warning::Skipping Cloudflare cleanup: missing Cloudflare credentials for host=${cp_host}"
+          if [ -z "${CP_URL:-}" ]; then
+            echo "::warning::Skipping Cloudflare cleanup: missing CP_URL"
             exit 0
           fi
-
-          export CLOUDFLARE_API_TOKEN="${cf_api_token}"
-          export CLOUDFLARE_ACCOUNT_ID="${cf_account_id}"
-          export CLOUDFLARE_ZONE_ID="${cf_zone_id}"
 
           python3 scripts/cleanup_stale_tunnels.py || true
           python3 scripts/cleanup_stale_dns.py || true

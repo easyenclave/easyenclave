@@ -52,6 +52,7 @@ jobs:
       source_ref: ${{ steps.resolve.outputs.source_ref }}
       source_sha: ${{ steps.sha.outputs.source_sha }}
       production_domain: ${{ steps.resolve.outputs.production_domain }}
+      production_network_name: ${{ steps.resolve.outputs.production_network_name }}
       release_tag: ${{ steps.resolve.outputs.release_tag }}
       release_tag_regex: ${{ steps.resolve.outputs.release_tag_regex }}
     steps:
@@ -62,6 +63,7 @@ jobs:
           INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
           INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
           DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+          DEFAULT_NETWORK_NAME: ${{ vars.PRODUCTION_NETWORK_NAME || 'production' }}
           DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
           STAGING_DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
           STAGING_DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
@@ -77,6 +79,7 @@ jobs:
           release_tag_regex="$(printf '%s' "$release_tag" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
 
           domain="${DEFAULT_DOMAIN:-easyenclave.com}"
+          network_name="${DEFAULT_NETWORK_NAME:-production}"
           cp_url="${INPUT_CP_URL:-}"
           if [ -z "$cp_url" ]; then
             cp_url="${DEFAULT_CP_URL:-}"
@@ -101,6 +104,7 @@ jobs:
             echo "release_tag_regex=${release_tag_regex}"
             echo "source_ref=${source_ref}"
             echo "production_domain=${domain}"
+            echo "production_network_name=${network_name}"
             echo "cp_url=${cp_url}"
           } >> "$GITHUB_OUTPUT"
 
@@ -260,6 +264,7 @@ jobs:
       num_standard_agents: '0'
       num_llm_agents: '0'
       easyenclave_domain: ${{ needs.resolve.outputs.production_domain }}
+      easyenclave_network_name: ${{ needs.resolve.outputs.production_network_name }}
       easyenclave_env: production
       tcb_enforcement_mode: strict
       allowed_tcb_statuses: UpToDate

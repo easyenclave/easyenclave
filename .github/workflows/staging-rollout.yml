@@ -52,6 +52,7 @@ jobs:
       cp_expected_git_sha: ${{ steps.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ steps.resolve.outputs.source_ref }}
       staging_domain: ${{ steps.resolve.outputs.staging_domain }}
+      staging_network_name: ${{ steps.resolve.outputs.staging_network_name }}
       should_run: ${{ steps.resolve.outputs.should_run }}
     steps:
       - name: Resolve URLs and refs
@@ -64,6 +65,7 @@ jobs:
           FORCE_IF_PRODUCTION_ACTIVE: ${{ github.event.inputs.force_if_production_active || 'false' }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
+          DEFAULT_NETWORK_NAME: ${{ vars.STAGING_NETWORK_NAME || 'staging' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
@@ -81,6 +83,7 @@ jobs:
           fi
 
           domain="${DEFAULT_DOMAIN:-staging.easyenclave.com}"
+          network_name="${DEFAULT_NETWORK_NAME:-staging}"
           cp_url="${INPUT_CP_URL:-}"
           if [ -z "$cp_url" ]; then
             cp_url="${DEFAULT_CP_URL:-}"
@@ -130,6 +133,7 @@ jobs:
             echo "source_ref=${source_ref}"
             echo "cp_expected_git_sha=${expected_sha}"
             echo "staging_domain=${domain}"
+            echo "staging_network_name=${network_name}"
             echo "cp_url=${cp_url}"
             echo "should_run=${should_run}"
           } >> "$GITHUB_OUTPUT"
@@ -148,6 +152,7 @@ jobs:
       num_standard_agents: '0'
       num_llm_agents: '1'
       easyenclave_domain: ${{ needs.resolve.outputs.staging_domain }}
+      easyenclave_network_name: ${{ needs.resolve.outputs.staging_network_name }}
       easyenclave_env: staging
       tcb_enforcement_mode: warn
       allowed_tcb_statuses: UpToDate
