@@ -290,6 +290,14 @@ make_compose() {
 # ===================================================================
 # 1. Deploy control plane
 # ===================================================================
+if [ ! -d "infra/image/output" ]; then
+  echo "Verity artifacts missing at infra/image/output; building once..."
+  (
+    cd infra/image
+    nix develop --command make build
+  )
+fi
+
 echo "==> Deploying control plane..."
 CP_BOOT_JSON="$(
   python3 infra/tdx_cli.py control-plane new \
