@@ -286,9 +286,9 @@ jobs:
       source_ref: ${{ needs.resolve.outputs.source_ref }}
       control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny,llm
-      # Bootstrap no extra agents in production rollout; downstream deploy workflows
-      # reconcile required capacity (baremetal + gcp) with their own retries.
-      num_tiny_agents: '0'
+      # Keep at least one warm tiny agent so production cannot come up with zero
+      # deployable capacity when builtin example jobs are skipped.
+      num_tiny_agents: '1'
       num_standard_agents: '0'
       num_llm_agents: '0'
       easyenclave_domain: ${{ needs.resolve.outputs.production_domain }}
