@@ -20,6 +20,8 @@
 #   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: baremetal)
 #   AGENT_DATACENTER_AZ - availability zone/datacenter shard label (default: github-runner)
 #   AGENT_DATACENTER_REGION - optional region label for placement metadata
+#   AGENT_VERIFY_WAIT_ATTEMPTS - polling attempts while waiting for agent verification (default: 90)
+#   AGENT_VERIFY_WAIT_SECONDS - sleep between verification polls (default: 10)
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -33,6 +35,8 @@ AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
 AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
 CP_BOOTSTRAP_SIZES="${CP_BOOTSTRAP_SIZES:-tiny}"
+AGENT_VERIFY_WAIT_ATTEMPTS="${AGENT_VERIFY_WAIT_ATTEMPTS:-90}"
+AGENT_VERIFY_WAIT_SECONDS="${AGENT_VERIFY_WAIT_SECONDS:-10}"
 
 # ===================================================================
 # Helpers
@@ -419,22 +423,38 @@ echo "Additional agent launches complete; expected verified total: $TOTAL_AGENTS
 # 5. Wait for agents to register and verify
 # ===================================================================
 echo "==> Waiting for $TOTAL_AGENTS agents to register and be verified..."
-for i in {1..30}; do
+for i in $(seq 1 "$AGENT_VERIFY_WAIT_ATTEMPTS"); do
   AGENTS=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')
   VERIFIED=$(echo "$AGENTS" | jq '[.agents[] | select(.verified == true)] | length')
+  TOTAL_SEEN=$(echo "$AGENTS" | jq '[.agents[]] | length')
   if [ "$VERIFIED" -ge "$TOTAL_AGENTS" ]; then
     echo "All $TOTAL_AGENTS agents verified"
     break
   elif [ "$VERIFIED" -ge $((TOTAL_AGENTS - 1)) ]; then
     echo "Warning: only $VERIFIED/$TOTAL_AGENTS agents verified"
   fi
-  echo "$VERIFIED/$TOTAL_AGENTS agents verified, waiting... ($i/30)"
-  sleep 10
+  echo "$VERIFIED/$TOTAL_AGENTS agents verified ($TOTAL_SEEN seen), waiting... ($i/$AGENT_VERIFY_WAIT_ATTEMPTS)"
+  if [ $((i % 6)) -eq 0 ]; then
+    echo "  Agent snapshot:"
+    echo "$AGENTS" | jq -r '
+      [.agents[] | {
+        agent_id,
+        vm_name,
+        node_size,
+        status,
+        health_status,
+        verified,
+        datacenter,
+        verification_error
+      }]' || true
+  fi
+  sleep "$AGENT_VERIFY_WAIT_SECONDS"
 done
 
 VERIFIED=$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null | jq '[.agents[] | select(.verified == true)] | length')
 if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
-  echo "::error::Not all agents verified after 5 minutes ($VERIFIED/$TOTAL_AGENTS)"
+  waited_seconds=$((AGENT_VERIFY_WAIT_ATTEMPTS * AGENT_VERIFY_WAIT_SECONDS))
+  echo "::error::Not all agents verified after ${waited_seconds}s ($VERIFIED/$TOTAL_AGENTS)"
   echo "::error::Dumping unverified agents (to surface root cause without VM logs)..."
   curl -sf "$CP_URL/api/v1/agents" 2>/dev/null \
     | jq -r '
