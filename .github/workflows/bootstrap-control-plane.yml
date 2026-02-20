@@ -435,9 +435,9 @@ jobs:
             exit 1
           fi
 
-          agents_json="$(curl -fsS "$cp_for_check/api/v1/agents" 2>/dev/null || echo '{"agents":[]}')"
-          verified_count_for_size() {
-            local size="$1"
+          verify_counts() {
+            local agents_json="$1"
+            local size="$2"
             echo "$agents_json" | jq -r --arg s "$size" '
               [.agents[]
                 | select(.verified == true)
@@ -446,24 +446,61 @@ jobs:
               ] | length'
           }
 
-          tiny_verified="$(verified_count_for_size tiny)"
-          standard_verified="$(verified_count_for_size standard)"
-          llm_verified="$(verified_count_for_size llm)"
+          tiny_required="${NUM_TINY_AGENTS:-0}"
+          standard_required="${NUM_STANDARD_AGENTS:-0}"
+          llm_required="${NUM_LLM_AGENTS:-0}"
+          max_checks=24
 
-          if [ "${tiny_verified:-0}" -lt "${NUM_TINY_AGENTS:-0}" ]; then
-            echo "::error::Insufficient verified tiny agents after bootstrap: have ${tiny_verified:-0}, need ${NUM_TINY_AGENTS:-0}"
-            exit 1
-          fi
-          if [ "${standard_verified:-0}" -lt "${NUM_STANDARD_AGENTS:-0}" ]; then
-            echo "::error::Insufficient verified standard agents after bootstrap: have ${standard_verified:-0}, need ${NUM_STANDARD_AGENTS:-0}"
-            exit 1
-          fi
-          if [ "${llm_verified:-0}" -lt "${NUM_LLM_AGENTS:-0}" ]; then
-            echo "::error::Insufficient verified llm agents after bootstrap: have ${llm_verified:-0}, need ${NUM_LLM_AGENTS:-0}"
-            exit 1
-          fi
+          tiny_verified=0
+          standard_verified=0
+          llm_verified=0
 
-          echo "Bootstrap capacity check passed: tiny=${tiny_verified} standard=${standard_verified} llm=${llm_verified}"
+          for attempt in $(seq 1 "$max_checks"); do
+            agents_json="$(curl -fsS "$cp_for_check/api/v1/agents" 2>/tmp/bootstrap_agents.err || true)"
+            if [ -z "${agents_json:-}" ]; then
+              if [ "$attempt" -lt "$max_checks" ]; then
+                echo "Post-bootstrap capacity check: agents API not reachable yet ($attempt/$max_checks), retrying..."
+                sleep 5
+                continue
+              fi
+              echo "::error::Failed to query agents from $cp_for_check after retries."
+              if [ -f /tmp/bootstrap_agents.err ]; then
+                cat /tmp/bootstrap_agents.err || true
+              fi
+              exit 1
+            fi
+
+            tiny_verified="$(verify_counts "$agents_json" tiny)"
+            standard_verified="$(verify_counts "$agents_json" standard)"
+            llm_verified="$(verify_counts "$agents_json" llm)"
+
+            if [ "${tiny_verified:-0}" -ge "$tiny_required" ] \
+              && [ "${standard_verified:-0}" -ge "$standard_required" ] \
+              && [ "${llm_verified:-0}" -ge "$llm_required" ]; then
+              echo "Bootstrap capacity check passed: tiny=${tiny_verified} standard=${standard_verified} llm=${llm_verified}"
+              break
+            fi
+
+            if [ "$attempt" -eq "$max_checks" ]; then
+              echo "::error::Insufficient verified capacity after bootstrap retries:"
+              echo "::error::tiny=${tiny_verified} (need ${tiny_required}) standard=${standard_verified} (need ${standard_required}) llm=${llm_verified} (need ${llm_required})"
+              echo "Latest agent snapshot:"
+              echo "$agents_json" | jq -r '
+                [.agents[] | {
+                  agent_id,
+                  node_size,
+                  status,
+                  health_status,
+                  verified,
+                  datacenter,
+                  verification_error
+                }]' || true
+              exit 1
+            fi
+
+            echo "Post-bootstrap capacity check: tiny=${tiny_verified}/${tiny_required} standard=${standard_verified}/${standard_required} llm=${llm_verified}/${llm_required} (attempt $attempt/$max_checks)"
+            sleep 5
+          done
 
       - name: Normalize bootstrap control-plane URLs
         id: cp_urls
