@@ -142,7 +142,7 @@ jobs:
             docker tag "$source_ref" "$target_tag_ref"
             push_out="$(retry_push "$target_tag_ref")"
 
-            digest="$(echo "$push_out" | awk '/digest:/ {print $2}' | tail -n1)"
+            digest="$(echo "$push_out" | grep -Eo 'sha256:[0-9a-f]{64}' | tail -n1)"
             if ! echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
               echo "::error::Failed to parse digest from push output for ${target_tag_ref}"
               exit 1
