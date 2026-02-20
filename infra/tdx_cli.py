@@ -12,6 +12,7 @@ All deployments go through the control plane API - this CLI only handles VM life
 """
 
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -192,14 +193,59 @@ class TDXManager:
         return slug[:max_len]
 
     def _resolve_vm_role_label(self, mode: str, launcher_config: dict) -> str:
-        vm_id = str(launcher_config.get("vm_id") or "")
         if mode == CONTROL_PLANE_MODE:
             return "cp"
-        if mode == "measure" or vm_id.startswith("measure-"):
+        if mode == "measure":
             return "measure"
-        if vm_id.startswith("bootstrap-"):
-            return "bootstrap"
         return "agent"
+
+    @staticmethod
+    def _is_ip_host(host: str) -> bool:
+        value = (host or "").strip()
+        if not value:
+            return False
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+
+    def _resolve_network_label_from_cp_health(self, cp_url: str) -> str:
+        """Resolve a stable network label from control-plane /health."""
+        if not cp_url:
+            return ""
+        try:
+            parsed = urllib.parse.urlparse(cp_url)
+            health_url = urllib.parse.urlunparse(
+                (parsed.scheme or "http", parsed.netloc, "/health", "", "", "")
+            )
+            req = urllib.request.Request(health_url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                payload = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception:
+            return ""
+
+        boot_id = str(payload.get("boot_id") or "")
+        if boot_id:
+            # Example: bootstrap-22241734738-1 -> b22241734738
+            match = re.search(r"bootstrap-(\d+)", boot_id)
+            if match:
+                return self._slug_name_component(f"b{match.group(1)}", "net", max_len=20)
+            return self._slug_name_component(boot_id, "net", max_len=20)
+
+        proxy_url = str(payload.get("proxy_url") or "")
+        if proxy_url:
+            try:
+                host = urllib.parse.urlparse(proxy_url).hostname or ""
+            except Exception:
+                host = ""
+            if host:
+                parts = [p for p in host.split(".") if p]
+                if parts and parts[0] == "app" and len(parts) > 1:
+                    return self._slug_name_component(parts[1], "net", max_len=20)
+                if parts:
+                    return self._slug_name_component(parts[0], "net", max_len=20)
+        return ""
 
     def _resolve_vm_network_label(self, launcher_config: dict) -> str:
         """Best-effort network label for VM naming."""
@@ -219,11 +265,16 @@ class TDXManager:
             except Exception:
                 host = ""
             if host:
-                parts = [p for p in host.split(".") if p]
-                if parts and parts[0] == "app" and len(parts) > 1:
-                    return self._slug_name_component(parts[1], "net", max_len=20)
-                if parts:
-                    return self._slug_name_component(parts[0], "net", max_len=20)
+                if host not in {"localhost", "127.0.0.1"} and not self._is_ip_host(host):
+                    parts = [p for p in host.split(".") if p]
+                    if parts and parts[0] == "app" and len(parts) > 1:
+                        return self._slug_name_component(parts[1], "net", max_len=20)
+                    if parts:
+                        return self._slug_name_component(parts[0], "net", max_len=20)
+
+                inferred = self._resolve_network_label_from_cp_health(cp_url)
+                if inferred:
+                    return inferred
 
         return "net"
 
@@ -452,17 +503,18 @@ class TDXManager:
             role = self._slug_name_component(
                 self._resolve_vm_role_label(mode, launcher_config), "vm", max_len=16
             )
+            network = self._resolve_vm_network_label(launcher_config)
+            uuid_short = re.sub(r"[^a-f0-9]", "", vm_uuid.lower())[:8] or rand_str[:8]
             size = self._slug_name_component(
                 str(launcher_config.get("node_size") or size_name or "na"), "na", max_len=12
             )
-            network = self._resolve_vm_network_label(launcher_config)
-            vm_id_short = self._slug_name_component(
-                str(launcher_config.get("vm_id") or ""), "id", max_len=8
-            )
-            uuid_short = re.sub(r"[^a-f0-9]", "", vm_uuid.lower())[:8] or rand_str[:8]
-            vm_name = (f"{self.DOMAIN_PREFIX}-{role}-{size}-{network}-{vm_id_short}-{uuid_short}")[
-                :220
-            ]
+            if role == "cp":
+                vm_name = f"{self.DOMAIN_PREFIX}-cp-{network}-{uuid_short}"
+            elif role == "agent":
+                vm_name = f"{self.DOMAIN_PREFIX}-agent-{size}-{network}-{uuid_short}"
+            else:
+                vm_name = f"{self.DOMAIN_PREFIX}-{role}-{size}-{network}-{uuid_short}"
+            vm_name = vm_name[:220]
 
         self._virsh("domrename", temp_domain, vm_name, check=True)
         self._virsh("start", vm_name, check=True)
