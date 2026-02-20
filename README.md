@@ -151,9 +151,9 @@ See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LL
 | Workflow | Trigger | Description |
 |----------|---------|-------------|
 | `CI` (`test.yml`) | Push/PR/manual | Lint, test, and build/sign container image (non-mutating) |
-| `PR Staging Checks` | Pull request | No-cost staging readiness checks + workflow policy checks |
+| `PR Staging Checks` | Pull request | Workflow policy checks + staging deploy examples (baremetal + gcp) for same-repo PRs |
 | `Staging Rollout` | CI success on `main`/manual | Bootstrap staging CP and run builtin deploy examples (baremetal + gcp in parallel) |
-| `Production Rollout` | Manual | Strict production rollout (full attestation policy + billing enabled) |
+| `Production Rollout` | CI success on `main`/manual | Strict production rollout (full attestation policy + billing enabled) |
 | `Bootstrap Control Plane` | Manual/reusable | Reusable control-plane bootstrap component used by rollout workflows |
 | `Builtin Deploy Examples (Baremetal)` | Manual/reusable | Deploy `hello-tdx` + `private-llm` (OpenAI-compatible smoke) on baremetal |
 | `Builtin Deploy Examples (GCP)` | Manual/reusable | Deploy `hello-tdx` + `private-llm` (OpenAI-compatible smoke) on gcp |

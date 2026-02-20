@@ -1,6 +1,6 @@
 # Production Rollout
 #
-# Manual strict release pipeline.
+# Strict release pipeline.
 #
 # Production profile:
 # - strict attestation policy
@@ -10,6 +10,10 @@
 name: Production Rollout
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       cp_url:
@@ -55,12 +59,21 @@ jobs:
           INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
           INPUT_EXPECTED_SHA: ${{ github.event.inputs.expected_git_sha || '' }}
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
+          STAGING_DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
+          STAGING_DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
         run: |
           set -euo pipefail
-          source_ref="${INPUT_SOURCE_REF:-${GITHUB_SHA}}"
+          source_ref="${INPUT_SOURCE_REF:-}"
+          if [ -z "$source_ref" ]; then
+            source_ref="${WORKFLOW_RUN_SHA:-${GITHUB_SHA}}"
+          fi
           expected_sha="${INPUT_EXPECTED_SHA:-}"
+          if [ -z "$expected_sha" ] && [ -n "${WORKFLOW_RUN_SHA:-}" ]; then
+            expected_sha="${WORKFLOW_RUN_SHA}"
+          fi
           domain="${DEFAULT_DOMAIN:-easyenclave.com}"
           cp_url="${INPUT_CP_URL:-}"
           if [ -z "$cp_url" ]; then
@@ -69,6 +82,18 @@ jobs:
           if [ -z "$cp_url" ]; then
             cp_url="https://app.${domain}"
           fi
+
+          staging_domain="${STAGING_DEFAULT_DOMAIN:-staging.easyenclave.com}"
+          staging_cp_url="${STAGING_DEFAULT_CP_URL:-}"
+          if [ -z "$staging_cp_url" ]; then
+            staging_cp_url="https://app.${staging_domain}"
+          fi
+          if [ "$cp_url" = "$staging_cp_url" ]; then
+            echo "::error::Production and staging CP URLs resolve to the same value: $cp_url"
+            echo "::error::Set distinct vars: PRODUCTION_CP_URL/PRODUCTION_EASYENCLAVE_DOMAIN and STAGING_CP_URL/STAGING_EASYENCLAVE_DOMAIN."
+            exit 1
+          fi
+
           {
             echo "source_ref=${source_ref}"
             echo "cp_expected_git_sha=${expected_sha}"
@@ -79,10 +104,11 @@ jobs:
   bootstrap:
     name: Bootstrap production control plane
     needs: [resolve]
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
-      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:latest', github.repository) }}
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_ref) }}
       cp_bootstrap_sizes: tiny,llm
       num_tiny_agents: '2'
       num_standard_agents: '0'
@@ -106,7 +132,7 @@ jobs:
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
-    if: github.event.inputs.run_builtin_examples == 'true'
+    if: github.event_name == 'workflow_run' || github.event.inputs.run_builtin_examples == 'true'
     needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
@@ -117,7 +143,7 @@ jobs:
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
-    if: github.event.inputs.run_builtin_examples == 'true'
+    if: github.event_name == 'workflow_run' || github.event.inputs.run_builtin_examples == 'true'
     needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit

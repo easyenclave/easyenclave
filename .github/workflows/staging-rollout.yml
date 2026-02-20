@@ -56,8 +56,10 @@ jobs:
           INPUT_EXPECTED_SHA: ${{ github.event.inputs.cp_expected_git_sha || '' }}
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
-          DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+          DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
+          PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+          PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
         run: |
           set -euo pipefail
           source_ref="${INPUT_SOURCE_REF:-}"
@@ -70,13 +72,24 @@ jobs:
             expected_sha="${WORKFLOW_RUN_SHA}"
           fi
 
-          domain="${DEFAULT_DOMAIN:-easyenclave.com}"
+          domain="${DEFAULT_DOMAIN:-staging.easyenclave.com}"
           cp_url="${INPUT_CP_URL:-}"
           if [ -z "$cp_url" ]; then
             cp_url="${DEFAULT_CP_URL:-}"
           fi
           if [ -z "$cp_url" ]; then
             cp_url="https://app.${domain}"
+          fi
+
+          prod_domain="${PROD_DEFAULT_DOMAIN:-easyenclave.com}"
+          prod_cp_url="${PROD_DEFAULT_CP_URL:-}"
+          if [ -z "$prod_cp_url" ]; then
+            prod_cp_url="https://app.${prod_domain}"
+          fi
+          if [ "$cp_url" = "$prod_cp_url" ]; then
+            echo "::error::Staging and production CP URLs resolve to the same value: $cp_url"
+            echo "::error::Set distinct vars: STAGING_CP_URL/STAGING_EASYENCLAVE_DOMAIN and PRODUCTION_CP_URL/PRODUCTION_EASYENCLAVE_DOMAIN."
+            exit 1
           fi
 
           {
