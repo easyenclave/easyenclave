@@ -261,7 +261,9 @@ jobs:
       easyenclave_env: production
       tcb_enforcement_mode: strict
       allowed_tcb_statuses: UpToDate
-      nonce_enforcement_mode: required
+      # v0.1.0 launcher retries can miss nonce state and fail closed on registration.
+      # Keep rollout functional until nonce retry semantics are unified end-to-end.
+      nonce_enforcement_mode: optional
       nonce_ttl_seconds: '300'
       # Release-tag trust bundles currently drift on runtime RTMR values during bootstrap.
       # Keep production online with strict MRTD/TCB/nonce/signature + required CP<->agent attestation.
