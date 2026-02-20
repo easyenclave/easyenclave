@@ -104,6 +104,7 @@ async def create_tunnel_for_agent(
         )
         list_resp.raise_for_status()
         existing_tunnels = list_resp.json().get("result") or []
+        created_new_tunnel = False
 
         if existing_tunnels:
             # Reuse existing tunnel
@@ -132,6 +133,7 @@ async def create_tunnel_for_agent(
             tunnel_data = create_resp.json()["result"]
             tunnel_id = tunnel_data["id"]
             tunnel_token = tunnel_data["token"]
+            created_new_tunnel = True
             logger.info(f"Created tunnel: {tunnel_id}")
 
         # 2. Configure ingress
@@ -190,6 +192,19 @@ async def create_tunnel_for_agent(
             logger.error(
                 f"DNS record creation failed (status {dns_resp.status_code}): {dns_resp.text}"
             )
+            if created_new_tunnel:
+                # Avoid leaking orphaned tunnels when DNS creation fails.
+                try:
+                    await delete_tunnel(tunnel_id)
+                    logger.info(
+                        "Deleted newly created tunnel %s after DNS creation failure", tunnel_id
+                    )
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Failed to delete tunnel %s after DNS creation failure: %s",
+                        tunnel_id,
+                        cleanup_exc,
+                    )
             dns_resp.raise_for_status()
         else:
             logger.info("DNS record created")
