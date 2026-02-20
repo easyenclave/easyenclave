@@ -195,6 +195,7 @@ jobs:
       - name: Upload descriptor to release assets
         shell: bash
         env:
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
           DESCRIPTOR_NAME: ${{ steps.descriptor.outputs.descriptor_name }}
         run: |
@@ -205,6 +206,6 @@ jobs:
           cp "$descriptor" "$versioned"
           cp "$descriptor" "$canonical"
 
-          gh release upload "$RELEASE_TAG" "$versioned" --clobber
-          gh release upload "$RELEASE_TAG" "$canonical" --clobber
+          gh release upload "$RELEASE_TAG" "$versioned" --clobber -R "$GH_REPO"
+          gh release upload "$RELEASE_TAG" "$canonical" --clobber -R "$GH_REPO"
           echo "Published release assets: $DESCRIPTOR_NAME, example-images.json"
