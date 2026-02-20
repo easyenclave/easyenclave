@@ -31,10 +31,10 @@ on:
         required: false
         default: ""
       run_builtin_examples:
-        description: "Run builtin deploy examples after rollout"
+        description: "Run builtin deploy examples after rollout (requires signed example images under strict policy)"
         required: false
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: easyenclave-rollout-shared
