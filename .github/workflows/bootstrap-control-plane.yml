@@ -131,6 +131,16 @@ on:
         required: false
         type: string
         default: ""
+    outputs:
+      cp_url:
+        description: "Preferred control-plane URL (public if reachable, else internal)"
+        value: ${{ jobs.bootstrap.outputs.cp_url }}
+      cp_internal_url:
+        description: "Internal control-plane URL on the self-hosted TDX network"
+        value: ${{ jobs.bootstrap.outputs.cp_internal_url }}
+      cp_public_url:
+        description: "Public control-plane URL (empty if not yet reachable)"
+        value: ${{ jobs.bootstrap.outputs.cp_public_url }}
   workflow_dispatch:
     inputs:
       control_plane_image:
@@ -226,6 +236,10 @@ jobs:
     runs-on: [self-hosted, tdx]
     permissions:
       contents: read
+    outputs:
+      cp_url: ${{ steps.deploy.outputs.cp_url }}
+      cp_internal_url: ${{ steps.deploy.outputs.cp_internal_url }}
+      cp_public_url: ${{ steps.deploy.outputs.cp_public_url }}
 
     env:
       EASYENCLAVE_BOOT_ID: bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
@@ -366,6 +380,7 @@ jobs:
         run: ./scripts/ci-build-measure.sh
 
       - name: Deploy control plane + bootstrap agents/apps
+        id: deploy
         env:
           TRUSTED_AGENT_MRTDS: ${{ env.PRECOMPUTED_TRUSTED_AGENT_MRTDS || steps.measure.outputs.mrtds }}
           TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE || steps.measure.outputs.mrtds_by_size }}'

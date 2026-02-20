@@ -47,7 +47,7 @@ env:
 jobs:
   wait-control-plane:
     name: Wait for control plane
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, tdx]
     steps:
       - name: Wait for control plane health
         shell: bash
@@ -90,7 +90,7 @@ jobs:
 
   register-apps:
     name: Register builtin apps
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, tdx]
     needs: [wait-control-plane]
     steps:
       - uses: actions/checkout@v4
@@ -265,7 +265,7 @@ jobs:
 
   deploy-hello-tdx:
     name: Deploy hello-tdx (baremetal tiny)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, tdx]
     needs: [ensure-baremetal-capacity]
     steps:
       - uses: actions/checkout@v4
@@ -286,7 +286,7 @@ jobs:
 
   deploy-private-llm:
     name: Deploy private-llm (baremetal llm)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, tdx]
     needs: [ensure-baremetal-capacity]
     steps:
       - uses: actions/checkout@v4

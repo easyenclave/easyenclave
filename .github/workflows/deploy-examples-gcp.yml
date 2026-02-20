@@ -49,7 +49,7 @@ env:
 jobs:
   deploy-hello-tdx-gcp:
     name: Deploy Hello TDX (gcp)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, tdx]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -136,7 +136,7 @@ jobs:
 
   deploy-private-llm-gcp:
     name: Deploy Private LLM (gcp)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, tdx]
     steps:
       - uses: actions/checkout@v4
         with:
