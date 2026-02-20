@@ -129,6 +129,11 @@ jobs:
             exit 1
           fi
 
-          gh release upload "$RELEASE_TAG" "$bundle#$VERSIONED_NAME" --clobber
-          gh release upload "$RELEASE_TAG" "$bundle#trusted_values.json" --clobber
+          versioned="/tmp/${VERSIONED_NAME}"
+          canonical="/tmp/trusted_values.json"
+          cp "$bundle" "$versioned"
+          cp "$bundle" "$canonical"
+
+          gh release upload "$RELEASE_TAG" "$versioned" --clobber
+          gh release upload "$RELEASE_TAG" "$canonical" --clobber
           echo "Published release assets: $VERSIONED_NAME, trusted_values.json"

@@ -152,6 +152,10 @@ jobs:
             asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.json") | .url' | head -n1)"
           fi
           if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            # Backward compatibility for earlier release workflow naming.
+            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.release.json") | .url' | head -n1)"
+          fi
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
             echo "::error::Release ${RELEASE_TAG} missing trust bundle asset (expected trusted_values.${RELEASE_TAG}.json or trusted_values.json)."
             echo "::error::Run .github/workflows/release-trust-bundle.yml for this tag first."
             exit 1
@@ -208,6 +212,10 @@ jobs:
           asset_url="$(echo "$release_json" | jq -r --arg n "gcp-image.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
           if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
             asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.json") | .url' | head -n1)"
+          fi
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            # Backward compatibility for earlier release workflow naming.
+            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.release.json") | .url' | head -n1)"
           fi
           if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
             echo "::error::Release ${RELEASE_TAG} missing GCP image asset (expected gcp-image.${RELEASE_TAG}.json or gcp-image.json)."

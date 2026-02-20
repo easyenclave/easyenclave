@@ -164,6 +164,11 @@ jobs:
         run: |
           set -euo pipefail
           descriptor="/tmp/gcp-image.release.json"
-          gh release upload "$RELEASE_TAG" "$descriptor#$DESCRIPTOR_NAME" --clobber
-          gh release upload "$RELEASE_TAG" "$descriptor#gcp-image.json" --clobber
+          versioned="/tmp/${DESCRIPTOR_NAME}"
+          canonical="/tmp/gcp-image.json"
+          cp "$descriptor" "$versioned"
+          cp "$descriptor" "$canonical"
+
+          gh release upload "$RELEASE_TAG" "$versioned" --clobber
+          gh release upload "$RELEASE_TAG" "$canonical" --clobber
           echo "Published release assets: $DESCRIPTOR_NAME, gcp-image.json"
