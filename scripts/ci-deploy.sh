@@ -313,8 +313,11 @@ else
   CP_URL_CANDIDATE=""
 fi
 
+# Keep bootstrap traffic on the internal URL for determinism.
+# Public URL reachability can lag behind and should not block agent registration.
 CP_URL="$CP_INTERNAL_URL"
 export CP_URL
+CP_PUBLIC_URL=""
 
 # ===================================================================
 # 3. Wait for control plane to answer health (internal URL)
@@ -338,8 +341,8 @@ if [ -n "${CP_URL_CANDIDATE:-}" ]; then
   for _i in {1..30}; do
     if curl -sf "$CP_URL_CANDIDATE/health" > /dev/null 2>&1; then
       echo "Public URL is up: $CP_URL_CANDIDATE"
-      CP_URL="$CP_URL_CANDIDATE"
-      export CP_URL
+      CP_PUBLIC_URL="$CP_URL_CANDIDATE"
+      export CP_PUBLIC_URL
       break
     fi
     sleep 2
