@@ -33,10 +33,15 @@ on:
         description: "Control plane image override"
         required: false
         default: ""
+      force_if_production_active:
+        description: "Force staging rollout even when production rollout is active"
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
-  group: easyenclave-rollout-shared
-  cancel-in-progress: false
+  group: easyenclave-staging-rollout
+  cancel-in-progress: true
 
 jobs:
   resolve:
@@ -47,6 +52,7 @@ jobs:
       cp_expected_git_sha: ${{ steps.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ steps.resolve.outputs.source_ref }}
       staging_domain: ${{ steps.resolve.outputs.staging_domain }}
+      should_run: ${{ steps.resolve.outputs.should_run }}
     steps:
       - name: Resolve URLs and refs
         id: resolve
@@ -55,11 +61,13 @@ jobs:
           INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
           INPUT_EXPECTED_SHA: ${{ github.event.inputs.cp_expected_git_sha || '' }}
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
+          FORCE_IF_PRODUCTION_ACTIVE: ${{ github.event.inputs.force_if_production_active || 'false' }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           source_ref="${INPUT_SOURCE_REF:-}"
@@ -92,17 +100,44 @@ jobs:
             exit 1
           fi
 
+          should_run="true"
+          force="$(echo "${FORCE_IF_PRODUCTION_ACTIVE:-false}" | tr '[:upper:]' '[:lower:]')"
+          if [ "$force" = "true" ]; then
+            echo "::notice::force_if_production_active=true; staging will run even if production is active."
+          else
+            in_progress_count="$(
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=in_progress&per_page=100" \
+                | jq '[.workflow_runs[] | select(.name == "Production Rollout")] | length'
+            )"
+            queued_count="$(
+              curl -fsSL \
+                -H "Authorization: Bearer ${GH_TOKEN}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=queued&per_page=100" \
+                | jq '[.workflow_runs[] | select(.name == "Production Rollout")] | length'
+            )"
+            active_count=$((in_progress_count + queued_count))
+            if [ "$active_count" -gt 0 ]; then
+              should_run="false"
+              echo "::notice::Skipping staging rollout because production rollout is active/queued (${active_count})."
+            fi
+          fi
+
           {
             echo "source_ref=${source_ref}"
             echo "cp_expected_git_sha=${expected_sha}"
             echo "staging_domain=${domain}"
             echo "cp_url=${cp_url}"
+            echo "should_run=${should_run}"
           } >> "$GITHUB_OUTPUT"
 
   bootstrap:
     name: Bootstrap staging control plane
     needs: [resolve]
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    if: (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && needs.resolve.outputs.should_run == 'true'
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:

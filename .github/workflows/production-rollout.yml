@@ -37,7 +37,7 @@ on:
         default: false
 
 concurrency:
-  group: easyenclave-rollout-shared
+  group: easyenclave-production-rollout
   cancel-in-progress: false
 
 jobs:

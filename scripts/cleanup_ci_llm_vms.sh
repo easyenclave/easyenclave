@@ -6,15 +6,18 @@ if [ -z "${CP_URL:-}" ]; then
   exit 1
 fi
 
-# Measurement VMs (trust_domain_verity) are always safe to delete and often
-# leak when a CI job is cancelled mid-measure.
-if command -v virsh >/dev/null 2>&1; then
+# Global measurement-VM cleanup is disabled by default because it can interfere
+# with other in-flight runs on shared runners.
+CLEANUP_GLOBAL_VERITY_DOMAINS="${CLEANUP_GLOBAL_VERITY_DOMAINS:-false}"
+if [ "$CLEANUP_GLOBAL_VERITY_DOMAINS" = "true" ] && command -v virsh >/dev/null 2>&1; then
   mapfile -t verity_domains < <(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true)
   for domain in "${verity_domains[@]}"; do
     [ -n "$domain" ] || continue
     virsh destroy "$domain" >/dev/null 2>&1 || true
     virsh undefine "$domain" --nvram >/dev/null 2>&1 || virsh undefine "$domain" >/dev/null 2>&1 || true
   done
+else
+  echo "Skipping global trust_domain_verity cleanup (set CLEANUP_GLOBAL_VERITY_DOMAINS=true to enable)."
 fi
 
 TARGET_DATACENTER="${TARGET_DATACENTER:-baremetal:github-runner}"

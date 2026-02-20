@@ -32,6 +32,11 @@ TRUSTED_RTMRS=""
 TRUSTED_RTMRS_BY_SIZE=""
 
 cleanup_stale_verity_domains() {
+  if [ "${CLEANUP_GLOBAL_VERITY_DOMAINS:-false}" != "true" ]; then
+    echo "Skipping global trust_domain_verity cleanup (set CLEANUP_GLOBAL_VERITY_DOMAINS=true to enable)." >&2
+    return 0
+  fi
+
   if ! command -v virsh >/dev/null 2>&1; then
     return 0
   fi
