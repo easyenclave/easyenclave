@@ -6,6 +6,7 @@
 # - strict attestation policy
 # - billing enabled (no simulation)
 # - pinned, versioned trusted measurements from release trust bundle
+# - pinned, versioned GCP boot image from release assets
 # - strict image signature policy pinned to release tag identities
 
 name: Production Rollout
@@ -182,9 +183,63 @@ jobs:
             echo "trusted_agent_rtmrs_by_size=$(jq -c '.rtmrs_by_size' "$out")"
           } >> "$GITHUB_OUTPUT"
 
+  gcp-image:
+    name: Resolve release GCP image
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_project: ${{ steps.asset.outputs.image_project }}
+      image_name: ${{ steps.asset.outputs.image_name }}
+      image_family: ${{ steps.asset.outputs.image_family }}
+    steps:
+      - name: Download GCP image descriptor from release assets
+        id: asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+
+          asset_url="$(echo "$release_json" | jq -r --arg n "gcp-image.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.json") | .url' | head -n1)"
+          fi
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            echo "::error::Release ${RELEASE_TAG} missing GCP image asset (expected gcp-image.${RELEASE_TAG}.json or gcp-image.json)."
+            echo "::error::Run .github/workflows/release-gcp-image.yml for this tag first."
+            exit 1
+          fi
+
+          out="/tmp/gcp-image.release.json"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" > "$out"
+
+          jq -e '.image_project | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.image_name | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.image_family | type == "string" and length > 0' "$out" >/dev/null
+
+          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
+          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
+            echo "::error::GCP image release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
+            exit 1
+          fi
+
+          {
+            echo "image_project=$(jq -r '.image_project' "$out")"
+            echo "image_name=$(jq -r '.image_name' "$out")"
+            echo "image_family=$(jq -r '.image_family' "$out")"
+          } >> "$GITHUB_OUTPUT"
+
   bootstrap:
     name: Bootstrap production control plane
-    needs: [resolve, trust-bundle]
+    needs: [resolve, trust-bundle, gcp-image]
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
@@ -216,6 +271,9 @@ jobs:
       trusted_agent_rtmrs_by_size: ${{ needs.trust-bundle.outputs.trusted_agent_rtmrs_by_size }}
       cosign_certificate_oidc_issuer: https://token.actions.githubusercontent.com
       cosign_certificate_identity_regexp: ${{ format('^https://github.com/{0}/.github/workflows/.+@refs/tags/{1}$', github.repository, needs.resolve.outputs.release_tag_regex) }}
+      ee_gcp_image_project: ${{ needs.gcp-image.outputs.image_project }}
+      ee_gcp_image_name: ${{ needs.gcp-image.outputs.image_name }}
+      ee_gcp_image_family: ${{ needs.gcp-image.outputs.image_family }}
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)

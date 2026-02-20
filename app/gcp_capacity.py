@@ -139,6 +139,10 @@ def _image_family() -> str:
     return (os.environ.get("EE_GCP_IMAGE_FAMILY") or "ubuntu-2404-lts-amd64").strip()
 
 
+def _image_name() -> str:
+    return (os.environ.get("EE_GCP_IMAGE_NAME") or "").strip()
+
+
 def _boot_disk_size_gb() -> int:
     raw = (os.environ.get("EE_GCP_BOOT_DISK_GB") or "80").strip()
     try:
@@ -153,6 +157,19 @@ def _boot_disk_type() -> str:
 
 def _network() -> str:
     return (os.environ.get("EE_GCP_NETWORK") or "default").strip()
+
+
+def _boot_source_image_params() -> dict[str, str]:
+    """Return source image selector for Compute API initializeParams.
+
+    Production can pin an exact release image via EE_GCP_IMAGE_NAME.
+    Otherwise we fall back to family-based selection.
+    """
+    name = _image_name()
+    project = _image_project()
+    if name:
+        return {"sourceImage": f"projects/{project}/global/images/{name}"}
+    return {"sourceImage": f"projects/{project}/global/images/family/{_image_family()}"}
 
 
 def _launcher_url() -> str:
@@ -332,7 +349,7 @@ async def create_tdx_instance_for_order(
                 "boot": True,
                 "autoDelete": True,
                 "initializeParams": {
-                    "sourceImage": f"projects/{_image_project()}/global/images/family/{_image_family()}",
+                    **_boot_source_image_params(),
                     "diskSizeGb": str(_boot_disk_size_gb()),
                     "diskType": f"projects/{project_id}/zones/{zone}/diskTypes/{_boot_disk_type()}",
                 },

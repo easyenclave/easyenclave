@@ -21,8 +21,10 @@ flowchart TD
     STG --> BM["Builtin Deploy Examples Baremetal"]
     STG --> GCP["Builtin Deploy Examples GCP"]
     REL["GitHub Release published"] --> RTB["Release Trust Bundle"]
+    REL --> RGI["Release GCP Image"]
     MANUAL["Manual prod dispatch with release_tag"] --> PROD["Production Rollout strict"]
     RTB --> PROD
+    RGI --> PROD
     PROD --> PBM["Builtin Deploy Examples Baremetal"]
     PROD --> PGCP["Builtin Deploy Examples GCP"]
 ```
@@ -41,9 +43,12 @@ flowchart TD
 ### Production
 
 - Trigger: `Production Rollout` via manual dispatch with `release_tag`.
-- Release prerequisite: `Release Trust Bundle` must publish `trusted_values.<tag>.json` (or `trusted_values.json`) on that release.
+- Release prerequisites:
+  - `Release Trust Bundle` must publish `trusted_values.<tag>.json` (or `trusted_values.json`) on that release.
+  - `Release GCP Image` must publish `gcp-image.<tag>.json` (or `gcp-image.json`) on that release.
 - Auth policy: strict (`AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION=true`).
 - Attestation policy: strict TCB + nonce + RTMR + signature verification with trust values pinned to the selected release tag.
+- Provisioning policy: CP-native GCP provisioning uses the exact release-pinned image descriptor (project + image name).
 - Billing policy: enabled (`BILLING_ENABLED=true`, no simulation).
 - Objective: deterministic release with full attestation posture.
 
@@ -53,6 +58,7 @@ flowchart TD
 - `.github/workflows/pr-staging-checks.yml`
 - `.github/workflows/staging-rollout.yml`
 - `.github/workflows/release-trust-bundle.yml`
+- `.github/workflows/release-gcp-image.yml`
 - `.github/workflows/production-rollout.yml`
 
 Reusable/manual components:

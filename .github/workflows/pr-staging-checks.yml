@@ -71,6 +71,10 @@ jobs:
             echo "::error::release-trust-bundle.yml must include release trigger."
             exit 1
           fi
+          if ! rg -n "release:" .github/workflows/release-gcp-image.yml -S >/dev/null; then
+            echo "::error::release-gcp-image.yml must include release trigger."
+            exit 1
+          fi
 
   staging-readiness:
     name: Staging readiness (no-cost)

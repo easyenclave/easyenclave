@@ -47,7 +47,7 @@
                 <h2>Network Trust Policy</h2>
                 <p><strong>Staging network is untrusted.</strong> It exists for CI and integration testing only. Do not use staging for secrets, private production data, or trust-sensitive workloads.</p>
                 <p><strong>Why use staging anyway?</strong> It runs the newest features from <code>main</code> first, and gives developers low-cost access to strong CPU/GPU capacity for build validation, load testing, and model/app experimentation before production.</p>
-                <p><strong>Production network is trusted.</strong> Production rollout is release-gated: strict attestation/auth policy plus pinned trusted measurements and signatures for an explicit release tag.</p>
+                <p><strong>Production network is trusted.</strong> Production rollout is release-gated: strict attestation/auth policy plus pinned trusted measurements, signatures, and GCP image descriptor for an explicit release tag.</p>
                 <div class="network-links">
                     <a href="https://app.easyenclave.com" class="network-link network-link-prod" target="_blank">Production App (Trusted)</a>
                     <a href="https://github.com/easyenclave/easyenclave/actions/workflows/staging-rollout.yml" class="network-link network-link-staging" target="_blank">Staging Rollout / Status (Untrusted)</a>

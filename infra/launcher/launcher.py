@@ -2297,6 +2297,12 @@ def run_control_plane_mode(config: dict):
         env["GCP_SERVICE_ACCOUNT"] = config["gcp_service_account"]
     if config.get("gcp_service_account_key"):
         env["GCP_SERVICE_ACCOUNT_KEY"] = config["gcp_service_account_key"]
+    if config.get("ee_gcp_image_project"):
+        env["EE_GCP_IMAGE_PROJECT"] = config["ee_gcp_image_project"]
+    if config.get("ee_gcp_image_family"):
+        env["EE_GCP_IMAGE_FAMILY"] = config["ee_gcp_image_family"]
+    if config.get("ee_gcp_image_name"):
+        env["EE_GCP_IMAGE_NAME"] = config["ee_gcp_image_name"]
     if config.get("azure_subscription_id"):
         env["AZURE_SUBSCRIPTION_ID"] = config["azure_subscription_id"]
     if config.get("azure_tenant_id"):

@@ -91,6 +91,18 @@ on:
         required: false
         type: string
         default: "5000"
+      ee_gcp_image_project:
+        required: false
+        type: string
+        default: ""
+      ee_gcp_image_family:
+        required: false
+        type: string
+        default: ""
+      ee_gcp_image_name:
+        required: false
+        type: string
+        default: ""
       use_precomputed_trusted_values:
         required: false
         type: string
@@ -272,6 +284,9 @@ jobs:
       BILLING_CAPACITY_REQUEST_DEV_SIMULATION: ${{ inputs.billing_capacity_request_dev_simulation || github.event.inputs.billing_capacity_request_dev_simulation || 'true' }}
       BILLING_PLATFORM_ACCOUNT_ID: ${{ inputs.billing_platform_account_id || github.event.inputs.billing_platform_account_id || secrets.BILLING_PLATFORM_ACCOUNT_ID || '' }}
       BILLING_CONTRIBUTOR_POOL_BPS: ${{ inputs.billing_contributor_pool_bps || github.event.inputs.billing_contributor_pool_bps || '5000' }}
+      EE_GCP_IMAGE_PROJECT: ${{ inputs.ee_gcp_image_project || '' }}
+      EE_GCP_IMAGE_FAMILY: ${{ inputs.ee_gcp_image_family || '' }}
+      EE_GCP_IMAGE_NAME: ${{ inputs.ee_gcp_image_name || '' }}
       USE_PRECOMPUTED_TRUSTED_VALUES: ${{ inputs.use_precomputed_trusted_values || 'false' }}
       PRECOMPUTED_TRUSTED_AGENT_MRTDS: ${{ inputs.trusted_agent_mrtds || '' }}
       PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ inputs.trusted_agent_mrtds_by_size || '' }}

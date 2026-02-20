@@ -462,6 +462,9 @@ class TDXManager:
             # GCP credentials for CP-native provisioning (optional).
             "gcp_project_id": os.environ.get("GCP_PROJECT_ID"),
             "gcp_service_account_key": os.environ.get("GCP_SERVICE_ACCOUNT_KEY"),
+            "ee_gcp_image_project": os.environ.get("EE_GCP_IMAGE_PROJECT"),
+            "ee_gcp_image_family": os.environ.get("EE_GCP_IMAGE_FAMILY"),
+            "ee_gcp_image_name": os.environ.get("EE_GCP_IMAGE_NAME"),
             # Auth / billing settings passed through to the control-plane container
             "github_oauth_client_id": os.environ.get("GITHUB_OAUTH_CLIENT_ID"),
             "github_oauth_client_secret": os.environ.get("GITHUB_OAUTH_CLIENT_SECRET"),
