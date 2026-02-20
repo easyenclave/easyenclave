@@ -277,6 +277,61 @@ jobs:
             echo "image_family=$(jq -r '.image_family' "$out")"
           } >> "$GITHUB_OUTPUT"
 
+  example-images:
+    name: Resolve release example images
+    if: github.event.inputs.run_builtin_examples == 'true'
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      hello_tdx_image: ${{ steps.asset.outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ steps.asset.outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ steps.asset.outputs.private_llm_model_loader_image }}
+    steps:
+      - name: Download example image descriptor from release assets
+        id: asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+
+          asset_url="$(echo "$release_json" | jq -r --arg n "example-images.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "example-images.json") | .url' | head -n1)"
+          fi
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            echo "::error::Release ${RELEASE_TAG} missing example image asset (expected example-images.${RELEASE_TAG}.json or example-images.json)."
+            echo "::error::Run .github/workflows/release-example-images.yml for this tag first."
+            exit 1
+          fi
+
+          out="/tmp/example-images.release.json"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" > "$out"
+
+          jq -e '.hello_tdx_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_ollama_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_model_loader_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+
+          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
+          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
+            echo "::error::Example image descriptor release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
+            exit 1
+          fi
+
+          {
+            echo "hello_tdx_image=$(jq -r '.hello_tdx_image' "$out")"
+            echo "private_llm_ollama_image=$(jq -r '.private_llm_ollama_image' "$out")"
+            echo "private_llm_model_loader_image=$(jq -r '.private_llm_model_loader_image' "$out")"
+          } >> "$GITHUB_OUTPUT"
+
   bootstrap:
     name: Bootstrap production control plane
     needs: [resolve, trust-bundle, gcp-image]
@@ -327,7 +382,7 @@ jobs:
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
     if: github.event.inputs.run_builtin_examples == 'true'
-    needs: [resolve, bootstrap]
+    needs: [resolve, bootstrap, example-images]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
@@ -336,16 +391,22 @@ jobs:
       # release trust/image inputs and enforces policy during bootstrap.
       cp_expected_git_sha: ''
       source_ref: ${{ needs.resolve.outputs.source_ref }}
+      hello_tdx_image: ${{ needs.example-images.outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ needs.example-images.outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ needs.example-images.outputs.private_llm_model_loader_image }}
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
     # GCP deploy examples are opt-in for production rollouts; enable via repo variable
     # ENABLE_PRODUCTION_GCP_EXAMPLES=true once external billing/capacity is ready.
     if: github.event.inputs.run_builtin_examples == 'true' && vars.ENABLE_PRODUCTION_GCP_EXAMPLES == 'true'
-    needs: [resolve, bootstrap]
+    needs: [resolve, bootstrap, example-images]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
       cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ''
       source_ref: ${{ needs.resolve.outputs.source_ref }}
+      hello_tdx_image: ${{ needs.example-images.outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ needs.example-images.outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ needs.example-images.outputs.private_llm_model_loader_image }}

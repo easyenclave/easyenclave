@@ -22,9 +22,11 @@ flowchart TD
     STG --> GCP["Builtin Deploy Examples GCP"]
     REL["GitHub Release published"] --> RTB["Release Trust Bundle"]
     REL --> RGI["Release GCP Image"]
+    REL --> REI["Release Example Images"]
     MANUAL["Manual prod dispatch with release_tag"] --> PROD["Production Rollout strict"]
     RTB --> PROD
     RGI --> PROD
+    REI --> PROD
     PROD --> PBM["Builtin Deploy Examples Baremetal"]
     PROD --> PGCP["Builtin Deploy Examples GCP"]
 ```
@@ -46,6 +48,7 @@ flowchart TD
 - Release prerequisites:
   - `Release Trust Bundle` must publish `trusted_values.<tag>.json` (or `trusted_values.json`) on that release.
   - `Release GCP Image` must publish `gcp-image.<tag>.json` (or `gcp-image.json`) on that release.
+  - `Release Example Images` must publish `example-images.<tag>.json` (or `example-images.json`) when running builtin examples in production.
 - Auth policy: strict (`AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION=true`).
 - Attestation policy: strict TCB + nonce + RTMR + signature verification with trust values pinned to the selected release tag.
 - Provisioning policy: CP-native GCP provisioning uses the exact release-pinned image descriptor (project + image name).
@@ -59,6 +62,7 @@ flowchart TD
 - `.github/workflows/staging-rollout.yml`
 - `.github/workflows/release-trust-bundle.yml`
 - `.github/workflows/release-gcp-image.yml`
+- `.github/workflows/release-example-images.yml`
 - `.github/workflows/production-rollout.yml`
 
 Reusable/manual components:

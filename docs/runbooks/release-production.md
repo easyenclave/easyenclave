@@ -32,7 +32,13 @@ gh workflow run release-trust-bundle.yml -f release_tag=v0.1.0
 gh workflow run release-gcp-image.yml -f release_tag=v0.1.0
 ```
 
-4. Verify assets:
+4. Generate release example image descriptors (signed digest refs for builtin deploy examples):
+
+```bash
+gh workflow run release-example-images.yml -f release_tag=v0.1.0
+```
+
+5. Verify assets:
 
 ```bash
 gh release view v0.1.0 --json assets --jq '.assets[].name'
@@ -44,8 +50,10 @@ Expected assets:
 - `trusted_values.json`
 - `gcp-image.v0.1.0.json`
 - `gcp-image.json`
+- `example-images.v0.1.0.json`
+- `example-images.json`
 
-5. Roll production:
+6. Roll production:
 
 ```bash
 gh workflow run production-rollout.yml -f release_tag=v0.1.0
@@ -55,4 +63,5 @@ gh workflow run production-rollout.yml -f release_tag=v0.1.0
 
 - Missing trust asset: `production-rollout` fails in trust-bundle resolution.
 - Missing GCP image asset: `production-rollout` fails in gcp-image resolution.
+- Missing example image asset (when `run_builtin_examples=true`): rollout fails in example-images resolution.
 - Release tag mismatch in asset payload: rollout fails fast to avoid mixed artifacts.

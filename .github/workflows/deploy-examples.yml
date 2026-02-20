@@ -21,6 +21,18 @@ on:
         required: false
         type: string
         default: ""
+      hello_tdx_image:
+        required: false
+        type: string
+        default: ""
+      private_llm_ollama_image:
+        required: false
+        type: string
+        default: ""
+      private_llm_model_loader_image:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       cp_url:
@@ -35,6 +47,18 @@ on:
         description: "Git ref to checkout"
         required: false
         default: ""
+      hello_tdx_image:
+        description: "Optional hello-tdx image override (digest ref)"
+        required: false
+        default: ""
+      private_llm_ollama_image:
+        description: "Optional private-llm ollama image override (digest ref)"
+        required: false
+        default: ""
+      private_llm_model_loader_image:
+        description: "Optional private-llm model-loader image override (digest ref)"
+        required: false
+        default: ""
 
 concurrency:
   group: easyenclave-deploy-examples-baremetal-${{ github.run_id }}
@@ -43,6 +67,9 @@ concurrency:
 env:
   CP_URL: ${{ inputs.cp_url || github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
   CP_EXPECTED_GIT_SHA: ${{ inputs.cp_expected_git_sha || github.event.inputs.cp_expected_git_sha || '' }}
+  HELLO_TDX_IMAGE: ${{ inputs.hello_tdx_image || github.event.inputs.hello_tdx_image || '' }}
+  PRIVATE_LLM_OLLAMA_IMAGE: ${{ inputs.private_llm_ollama_image || github.event.inputs.private_llm_ollama_image || '' }}
+  PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ inputs.private_llm_model_loader_image || github.event.inputs.private_llm_model_loader_image || '' }}
 
 jobs:
   wait-control-plane:
@@ -296,11 +323,29 @@ jobs:
         with:
           ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
+      - name: Prepare hello-tdx compose (optional release image override)
+        id: hello_compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="examples/hello-tdx/docker-compose.yml"
+          out="${RUNNER_TEMP}/hello-tdx.compose.yml"
+          cp "$src" "$out"
+          if [ -n "${HELLO_TDX_IMAGE:-}" ]; then
+            if ! grep -qE 'image:[[:space:]]*hashicorp/http-echo:latest' "$out"; then
+              echo "::error::Expected hello-tdx image line not found in $src"
+              exit 1
+            fi
+            escaped="$(printf '%s' "${HELLO_TDX_IMAGE}" | sed -e 's/[&|]/\\&/g')"
+            sed -i -E "s|image:[[:space:]]*hashicorp/http-echo:latest|image: ${escaped}|g" "$out"
+          fi
+          echo "compose_file=$out" >> "$GITHUB_OUTPUT"
+
       - name: Deploy hello-tdx
         uses: ./.github/actions/deploy-example
         with:
           app_name: hello-tdx
-          compose_file: examples/hello-tdx/docker-compose.yml
+          compose_file: ${{ steps.hello_compose.outputs.compose_file }}
           service_name: hello-tdx
           health_endpoint: /
           control_plane_url: ${{ env.CP_URL }}
@@ -317,12 +362,41 @@ jobs:
         with:
           ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
+      - name: Prepare private-llm compose (optional release image overrides)
+        id: llm_compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="examples/private-llm/docker-compose.yml"
+          out="${RUNNER_TEMP}/private-llm.compose.yml"
+          cp "$src" "$out"
+
+          if [ -n "${PRIVATE_LLM_OLLAMA_IMAGE:-}" ]; then
+            if ! grep -qE 'image:[[:space:]]*ollama/ollama:latest' "$out"; then
+              echo "::error::Expected private-llm ollama image line not found in $src"
+              exit 1
+            fi
+            escaped="$(printf '%s' "${PRIVATE_LLM_OLLAMA_IMAGE}" | sed -e 's/[&|]/\\&/g')"
+            sed -i -E "s|image:[[:space:]]*ollama/ollama:latest|image: ${escaped}|g" "$out"
+          fi
+
+          if [ -n "${PRIVATE_LLM_MODEL_LOADER_IMAGE:-}" ]; then
+            if ! grep -qE 'image:[[:space:]]*curlimages/curl:latest' "$out"; then
+              echo "::error::Expected private-llm model-loader image line not found in $src"
+              exit 1
+            fi
+            escaped="$(printf '%s' "${PRIVATE_LLM_MODEL_LOADER_IMAGE}" | sed -e 's/[&|]/\\&/g')"
+            sed -i -E "s|image:[[:space:]]*curlimages/curl:latest|image: ${escaped}|g" "$out"
+          fi
+
+          echo "compose_file=$out" >> "$GITHUB_OUTPUT"
+
       - name: Deploy private-llm
         id: deploy
         uses: ./.github/actions/deploy-example
         with:
           app_name: private-llm
-          compose_file: examples/private-llm/docker-compose.yml
+          compose_file: ${{ steps.llm_compose.outputs.compose_file }}
           service_name: private-llm
           health_endpoint: /
           control_plane_url: ${{ env.CP_URL }}
