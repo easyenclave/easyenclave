@@ -354,10 +354,11 @@ jobs:
         run: |
           set -euo pipefail
           if command -v virsh >/dev/null 2>&1; then
-            for d in $(virsh list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
+            libvirt_uri="qemu:///system"
+            for d in $(virsh --connect "$libvirt_uri" list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
               [ -n "$d" ] || continue
-              virsh destroy "$d" >/dev/null 2>&1 || true
-              virsh undefine "$d" --nvram >/dev/null 2>&1 || virsh undefine "$d" >/dev/null 2>&1 || true
+              virsh --connect "$libvirt_uri" destroy "$d" >/dev/null 2>&1 || true
+              virsh --connect "$libvirt_uri" undefine "$d" --nvram >/dev/null 2>&1 || virsh --connect "$libvirt_uri" undefine "$d" >/dev/null 2>&1 || true
             done
           fi
 
