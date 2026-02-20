@@ -54,17 +54,21 @@ jobs:
             exit 1
           fi
 
-          # Production rollout must support CI->workflow_run automation plus manual dispatch.
+          # Production rollout must be release-gated + manual dispatch.
           if rg -n "pull_request:|push:" .github/workflows/production-rollout.yml -S; then
             echo "::error::production-rollout.yml must not trigger on pull_request/push."
             exit 1
           fi
-          if ! rg -n "workflow_run:" .github/workflows/production-rollout.yml -S >/dev/null; then
-            echo "::error::production-rollout.yml must include workflow_run trigger."
+          if rg -n "workflow_run:" .github/workflows/production-rollout.yml -S >/dev/null; then
+            echo "::error::production-rollout.yml must not include workflow_run trigger."
             exit 1
           fi
           if ! rg -n "workflow_dispatch:" .github/workflows/production-rollout.yml -S >/dev/null; then
             echo "::error::production-rollout.yml must include workflow_dispatch trigger."
+            exit 1
+          fi
+          if ! rg -n "release:" .github/workflows/release-trust-bundle.yml -S >/dev/null; then
+            echo "::error::release-trust-bundle.yml must include release trigger."
             exit 1
           fi
 

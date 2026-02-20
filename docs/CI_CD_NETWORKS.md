@@ -6,7 +6,7 @@ This document defines the canonical CI/CD split for EasyEnclave networks.
 
 - Run per-PR staging deploy validation for same-repo PRs.
 - Keep staging rollout automatic from latest `main` with no billing spend.
-- Keep production rollout strict and deterministic (auto from CI on `main`, plus manual dispatch).
+- Require production rollout to target an explicit release tag with pinned trust bundle values.
 - Run builtin deploy examples for baremetal and GCP in parallel.
 
 ## Workflow Graph
@@ -20,8 +20,9 @@ flowchart TD
     CI --> STG["Staging Rollout auto"]
     STG --> BM["Builtin Deploy Examples Baremetal"]
     STG --> GCP["Builtin Deploy Examples GCP"]
-    CI --> PROD["Production Rollout strict"]
-    REL["Manual dispatch"] --> PROD
+    REL["GitHub Release published"] --> RTB["Release Trust Bundle"]
+    MANUAL["Manual prod dispatch with release_tag"] --> PROD["Production Rollout strict"]
+    RTB --> PROD
     PROD --> PBM["Builtin Deploy Examples Baremetal"]
     PROD --> PGCP["Builtin Deploy Examples GCP"]
 ```
@@ -39,9 +40,10 @@ flowchart TD
 
 ### Production
 
-- Trigger: `Production Rollout` after `CI` success on `main` and via manual dispatch.
+- Trigger: `Production Rollout` via manual dispatch with `release_tag`.
+- Release prerequisite: `Release Trust Bundle` must publish `trusted_values.<tag>.json` (or `trusted_values.json`) on that release.
 - Auth policy: strict (`AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION=true`).
-- Attestation policy: strict TCB + nonce + RTMR + signature verification.
+- Attestation policy: strict TCB + nonce + RTMR + signature verification with trust values pinned to the selected release tag.
 - Billing policy: enabled (`BILLING_ENABLED=true`, no simulation).
 - Objective: deterministic release with full attestation posture.
 
@@ -50,6 +52,7 @@ flowchart TD
 - `.github/workflows/test.yml`
 - `.github/workflows/pr-staging-checks.yml`
 - `.github/workflows/staging-rollout.yml`
+- `.github/workflows/release-trust-bundle.yml`
 - `.github/workflows/production-rollout.yml`
 
 Reusable/manual components:
@@ -61,6 +64,6 @@ Reusable/manual components:
 ## Policy Notes
 
 - `deploy-examples*.yml` are intentionally reusable/manual only.
-- Only rollout workflows orchestrate automatic network mutation.
+- Staging rollout mutates staging automatically; production mutation is release-gated and manual.
 - PR checks can run deploy examples only for same-repo PRs on the staging control plane.
 - Baremetal and GCP example deploys execute in parallel after bootstrap.

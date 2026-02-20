@@ -91,6 +91,34 @@ on:
         required: false
         type: string
         default: "5000"
+      use_precomputed_trusted_values:
+        required: false
+        type: string
+        default: "false"
+      trusted_agent_mrtds:
+        required: false
+        type: string
+        default: ""
+      trusted_agent_mrtds_by_size:
+        required: false
+        type: string
+        default: ""
+      trusted_agent_rtmrs:
+        required: false
+        type: string
+        default: ""
+      trusted_agent_rtmrs_by_size:
+        required: false
+        type: string
+        default: ""
+      cosign_certificate_oidc_issuer:
+        required: false
+        type: string
+        default: ""
+      cosign_certificate_identity_regexp:
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       control_plane_image:
@@ -177,7 +205,6 @@ on:
         description: "Contributor pool basis points"
         required: false
         default: "5000"
-
 concurrency:
   group: easyenclave-${{ inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'shared' }}-control-plane
   cancel-in-progress: false
@@ -245,6 +272,13 @@ jobs:
       BILLING_CAPACITY_REQUEST_DEV_SIMULATION: ${{ inputs.billing_capacity_request_dev_simulation || github.event.inputs.billing_capacity_request_dev_simulation || 'true' }}
       BILLING_PLATFORM_ACCOUNT_ID: ${{ inputs.billing_platform_account_id || github.event.inputs.billing_platform_account_id || secrets.BILLING_PLATFORM_ACCOUNT_ID || '' }}
       BILLING_CONTRIBUTOR_POOL_BPS: ${{ inputs.billing_contributor_pool_bps || github.event.inputs.billing_contributor_pool_bps || '5000' }}
+      USE_PRECOMPUTED_TRUSTED_VALUES: ${{ inputs.use_precomputed_trusted_values || 'false' }}
+      PRECOMPUTED_TRUSTED_AGENT_MRTDS: ${{ inputs.trusted_agent_mrtds || '' }}
+      PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ inputs.trusted_agent_mrtds_by_size || '' }}
+      PRECOMPUTED_TRUSTED_AGENT_RTMRS: ${{ inputs.trusted_agent_rtmrs || '' }}
+      PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ inputs.trusted_agent_rtmrs_by_size || '' }}
+      COSIGN_CERTIFICATE_OIDC_ISSUER: ${{ inputs.cosign_certificate_oidc_issuer || 'https://token.actions.githubusercontent.com' }}
+      COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ inputs.cosign_certificate_identity_regexp || '^https://github.com/.+/.+/.github/workflows/.+@refs/.*$' }}
 
     steps:
       - name: Checkout
@@ -288,7 +322,29 @@ jobs:
             done
           fi
 
+      - name: Validate trusted-value source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mode="$(echo "${USE_PRECOMPUTED_TRUSTED_VALUES:-false}" | tr '[:upper:]' '[:lower:]')"
+          if [ "$mode" != "true" ]; then
+            echo "Trusted-value source: local measurement"
+            exit 0
+          fi
+
+          for v in PRECOMPUTED_TRUSTED_AGENT_MRTDS PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE PRECOMPUTED_TRUSTED_AGENT_RTMRS PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::use_precomputed_trusted_values=true requires $v"
+              exit 1
+            fi
+          done
+          echo "${PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE}" | jq -e 'type == "object"' >/dev/null
+          echo "${PRECOMPUTED_TRUSTED_AGENT_RTMRS}" | jq -e 'type == "object"' >/dev/null
+          echo "${PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE}" | jq -e 'type == "object"' >/dev/null
+          echo "Trusted-value source: precomputed bundle"
+
       - name: Build and measure trusted values (bootstrap sizes)
+        if: env.USE_PRECOMPUTED_TRUSTED_VALUES != 'true'
         id: measure
         env:
           MEASURE_SIZES: ${{ env.CP_BOOTSTRAP_SIZES }}
@@ -296,8 +352,8 @@ jobs:
 
       - name: Deploy control plane + bootstrap agents/apps
         env:
-          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ steps.measure.outputs.mrtds_by_size }}'
-          TRUSTED_AGENT_RTMRS: '${{ steps.measure.outputs.rtmrs }}'
-          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ steps.measure.outputs.rtmrs_by_size }}'
+          TRUSTED_AGENT_MRTDS: ${{ env.PRECOMPUTED_TRUSTED_AGENT_MRTDS || steps.measure.outputs.mrtds }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE || steps.measure.outputs.mrtds_by_size }}'
+          TRUSTED_AGENT_RTMRS: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS || steps.measure.outputs.rtmrs }}'
+          TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE || steps.measure.outputs.rtmrs_by_size }}'
         run: ./scripts/ci-deploy.sh

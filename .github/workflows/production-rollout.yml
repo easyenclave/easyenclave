@@ -1,27 +1,24 @@
 # Production Rollout
 #
-# Strict release pipeline.
+# Release-gated strict rollout pipeline.
 #
 # Production profile:
 # - strict attestation policy
 # - billing enabled (no simulation)
-# - optional builtin deploy example verification
+# - pinned, versioned trusted measurements from release trust bundle
+# - strict image signature policy pinned to release tag identities
 
 name: Production Rollout
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: "Release tag to roll out (must have trust bundle asset)"
+        required: true
+        default: ""
       cp_url:
         description: "Production control plane URL"
-        required: false
-        default: ""
-      source_ref:
-        description: "Git ref to checkout for deploy examples"
         required: false
         default: ""
       control_plane_image:
@@ -29,7 +26,7 @@ on:
         required: false
         default: ""
       expected_git_sha:
-        description: "Expected git SHA in /health (optional)"
+        description: "Expected git SHA in /health (optional; default = release commit)"
         required: false
         default: ""
       run_builtin_examples:
@@ -46,34 +43,38 @@ jobs:
   resolve:
     name: Resolve production rollout config
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       cp_url: ${{ steps.resolve.outputs.cp_url }}
-      cp_expected_git_sha: ${{ steps.resolve.outputs.cp_expected_git_sha }}
+      cp_expected_git_sha: ${{ steps.sha.outputs.cp_expected_git_sha }}
       source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_sha: ${{ steps.sha.outputs.source_sha }}
       production_domain: ${{ steps.resolve.outputs.production_domain }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_tag_regex: ${{ steps.resolve.outputs.release_tag_regex }}
     steps:
-      - name: Resolve URLs and refs
+      - name: Resolve URLs and release tag
         id: resolve
         shell: bash
         env:
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
           INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
-          INPUT_EXPECTED_SHA: ${{ github.event.inputs.expected_git_sha || '' }}
-          INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
-          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
           STAGING_DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
           STAGING_DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
         run: |
           set -euo pipefail
-          source_ref="${INPUT_SOURCE_REF:-}"
-          if [ -z "$source_ref" ]; then
-            source_ref="${WORKFLOW_RUN_SHA:-${GITHUB_SHA}}"
+          release_tag="${INPUT_RELEASE_TAG:-}"
+          if [ -z "$release_tag" ]; then
+            echo "::error::release_tag is required for production rollout."
+            exit 1
           fi
-          expected_sha="${INPUT_EXPECTED_SHA:-}"
-          if [ -z "$expected_sha" ] && [ -n "${WORKFLOW_RUN_SHA:-}" ]; then
-            expected_sha="${WORKFLOW_RUN_SHA}"
-          fi
+
+          source_ref="refs/tags/${release_tag}"
+          release_tag_regex="$(printf '%s' "$release_tag" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
+
           domain="${DEFAULT_DOMAIN:-easyenclave.com}"
           cp_url="${INPUT_CP_URL:-}"
           if [ -z "$cp_url" ]; then
@@ -95,20 +96,99 @@ jobs:
           fi
 
           {
+            echo "release_tag=${release_tag}"
+            echo "release_tag_regex=${release_tag_regex}"
             echo "source_ref=${source_ref}"
-            echo "cp_expected_git_sha=${expected_sha}"
             echo "production_domain=${domain}"
             echo "cp_url=${cp_url}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.source_ref }}
+
+      - name: Resolve release commit sha
+        id: sha
+        shell: bash
+        env:
+          INPUT_EXPECTED_SHA: ${{ github.event.inputs.expected_git_sha || '' }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          expected_sha="${INPUT_EXPECTED_SHA:-$source_sha}"
+          {
+            echo "source_sha=${source_sha}"
+            echo "cp_expected_git_sha=${expected_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+  trust-bundle:
+    name: Resolve release trust bundle
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      trusted_agent_mrtds: ${{ steps.bundle.outputs.trusted_agent_mrtds }}
+      trusted_agent_mrtds_by_size: ${{ steps.bundle.outputs.trusted_agent_mrtds_by_size }}
+      trusted_agent_rtmrs: ${{ steps.bundle.outputs.trusted_agent_rtmrs }}
+      trusted_agent_rtmrs_by_size: ${{ steps.bundle.outputs.trusted_agent_rtmrs_by_size }}
+      trusted_digest: ${{ steps.bundle.outputs.trusted_digest }}
+    steps:
+      - name: Download trust bundle from release assets
+        id: bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+
+          asset_url="$(echo "$release_json" | jq -r --arg n "trusted_values.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.json") | .url' | head -n1)"
+          fi
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            echo "::error::Release ${RELEASE_TAG} missing trust bundle asset (expected trusted_values.${RELEASE_TAG}.json or trusted_values.json)."
+            echo "::error::Run .github/workflows/release-trust-bundle.yml for this tag first."
+            exit 1
+          fi
+
+          out="/tmp/trusted_values.release.json"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" > "$out"
+
+          jq -e '.digest | type == "string" and test("^[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.mrtds | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.mrtds_by_size | type == "object"' "$out" >/dev/null
+          jq -e '.rtmrs | type == "object"' "$out" >/dev/null
+          jq -e '.rtmrs_by_size | type == "object"' "$out" >/dev/null
+
+          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
+          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
+            echo "::error::Trust bundle release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
+            exit 1
+          fi
+
+          {
+            echo "trusted_digest=$(jq -r '.digest' "$out")"
+            echo "trusted_agent_mrtds=$(jq -r '.mrtds' "$out")"
+            echo "trusted_agent_mrtds_by_size=$(jq -c '.mrtds_by_size' "$out")"
+            echo "trusted_agent_rtmrs=$(jq -c '.rtmrs' "$out")"
+            echo "trusted_agent_rtmrs_by_size=$(jq -c '.rtmrs_by_size' "$out")"
+          } >> "$GITHUB_OUTPUT"
+
   bootstrap:
     name: Bootstrap production control plane
-    needs: [resolve]
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: [resolve, trust-bundle]
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
-      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_ref) }}
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny,llm
       num_tiny_agents: '2'
       num_standard_agents: '0'
@@ -129,10 +209,17 @@ jobs:
       billing_capacity_request_dev_simulation: ${{ 'false' }}
       billing_platform_account_id: ${{ vars.BILLING_PLATFORM_ACCOUNT_ID || '' }}
       billing_contributor_pool_bps: ${{ vars.BILLING_CONTRIBUTOR_POOL_BPS || '5000' }}
+      use_precomputed_trusted_values: ${{ 'true' }}
+      trusted_agent_mrtds: ${{ needs.trust-bundle.outputs.trusted_agent_mrtds }}
+      trusted_agent_mrtds_by_size: ${{ needs.trust-bundle.outputs.trusted_agent_mrtds_by_size }}
+      trusted_agent_rtmrs: ${{ needs.trust-bundle.outputs.trusted_agent_rtmrs }}
+      trusted_agent_rtmrs_by_size: ${{ needs.trust-bundle.outputs.trusted_agent_rtmrs_by_size }}
+      cosign_certificate_oidc_issuer: https://token.actions.githubusercontent.com
+      cosign_certificate_identity_regexp: ${{ format('^https://github.com/{0}/.github/workflows/.+@refs/tags/{1}$', github.repository, needs.resolve.outputs.release_tag_regex) }}
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
-    if: github.event_name == 'workflow_run' || github.event.inputs.run_builtin_examples == 'true'
+    if: github.event.inputs.run_builtin_examples == 'true'
     needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
@@ -143,7 +230,7 @@ jobs:
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
-    if: github.event_name == 'workflow_run' || github.event.inputs.run_builtin_examples == 'true'
+    if: github.event.inputs.run_builtin_examples == 'true'
     needs: [resolve, bootstrap]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit

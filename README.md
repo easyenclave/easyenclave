@@ -140,8 +140,11 @@ Use the GitHub Actions workflows to deploy to TDX VMs:
 # Roll out staging network (latest main, no-cost profile)
 gh workflow run staging-rollout.yml
 
-# Roll out production network (strict attestation, billing enabled)
-gh workflow run production-rollout.yml
+# Build/re-publish release trust bundle (for a release tag)
+gh workflow run release-trust-bundle.yml -f release_tag=v0.1.0
+
+# Roll out production network for a release tag (strict + pinned trust bundle)
+gh workflow run production-rollout.yml -f release_tag=v0.1.0
 ```
 
 See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LLM example.
@@ -153,7 +156,8 @@ See [examples/private-llm](examples/private-llm) for a complete E2E encrypted LL
 | `CI` (`test.yml`) | Push/PR/manual | Lint, test, and build/sign container image (non-mutating) |
 | `PR Staging Checks` | Pull request | Workflow policy checks + staging deploy examples (baremetal + gcp) for same-repo PRs |
 | `Staging Rollout` | CI success on `main`/manual | Bootstrap staging CP and run builtin deploy examples (baremetal + gcp in parallel) |
-| `Production Rollout` | CI success on `main`/manual | Strict production rollout (full attestation policy + billing enabled) |
+| `Release Trust Bundle` | Release published/manual | Compute deterministic trusted measurements and publish pinned release trust bundle asset |
+| `Production Rollout` | Manual | Strict production rollout for a `release_tag` using pinned release trust bundle |
 | `Bootstrap Control Plane` | Manual/reusable | Reusable control-plane bootstrap component used by rollout workflows |
 | `Builtin Deploy Examples (Baremetal)` | Manual/reusable | Deploy `hello-tdx` + `private-llm` (OpenAI-compatible smoke) on baremetal |
 | `Builtin Deploy Examples (GCP)` | Manual/reusable | Deploy `hello-tdx` + `private-llm` (OpenAI-compatible smoke) on gcp |
