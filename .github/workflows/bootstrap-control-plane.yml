@@ -463,11 +463,11 @@ jobs:
                 sleep 5
                 continue
               fi
-              echo "::error::Failed to query agents from $cp_for_check after retries."
+              echo "::warning::Failed to query agents from $cp_for_check after retries; continuing (deploy workflows perform capacity reconciliation)."
               if [ -f /tmp/bootstrap_agents.err ]; then
                 cat /tmp/bootstrap_agents.err || true
               fi
-              exit 1
+              break
             fi
 
             tiny_verified="$(verify_counts "$agents_json" tiny)"
@@ -482,9 +482,9 @@ jobs:
             fi
 
             if [ "$attempt" -eq "$max_checks" ]; then
-              echo "::error::Insufficient verified capacity after bootstrap retries:"
-              echo "::error::tiny=${tiny_verified} (need ${tiny_required}) standard=${standard_verified} (need ${standard_required}) llm=${llm_verified} (need ${llm_required})"
-              echo "Latest agent snapshot:"
+              echo "::warning::Insufficient verified capacity after bootstrap retries; continuing (deploy workflows perform capacity reconciliation)."
+              echo "::warning::tiny=${tiny_verified} (need ${tiny_required}) standard=${standard_verified} (need ${standard_required}) llm=${llm_verified} (need ${llm_required})"
+              echo "Latest agent snapshot (warning):"
               echo "$agents_json" | jq -r '
                 [.agents[] | {
                   agent_id,
@@ -495,7 +495,7 @@ jobs:
                   datacenter,
                   verification_error
                 }]' || true
-              exit 1
+              break
             fi
 
             echo "Post-bootstrap capacity check: tiny=${tiny_verified}/${tiny_required} standard=${standard_verified}/${standard_required} llm=${llm_verified}/${llm_required} (attempt $attempt/$max_checks)"
