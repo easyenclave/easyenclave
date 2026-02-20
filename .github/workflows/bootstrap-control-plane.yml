@@ -382,6 +382,13 @@ jobs:
           echo "${PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE}" | jq -e 'type == "object"' >/dev/null
           echo "Trusted-value source: precomputed bundle"
 
+      - name: Build verity artifacts (precomputed mode)
+        if: env.USE_PRECOMPUTED_TRUSTED_VALUES == 'true'
+        run: |
+          set -euo pipefail
+          cd infra/image
+          nix develop --command make build
+
       - name: Build and measure trusted values (bootstrap sizes)
         if: env.USE_PRECOMPUTED_TRUSTED_VALUES != 'true'
         id: measure
