@@ -2,6 +2,10 @@
 
 Example apps that run inside TDX enclaves via EasyEnclave. Each is a standard `docker-compose.yml` — EasyEnclave handles attestation, tunneling, and deployment.
 
+Use the combined app runbook for build + deploy:
+
+- [`docs/runbooks/deploy-app.md`](../docs/runbooks/deploy-app.md)
+
 | Example | Description | Test |
 |---------|-------------|------|
 | [hello-tdx](hello-tdx/) | Minimal HTTP server — the smallest possible EasyEnclave app | health check via deploy action |

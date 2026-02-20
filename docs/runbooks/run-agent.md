@@ -12,6 +12,26 @@ Boot a TDX guest agent on your host and register it with an existing control pla
 - Intel Trust Authority API key.
 - Reachable control plane URL (for example `https://app.easyenclave.com`).
 
+## Why the agent needs `ITA_API_KEY`
+
+`ITA_API_KEY` is used by the launcher inside the guest to call Intel Trust
+Authority and mint an attestation token from the TDX quote.
+
+Registration flow:
+
+1. Agent requests nonce challenge from CP.
+2. Agent generates TDX quote.
+3. Agent calls Intel Trust Authority using `ITA_API_KEY` and gets a signed token.
+4. Agent sends token to CP at `/api/v1/agents/register`.
+5. CP verifies Intel signature + nonce + trusted MRTD/RTMR policy.
+
+Important:
+
+- The key is required for the agent to obtain Intel-signed attestation.
+- The key does not need to match the control plane's key.
+- A different key proves quote validity, not ownership identity with CP.
+- Without the key, registration fails because no valid Intel TA token can be produced.
+
 ## Steps
 
 1. Clone repo and pin to the intended release/commit.

@@ -6,6 +6,22 @@ Primary directories: `app/`, `infra/`, `.github/workflows/`
 
 Add CP-native provisioning support for a new cloud with deterministic placement labels.
 
+## Provider Backlog (TODO)
+
+- [x] GCP
+- [ ] Azure
+- [ ] AWS
+- [ ] OCI
+- [ ] Local/baremetal pool API parity with cloud-style capacity hooks
+
+## Node Size Expansion Backlog (TODO)
+
+- [ ] Add a new node size to an existing cloud (capacity module + scheduler labels + preflight checks)
+- [ ] Add `tiny` support for each new cloud
+- [ ] Add `standard` support for each new cloud
+- [ ] Add `llm` support for each new cloud
+- [ ] Add size-specific deploy-example coverage in CI
+
 ## Architecture Points to Extend
 
 1. Provisioning module:

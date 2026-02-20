@@ -8,8 +8,7 @@ Use this top-level README as a router: pick what you want to do, then jump into 
 | What you want to do | Start here | Work mostly in |
 |---|---|---|
 | Run a new agent from a blank TDX host | [`docs/runbooks/run-agent.md`](docs/runbooks/run-agent.md) | `infra/`, `app/` |
-| Deploy an app to an existing agent | [`docs/runbooks/deploy-app.md`](docs/runbooks/deploy-app.md) | `app/`, `examples/` |
-| Build a new app for the network | [`docs/guides/build-app.md`](docs/guides/build-app.md) | `examples/`, `sdk/` |
+| Build and deploy an app to an existing agent | [`docs/runbooks/deploy-app.md`](docs/runbooks/deploy-app.md) | `examples/`, `sdk/`, `.github/actions/` |
 | Add a new cloud/provider | [`docs/guides/add-cloud.md`](docs/guides/add-cloud.md) | `app/`, `infra/`, `.github/workflows/` |
 | Ship a release to production | [`docs/runbooks/release-production.md`](docs/runbooks/release-production.md) | `.github/workflows/`, `infra/` |
 | Understand system design and trust model | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/FAQ.md`](docs/FAQ.md) | `docs/` |
@@ -76,8 +75,7 @@ Common vars:
 ## Docs Index
 
 - Agent onboarding: [`docs/runbooks/run-agent.md`](docs/runbooks/run-agent.md)
-- Deploying apps: [`docs/runbooks/deploy-app.md`](docs/runbooks/deploy-app.md)
-- Building apps: [`docs/guides/build-app.md`](docs/guides/build-app.md)
+- Build + deploy apps: [`docs/runbooks/deploy-app.md`](docs/runbooks/deploy-app.md)
 - Adding clouds/providers: [`docs/guides/add-cloud.md`](docs/guides/add-cloud.md)
 - Release/prod operations: [`docs/runbooks/release-production.md`](docs/runbooks/release-production.md)
 - CI/CD split: [`docs/CI_CD_NETWORKS.md`](docs/CI_CD_NETWORKS.md)
