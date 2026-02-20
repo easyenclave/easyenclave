@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import zlib
@@ -179,6 +180,52 @@ class TDXManager:
         cmd = ["virsh", "--connect", self.VIRSH_CONNECT, *args]
         kwargs.setdefault("capture_output", True)
         return subprocess.run(cmd, **kwargs)
+
+    @staticmethod
+    def _slug_name_component(value: str, default: str, max_len: int = 24) -> str:
+        """Normalize a value for use in VM/domain names."""
+        raw = (value or "").strip().lower()
+        slug = re.sub(r"[^a-z0-9-]+", "-", raw).strip("-")
+        slug = re.sub(r"-{2,}", "-", slug)
+        if not slug:
+            slug = default
+        return slug[:max_len]
+
+    def _resolve_vm_role_label(self, mode: str, launcher_config: dict) -> str:
+        vm_id = str(launcher_config.get("vm_id") or "")
+        if mode == CONTROL_PLANE_MODE:
+            return "cp"
+        if mode == "measure" or vm_id.startswith("measure-"):
+            return "measure"
+        if vm_id.startswith("bootstrap-"):
+            return "bootstrap"
+        return "agent"
+
+    def _resolve_vm_network_label(self, launcher_config: dict) -> str:
+        """Best-effort network label for VM naming."""
+        direct = str(
+            launcher_config.get("easyenclave_network_name")
+            or launcher_config.get("network_name")
+            or launcher_config.get("easyenclave_env")
+            or ""
+        )
+        if direct:
+            return self._slug_name_component(direct, "net", max_len=20)
+
+        cp_url = str(launcher_config.get("control_plane_url") or "")
+        if cp_url:
+            try:
+                host = urllib.parse.urlparse(cp_url).hostname or ""
+            except Exception:
+                host = ""
+            if host:
+                parts = [p for p in host.split(".") if p]
+                if parts and parts[0] == "app" and len(parts) > 1:
+                    return self._slug_name_component(parts[1], "net", max_len=20)
+                if parts:
+                    return self._slug_name_component(parts[0], "net", max_len=20)
+
+        return "net"
 
     def vm_new(
         self,
@@ -396,8 +443,26 @@ class TDXManager:
         result = self._virsh("domuuid", temp_domain, text=True, check=True)
         vm_uuid = result.stdout.strip()
 
-        template_name = template.stem.replace(".xml", "")
-        vm_name = f"{self.DOMAIN_PREFIX}-{template_name}-{vm_uuid}"
+        # Keep measurement VM naming stable for existing cleanup scripts that target
+        # trust_domain_verity-* domains explicitly.
+        if mode == "measure":
+            template_name = template.stem.replace(".xml", "")
+            vm_name = f"{self.DOMAIN_PREFIX}-{template_name}-{vm_uuid}"
+        else:
+            role = self._slug_name_component(
+                self._resolve_vm_role_label(mode, launcher_config), "vm", max_len=16
+            )
+            size = self._slug_name_component(
+                str(launcher_config.get("node_size") or size_name or "na"), "na", max_len=12
+            )
+            network = self._resolve_vm_network_label(launcher_config)
+            vm_id_short = self._slug_name_component(
+                str(launcher_config.get("vm_id") or ""), "id", max_len=8
+            )
+            uuid_short = re.sub(r"[^a-f0-9]", "", vm_uuid.lower())[:8] or rand_str[:8]
+            vm_name = (f"{self.DOMAIN_PREFIX}-{role}-{size}-{network}-{vm_id_short}-{uuid_short}")[
+                :220
+            ]
 
         self._virsh("domrename", temp_domain, vm_name, check=True)
         self._virsh("start", vm_name, check=True)
@@ -1229,6 +1294,14 @@ To start a new EasyEnclave network:
                                 "control_plane_url": url,
                                 "vm_id": bootstrap_vm_id,
                             }
+                            env_network_name = (
+                                os.environ.get("EASYENCLAVE_NETWORK_NAME") or ""
+                            ).strip()
+                            env_network_env = (os.environ.get("EASYENCLAVE_ENV") or "").strip()
+                            if env_network_name:
+                                bootstrap_config["easyenclave_network_name"] = env_network_name
+                            elif env_network_env:
+                                bootstrap_config["easyenclave_env"] = env_network_env
                             env_agent_mode = (
                                 (os.environ.get("AGENT_ADMIN_AUTH_MODE") or "").strip().lower()
                             )
@@ -1322,6 +1395,12 @@ To start a new EasyEnclave network:
                 # Agents mint Intel Trust Authority tokens directly (requires ITA_API_KEY).
                 if args.intel_api_key:
                     config["intel_api_key"] = args.intel_api_key
+                env_network_name = (os.environ.get("EASYENCLAVE_NETWORK_NAME") or "").strip()
+                env_network_env = (os.environ.get("EASYENCLAVE_ENV") or "").strip()
+                if env_network_name:
+                    config["easyenclave_network_name"] = env_network_name
+                elif env_network_env:
+                    config["easyenclave_env"] = env_network_env
                 env_agent_mode = (os.environ.get("AGENT_ADMIN_AUTH_MODE") or "").strip().lower()
                 if env_agent_mode in {"password", "cp", "hybrid"}:
                     config["agent_admin_auth_mode"] = env_agent_mode
