@@ -85,7 +85,7 @@ env:
 jobs:
   deploy-hello-tdx-gcp:
     name: Deploy Hello TDX (gcp)
-    runs-on: [self-hosted, tdx]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
