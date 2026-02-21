@@ -387,6 +387,13 @@ runs:
         if [ "$registration_stall_seconds" -gt 300 ]; then
           registration_stall_seconds=300
         fi
+        fulfilled_grace_seconds=$(( ${WAIT_SECONDS:-900} / 2 ))
+        if [ "$fulfilled_grace_seconds" -lt 300 ]; then
+          fulfilled_grace_seconds=300
+        fi
+        if [ "$fulfilled_grace_seconds" -gt 900 ]; then
+          fulfilled_grace_seconds=900
+        fi
         mrtd=""
         while :; do
           now="$(date +%s)"
@@ -421,8 +428,8 @@ runs:
               echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "open" or .status == "claimed" or .status == "provisioning"))[:5] | map({order_id,status,datacenter,node_size,claim_expires_at,created_at,updated_at,error})' 2>/dev/null || echo "${orders_json:-}"
               exit 1
             fi
-            if [ "${completed_count:-0}" -gt 0 ] && [ "$elapsed" -ge 120 ]; then
-              echo "::error::Launch order(s) report completed/fulfilled but no GCP agent registered with MRTD within 120s."
+            if [ "${completed_count:-0}" -gt 0 ] && [ "$elapsed" -ge "$fulfilled_grace_seconds" ]; then
+              echo "::error::Launch order(s) report completed/fulfilled but no GCP agent registered with MRTD within ${fulfilled_grace_seconds}s."
               echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "completed" or .status == "fulfilled"))[:5] | map({order_id,status,datacenter,node_size,vm_name,created_at,updated_at})' 2>/dev/null || echo "${orders_json:-}"
               exit 1
             fi
@@ -598,6 +605,13 @@ runs:
         if [ "$stall_seconds" -gt 300 ]; then
           stall_seconds=300
         fi
+        fulfilled_grace_seconds=$(( ${WAIT_SECONDS:-900} / 2 ))
+        if [ "$fulfilled_grace_seconds" -lt 300 ]; then
+          fulfilled_grace_seconds=300
+        fi
+        if [ "$fulfilled_grace_seconds" -gt 900 ]; then
+          fulfilled_grace_seconds=900
+        fi
         no_order_seconds=90
         while :; do
           now="$(date +%s)"
@@ -637,8 +651,8 @@ runs:
               exit 1
             fi
 
-            if [ "${fulfilled_count:-0}" -gt 0 ] && [ "$elapsed" -ge 120 ]; then
-              echo "::error::Capacity launch order(s) are fulfilled but no eligible GCP agent registered within 120s."
+            if [ "${fulfilled_count:-0}" -gt 0 ] && [ "$elapsed" -ge "$fulfilled_grace_seconds" ]; then
+              echo "::error::Capacity launch order(s) are fulfilled but no eligible GCP agent registered within ${fulfilled_grace_seconds}s."
               echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "fulfilled"))[:3] | map({order_id,status,datacenter,node_size,vm_name,created_at,updated_at,error})' 2>/dev/null || echo "${orders_json:-}"
               exit 1
             fi

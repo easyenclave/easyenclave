@@ -285,6 +285,7 @@ jobs:
       # GitHub OAuth (admin login + deployer identity).
       GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
       GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
+      # Resolved per-environment below (staging vs production) to avoid callback mismatch.
       GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }}
       ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
 
@@ -345,6 +346,33 @@ jobs:
         run: |
           set -euo pipefail
           echo "EASYENCLAVE_GIT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Resolve GitHub OAuth redirect URI (per environment)
+        shell: bash
+        env:
+          STAGING_REDIRECT_OVERRIDE: ${{ secrets.STAGING_EE_GITHUB_OAUTH_REDIRECT_URI || '' }}
+          PRODUCTION_REDIRECT_OVERRIDE: ${{ secrets.PRODUCTION_EE_GITHUB_OAUTH_REDIRECT_URI || '' }}
+          SHARED_REDIRECT_OVERRIDE: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI || '' }}
+        run: |
+          set -euo pipefail
+          env_name="$(echo "${EASYENCLAVE_ENV:-staging}" | tr '[:upper:]' '[:lower:]')"
+          domain="${EASYENCLAVE_DOMAIN:-easyenclave.com}"
+          redirect_uri=""
+
+          if [ "$env_name" = "production" ]; then
+            redirect_uri="${PRODUCTION_REDIRECT_OVERRIDE:-${SHARED_REDIRECT_OVERRIDE:-}}"
+            if [ -z "$redirect_uri" ]; then
+              redirect_uri="https://app.${domain}/auth/github/callback"
+            fi
+          else
+            redirect_uri="${STAGING_REDIRECT_OVERRIDE:-${SHARED_REDIRECT_OVERRIDE:-}}"
+            if [ -z "$redirect_uri" ]; then
+              redirect_uri="https://app-staging.${domain}/auth/github/callback"
+            fi
+          fi
+
+          echo "Using GitHub OAuth redirect URI for env='${env_name}': ${redirect_uri}"
+          echo "GITHUB_OAUTH_REDIRECT_URI=${redirect_uri}" >> "$GITHUB_ENV"
 
       - name: Validate required secrets
         run: |
