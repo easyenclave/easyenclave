@@ -2034,6 +2034,7 @@ def stream_container_logs(cwd: Path, stop_event: threading.Event) -> None:
 def _control_plane_hostnames(config: dict) -> tuple[str, str]:
     """Return canonical and alias hostnames for the control plane."""
     domain = (config.get("easyenclave_domain") or "easyenclave.com").strip()
+    env_name = (config.get("easyenclave_env") or "").strip().lower()
     network_name = (
         config.get("easyenclave_network_name")
         or config.get("easyenclave_env")
@@ -2044,7 +2045,8 @@ def _control_plane_hostnames(config: dict) -> tuple[str, str]:
     if not network_slug:
         network_slug = "network"
     canonical_hostname = f"{network_slug}.{domain}"
-    alias_hostname = f"app.{domain}"
+    alias_label = "app-staging" if env_name == "staging" else "app"
+    alias_hostname = f"{alias_label}.{domain}"
     return canonical_hostname, alias_hostname
 
 
@@ -2473,8 +2475,8 @@ def run_control_plane_mode(config: dict):
         logger.info(f"API docs at: http://{vm_ip}:{port}/docs")
 
         if cloudflared_proc:
-            domain = config.get("easyenclave_domain", "easyenclave.com")
-            write_status(f"control-plane-ready:app.{domain}")
+            _, alias_hostname = _control_plane_hostnames(config)
+            write_status(f"control-plane-ready:{alias_hostname}")
         else:
             write_status(f"control-plane-ready:{vm_ip}:{port}")
     except Exception as e:

@@ -60,7 +60,7 @@ jobs:
           DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.PRODUCTION_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
-          STAGING_DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
+          STAGING_DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           STAGING_DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
         run: |
           set -euo pipefail
@@ -110,10 +110,10 @@ jobs:
             cp_url="https://app.${domain}"
           fi
 
-          staging_domain="${STAGING_DEFAULT_DOMAIN:-staging.easyenclave.com}"
+          staging_domain="${STAGING_DEFAULT_DOMAIN:-easyenclave.com}"
           staging_cp_url="${STAGING_DEFAULT_CP_URL:-}"
           if [ -z "$staging_cp_url" ]; then
-            staging_cp_url="https://app.${staging_domain}"
+            staging_cp_url="https://app-staging.${staging_domain}"
           fi
           if [ "$cp_url" = "$staging_cp_url" ]; then
             echo "::error::Production and staging CP URLs resolve to the same value: $cp_url"

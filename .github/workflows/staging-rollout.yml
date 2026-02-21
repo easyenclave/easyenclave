@@ -64,7 +64,7 @@ jobs:
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
           FORCE_IF_PRODUCTION_ACTIVE: ${{ github.event.inputs.force_if_production_active || 'false' }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
-          DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'staging.easyenclave.com' }}
+          DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.STAGING_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
@@ -100,7 +100,7 @@ jobs:
             expected_sha="${WORKFLOW_RUN_SHA}"
           fi
 
-          domain="${DEFAULT_DOMAIN:-staging.easyenclave.com}"
+          domain="${DEFAULT_DOMAIN:-easyenclave.com}"
           network_name="$(normalize_network_name "${DEFAULT_NETWORK_NAME:-}")"
           if [ -z "$network_name" ]; then
             network_name="$(make_network_name "staging:${source_ref}:${expected_sha}")"
@@ -116,7 +116,7 @@ jobs:
             cp_url="${DEFAULT_CP_URL:-}"
           fi
           if [ -z "$cp_url" ]; then
-            cp_url="https://app.${domain}"
+            cp_url="https://app-staging.${domain}"
           fi
 
           prod_domain="${PROD_DEFAULT_DOMAIN:-easyenclave.com}"

@@ -547,7 +547,8 @@ class TDXManager:
 
         If Cloudflare environment variables are set, the control plane will
         create a tunnel with a canonical network hostname and keep
-        https://app.{domain} as a stable alias.
+        a stable public alias (`https://app.{domain}` for production,
+        `https://app-staging.{domain}` for staging).
 
         Environment variables for Cloudflare tunnel:
         - CLOUDFLARE_API_TOKEN: API token with Tunnel and DNS edit permissions
@@ -647,7 +648,9 @@ class TDXManager:
         # Add expected hostname if Cloudflare is configured
         if config.get("cloudflare_api_token"):
             domain = config["easyenclave_domain"]
-            result["control_plane_hostname"] = f"app.{domain}"
+            env_name = (config.get("easyenclave_env") or "").strip().lower()
+            alias_label = "app-staging" if env_name == "staging" else "app"
+            result["control_plane_hostname"] = f"{alias_label}.{domain}"
             network_name = (config.get("easyenclave_network_name") or "").strip().lower()
             network_slug = re.sub(r"[^a-z0-9-]+", "-", network_name).strip("-")
             if network_slug:

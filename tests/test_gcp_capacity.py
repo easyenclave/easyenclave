@@ -9,7 +9,7 @@ def test_ownership_scope_labels_include_expected_values(monkeypatch):
     monkeypatch.setenv("EASYENCLAVE_NETWORK_NAME", "Trippy-Drifter-2c6b1c")
     monkeypatch.setenv("EASYENCLAVE_ENV", "staging")
     monkeypatch.setenv("EASYENCLAVE_BOOT_ID", "bootstrap-22260503213-1")
-    monkeypatch.setenv("EASYENCLAVE_CP_URL", "https://app.staging.easyenclave.com")
+    monkeypatch.setenv("EASYENCLAVE_CP_URL", "https://app-staging.easyenclave.com")
 
     labels = gcp_capacity._ownership_scope_labels()
 
