@@ -48,7 +48,7 @@ flowchart TD
 - Release prerequisites:
   - `Release Trust Bundle` must publish `trusted_values.<tag>.json` (or `trusted_values.json`) on that release.
   - `Release GCP Image` must publish `gcp-image.<tag>.json` (or `gcp-image.json`) on that release.
-  - `Release Example Images` must publish `example-images.<tag>.json` (or `example-images.json`) because builtin examples always run in production rollout.
+- `Release Example Images` must publish `example-images.<tag>.json` (or `example-images.json`) because production always dispatches builtin examples after bootstrap.
 - Auth policy: strict (`AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION=true`).
 - Attestation policy: strict TCB + nonce + RTMR + signature verification with trust values pinned to the selected release tag.
 - Provisioning policy: CP-native GCP provisioning uses the exact release-pinned image descriptor (project + image name).
@@ -77,3 +77,4 @@ Reusable/manual components:
 - Staging rollout mutates staging automatically; production mutation is release-gated and manual.
 - PR checks can run deploy examples only for same-repo PRs on the staging control plane.
 - Baremetal and GCP example deploys execute in parallel after bootstrap.
+- In production, those example deploys are dispatched asynchronously so production cutover is not blocked by long-tail example execution time.

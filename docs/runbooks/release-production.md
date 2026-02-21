@@ -59,6 +59,11 @@ Expected assets:
 gh workflow run production-rollout.yml -f release_tag=v0.1.0
 ```
 
+Note:
+
+- `production-rollout` now dispatches `deploy-examples.yml` and `deploy-examples-gcp.yml` asynchronously after bootstrap.
+- This keeps production cutover fast; monitor those two workflows separately for post-cutover validation.
+
 ## Failure Modes
 
 - Missing trust asset: `production-rollout` fails in trust-bundle resolution.
