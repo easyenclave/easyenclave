@@ -407,7 +407,7 @@ jobs:
           echo "${PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE}" | jq -e 'type == "object"' >/dev/null
           echo "Trusted-value source: precomputed bundle"
 
-      - name: Prune stale local tdvirsh VMs for this network (best effort)
+      - name: Prune stale local tdvirsh VMs (current + orphaned networks)
         shell: bash
         run: |
           set -euo pipefail
@@ -421,19 +421,65 @@ jobs:
             echo "No network slug resolved; skipping local VM prune."
             exit 0
           fi
-          echo "Pruning stale tdvirsh domains for network='${network_slug}'"
-          count=0
-          for d in $(virsh --connect qemu:///system list --all --name | sed '/^$/d'); do
+          echo "Pruning stale tdvirsh domains for current network='${network_slug}'"
+          count_current=0
+          count_orphan=0
+          mapfile -t all_domains < <(virsh --connect qemu:///system list --all --name | sed '/^$/d')
+
+          # 1) Always clear stale domains for the network we are about to bootstrap.
+          for d in "${all_domains[@]}"; do
             case "$d" in
               tdvirsh-cp-"${network_slug}"-*|tdvirsh-agent-*"${network_slug}"-*)
-                echo "  deleting stale domain: $d"
+                echo "  deleting current-network stale domain: $d"
                 virsh --connect qemu:///system destroy "$d" >/dev/null 2>&1 || true
                 virsh --connect qemu:///system undefine "$d" --nvram >/dev/null 2>&1 || virsh --connect qemu:///system undefine "$d" >/dev/null 2>&1 || true
-                count=$((count + 1))
+                count_current=$((count_current + 1))
                 ;;
             esac
           done
-          echo "Pruned ${count} stale tdvirsh domain(s) for network ${network_slug}."
+
+          # 2) Cleanup orphaned legacy networks (agents left behind after CP VM is gone).
+          # Keep any network that still has a running CP VM to avoid cross-network interference.
+          declare -A network_domains
+          declare -A network_has_running_cp
+          for d in "${all_domains[@]}"; do
+            network=""
+            is_cp="false"
+            if [[ "$d" =~ ^tdvirsh-cp-(.+)-[0-9a-f]{8}$ ]]; then
+              network="${BASH_REMATCH[1]}"
+              is_cp="true"
+            elif [[ "$d" =~ ^tdvirsh-agent-[^-]+-(.+)-[0-9a-f]{8}$ ]]; then
+              network="${BASH_REMATCH[1]}"
+            else
+              continue
+            fi
+            network_domains["$network"]+="${d}"$'\n'
+            if [ "$is_cp" = "true" ]; then
+              state="$(virsh --connect qemu:///system domstate "$d" 2>/dev/null | tr -d '\r' | xargs || true)"
+              if [ "$state" = "running" ]; then
+                network_has_running_cp["$network"]="1"
+              fi
+            fi
+          done
+
+          for network in "${!network_domains[@]}"; do
+            if [ "$network" = "$network_slug" ]; then
+              continue
+            fi
+            if [ "${network_has_running_cp[$network]:-0}" = "1" ]; then
+              continue
+            fi
+            echo "  deleting orphaned network domains: network=$network"
+            while IFS= read -r d; do
+              [ -n "$d" ] || continue
+              echo "    deleting orphan domain: $d"
+              virsh --connect qemu:///system destroy "$d" >/dev/null 2>&1 || true
+              virsh --connect qemu:///system undefine "$d" --nvram >/dev/null 2>&1 || virsh --connect qemu:///system undefine "$d" >/dev/null 2>&1 || true
+              count_orphan=$((count_orphan + 1))
+            done <<< "${network_domains[$network]}"
+          done
+
+          echo "Pruned ${count_current} current-network domain(s) and ${count_orphan} orphan-network domain(s)."
 
       - name: Build verity artifacts (precomputed mode)
         if: env.USE_PRECOMPUTED_TRUSTED_VALUES == 'true'
