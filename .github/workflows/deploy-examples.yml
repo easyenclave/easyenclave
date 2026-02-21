@@ -81,8 +81,8 @@ env:
   PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ inputs.private_llm_model_loader_image || github.event.inputs.private_llm_model_loader_image || '' }}
 
 jobs:
-  wait-control-plane:
-    name: Wait for control plane
+  deploy-builtin-baremetal:
+    name: Deploy builtin apps (baremetal)
     runs-on: [self-hosted, tdx]
     steps:
       - name: Wait for control plane health
@@ -124,11 +124,6 @@ jobs:
             sleep 5
           done
 
-  register-apps:
-    name: Register builtin apps
-    runs-on: [self-hosted, tdx]
-    needs: [wait-control-plane]
-    steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
@@ -146,191 +141,6 @@ jobs:
           name: private-llm
           description: "Private LLM - Ollama running in a TDX enclave"
           control_plane_url: ${{ env.CP_URL }}
-
-  ensure-baremetal-capacity:
-    name: Ensure baremetal capacity (tiny + llm)
-    runs-on: [self-hosted, tdx]
-    needs: [register-apps]
-    permissions:
-      contents: read
-    env:
-      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token || github.event.inputs.cp_admin_token || secrets.CP_ADMIN_TOKEN }}
-      CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
-
-      - name: Validate required secrets
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${ITA_API_KEY:-}" ]; then
-            echo "::error::Missing required secret/env: ITA_API_KEY"
-            exit 1
-          fi
-          if [ -z "${CP_ADMIN_TOKEN:-}" ] && [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
-            echo "::warning::Neither CP_ADMIN_TOKEN nor CP_ADMIN_PASSWORD is set; baseline trust step can only pass if llm MRTD is already trusted."
-          fi
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Build verity artifacts (required for tdx_cli vm new)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd infra/image
-          nix develop --command make build
-
-      - name: Cleanup stale Cloudflare agent resources (best effort)
-        shell: bash
-        run: |
-          set -euo pipefail
-          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_ZONE_ID; do
-            if [ -z "${!v:-}" ]; then
-              echo "::warning::Skipping Cloudflare cleanup: missing $v"
-              exit 0
-            fi
-          done
-
-          if [ -z "${CP_URL:-}" ]; then
-            echo "::warning::Skipping Cloudflare cleanup: missing CP_URL"
-            exit 0
-          fi
-
-          python3 scripts/cleanup_stale_tunnels.py || true
-          python3 scripts/cleanup_stale_dns.py || true
-
-      - name: Cleanup stale CI LLM VMs (best effort)
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash ./scripts/cleanup_ci_llm_vms.sh || true
-
-      - name: Trust measured llm baseline
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          measurements="$(python3 infra/tdx_cli.py vm measure --size llm --json)"
-          mrtd="$(echo "$measurements" | jq -r '.mrtd // empty')"
-          if ! echo "$mrtd" | grep -Eq '^[0-9a-f]{96}$'; then
-            echo "::error::Failed to measure valid llm baseline MRTD"
-            echo "$measurements" | head -c 2000 || true
-            exit 1
-          fi
-
-          already="$(curl -sS -H 'Accept: application/json' "$CP_URL/api/v1/trusted-mrtds" | jq -r --arg m "$mrtd" '[.trusted_mrtds[] | select((.mrtd // "") == $m)] | length' 2>/dev/null || echo 0)"
-          if [ "${already:-0}" -gt 0 ]; then
-            echo "LLM baseline already trusted: ${mrtd:0:16}..."
-            exit 0
-          fi
-
-          admin_token="${CP_ADMIN_TOKEN:-}"
-          if [ -z "${admin_token:-}" ] && [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
-            payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
-            admin_token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
-          fi
-          if [ -z "${admin_token:-}" ]; then
-            echo "::error::LLM baseline ${mrtd:0:16}... is not trusted, and no admin token could be resolved (password login may be disabled)."
-            echo "::error::Set CP_ADMIN_TOKEN for CI, or preseed this MRTD in trusted values."
-            exit 1
-          fi
-
-          payload="$(jq -cn --arg m "$mrtd" --arg note "builtin-examples llm baseline" '{mrtd:$m, type:"agent", note:$note}')"
-          code="$(curl -sS -o /tmp/trust-mrtd.json -w '%{http_code}' -X POST "$CP_URL/api/v1/admin/trusted-mrtds" -H "Authorization: Bearer ${admin_token}" -H 'Content-Type: application/json' -d "$payload" || true)"
-          if [ "$code" -ge 400 ]; then
-            echo "::error::Failed to trust llm MRTD (HTTP $code): $(cat /tmp/trust-mrtd.json)"
-            exit 1
-          fi
-          echo "Trusted measured llm baseline MRTD: ${mrtd:0:16}..."
-
-      - name: Ensure deployable baremetal tiny + llm agents exist
-        shell: bash
-        run: |
-          set -euo pipefail
-          ita_key="${ITA_API_KEY:-${INTEL_API_KEY:-}}"
-          if [ -z "${ita_key:-}" ]; then
-            echo "::error::Missing ITA_API_KEY (Intel Trust Authority API key); cannot boot agents."
-            exit 1
-          fi
-
-          count_deployable() {
-            local size="$1"
-            curl -sSf "$CP_URL/api/v1/agents" | jq -r --arg ns "$size" '
-              [.agents[]
-                | select(.verified == true)
-                | select((.health_status // "" | ascii_downcase) == "healthy")
-                | select(((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "deployed"))
-                | select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase))
-                | select((.datacenter // "" | ascii_downcase) == "baremetal:github-runner")
-                | select(((.deployed_app // "") | startswith("measuring-enclave")) | not)
-              ] | length'
-          }
-
-          ensure_capacity() {
-            local size="$1"
-            local required="$2"
-            local max_boots="${3:-3}"
-            local boots=0
-
-            local count
-            count="$(count_deployable "$size" || echo 0)"
-            echo "Deployable baremetal $size candidates: $count (required: $required)"
-
-            while [ "${count:-0}" -lt "$required" ]; do
-              boots=$((boots + 1))
-              if [ "$boots" -gt "$max_boots" ]; then
-                echo "::error::Exceeded max $size boot attempts ($max_boots)"
-                curl -sSf "$CP_URL/api/v1/agents" | jq -r --arg ns "$size" '
-                  [.agents[] | select((.node_size // "" | ascii_downcase) == ($ns | ascii_downcase))
-                    | {agent_id, status, health_status, verified, datacenter, deployed_app, vm_name, verification_error}]'
-                exit 1
-              fi
-
-              echo "Booting a new baremetal $size agent VM..."
-              python3 infra/tdx_cli.py vm new \
-                --size "$size" \
-                --cloud-provider baremetal \
-                --availability-zone github-runner \
-                --easyenclave-url "$CP_URL" \
-                --intel-api-key "$ita_key" \
-                --wait \
-                >"/tmp/new_${size}_vm.json"
-              cat "/tmp/new_${size}_vm.json" || true
-
-              for i in {1..60}; do
-                count="$(count_deployable "$size" || echo 0)"
-                if [ "${count:-0}" -ge "$required" ]; then
-                  break
-                fi
-                if [ $((i % 6)) -eq 0 ]; then
-                  echo "Still waiting for deployable baremetal $size capacity... ($i/60)"
-                fi
-                sleep 5
-              done
-
-              count="$(count_deployable "$size" || echo 0)"
-              echo "Deployable baremetal $size candidates now: $count (required: $required)"
-            done
-          }
-
-          ensure_capacity tiny 1 2
-          ensure_capacity llm 1 3
-
-  deploy-hello-tdx:
-    name: Deploy hello-tdx (baremetal tiny)
-    runs-on: [self-hosted, tdx]
-    needs: [ensure-baremetal-capacity]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
       - name: Prepare hello-tdx compose (optional release image override)
         id: hello_compose
@@ -361,15 +171,6 @@ jobs:
           node_size: tiny
           allowed_clouds: baremetal
           allowed_datacenters: baremetal:github-runner
-
-  deploy-private-llm:
-    name: Deploy private-llm (baremetal llm)
-    runs-on: [self-hosted, tdx]
-    needs: [ensure-baremetal-capacity]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.source_ref || github.event.inputs.source_ref || github.sha }}
 
       - name: Prepare private-llm compose (optional release image overrides)
         id: llm_compose

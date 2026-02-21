@@ -536,6 +536,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tiny_required="${NUM_TINY_AGENTS:-0}"
+          standard_required="${NUM_STANDARD_AGENTS:-0}"
+          llm_required="${NUM_LLM_AGENTS:-0}"
+          required_total=$((tiny_required + standard_required + llm_required))
+
           set +e
           ./scripts/ci-deploy.sh 2>&1 | tee /tmp/ci-deploy.log
           ci_rc=${PIPESTATUS[0]}
@@ -543,7 +548,11 @@ jobs:
 
           if [ "$ci_rc" -ne 0 ]; then
             if grep -q "No agents available (bootstrap=0 and additional requested=0)" /tmp/ci-deploy.log; then
-              echo "::warning::ci-deploy.sh skipped agent bootstrap capacity (expected for rollout profile); deploy workflows will provision capacity."
+              if [ "${required_total:-0}" -gt 0 ]; then
+                echo "::error::ci-deploy.sh skipped agent bootstrap capacity, but rollout requires tiny=${tiny_required} standard=${standard_required} llm=${llm_required}."
+                exit "$ci_rc"
+              fi
+              echo "::warning::ci-deploy.sh skipped agent bootstrap capacity (no startup agents requested)."
             elif grep -q "Not all agents verified after" /tmp/ci-deploy.log \
               && grep -Eq "All [0-9]+ agents verified" /tmp/ci-deploy.log; then
               echo "::warning::Ignoring transient post-loop verification regression from ci-deploy.sh; validating agent capacity directly."
@@ -572,9 +581,6 @@ jobs:
               ] | length'
           }
 
-          tiny_required="${NUM_TINY_AGENTS:-0}"
-          standard_required="${NUM_STANDARD_AGENTS:-0}"
-          llm_required="${NUM_LLM_AGENTS:-0}"
           max_checks=24
 
           tiny_verified=0
@@ -589,11 +595,11 @@ jobs:
                 sleep 5
                 continue
               fi
-              echo "::warning::Failed to query agents from $cp_for_check after retries; continuing (deploy workflows perform capacity reconciliation)."
+              echo "::error::Failed to query agents from $cp_for_check after retries."
               if [ -f /tmp/bootstrap_agents.err ]; then
                 cat /tmp/bootstrap_agents.err || true
               fi
-              break
+              exit 1
             fi
 
             tiny_verified="$(verify_counts "$agents_json" tiny)"
@@ -608,9 +614,9 @@ jobs:
             fi
 
             if [ "$attempt" -eq "$max_checks" ]; then
-              echo "::warning::Insufficient verified capacity after bootstrap retries; continuing (deploy workflows perform capacity reconciliation)."
-              echo "::warning::tiny=${tiny_verified} (need ${tiny_required}) standard=${standard_verified} (need ${standard_required}) llm=${llm_verified} (need ${llm_required})"
-              echo "Latest agent snapshot (warning):"
+              echo "::error::Insufficient verified capacity after bootstrap retries."
+              echo "::error::tiny=${tiny_verified} (need ${tiny_required}) standard=${standard_verified} (need ${standard_required}) llm=${llm_verified} (need ${llm_required})"
+              echo "Latest agent snapshot:"
               echo "$agents_json" | jq -r '
                 [.agents[] | {
                   agent_id,
@@ -621,7 +627,7 @@ jobs:
                   datacenter,
                   verification_error
                 }]' || true
-              break
+              exit 1
             fi
 
             echo "Post-bootstrap capacity check: tiny=${tiny_verified}/${tiny_required} standard=${standard_verified}/${standard_required} llm=${llm_verified}/${llm_required} (attempt $attempt/$max_checks)"

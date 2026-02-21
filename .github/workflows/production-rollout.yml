@@ -339,7 +339,7 @@ jobs:
       # deployable capacity when builtin example jobs are skipped.
       num_tiny_agents: '1'
       num_standard_agents: '0'
-      num_llm_agents: '0'
+      num_llm_agents: '1'
       easyenclave_domain: ${{ needs.resolve.outputs.production_domain }}
       easyenclave_network_name: ${{ needs.resolve.outputs.production_network_name }}
       easyenclave_env: production
