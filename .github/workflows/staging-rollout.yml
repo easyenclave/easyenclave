@@ -226,3 +226,4 @@ jobs:
       cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
+      easyenclave_env: staging

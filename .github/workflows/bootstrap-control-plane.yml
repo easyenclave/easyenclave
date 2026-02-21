@@ -270,10 +270,9 @@ jobs:
       EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
 
       # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
-      # Prefer environment-specific secrets when present, falling back to legacy shared ones.
-      # This lets staging/prod run in different GCP projects while keeping backwards compatibility.
-      GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && (secrets.PRODUCTION_GCP_PROJECT_ID || secrets.GCP_PROJECT_ID)) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_GCP_PROJECT_ID || secrets.GCP_PROJECT_ID)) || secrets.GCP_PROJECT_ID }}
-      GCP_SERVICE_ACCOUNT_KEY: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && (secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY || secrets.GCP_SERVICE_ACCOUNT_KEY)) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY || secrets.GCP_SERVICE_ACCOUNT_KEY)) || secrets.GCP_SERVICE_ACCOUNT_KEY }}
+      # Strict environment isolation: no shared fallback secrets.
+      GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_PROJECT_ID) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && secrets.STAGING_GCP_PROJECT_ID) }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY) }}
 
       # Shared Cloudflare credentials; network separation is done by domain/hostname.
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

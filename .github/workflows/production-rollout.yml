@@ -406,26 +406,28 @@ jobs:
             local cp_url="$2"
             local payload
             payload="$(jq -cn \
-            --arg ref "$DISPATCH_REF" \
-            --arg cp_url "$cp_url" \
-            --arg cp_expected_git_sha "" \
-            --arg cp_admin_token "$CP_ADMIN_TOKEN" \
-            --arg source_ref "$SOURCE_REF" \
-            --arg hello_tdx_image "$HELLO_TDX_IMAGE" \
-            --arg private_llm_ollama_image "$PRIVATE_LLM_OLLAMA_IMAGE" \
-            --arg private_llm_model_loader_image "$PRIVATE_LLM_MODEL_LOADER_IMAGE" \
-            '{
-              ref: $ref,
-              inputs: {
-                cp_url: $cp_url,
-                cp_expected_git_sha: $cp_expected_git_sha,
-                cp_admin_token: $cp_admin_token,
-                source_ref: $source_ref,
-                hello_tdx_image: $hello_tdx_image,
-                private_llm_ollama_image: $private_llm_ollama_image,
-                private_llm_model_loader_image: $private_llm_model_loader_image
-              }
-            }')"
+              --arg ref "$DISPATCH_REF" \
+              --arg cp_url "$cp_url" \
+              --arg cp_expected_git_sha "" \
+              --arg cp_admin_token "$CP_ADMIN_TOKEN" \
+              --arg source_ref "$SOURCE_REF" \
+              --arg hello_tdx_image "$HELLO_TDX_IMAGE" \
+              --arg private_llm_ollama_image "$PRIVATE_LLM_OLLAMA_IMAGE" \
+              --arg private_llm_model_loader_image "$PRIVATE_LLM_MODEL_LOADER_IMAGE" \
+              --arg easyenclave_env "production" \
+              '{
+                ref: $ref,
+                inputs: {
+                  cp_url: $cp_url,
+                  cp_expected_git_sha: $cp_expected_git_sha,
+                  cp_admin_token: $cp_admin_token,
+                  source_ref: $source_ref,
+                  hello_tdx_image: $hello_tdx_image,
+                  private_llm_ollama_image: $private_llm_ollama_image,
+                  private_llm_model_loader_image: $private_llm_model_loader_image,
+                  easyenclave_env: $easyenclave_env
+                }
+              }')"
             code="$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' \
               -X POST \
               -H "Authorization: Bearer ${GH_TOKEN}" \

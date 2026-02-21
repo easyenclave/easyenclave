@@ -67,7 +67,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
       SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
-      TARGET_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+      TARGET_PROJECT: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
       BASE_IMAGE_PROJECT: ${{ vars.EE_GCP_BASE_IMAGE_PROJECT || 'ubuntu-os-cloud' }}
       BASE_IMAGE_FAMILY: ${{ vars.EE_GCP_BASE_IMAGE_FAMILY || 'ubuntu-2404-lts-amd64' }}
     steps:
@@ -85,7 +85,7 @@ jobs:
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          credentials_json: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
