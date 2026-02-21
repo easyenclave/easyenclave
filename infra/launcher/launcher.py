@@ -2162,26 +2162,6 @@ def _control_plane_hostnames(config: dict) -> tuple[str, str]:
     return canonical_hostname, alias_hostname
 
 
-def _control_plane_legacy_aliases(config: dict, alias_hostname: str) -> list[str]:
-    """Return legacy control-plane aliases that should be removed."""
-    domain = (config.get("easyenclave_domain") or "easyenclave.com").strip()
-    env_name = (config.get("easyenclave_env") or "").strip().lower()
-    if env_name != "staging":
-        return []
-
-    # Staging must never delete production's canonical alias (app.<domain>).
-    # We only remove the old staging alias that predates app-staging.<domain>.
-    candidates = [f"app.staging.{domain}"]
-    seen: set[str] = set()
-    aliases: list[str] = []
-    for name in candidates:
-        if not name or name == alias_hostname or name in seen:
-            continue
-        seen.add(name)
-        aliases.append(name)
-    return aliases
-
-
 def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | None:
     """Create Cloudflare tunnel for the control plane.
 
@@ -2198,7 +2178,6 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
     account_id = config.get("cloudflare_account_id")
     zone_id = config.get("cloudflare_zone_id")
     canonical_hostname, alias_hostname = _control_plane_hostnames(config)
-    legacy_aliases = _control_plane_legacy_aliases(config, alias_hostname)
 
     if not all([api_token, account_id, zone_id]):
         logger.info("Cloudflare credentials not configured, skipping tunnel setup")
@@ -2345,32 +2324,6 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
                 update_resp.raise_for_status()
             else:
                 create_dns.raise_for_status()
-
-        # Best-effort cleanup for legacy aliases to prevent stale records
-        # from causing confusion during app-staging cutover.
-        for hostname in legacy_aliases:
-            try:
-                logger.info("Removing legacy DNS alias if present: %s", hostname)
-                existing_dns = requests.get(
-                    f"{api_url}/zones/{zone_id}/dns_records",
-                    headers=headers,
-                    params={"name": hostname},
-                    timeout=30,
-                )
-                existing_dns.raise_for_status()
-                records = existing_dns.json().get("result") or []
-                for record in records:
-                    record_id = record.get("id")
-                    if not record_id:
-                        continue
-                    delete_resp = requests.delete(
-                        f"{api_url}/zones/{zone_id}/dns_records/{record_id}",
-                        headers=headers,
-                        timeout=30,
-                    )
-                    delete_resp.raise_for_status()
-            except Exception as exc:
-                logger.warning("Failed cleaning legacy alias %s: %s", hostname, exc)
 
         # Start cloudflared
         logger.info("Starting cloudflared for control plane...")
