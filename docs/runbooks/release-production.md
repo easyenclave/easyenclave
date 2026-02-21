@@ -63,5 +63,5 @@ gh workflow run production-rollout.yml -f release_tag=v0.1.0
 
 - Missing trust asset: `production-rollout` fails in trust-bundle resolution.
 - Missing GCP image asset: `production-rollout` fails in gcp-image resolution.
-- Missing example image asset (when `run_builtin_examples=true`): rollout fails in example-images resolution.
+- Missing example image asset: rollout fails in example-images resolution.
 - Release tag mismatch in asset payload: rollout fails fast to avoid mixed artifacts.

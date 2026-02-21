@@ -30,11 +30,6 @@ on:
         description: "Expected git SHA in /health (optional; default = release commit)"
         required: false
         default: ""
-      run_builtin_examples:
-        description: "Run builtin deploy examples after rollout (requires signed example images under strict policy)"
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: easyenclave-production-rollout
@@ -279,7 +274,6 @@ jobs:
 
   example-images:
     name: Resolve release example images
-    if: github.event.inputs.run_builtin_examples == 'true'
     needs: [resolve]
     runs-on: ubuntu-latest
     permissions:
@@ -383,7 +377,6 @@ jobs:
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
-    if: github.event.inputs.run_builtin_examples == 'true'
     needs: [resolve, bootstrap, example-images]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
@@ -399,9 +392,6 @@ jobs:
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
-    # GCP deploy examples are opt-in for production rollouts; enable via repo variable
-    # ENABLE_PRODUCTION_GCP_EXAMPLES=true once external billing/capacity is ready.
-    if: github.event.inputs.run_builtin_examples == 'true' && vars.ENABLE_PRODUCTION_GCP_EXAMPLES == 'true'
     needs: [resolve, bootstrap, example-images]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
