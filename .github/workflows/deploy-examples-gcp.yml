@@ -2,7 +2,7 @@
 #
 # Canonical GCP example workflow:
 # - hello-tdx on tiny
-# - private-llm on llm (OpenAI-compatible smoke test)
+# - private-llm on llm (OpenAI-compatible smoke test, production only)
 
 name: Builtin Deploy Examples (GCP)
 
@@ -265,6 +265,7 @@ jobs:
 
   deploy-private-llm-gcp:
     name: Deploy Private LLM (gcp)
+    if: ${{ (inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

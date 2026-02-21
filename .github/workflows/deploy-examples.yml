@@ -2,7 +2,7 @@
 #
 # Canonical baremetal example workflow:
 # - hello-tdx on tiny
-# - private-llm on llm (OpenAI-compatible smoke test)
+# - private-llm on llm (OpenAI-compatible smoke test, production only)
 
 name: Builtin Deploy Examples (Baremetal)
 
@@ -37,6 +37,10 @@ on:
         required: false
         type: string
         default: ""
+      easyenclave_env:
+        required: false
+        type: string
+        default: "staging"
   workflow_dispatch:
     inputs:
       cp_url:
@@ -67,6 +71,10 @@ on:
         description: "Optional private-llm model-loader image override (digest ref)"
         required: false
         default: ""
+      easyenclave_env:
+        description: "Environment profile (staging or production)"
+        required: false
+        default: "staging"
 
 concurrency:
   group: easyenclave-deploy-examples-baremetal-${{ github.run_id }}
@@ -79,6 +87,7 @@ env:
   HELLO_TDX_IMAGE: ${{ inputs.hello_tdx_image || github.event.inputs.hello_tdx_image || '' }}
   PRIVATE_LLM_OLLAMA_IMAGE: ${{ inputs.private_llm_ollama_image || github.event.inputs.private_llm_ollama_image || '' }}
   PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ inputs.private_llm_model_loader_image || github.event.inputs.private_llm_model_loader_image || '' }}
+  EASYENCLAVE_ENV: ${{ inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging' }}
 
 jobs:
   deploy-builtin-baremetal:
@@ -136,6 +145,7 @@ jobs:
           control_plane_url: ${{ env.CP_URL }}
 
       - name: Register private-llm
+        if: ${{ env.EASYENCLAVE_ENV == 'production' }}
         uses: ./.github/actions/register-app
         with:
           name: private-llm
@@ -174,6 +184,7 @@ jobs:
           allowed_datacenters: baremetal:github-runner
 
       - name: Prepare private-llm compose (optional release image overrides)
+        if: ${{ env.EASYENCLAVE_ENV == 'production' }}
         id: llm_compose
         shell: bash
         run: |
@@ -203,6 +214,7 @@ jobs:
           echo "compose_file=$out" >> "$GITHUB_OUTPUT"
 
       - name: Deploy private-llm
+        if: ${{ env.EASYENCLAVE_ENV == 'production' }}
         id: deploy
         uses: ./.github/actions/deploy-example
         with:
@@ -218,14 +230,17 @@ jobs:
           allowed_datacenters: baremetal:github-runner
 
       - name: Set up Python
+        if: ${{ env.EASYENCLAVE_ENV == 'production' }}
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install SDK and OpenAI client
+        if: ${{ env.EASYENCLAVE_ENV == 'production' }}
         run: pip install ./sdk/ openai
 
       - name: Smoke test private-llm (OpenAI-compatible)
+        if: ${{ env.EASYENCLAVE_ENV == 'production' }}
         env:
           SERVICE_URL: ${{ steps.deploy.outputs.service_url }}
           EASYENCLAVE_URL: ${{ env.CP_URL }}

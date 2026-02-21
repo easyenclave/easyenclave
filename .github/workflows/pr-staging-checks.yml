@@ -107,6 +107,7 @@ jobs:
       cp_url: ${{ vars.STAGING_CP_URL || 'https://app-staging.easyenclave.com' }}
       cp_expected_git_sha: ""
       source_ref: ${{ github.event.pull_request.head.sha }}
+      easyenclave_env: staging
 
   deploy-gcp-pr:
     name: Builtin deploy examples (gcp, PR)

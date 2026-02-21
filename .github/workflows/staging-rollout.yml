@@ -182,11 +182,11 @@ jobs:
     with:
       source_ref: ${{ needs.resolve.outputs.source_ref }}
       control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_ref) }}
-      cp_bootstrap_sizes: tiny,llm
+      cp_bootstrap_sizes: tiny
       # Keep staging warm spare footprint small.
       num_tiny_agents: '1'
       num_standard_agents: '0'
-      num_llm_agents: '1'
+      num_llm_agents: '0'
       easyenclave_domain: ${{ needs.resolve.outputs.staging_domain }}
       easyenclave_network_name: ${{ needs.resolve.outputs.staging_network_name }}
       easyenclave_env: staging
@@ -216,6 +216,7 @@ jobs:
       cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
+      easyenclave_env: staging
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
