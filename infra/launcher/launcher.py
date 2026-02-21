@@ -2169,7 +2169,9 @@ def _control_plane_legacy_aliases(config: dict, alias_hostname: str) -> list[str
     if env_name != "staging":
         return []
 
-    candidates = [f"app.{domain}", f"app.staging.{domain}"]
+    # Staging must never delete production's canonical alias (app.<domain>).
+    # We only remove the old staging alias that predates app-staging.<domain>.
+    candidates = [f"app.staging.{domain}"]
     seen: set[str] = set()
     aliases: list[str] = []
     for name in candidates:
