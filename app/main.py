@@ -1765,6 +1765,15 @@ def _parse_gcp_timestamp(value: str | None) -> datetime | None:
         return None
 
 
+def _sanitize_scope_label(value: str | None) -> str:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9-_]", "-", raw)
+    cleaned = re.sub(r"[-_]{2,}", "-", cleaned).strip("-_")
+    return cleaned
+
+
 async def reclaim_stale_fulfilled_gcp_orders(
     *,
     internal_launcher_id: str,
@@ -1860,7 +1869,14 @@ async def reclaim_orphaned_managed_gcp_instances(
     delete_gcp_instance,
     list_managed_gcp_instances,
 ) -> int:
-    """Delete stale CP-managed GCP instances that have no active agent signal."""
+    """Delete stale CP-managed GCP instances that have no active agent signal.
+
+    When both EASYENCLAVE_NETWORK_NAME and EASYENCLAVE_ENV are set, inventory
+    broadens to all EasyEnclave-managed instances in the project and this reaper
+    deletes stale orphaned instances from older networks in the same environment.
+    This keeps one environment from accumulating stranded VMs across rollouts
+    while preserving staging/production separation.
+    """
     now = datetime.now(timezone.utc)
     grace_seconds = max(
         300,
@@ -1885,8 +1901,18 @@ async def reclaim_orphaned_managed_gcp_instances(
         if (a.vm_name or "").strip()
     }
 
+    expected_network = _sanitize_scope_label(os.environ.get("EASYENCLAVE_NETWORK_NAME"))
+    expected_env = _sanitize_scope_label(
+        os.environ.get("EASYENCLAVE_ENV") or os.environ.get("ENVIRONMENT")
+    )
+    # If we can scope by both network + env labels, inventory all managed instances
+    # and let this reaper clean same-env orphaned older networks.
+    owned_only = not (expected_network and expected_env)
     try:
-        instances = await list_managed_gcp_instances()
+        try:
+            instances = await list_managed_gcp_instances(owned_only=owned_only)
+        except TypeError:
+            instances = await list_managed_gcp_instances()
     except Exception as exc:
         logger.warning("Failed managed GCP instance inventory for orphan reap: %s", exc)
         return 0
@@ -1899,6 +1925,21 @@ async def reclaim_orphaned_managed_gcp_instances(
         datacenter = str(inst.get("datacenter") or "").strip().lower()
         if datacenter != "gcp" and not datacenter.startswith("gcp:"):
             continue
+
+        labels = inst.get("labels") if isinstance(inst.get("labels"), dict) else {}
+        inst_network = _sanitize_scope_label(str(labels.get("ee-network") or ""))
+        inst_env = _sanitize_scope_label(str(labels.get("ee-env") or ""))
+
+        # Never cross environments (staging/prod isolation).
+        if expected_env and inst_env != expected_env:
+            continue
+        # In cross-network mode, require a labeled network and allow only
+        # same-env networks that differ from the current network.
+        cross_network = False
+        if not owned_only:
+            if not inst_network:
+                continue
+            cross_network = inst_network != expected_network
 
         created_at = _parse_gcp_timestamp(str(inst.get("creation_timestamp") or ""))
         if created_at and created_at > cutoff:
@@ -1924,11 +1965,20 @@ async def reclaim_orphaned_managed_gcp_instances(
             agent_store.delete(agent.agent_id)
 
         logger.warning(
-            "Reclaimed orphan managed GCP instance vm=%s dc=%s deleted=%s reason=%s",
+            "Reclaimed orphan managed GCP instance vm=%s dc=%s network=%s deleted=%s reason=%s",
             vm_name,
             datacenter,
+            inst_network or "unknown",
             deleted,
-            "no-agent" if agent is None else "stale-agent",
+            (
+                "orphan-network-no-agent"
+                if cross_network and agent is None
+                else "orphan-network-stale-agent"
+                if cross_network
+                else "no-agent"
+                if agent is None
+                else "stale-agent"
+            ),
         )
         reclaimed += 1
 
