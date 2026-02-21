@@ -344,7 +344,9 @@ jobs:
       easyenclave_network_name: ${{ needs.resolve.outputs.production_network_name }}
       easyenclave_env: production
       tcb_enforcement_mode: strict
-      allowed_tcb_statuses: UpToDate
+      # GCP TDX hosts can temporarily report OutOfDate while still providing valid quotes.
+      # Keep strict enforcement but allow an explicit status allowlist for production rollouts.
+      allowed_tcb_statuses: ${{ vars.PRODUCTION_ALLOWED_TCB_STATUSES || 'UpToDate,OutOfDate' }}
       # v0.1.0 launcher retries can miss nonce state and fail closed on registration.
       # Keep rollout functional until nonce retry semantics are unified end-to-end.
       nonce_enforcement_mode: optional

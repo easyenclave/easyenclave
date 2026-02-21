@@ -404,7 +404,7 @@ runs:
             total_orders="$(echo "${orders_json:-}" | jq -r '.total // 0' 2>/dev/null || echo 0)"
             failed_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "failed" or .status == "cancelled")] | length' 2>/dev/null || echo 0)"
             inflight_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "open" or .status == "claimed" or .status == "provisioning")] | length' 2>/dev/null || echo 0)"
-            completed_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "completed")] | length' 2>/dev/null || echo 0)"
+            completed_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "completed" or .status == "fulfilled")] | length' 2>/dev/null || echo 0)"
 
             if [ "${failed_count:-0}" -gt 0 ]; then
               echo "::error::GCP capacity provisioning failed before agent registration (showing up to 5 failed/cancelled order(s))."
@@ -422,8 +422,8 @@ runs:
               exit 1
             fi
             if [ "${completed_count:-0}" -gt 0 ] && [ "$elapsed" -ge 120 ]; then
-              echo "::error::Launch order(s) report completed but no GCP agent registered with MRTD within 120s."
-              echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "completed"))[:5] | map({order_id,status,datacenter,node_size,vm_name,created_at,updated_at})' 2>/dev/null || echo "${orders_json:-}"
+              echo "::error::Launch order(s) report completed/fulfilled but no GCP agent registered with MRTD within 120s."
+              echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "completed" or .status == "fulfilled"))[:5] | map({order_id,status,datacenter,node_size,vm_name,created_at,updated_at})' 2>/dev/null || echo "${orders_json:-}"
               exit 1
             fi
           fi
@@ -617,6 +617,7 @@ runs:
             total_orders="$(echo "${orders_json:-}" | jq -r '.total // 0' 2>/dev/null || echo 0)"
             failed_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "failed")] | length' 2>/dev/null || echo 0)"
             inflight_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "open" or .status == "claimed" or .status == "provisioning")] | length' 2>/dev/null || echo 0)"
+            fulfilled_count="$(echo "${orders_json:-}" | jq -r '[.orders[]? | select(.status == "fulfilled")] | length' 2>/dev/null || echo 0)"
 
             if [ "${failed_count:-0}" -gt 0 ]; then
               echo "::error::GCP capacity provisioning failed (showing up to 3 failed order(s))"
@@ -633,6 +634,12 @@ runs:
             if [ "${inflight_count:-0}" -gt 0 ] && [ "$elapsed" -ge "$stall_seconds" ]; then
               echo "::error::Capacity launch orders are still in-flight after ${elapsed}s (stall threshold=${stall_seconds}s)."
               echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "open" or .status == "claimed" or .status == "provisioning"))[:3] | map({order_id,status,datacenter,node_size,claim_expires_at,created_at,updated_at,error})' 2>/dev/null || echo "${orders_json:-}"
+              exit 1
+            fi
+
+            if [ "${fulfilled_count:-0}" -gt 0 ] && [ "$elapsed" -ge 120 ]; then
+              echo "::error::Capacity launch order(s) are fulfilled but no eligible GCP agent registered within 120s."
+              echo "${orders_json:-}" | jq -r '.orders | map(select(.status == "fulfilled"))[:3] | map({order_id,status,datacenter,node_size,vm_name,created_at,updated_at,error})' 2>/dev/null || echo "${orders_json:-}"
               exit 1
             fi
           fi
