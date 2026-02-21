@@ -161,6 +161,7 @@ jobs:
           echo "compose_file=$out" >> "$GITHUB_OUTPUT"
 
       - name: Deploy hello-tdx
+        id: deploy_hello
         uses: ./.github/actions/deploy-example
         with:
           app_name: hello-tdx
@@ -315,3 +316,64 @@ jobs:
           wait_ready("proxy", proxy_call)
           wait_ready("openai", openai_call)
           PY
+
+      - name: Resolve admin token for hello teardown
+        id: teardown_auth
+        if: always()
+        shell: bash
+        env:
+          CP_ADMIN_TOKEN: ${{ env.CP_ADMIN_TOKEN || secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          token="$(echo "${CP_ADMIN_TOKEN:-}" | xargs)"
+          if [ -z "$token" ] && [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
+            payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
+            token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
+          fi
+          if [ -z "$token" ]; then
+            echo "::warning::Could not resolve admin token for hello-tdx teardown."
+            exit 0
+          fi
+          echo "::add-mask::$token"
+          echo "admin_token=$token" >> "$GITHUB_OUTPUT"
+          echo "Resolved admin token for hello-tdx teardown."
+
+      - name: Teardown hello-tdx baremetal deployment
+        if: always() && steps.deploy_hello.outcome == 'success'
+        shell: bash
+        env:
+          ADMIN_TOKEN: ${{ steps.teardown_auth.outputs.admin_token }}
+          AGENT_ID: ${{ steps.deploy_hello.outputs.agent_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AGENT_ID:-}" ]; then
+            echo "::warning::No hello-tdx agent_id output; skipping teardown."
+            exit 0
+          fi
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "::warning::Missing admin token; cannot teardown hello-tdx deployment."
+            exit 0
+          fi
+
+          undeploy_code="$(curl -sS -o /tmp/hello-undeploy.json -w "%{http_code}" \
+            -X POST "$CP_URL/api/v1/agents/${AGENT_ID}/undeploy" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -H 'Accept: application/json' || true)"
+          if [ "$undeploy_code" -lt 400 ]; then
+            echo "hello-tdx undeploy succeeded for agent ${AGENT_ID}."
+          else
+            echo "::warning::hello-tdx undeploy failed (HTTP $undeploy_code): $(cat /tmp/hello-undeploy.json)"
+          fi
+
+          cleanup_body="$(jq -cn --arg reason "ci:baremetal-hello-post-test-teardown" '{dry_run:false, reason:$reason}')"
+          cleanup_code="$(curl -sS -o /tmp/hello-cleanup.json -w "%{http_code}" \
+            -X POST "$CP_URL/api/v1/admin/agents/${AGENT_ID}/cleanup" \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d "$cleanup_body" || true)"
+          if [ "$cleanup_code" -lt 400 ]; then
+            echo "hello-tdx cleanup succeeded for agent ${AGENT_ID}."
+          else
+            echo "::warning::hello-tdx cleanup failed (HTTP $cleanup_code): $(cat /tmp/hello-cleanup.json)"
+          fi
