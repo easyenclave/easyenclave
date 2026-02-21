@@ -389,7 +389,8 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       DISPATCH_REF: ${{ github.ref_name }}
       SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
-      CP_URL: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      CP_URL_BAREMETAL: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      CP_URL_GCP: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       CP_ADMIN_TOKEN: ${{ needs.bootstrap.outputs.cp_admin_token }}
       HELLO_TDX_IMAGE: ${{ needs.example-images.outputs.hello_tdx_image }}
       PRIVATE_LLM_OLLAMA_IMAGE: ${{ needs.example-images.outputs.private_llm_ollama_image }}
@@ -400,9 +401,13 @@ jobs:
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows"
-          payload="$(jq -cn \
+          dispatch_workflow() {
+            local wf="$1"
+            local cp_url="$2"
+            local payload
+            payload="$(jq -cn \
             --arg ref "$DISPATCH_REF" \
-            --arg cp_url "$CP_URL" \
+            --arg cp_url "$cp_url" \
             --arg cp_expected_git_sha "" \
             --arg cp_admin_token "$CP_ADMIN_TOKEN" \
             --arg source_ref "$SOURCE_REF" \
@@ -421,8 +426,6 @@ jobs:
                 private_llm_model_loader_image: $private_llm_model_loader_image
               }
             }')"
-
-          for wf in deploy-examples.yml deploy-examples-gcp.yml; do
             code="$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' \
               -X POST \
               -H "Authorization: Bearer ${GH_TOKEN}" \
@@ -434,5 +437,8 @@ jobs:
               cat /tmp/dispatch.out || true
               exit 1
             fi
-            echo "Dispatched ${wf} for workflow-ref ${DISPATCH_REF} (source_ref=${SOURCE_REF})"
-          done
+            echo "Dispatched ${wf} (cp_url=${cp_url}) for workflow-ref ${DISPATCH_REF} (source_ref=${SOURCE_REF})"
+          }
+
+          dispatch_workflow deploy-examples.yml "$CP_URL_BAREMETAL"
+          dispatch_workflow deploy-examples-gcp.yml "$CP_URL_GCP"
