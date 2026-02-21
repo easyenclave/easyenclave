@@ -15,6 +15,7 @@ import random
 import re
 import string
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote as _urlquote
@@ -52,6 +53,12 @@ def _sanitize_name(value: str, max_len: int = 63) -> str:
 
 def _sanitize_label_value(value: str, max_len: int = 63) -> str:
     return _sanitize_name(value, max_len=max_len)
+
+
+def _sanitize_optional_label_value(value: str, max_len: int = 63) -> str:
+    cleaned = re.sub(r"[^a-z0-9-_]", "-", (value or "").strip().lower())
+    cleaned = re.sub(r"[-_]{2,}", "-", cleaned).strip("-_")
+    return cleaned[:max_len].strip("-_")
 
 
 def _parse_service_account_info(raw: str) -> dict[str, Any]:
@@ -181,6 +188,64 @@ def _launcher_url() -> str:
 
 def _cp_url() -> str:
     return (os.environ.get("EASYENCLAVE_CP_URL") or "https://app.easyenclave.com").strip()
+
+
+def _network_name_env() -> str:
+    return _sanitize_optional_label_value(os.environ.get("EASYENCLAVE_NETWORK_NAME") or "")
+
+
+def _environment_env() -> str:
+    return _sanitize_optional_label_value(
+        os.environ.get("EASYENCLAVE_ENV") or os.environ.get("ENVIRONMENT") or ""
+    )
+
+
+def _cp_boot_id_env() -> str:
+    return _sanitize_optional_label_value(os.environ.get("EASYENCLAVE_BOOT_ID") or "")
+
+
+def _cp_host_env() -> str:
+    cp_url = _cp_url()
+    if not cp_url:
+        return ""
+    try:
+        host = urllib.parse.urlparse(cp_url).hostname or ""
+    except Exception:
+        host = ""
+    return _sanitize_optional_label_value(host)
+
+
+def _ownership_scope_labels() -> dict[str, str]:
+    labels: dict[str, str] = {}
+    network = _network_name_env()
+    if network:
+        labels["ee-network"] = network
+    env_name = _environment_env()
+    if env_name:
+        labels["ee-env"] = env_name
+    cp_boot_id = _cp_boot_id_env()
+    if cp_boot_id:
+        labels["ee-cp-boot"] = cp_boot_id
+    cp_host = _cp_host_env()
+    if cp_host:
+        labels["ee-cp-host"] = cp_host
+    return labels
+
+
+def _instance_owned_by_current_scope(labels: dict[str, Any] | None) -> bool:
+    expected_network = _network_name_env()
+    if not expected_network:
+        return False
+    raw_labels = labels if isinstance(labels, dict) else {}
+    network_label = _sanitize_optional_label_value(str(raw_labels.get("ee-network") or ""))
+    if network_label != expected_network:
+        return False
+    expected_env = _environment_env()
+    if expected_env:
+        env_label = _sanitize_optional_label_value(str(raw_labels.get("ee-env") or ""))
+        if env_label != expected_env:
+            return False
+    return True
 
 
 def _agent_ita_api_key_env() -> str:
@@ -321,6 +386,12 @@ async def create_tdx_instance_for_order(
         "bootstrap_order_id": order_id,
         "bootstrap_token": bootstrap_token,
     }
+    network_name = (os.environ.get("EASYENCLAVE_NETWORK_NAME") or "").strip()
+    if network_name:
+        launcher_config["easyenclave_network_name"] = network_name
+    env_name = (os.environ.get("EASYENCLAVE_ENV") or "").strip()
+    if env_name:
+        launcher_config["easyenclave_env"] = env_name
     ita_key = _agent_ita_api_key_env()
     if ita_key:
         launcher_config["intel_api_key"] = ita_key
@@ -338,6 +409,7 @@ async def create_tdx_instance_for_order(
         "ee-node": _sanitize_label_value((node_size or "tiny").lower()),
         "ee-dc": _sanitize_label_value(dc or f"gcp:{zone}"),
     }
+    labels.update(_ownership_scope_labels())
 
     body: dict[str, Any] = {
         "name": instance_name,
@@ -501,7 +573,7 @@ async def delete_instance(
     return True
 
 
-async def list_managed_instances() -> list[dict[str, Any]]:
+async def list_managed_instances(*, owned_only: bool = True) -> list[dict[str, Any]]:
     """List CP-managed GCP instances across zones.
 
     Returns lightweight inventory rows:
@@ -512,6 +584,13 @@ async def list_managed_instances() -> list[dict[str, Any]]:
       - creation_timestamp
       - labels
     """
+    if owned_only and not _network_name_env():
+        logger.warning(
+            "Skipping managed GCP inventory because EASYENCLAVE_NETWORK_NAME is not set; "
+            "ownership-safe filtering cannot be applied."
+        )
+        return []
+
     project_id = _project_id_env()
     if not project_id:
         raise GCPProvisionError("GCP_PROJECT_ID is not set on the control plane")
@@ -552,6 +631,8 @@ async def list_managed_instances() -> list[dict[str, Any]]:
                         continue
                     labels = inst.get("labels") or {}
                     if str(labels.get("easyenclave") or "").strip().lower() != "managed":
+                        continue
+                    if owned_only and not _instance_owned_by_current_scope(labels):
                         continue
 
                     name = str(inst.get("name") or "").strip()

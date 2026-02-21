@@ -182,6 +182,7 @@ services:
       - EASYENCLAVE_CP_URL=${{EASYENCLAVE_CP_URL:-https://app.easyenclave.com}}
       - EASYENCLAVE_BOOT_ID=${{EASYENCLAVE_BOOT_ID:-}}
       - EASYENCLAVE_GIT_SHA=${{EASYENCLAVE_GIT_SHA:-}}
+      - EASYENCLAVE_NETWORK_NAME=${{EASYENCLAVE_NETWORK_NAME:-}}
       - TRUSTED_AGENT_MRTDS=${{TRUSTED_AGENT_MRTDS:-}}
       - TRUSTED_PROXY_MRTDS=${{TRUSTED_PROXY_MRTDS:-}}
       - TRUSTED_AGENT_RTMRS=${{TRUSTED_AGENT_RTMRS:-}}
@@ -2310,6 +2311,8 @@ def run_control_plane_mode(config: dict):
         )
     if config.get("easyenclave_env"):
         env["EASYENCLAVE_ENV"] = config["easyenclave_env"]
+    if config.get("easyenclave_network_name"):
+        env["EASYENCLAVE_NETWORK_NAME"] = config["easyenclave_network_name"]
     if config.get("easyenclave_boot_id"):
         env["EASYENCLAVE_BOOT_ID"] = config["easyenclave_boot_id"]
     if config.get("easyenclave_git_sha"):
