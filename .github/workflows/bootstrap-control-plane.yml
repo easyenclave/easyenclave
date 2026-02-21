@@ -469,8 +469,9 @@ jobs:
             esac
           done
 
-          # 2) Cleanup orphaned legacy networks (agents left behind after CP VM is gone).
-          # Keep any network that still has a running CP VM to avoid cross-network interference.
+          # 2) Cleanup orphaned legacy networks.
+          # Also cleanup stale same-environment networks even when their CP is still running,
+          # so a new staging/prod bootstrap does not stack multiple clusters on one host.
           declare -A network_domains
           declare -A network_has_running_cp
           for d in "${all_domains[@]}"; do
@@ -493,14 +494,63 @@ jobs:
             fi
           done
 
+          env_slug="$(echo "${EASYENCLAVE_ENV:-}" | tr '[:upper:]' '[:lower:]' | xargs)"
+          network_is_same_environment() {
+            local network="$1"
+            local cp_domain=""
+            local cp_ip=""
+            local health=""
+            local proxy_url=""
+            local state=""
+
+            [ -n "$env_slug" ] || return 1
+
+            for d in "${all_domains[@]}"; do
+              case "$d" in
+                tdvirsh-cp-"${network}"-*)
+                  state="$(virsh --connect qemu:///system domstate "$d" 2>/dev/null | tr -d '\r' | xargs || true)"
+                  if [ "$state" = "running" ]; then
+                    cp_domain="$d"
+                    break
+                  fi
+                  ;;
+              esac
+            done
+            [ -n "$cp_domain" ] || return 1
+
+            cp_ip="$(virsh --connect qemu:///system domifaddr "$cp_domain" --source lease 2>/dev/null | awk '/ipv4/ {print $4}' | head -n1 | cut -d/ -f1)"
+            [ -n "$cp_ip" ] || return 1
+
+            health="$(curl -fsS --max-time 5 "http://${cp_ip}:8080/health" 2>/dev/null || true)"
+            proxy_url="$(echo "${health}" | jq -r '.proxy_url // empty' 2>/dev/null || true)"
+            [ -n "$proxy_url" ] || return 1
+
+            case "$env_slug" in
+              staging)
+                [[ "$proxy_url" == *"app-staging."* ]]
+                ;;
+              production|prod)
+                [[ "$proxy_url" == *"app."* && "$proxy_url" != *"app-staging."* ]]
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
           for network in "${!network_domains[@]}"; do
             if [ "$network" = "$network_slug" ]; then
               continue
             fi
             if [ "${network_has_running_cp[$network]:-0}" = "1" ]; then
-              continue
+              if network_is_same_environment "$network"; then
+                echo "  deleting stale same-environment network domains: env=${env_slug} network=${network}"
+              else
+                continue
+              fi
+            else
+              echo "  deleting orphaned network domains: network=$network"
             fi
-            echo "  deleting orphaned network domains: network=$network"
             while IFS= read -r d; do
               [ -n "$d" ] || continue
               echo "    deleting orphan domain: $d"
