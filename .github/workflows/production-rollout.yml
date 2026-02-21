@@ -387,7 +387,7 @@ jobs:
       contents: read
     env:
       GH_TOKEN: ${{ github.token }}
-      DISPATCH_REF: ${{ github.sha }}
+      DISPATCH_REF: ${{ github.ref_name }}
       SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
       CP_URL: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       CP_ADMIN_TOKEN: ${{ needs.bootstrap.outputs.cp_admin_token }}
