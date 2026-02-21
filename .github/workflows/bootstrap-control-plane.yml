@@ -270,8 +270,10 @@ jobs:
       EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
 
       # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
-      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+      # Prefer environment-specific secrets when present, falling back to legacy shared ones.
+      # This lets staging/prod run in different GCP projects while keeping backwards compatibility.
+      GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && (secrets.PRODUCTION_GCP_PROJECT_ID || secrets.GCP_PROJECT_ID)) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_GCP_PROJECT_ID || secrets.GCP_PROJECT_ID)) || secrets.GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && (secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY || secrets.GCP_SERVICE_ACCOUNT_KEY)) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY || secrets.GCP_SERVICE_ACCOUNT_KEY)) || secrets.GCP_SERVICE_ACCOUNT_KEY }}
 
       # Shared Cloudflare credentials; network separation is done by domain/hostname.
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -318,6 +320,9 @@ jobs:
       BILLING_CAPACITY_REQUEST_DEV_SIMULATION: ${{ inputs.billing_capacity_request_dev_simulation || github.event.inputs.billing_capacity_request_dev_simulation || 'true' }}
       BILLING_PLATFORM_ACCOUNT_ID: ${{ inputs.billing_platform_account_id || github.event.inputs.billing_platform_account_id || secrets.BILLING_PLATFORM_ACCOUNT_ID || '' }}
       BILLING_CONTRIBUTOR_POOL_BPS: ${{ inputs.billing_contributor_pool_bps || github.event.inputs.billing_contributor_pool_bps || '5000' }}
+      DEFAULT_GCP_TINY_CAPACITY_ENABLED: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && 'true') || 'false' }}
+      DEFAULT_GCP_TINY_CAPACITY_COUNT: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && '1') || '0' }}
+      DEFAULT_GCP_TINY_CAPACITY_DISPATCH: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && 'true') || 'false' }}
       EE_GCP_IMAGE_PROJECT: ${{ inputs.ee_gcp_image_project || '' }}
       EE_GCP_IMAGE_FAMILY: ${{ inputs.ee_gcp_image_family || '' }}
       EE_GCP_IMAGE_NAME: ${{ inputs.ee_gcp_image_name || '' }}
@@ -401,6 +406,34 @@ jobs:
           echo "${PRECOMPUTED_TRUSTED_AGENT_RTMRS}" | jq -e 'type == "object"' >/dev/null
           echo "${PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE}" | jq -e 'type == "object"' >/dev/null
           echo "Trusted-value source: precomputed bundle"
+
+      - name: Prune stale local tdvirsh VMs for this network (best effort)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v virsh >/dev/null 2>&1; then
+            echo "virsh not found; skipping local VM prune."
+            exit 0
+          fi
+          network_raw="${EASYENCLAVE_NETWORK_NAME:-${EASYENCLAVE_ENV:-network}}"
+          network_slug="$(echo "${network_raw}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g')"
+          if [ -z "${network_slug}" ]; then
+            echo "No network slug resolved; skipping local VM prune."
+            exit 0
+          fi
+          echo "Pruning stale tdvirsh domains for network='${network_slug}'"
+          count=0
+          for d in $(virsh --connect qemu:///system list --all --name | sed '/^$/d'); do
+            case "$d" in
+              tdvirsh-cp-"${network_slug}"-*|tdvirsh-agent-*"${network_slug}"-*)
+                echo "  deleting stale domain: $d"
+                virsh --connect qemu:///system destroy "$d" >/dev/null 2>&1 || true
+                virsh --connect qemu:///system undefine "$d" --nvram >/dev/null 2>&1 || virsh --connect qemu:///system undefine "$d" >/dev/null 2>&1 || true
+                count=$((count + 1))
+                ;;
+            esac
+          done
+          echo "Pruned ${count} stale tdvirsh domain(s) for network ${network_slug}."
 
       - name: Build verity artifacts (precomputed mode)
         if: env.USE_PRECOMPUTED_TRUSTED_VALUES == 'true'

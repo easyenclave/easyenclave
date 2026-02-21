@@ -204,6 +204,9 @@ services:
       - BILLING_CAPACITY_REQUEST_DEV_SIMULATION=${{BILLING_CAPACITY_REQUEST_DEV_SIMULATION:-true}}
       - BILLING_PLATFORM_ACCOUNT_ID=${{BILLING_PLATFORM_ACCOUNT_ID:-}}
       - BILLING_CONTRIBUTOR_POOL_BPS=${{BILLING_CONTRIBUTOR_POOL_BPS:-5000}}
+      - DEFAULT_GCP_TINY_CAPACITY_ENABLED=${{DEFAULT_GCP_TINY_CAPACITY_ENABLED:-false}}
+      - DEFAULT_GCP_TINY_CAPACITY_COUNT=${{DEFAULT_GCP_TINY_CAPACITY_COUNT:-0}}
+      - DEFAULT_GCP_TINY_CAPACITY_DISPATCH=${{DEFAULT_GCP_TINY_CAPACITY_DISPATCH:-false}}
       - AGENT_ATTESTATION_INTERVAL=${{AGENT_ATTESTATION_INTERVAL:-3600}}
       - AGENT_STALE_HOURS=${{AGENT_STALE_HOURS:-24}}
       - ADMIN_PASSWORD_HASH=${{ADMIN_PASSWORD_HASH:-}}
@@ -2395,6 +2398,12 @@ def run_control_plane_mode(config: dict):
         env["BILLING_PLATFORM_ACCOUNT_ID"] = config["billing_platform_account_id"]
     if config.get("billing_contributor_pool_bps"):
         env["BILLING_CONTRIBUTOR_POOL_BPS"] = str(config["billing_contributor_pool_bps"])
+    if config.get("default_gcp_tiny_capacity_enabled"):
+        env["DEFAULT_GCP_TINY_CAPACITY_ENABLED"] = config["default_gcp_tiny_capacity_enabled"]
+    if config.get("default_gcp_tiny_capacity_count"):
+        env["DEFAULT_GCP_TINY_CAPACITY_COUNT"] = str(config["default_gcp_tiny_capacity_count"])
+    if config.get("default_gcp_tiny_capacity_dispatch"):
+        env["DEFAULT_GCP_TINY_CAPACITY_DISPATCH"] = config["default_gcp_tiny_capacity_dispatch"]
     if config.get("admin_password_hash"):
         env["ADMIN_PASSWORD_HASH"] = config["admin_password_hash"]
 

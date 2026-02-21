@@ -621,6 +621,13 @@ class TDXManager:
             ),
             "billing_platform_account_id": os.environ.get("BILLING_PLATFORM_ACCOUNT_ID"),
             "billing_contributor_pool_bps": os.environ.get("BILLING_CONTRIBUTOR_POOL_BPS"),
+            "default_gcp_tiny_capacity_enabled": os.environ.get(
+                "DEFAULT_GCP_TINY_CAPACITY_ENABLED"
+            ),
+            "default_gcp_tiny_capacity_count": os.environ.get("DEFAULT_GCP_TINY_CAPACITY_COUNT"),
+            "default_gcp_tiny_capacity_dispatch": os.environ.get(
+                "DEFAULT_GCP_TINY_CAPACITY_DISPATCH"
+            ),
             # Admin password hash for control plane dashboard
             "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH"),
         }
