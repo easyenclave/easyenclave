@@ -149,6 +149,9 @@ on:
       cp_public_url:
         description: "Public control-plane URL (empty if not yet reachable)"
         value: ${{ jobs.bootstrap.outputs.cp_public_url }}
+      cp_admin_token:
+        description: "Bootstrap admin bearer token minted for this control-plane instance"
+        value: ${{ jobs.bootstrap.outputs.cp_admin_token }}
   workflow_dispatch:
     inputs:
       source_ref:
@@ -256,6 +259,7 @@ jobs:
       cp_url: ${{ steps.cp_urls.outputs.cp_url }}
       cp_internal_url: ${{ steps.cp_urls.outputs.cp_internal_url }}
       cp_public_url: ${{ steps.cp_urls.outputs.cp_public_url }}
+      cp_admin_token: ${{ steps.admin_token.outputs.cp_admin_token }}
 
     env:
       EASYENCLAVE_BOOT_ID: bootstrap-${{ github.run_id }}-${{ github.run_attempt }}
@@ -559,3 +563,28 @@ jobs:
             echo "cp_public_url=$cp_public"
             echo "cp_url=$cp_url"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Mint bootstrap admin token
+        id: admin_token
+        shell: bash
+        env:
+          CP_INTERNAL_URL: ${{ steps.cp_urls.outputs.cp_internal_url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CP_INTERNAL_URL:-}" ]; then
+            echo "::error::Missing CP internal URL; cannot mint bootstrap admin token."
+            exit 1
+          fi
+          if [ -z "${ADMIN_PASSWORD:-}" ]; then
+            echo "::error::Missing ADMIN_PASSWORD; cannot mint bootstrap admin token."
+            exit 1
+          fi
+          payload="$(jq -cn --arg p "${ADMIN_PASSWORD}" '{password: $p}')"
+          token="$(curl -sS -X POST "${CP_INTERNAL_URL}/admin/login" -H 'Content-Type: application/json' -d "$payload" | jq -r '.token // empty' 2>/dev/null || true)"
+          if [ -z "$token" ]; then
+            echo "::error::Failed to mint bootstrap admin token via ${CP_INTERNAL_URL}/admin/login"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "cp_admin_token=$token" >> "$GITHUB_OUTPUT"
+          echo "Minted bootstrap admin token."

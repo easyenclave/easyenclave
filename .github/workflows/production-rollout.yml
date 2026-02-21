@@ -389,6 +389,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
       CP_URL: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      CP_ADMIN_TOKEN: ${{ needs.bootstrap.outputs.cp_admin_token }}
       HELLO_TDX_IMAGE: ${{ needs.example-images.outputs.hello_tdx_image }}
       PRIVATE_LLM_OLLAMA_IMAGE: ${{ needs.example-images.outputs.private_llm_ollama_image }}
       PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ needs.example-images.outputs.private_llm_model_loader_image }}
@@ -402,6 +403,7 @@ jobs:
             --arg ref "$SOURCE_REF" \
             --arg cp_url "$CP_URL" \
             --arg cp_expected_git_sha "" \
+            --arg cp_admin_token "$CP_ADMIN_TOKEN" \
             --arg source_ref "$SOURCE_REF" \
             --arg hello_tdx_image "$HELLO_TDX_IMAGE" \
             --arg private_llm_ollama_image "$PRIVATE_LLM_OLLAMA_IMAGE" \
@@ -411,6 +413,7 @@ jobs:
               inputs: {
                 cp_url: $cp_url,
                 cp_expected_git_sha: $cp_expected_git_sha,
+                cp_admin_token: $cp_admin_token,
                 source_ref: $source_ref,
                 hello_tdx_image: $hello_tdx_image,
                 private_llm_ollama_image: $private_llm_ollama_image,

@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: ""
+      cp_admin_token:
+        required: false
+        type: string
+        default: ""
       source_ref:
         required: false
         type: string
@@ -41,6 +45,10 @@ on:
         default: "https://app.easyenclave.com"
       cp_expected_git_sha:
         description: "Expected control-plane git SHA from /health (optional)"
+        required: false
+        default: ""
+      cp_admin_token:
+        description: "Optional admin bearer token for trust bootstrap/teardown"
         required: false
         default: ""
       source_ref:
@@ -69,6 +77,7 @@ concurrency:
 env:
   CP_URL: ${{ inputs.cp_url || github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
   CP_EXPECTED_GIT_SHA: ${{ inputs.cp_expected_git_sha || github.event.inputs.cp_expected_git_sha || '' }}
+  CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token || github.event.inputs.cp_admin_token || '' }}
   HELLO_TDX_IMAGE: ${{ inputs.hello_tdx_image || github.event.inputs.hello_tdx_image || '' }}
   PRIVATE_LLM_OLLAMA_IMAGE: ${{ inputs.private_llm_ollama_image || github.event.inputs.private_llm_ollama_image || '' }}
   PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ inputs.private_llm_model_loader_image || github.event.inputs.private_llm_model_loader_image || '' }}
@@ -176,7 +185,7 @@ jobs:
           billing_api_key: ${{ secrets.CP_DEPLOYER_API_KEY }}
           billing_months: "1"
           gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
-          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
+          cp_admin_token: ${{ env.CP_ADMIN_TOKEN || secrets.CP_ADMIN_TOKEN }}
           cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
 
   deploy-private-llm-gcp:
@@ -252,7 +261,7 @@ jobs:
           # Agent admin password (set on deployed nodes for local admin UI auth).
           AGENT_ADMIN_PASSWORD: ${{ secrets.AGENT_ADMIN_PASSWORD }}
           # Control-plane admin auth (used for trusted MRTD writes / cleanup APIs).
-          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_TOKEN: ${{ env.CP_ADMIN_TOKEN || secrets.CP_ADMIN_TOKEN }}
           CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
@@ -303,7 +312,7 @@ jobs:
           gcp_project_id: ${{ secrets.GCP_PROJECT_ID }}
           gcp_service_account_key: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
           gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
-          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
+          cp_admin_token: ${{ env.CP_ADMIN_TOKEN || secrets.CP_ADMIN_TOKEN }}
           cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       - name: Ensure app exists (idempotent)
@@ -332,7 +341,7 @@ jobs:
           billing_api_key: ${{ secrets.CP_DEPLOYER_API_KEY }}
           billing_months: "1"
           gcp_zone: ${{ vars.GCP_ZONE || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b' }}
-          cp_admin_token: ${{ secrets.CP_ADMIN_TOKEN }}
+          cp_admin_token: ${{ env.CP_ADMIN_TOKEN || secrets.CP_ADMIN_TOKEN }}
           cp_admin_password: ${{ secrets.CP_ADMIN_PASSWORD }}
 
       - name: Set up Python
@@ -443,7 +452,7 @@ jobs:
         if: always() && steps.cfg_llm.outputs.configured == 'true' && steps.deploy.outcome == 'success'
         shell: bash
         env:
-          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_TOKEN: ${{ env.CP_ADMIN_TOKEN || secrets.CP_ADMIN_TOKEN }}
           CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail

@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: ""
+      cp_admin_token:
+        required: false
+        type: string
+        default: ""
       source_ref:
         required: false
         type: string
@@ -43,6 +47,10 @@ on:
         description: "Expected control-plane git SHA from /health (optional)"
         required: false
         default: ""
+      cp_admin_token:
+        description: "Optional admin bearer token for trust bootstrap"
+        required: false
+        default: ""
       source_ref:
         description: "Git ref to checkout"
         required: false
@@ -67,6 +75,7 @@ concurrency:
 env:
   CP_URL: ${{ inputs.cp_url || github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
   CP_EXPECTED_GIT_SHA: ${{ inputs.cp_expected_git_sha || github.event.inputs.cp_expected_git_sha || '' }}
+  CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token || github.event.inputs.cp_admin_token || '' }}
   HELLO_TDX_IMAGE: ${{ inputs.hello_tdx_image || github.event.inputs.hello_tdx_image || '' }}
   PRIVATE_LLM_OLLAMA_IMAGE: ${{ inputs.private_llm_ollama_image || github.event.inputs.private_llm_ollama_image || '' }}
   PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ inputs.private_llm_model_loader_image || github.event.inputs.private_llm_model_loader_image || '' }}
@@ -146,7 +155,7 @@ jobs:
       contents: read
     env:
       ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+      CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token || github.event.inputs.cp_admin_token || secrets.CP_ADMIN_TOKEN }}
       CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
