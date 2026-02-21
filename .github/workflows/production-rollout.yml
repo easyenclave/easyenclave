@@ -387,6 +387,7 @@ jobs:
       contents: read
     env:
       GH_TOKEN: ${{ github.token }}
+      DISPATCH_REF: ${{ github.sha }}
       SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
       CP_URL: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       CP_ADMIN_TOKEN: ${{ needs.bootstrap.outputs.cp_admin_token }}
@@ -400,7 +401,7 @@ jobs:
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows"
           payload="$(jq -cn \
-            --arg ref "$SOURCE_REF" \
+            --arg ref "$DISPATCH_REF" \
             --arg cp_url "$CP_URL" \
             --arg cp_expected_git_sha "" \
             --arg cp_admin_token "$CP_ADMIN_TOKEN" \
@@ -433,5 +434,5 @@ jobs:
               cat /tmp/dispatch.out || true
               exit 1
             fi
-            echo "Dispatched ${wf} for ref ${SOURCE_REF}"
+            echo "Dispatched ${wf} for workflow-ref ${DISPATCH_REF} (source_ref=${SOURCE_REF})"
           done
