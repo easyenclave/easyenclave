@@ -366,7 +366,9 @@ jobs:
               redirect_uri="https://app.${domain}/auth/github/callback"
             fi
           else
-            redirect_uri="${STAGING_REDIRECT_OVERRIDE:-${SHARED_REDIRECT_OVERRIDE:-}}"
+            # Never inherit the shared redirect for staging; default to app-staging
+            # to avoid callback collisions with production.
+            redirect_uri="${STAGING_REDIRECT_OVERRIDE:-}"
             if [ -z "$redirect_uri" ]; then
               redirect_uri="https://app-staging.${domain}/auth/github/callback"
             fi
