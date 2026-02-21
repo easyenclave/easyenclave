@@ -179,6 +179,7 @@ services:
       - CLOUDFLARE_ACCOUNT_ID=${{CLOUDFLARE_ACCOUNT_ID:-}}
       - CLOUDFLARE_ZONE_ID=${{CLOUDFLARE_ZONE_ID:-}}
       - EASYENCLAVE_DOMAIN=${{EASYENCLAVE_DOMAIN:-easyenclave.com}}
+      - EASYENCLAVE_CP_URL=${{EASYENCLAVE_CP_URL:-https://app.easyenclave.com}}
       - EASYENCLAVE_BOOT_ID=${{EASYENCLAVE_BOOT_ID:-}}
       - EASYENCLAVE_GIT_SHA=${{EASYENCLAVE_GIT_SHA:-}}
       - TRUSTED_AGENT_MRTDS=${{TRUSTED_AGENT_MRTDS:-}}
@@ -2026,6 +2027,23 @@ def stream_container_logs(cwd: Path, stop_event: threading.Event) -> None:
         logger.warning(f"Container log streaming error: {e}")
 
 
+def _control_plane_hostnames(config: dict) -> tuple[str, str]:
+    """Return canonical and alias hostnames for the control plane."""
+    domain = (config.get("easyenclave_domain") or "easyenclave.com").strip()
+    network_name = (
+        config.get("easyenclave_network_name")
+        or config.get("easyenclave_env")
+        or domain
+        or "network"
+    )
+    network_slug = re.sub(r"[^a-z0-9-]+", "-", str(network_name).lower()).strip("-")
+    if not network_slug:
+        network_slug = "network"
+    canonical_hostname = f"{network_slug}.{domain}"
+    alias_hostname = f"app.{domain}"
+    return canonical_hostname, alias_hostname
+
+
 def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | None:
     """Create Cloudflare tunnel for the control plane.
 
@@ -2041,13 +2059,7 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
     api_token = config.get("cloudflare_api_token")
     account_id = config.get("cloudflare_account_id")
     zone_id = config.get("cloudflare_zone_id")
-    domain = config.get("easyenclave_domain", "easyenclave.com")
-    network_name = (
-        config.get("easyenclave_network_name")
-        or config.get("easyenclave_env")
-        or domain
-        or "network"
-    )
+    canonical_hostname, alias_hostname = _control_plane_hostnames(config)
 
     if not all([api_token, account_id, zone_id]):
         logger.info("Cloudflare credentials not configured, skipping tunnel setup")
@@ -2060,12 +2072,10 @@ def create_control_plane_tunnel(config: dict, port: int) -> subprocess.Popen | N
     import secrets
 
     # Keep tunnel identity unique per network so staging/prod can share one Cloudflare account.
-    network_slug = re.sub(r"[^a-z0-9-]+", "-", str(network_name).lower()).strip("-")
+    network_slug = canonical_hostname.split(".", 1)[0]
     if not network_slug:
         network_slug = "network"
     tunnel_name = f"easyenclave-control-plane-{network_slug}"[:190]
-    canonical_hostname = f"{network_slug}.{domain}"
-    alias_hostname = f"app.{domain}"
     hostnames: list[str] = []
     for name in (canonical_hostname, alias_hostname):
         if name and name not in hostnames:
@@ -2285,6 +2295,16 @@ def run_control_plane_mode(config: dict):
         env["CLOUDFLARE_ZONE_ID"] = config["cloudflare_zone_id"]
     if config.get("easyenclave_domain"):
         env["EASYENCLAVE_DOMAIN"] = config["easyenclave_domain"]
+    cp_url_for_agents = (config.get("easyenclave_cp_url") or "").strip()
+    if not cp_url_for_agents:
+        canonical_hostname, alias_hostname = _control_plane_hostnames(config)
+        cp_url_for_agents = f"https://{canonical_hostname or alias_hostname}"
+    if cp_url_for_agents:
+        env["EASYENCLAVE_CP_URL"] = cp_url_for_agents
+        logger.info(
+            "Configured CP-native provisioner agent registration URL: %s",
+            cp_url_for_agents,
+        )
     if config.get("easyenclave_env"):
         env["EASYENCLAVE_ENV"] = config["easyenclave_env"]
     if config.get("easyenclave_boot_id"):
