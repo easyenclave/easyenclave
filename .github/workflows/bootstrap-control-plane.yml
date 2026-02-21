@@ -283,8 +283,9 @@ jobs:
       EASYENCLAVE_NETWORK_NAME: ${{ inputs.easyenclave_network_name || github.event.inputs.easyenclave_network_name || '' }}
 
       # GitHub OAuth (admin login + deployer identity).
-      GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
-      GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
+      # Prefer env-specific OAuth app credentials for simultaneous staging/prod.
+      GITHUB_OAUTH_CLIENT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && (secrets.PRODUCTION_EE_GITHUB_OAUTH_CLIENT_ID || secrets.EE_GITHUB_OAUTH_CLIENT_ID)) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_EE_GITHUB_OAUTH_CLIENT_ID || secrets.EE_GITHUB_OAUTH_CLIENT_ID)) || secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
+      GITHUB_OAUTH_CLIENT_SECRET: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && (secrets.PRODUCTION_EE_GITHUB_OAUTH_CLIENT_SECRET || secrets.EE_GITHUB_OAUTH_CLIENT_SECRET)) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_EE_GITHUB_OAUTH_CLIENT_SECRET || secrets.EE_GITHUB_OAUTH_CLIENT_SECRET)) || secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
       # Resolved per-environment below (staging vs production) to avoid callback mismatch.
       GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }}
       ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
