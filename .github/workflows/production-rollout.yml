@@ -375,30 +375,57 @@ jobs:
       ee_gcp_image_name: ${{ needs.gcp-image.outputs.image_name }}
       ee_gcp_image_family: ${{ needs.gcp-image.outputs.image_family }}
 
-  deploy-baremetal:
-    name: Builtin deploy examples (baremetal)
+  dispatch-builtin-examples:
+    name: Dispatch builtin deploy examples (async)
     needs: [resolve, bootstrap, example-images]
-    uses: ./.github/workflows/deploy-examples.yml
-    secrets: inherit
-    with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
-      # Temporarily skip strict git_sha gate for deploy examples; rollout already pins
-      # release trust/image inputs and enforces policy during bootstrap.
-      cp_expected_git_sha: ''
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
-      hello_tdx_image: ${{ needs.example-images.outputs.hello_tdx_image }}
-      private_llm_ollama_image: ${{ needs.example-images.outputs.private_llm_ollama_image }}
-      private_llm_model_loader_image: ${{ needs.example-images.outputs.private_llm_model_loader_image }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
+      CP_URL: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      HELLO_TDX_IMAGE: ${{ needs.example-images.outputs.hello_tdx_image }}
+      PRIVATE_LLM_OLLAMA_IMAGE: ${{ needs.example-images.outputs.private_llm_ollama_image }}
+      PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ needs.example-images.outputs.private_llm_model_loader_image }}
+    steps:
+      - name: Dispatch baremetal + gcp example workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows"
+          payload="$(jq -cn \
+            --arg ref "$SOURCE_REF" \
+            --arg cp_url "$CP_URL" \
+            --arg cp_expected_git_sha "" \
+            --arg source_ref "$SOURCE_REF" \
+            --arg hello_tdx_image "$HELLO_TDX_IMAGE" \
+            --arg private_llm_ollama_image "$PRIVATE_LLM_OLLAMA_IMAGE" \
+            --arg private_llm_model_loader_image "$PRIVATE_LLM_MODEL_LOADER_IMAGE" \
+            '{
+              ref: $ref,
+              inputs: {
+                cp_url: $cp_url,
+                cp_expected_git_sha: $cp_expected_git_sha,
+                source_ref: $source_ref,
+                hello_tdx_image: $hello_tdx_image,
+                private_llm_ollama_image: $private_llm_ollama_image,
+                private_llm_model_loader_image: $private_llm_model_loader_image
+              }
+            }')"
 
-  deploy-gcp:
-    name: Builtin deploy examples (gcp)
-    needs: [resolve, bootstrap, example-images]
-    uses: ./.github/workflows/deploy-examples-gcp.yml
-    secrets: inherit
-    with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
-      cp_expected_git_sha: ''
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
-      hello_tdx_image: ${{ needs.example-images.outputs.hello_tdx_image }}
-      private_llm_ollama_image: ${{ needs.example-images.outputs.private_llm_ollama_image }}
-      private_llm_model_loader_image: ${{ needs.example-images.outputs.private_llm_model_loader_image }}
+          for wf in deploy-examples.yml deploy-examples-gcp.yml; do
+            code="$(curl -sS -o /tmp/dispatch.out -w '%{http_code}' \
+              -X POST \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${api}/${wf}/dispatches" \
+              -d "$payload")"
+            if [ "$code" != "204" ]; then
+              echo "::error::Failed to dispatch ${wf} (HTTP ${code})"
+              cat /tmp/dispatch.out || true
+              exit 1
+            fi
+            echo "Dispatched ${wf} for ref ${SOURCE_REF}"
+          done
