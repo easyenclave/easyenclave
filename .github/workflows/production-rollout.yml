@@ -360,7 +360,8 @@ jobs:
       cp_to_agent_attestation_mode: optional
       auth_require_github_oauth_in_production: ${{ 'true' }}
       password_login_enabled: ${{ 'true' }}
-      auth_allow_password_login_in_production: ${{ 'false' }}
+      # Required so CI can admin-login and trust-bootstrap newly observed GCP MRTDs.
+      auth_allow_password_login_in_production: ${{ 'true' }}
       billing_enabled: ${{ 'true' }}
       # CI rollouts use simulated billing capacity requests to avoid external account funding dependence.
       billing_capacity_request_dev_simulation: ${{ 'true' }}
