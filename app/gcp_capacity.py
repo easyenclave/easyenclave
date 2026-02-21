@@ -259,6 +259,18 @@ def _agent_ita_api_key_env() -> str:
     ).strip()
 
 
+def _agent_disconnect_self_terminate_seconds() -> int:
+    raw = (
+        os.environ.get("AGENT_CLOUD_DISCONNECT_SELF_TERMINATE_SECONDS")
+        or os.environ.get("EE_AGENT_DISCONNECT_SELF_TERMINATE_SECONDS")
+        or "300"
+    ).strip()
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        return 300
+
+
 def _cloud_init_user_data(*, launcher_config: dict[str, Any]) -> str:
     config_json = json.dumps(launcher_config, indent=2)
     launcher_url = _launcher_url()
@@ -385,6 +397,7 @@ async def create_tdx_instance_for_order(
         "datacenter": dc or f"gcp:{zone}",
         "bootstrap_order_id": order_id,
         "bootstrap_token": bootstrap_token,
+        "disconnect_self_terminate_seconds": _agent_disconnect_self_terminate_seconds(),
     }
     network_name = (os.environ.get("EASYENCLAVE_NETWORK_NAME") or "").strip()
     if network_name:
@@ -435,7 +448,7 @@ async def create_tdx_instance_for_order(
         ],
         "metadata": {"items": [{"key": "user-data", "value": cloud_init}]},
         "labels": labels,
-        "scheduling": {"onHostMaintenance": "TERMINATE"},
+        "scheduling": {"onHostMaintenance": "TERMINATE", "automaticRestart": False},
     }
 
     service_account = _parse_service_account_info(service_account_raw)

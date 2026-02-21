@@ -209,6 +209,7 @@ services:
       - DEFAULT_GCP_TINY_CAPACITY_COUNT=${{DEFAULT_GCP_TINY_CAPACITY_COUNT:-0}}
       - DEFAULT_GCP_TINY_CAPACITY_DISPATCH=${{DEFAULT_GCP_TINY_CAPACITY_DISPATCH:-false}}
       - AGENT_ATTESTATION_INTERVAL=${{AGENT_ATTESTATION_INTERVAL:-3600}}
+      - AGENT_CLOUD_DISCONNECT_SELF_TERMINATE_SECONDS=${{AGENT_CLOUD_DISCONNECT_SELF_TERMINATE_SECONDS:-300}}
       - AGENT_STALE_HOURS=${{AGENT_STALE_HOURS:-24}}
       - ADMIN_PASSWORD_HASH=${{ADMIN_PASSWORD_HASH:-}}
     volumes:
@@ -314,6 +315,117 @@ def _cache_attestation(attestation: dict, source: str):
     _admin_state["attestation"] = attestation
     _admin_state["attestation_source"] = source
     _admin_state["attestation_updated_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_nonnegative_int(value, default: int) -> int:
+    try:
+        parsed = int(str(value).strip())
+        return max(0, parsed)
+    except Exception:
+        return max(0, int(default))
+
+
+def _resolve_gcp_disconnect_self_terminate_seconds(config: dict) -> int:
+    """Resolve self-terminate timeout for unrecoverable GCP disconnects."""
+    if "disconnect_self_terminate_seconds" in config:
+        return _coerce_nonnegative_int(config.get("disconnect_self_terminate_seconds"), 300)
+    return _coerce_nonnegative_int(
+        os.environ.get("AGENT_CLOUD_DISCONNECT_SELF_TERMINATE_SECONDS", "300"),
+        300,
+    )
+
+
+def _probe_tunnel_reachability(hostname: str) -> tuple[bool, str]:
+    """Probe the public tunnel endpoint to verify external reachability."""
+    host = (hostname or "").strip()
+    if not host:
+        return (False, "missing-hostname")
+    url = f"https://{host}/api/health"
+    try:
+        resp = requests.get(url, timeout=8)
+        if 200 <= resp.status_code < 300:
+            return (True, "ok")
+        return (False, f"http-{resp.status_code}")
+    except Exception as exc:
+        return (False, f"error:{exc}")
+
+
+def _gcp_metadata_get(path: str) -> str:
+    resp = requests.get(
+        f"http://metadata.google.internal/computeMetadata/v1/{path.lstrip('/')}",
+        headers={"Metadata-Flavor": "Google"},
+        timeout=5,
+    )
+    resp.raise_for_status()
+    return (resp.text or "").strip()
+
+
+def _attempt_gcp_self_delete() -> bool:
+    """Best-effort self-delete of the current GCP VM via metadata token."""
+    try:
+        project_id = _gcp_metadata_get("project/project-id")
+        zone_path = _gcp_metadata_get("instance/zone")
+        instance_name = _gcp_metadata_get("instance/name")
+        zone = zone_path.rsplit("/", 1)[-1].strip()
+        if not project_id or not zone or not instance_name:
+            raise RuntimeError(
+                "missing project/zone/instance metadata "
+                f"(project={project_id!r} zone={zone!r} instance={instance_name!r})"
+            )
+        tok_resp = requests.get(
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+            headers={"Metadata-Flavor": "Google"},
+            timeout=5,
+        )
+        tok_resp.raise_for_status()
+        token = str((tok_resp.json() or {}).get("access_token") or "").strip()
+        if not token:
+            raise RuntimeError("metadata token endpoint returned empty access_token")
+
+        delete_url = (
+            "https://compute.googleapis.com/compute/v1/projects/"
+            f"{urllib.parse.quote(project_id, safe='')}/zones/"
+            f"{urllib.parse.quote(zone, safe='')}/instances/"
+            f"{urllib.parse.quote(instance_name, safe='')}"
+        )
+        del_resp = requests.delete(
+            delete_url,
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if del_resp.status_code in {200, 202, 204, 404}:
+            logger.warning(
+                "Requested GCP self-delete for instance=%s zone=%s status=%s",
+                instance_name,
+                zone,
+                del_resp.status_code,
+            )
+            return True
+        raise RuntimeError(
+            f"compute API returned HTTP {del_resp.status_code}: {del_resp.text[:240]}"
+        )
+    except Exception as exc:
+        logger.warning("GCP self-delete request failed: %s", exc)
+        return False
+
+
+def _commit_vm_death(reason: str, *, is_gcp: bool):
+    """Terminate this VM when it is irrecoverably disconnected."""
+    logger.error("Committing VM death: %s", reason)
+    if is_gcp:
+        _attempt_gcp_self_delete()
+
+    # Fallback/fast-path: stop the instance locally even if delete API fails.
+    try:
+        subprocess.run(["systemctl", "poweroff"], check=False)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["shutdown", "-h", "now"], check=False)
+    except Exception:
+        pass
+    # If poweroff is blocked, exit so the service does not keep serving a broken node.
+    raise SystemExit(1)
 
 
 def _password_admin_enabled() -> bool:
@@ -2656,7 +2768,8 @@ def run_agent_mode(config: dict):
     vm_name = get_vm_name()
     logger.info(f"VM name: {vm_name}")
     _admin_state["vm_name"] = vm_name
-    _admin_state["datacenter"] = resolve_datacenter_label(config) or None
+    datacenter_label = resolve_datacenter_label(config) or None
+    _admin_state["datacenter"] = datacenter_label
 
     # 1. Generate initial attestation (requires Intel TA - will crash if fails)
     # Pass vm_name for nonce challenge (replay attack prevention)
@@ -2727,9 +2840,29 @@ def run_agent_mode(config: dict):
     # Control plane will still do frequent health pulls, but it no longer needs to pull attestation.
     start_periodic_attestation_push(agent_id=agent_id, vm_name=vm_name, config=config)
 
+    is_gcp_agent = str(datacenter_label or "").lower().startswith("gcp")
+    disconnect_timeout_seconds = _resolve_gcp_disconnect_self_terminate_seconds(config)
+    monitor_sleep_seconds = max(
+        5,
+        _coerce_nonnegative_int(
+            config.get("disconnect_probe_interval_seconds")
+            or os.environ.get("AGENT_DISCONNECT_PROBE_INTERVAL_SECONDS", "30"),
+            30,
+        ),
+    )
+    if is_gcp_agent:
+        logger.info(
+            "GCP disconnect self-terminate timeout: %ss (probe interval: %ss)",
+            disconnect_timeout_seconds,
+            monitor_sleep_seconds,
+        )
+    disconnect_started_at: float | None = None
+
     # 5. Monitor loop (just keep cloudflared running)
     while True:
         try:
+            disconnect_issue: str | None = None
+
             # Check if cloudflared is still running
             if cloudflared_proc is not None:
                 poll_result = cloudflared_proc.poll()
@@ -2741,16 +2874,54 @@ def run_agent_mode(config: dict):
                         api_secret = (reg_response.get("agent_api_secret") or "").strip()
                         if api_secret:
                             API_SECRET = api_secret
+                        maybe_hostname = (reg_response.get("hostname") or "").strip()
+                        if maybe_hostname:
+                            tunnel_hostname = maybe_hostname
+                            _admin_state["hostname"] = maybe_hostname
                         if reg_response.get("tunnel_token"):
                             cloudflared_proc = start_cloudflared(reg_response["tunnel_token"])
                     except Exception as e:
                         logger.error(f"Failed to restart tunnel: {e}")
                         cloudflared_proc = None
+                        disconnect_issue = "cloudflared-restart-failed"
+            else:
+                disconnect_issue = "cloudflared-not-running"
+
+            if cloudflared_proc is not None and tunnel_hostname:
+                reachable, detail = _probe_tunnel_reachability(tunnel_hostname)
+                if not reachable:
+                    disconnect_issue = f"public-tunnel-unreachable:{detail}"
+
+            if disconnect_issue:
+                if disconnect_started_at is None:
+                    disconnect_started_at = time.monotonic()
+                    logger.warning(
+                        "Agent connectivity degraded (%s); monitoring for recovery",
+                        disconnect_issue,
+                    )
+                disconnected_for = int(time.monotonic() - disconnect_started_at)
+                if (
+                    is_gcp_agent
+                    and disconnect_timeout_seconds > 0
+                    and disconnected_for >= disconnect_timeout_seconds
+                ):
+                    _commit_vm_death(
+                        (
+                            "agent disconnected for "
+                            f"{disconnected_for}s (threshold={disconnect_timeout_seconds}s): "
+                            f"{disconnect_issue}"
+                        ),
+                        is_gcp=True,
+                    )
+            elif disconnect_started_at is not None:
+                recovered_for = int(time.monotonic() - disconnect_started_at)
+                logger.info("Agent connectivity restored after %ss", recovered_for)
+                disconnect_started_at = None
 
         except Exception as e:
             logger.error(f"Monitor error: {e}")
 
-        time.sleep(30)
+        time.sleep(monitor_sleep_seconds)
 
 
 def main():
