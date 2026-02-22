@@ -1,8 +1,10 @@
 # Staging Rollout
 #
 # Canonical staging network pipeline:
-# 1) Bootstrap staging control plane from latest CI image on main
-# 2) Run builtin deploy examples in parallel (baremetal + gcp)
+# 1) Trigger on push to main (in parallel with CI).
+# 2) Wait for CI success on the same commit SHA.
+# 3) Build/pin a staging GCP image for that exact commit.
+# 4) Bootstrap staging control plane and run builtin deploy examples in parallel (baremetal + gcp).
 #
 # Staging profile is intentionally no-cost:
 # - billing disabled
@@ -11,10 +13,20 @@
 name: Staging Rollout
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [main]
+    paths:
+      - "app/**"
+      - "infra/**"
+      - "scripts/**"
+      - "tests/**"
+      - "sdk/**"
+      - ".github/actions/**"
+      - ".github/workflows/**"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "requirements.txt"
+      - "pyproject.toml"
   workflow_dispatch:
     inputs:
       cp_url:
@@ -42,10 +54,13 @@ jobs:
   resolve:
     name: Resolve staging rollout config
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       cp_url: ${{ steps.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ steps.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
       staging_domain: ${{ steps.resolve.outputs.staging_domain }}
       staging_network_name: ${{ steps.resolve.outputs.staging_network_name }}
       staging_release_tag: ${{ steps.resolve.outputs.staging_release_tag }}
@@ -59,8 +74,7 @@ jobs:
           INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
           INPUT_EXPECTED_SHA: ${{ github.event.inputs.cp_expected_git_sha || '' }}
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
-          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
-          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          GH_TOKEN: ${{ github.token }}
           DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.STAGING_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
@@ -86,22 +100,44 @@ jobs:
               | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
           }
 
+          resolve_ref_sha() {
+            local ref="$1"
+            local sha=""
+            if echo "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+              printf '%s' "$ref"
+              return 0
+            fi
+            sha="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${ref}" --jq '.sha' 2>/dev/null || true)"
+            if ! echo "${sha:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+              return 1
+            fi
+            printf '%s' "$sha"
+          }
+
           source_ref="${INPUT_SOURCE_REF:-}"
           if [ -z "$source_ref" ]; then
-            source_ref="${WORKFLOW_RUN_SHA:-${GITHUB_SHA}}"
+            source_ref="${GITHUB_SHA}"
           fi
 
-          event_name="${GITHUB_EVENT_NAME:-}"
-          workflow_run_conclusion="$(echo "${WORKFLOW_RUN_CONCLUSION:-}" | tr '[:upper:]' '[:lower:]')"
-          if [ "$event_name" = "workflow_run" ] && [ "$workflow_run_conclusion" != "success" ]; then
-            echo "::error::Upstream CI did not succeed (conclusion='${WORKFLOW_RUN_CONCLUSION:-unknown}'); refusing no-op green staging rollout."
+          source_sha="$(resolve_ref_sha "$source_ref" || true)"
+          if [ -z "${source_sha:-}" ]; then
+            echo "::error::Could not resolve source ref '${source_ref}' to a commit SHA."
+            exit 1
+          fi
+          source_ref="$source_sha"
+
+          expected_sha="${INPUT_EXPECTED_SHA:-}"
+          if [ -n "$expected_sha" ] && ! echo "$expected_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            expected_sha="$(resolve_ref_sha "$expected_sha" || true)"
+          fi
+          if [ -z "$expected_sha" ]; then
+            expected_sha="$source_sha"
+          fi
+          if ! echo "$expected_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Could not resolve expected git SHA."
             exit 1
           fi
 
-          expected_sha="${INPUT_EXPECTED_SHA:-}"
-          if [ -z "$expected_sha" ] && [ -n "${WORKFLOW_RUN_SHA:-}" ]; then
-            expected_sha="${WORKFLOW_RUN_SHA}"
-          fi
           release_seed="${expected_sha:-$source_ref}"
           release_seed="$(normalize_network_name "${release_seed}")"
           if [ -z "$release_seed" ]; then
@@ -145,6 +181,7 @@ jobs:
 
           {
             echo "source_ref=${source_ref}"
+            echo "source_sha=${source_sha}"
             echo "cp_expected_git_sha=${expected_sha}"
             echo "staging_domain=${domain}"
             echo "staging_network_name=${network_name}"
@@ -154,8 +191,57 @@ jobs:
             echo "skip_reason=${skip_reason}"
           } >> "$GITHUB_OUTPUT"
 
+  wait-ci:
+    name: Wait for CI on target SHA
+    needs: [resolve]
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require CI success for rollout SHA
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TARGET_SHA:-}" ]; then
+            echo "::error::Missing target SHA for CI gate."
+            exit 1
+          fi
+
+          deadline=$(( $(date +%s) + 3600 ))
+          while :; do
+            runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${TARGET_SHA}&per_page=100")"
+            status="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .status // "missing"')"
+            conclusion="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .conclusion // ""')"
+            url="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .html_url // ""')"
+            echo "CI gate: sha=${TARGET_SHA} status=${status} conclusion=${conclusion}"
+            if [ -n "$url" ]; then
+              echo "  ${url}"
+            fi
+
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI passed for ${TARGET_SHA}."
+                break
+              fi
+              echo "::error::CI for ${TARGET_SHA} completed with conclusion='${conclusion}'."
+              exit 1
+            fi
+
+            now=$(date +%s)
+            if [ "$now" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for CI success for ${TARGET_SHA}."
+              exit 1
+            fi
+            sleep 15
+          done
+
   cleanup-staging-gcp:
-    name: Cleanup stale staging GCP capacity
+    name: Cleanup stale staging GCP resources
     needs: [resolve]
     if: needs.resolve.outputs.should_run == 'true'
     runs-on: ubuntu-latest
@@ -164,9 +250,6 @@ jobs:
     env:
       GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
-      SOURCE_IMAGE_PROJECT: ${{ vars.STAGING_GCP_SOURCE_IMAGE_PROJECT || vars.EE_GCP_SOURCE_IMAGE_PROJECT || secrets.PRODUCTION_GCP_PROJECT_ID }}
-      SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_SOURCE_IMAGE_NAME || vars.EE_GCP_SOURCE_IMAGE_NAME || '' }}
-      SOURCE_IMAGE_FAMILY: ${{ vars.STAGING_GCP_SOURCE_IMAGE_FAMILY || vars.EE_GCP_SOURCE_IMAGE_FAMILY || 'easyenclave-agent' }}
     steps:
       - name: Validate staging GCP config
         id: cfg
@@ -219,100 +302,163 @@ jobs:
               --quiet
           done
 
-      - name: Ensure staging seed image exists for CP-native GCP provisioning
+      - name: Keep only latest 3 staging commit images
         if: steps.cfg.outputs.configured == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${SOURCE_IMAGE_PROJECT:-}" ] || [ -z "${SOURCE_IMAGE_FAMILY:-}" ]; then
-            echo "::error::Missing SOURCE_IMAGE_PROJECT/SOURCE_IMAGE_FAMILY for staging seed image creation."
-            exit 1
-          fi
-
-          src_selector=""
-          src_value=""
-          src_name="${SOURCE_IMAGE_NAME:-}"
-          src_family="${SOURCE_IMAGE_FAMILY:-}"
-          fallback_family="easyenclave-agent"
-
-          if [ -n "${src_name}" ] && gcloud compute images describe "${src_name}" --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
-            src_selector="name"
-            src_value="${src_name}"
-          fi
-
-          if [ -z "${src_selector}" ] && [ -n "${src_family}" ] && gcloud compute images describe-from-family "${src_family}" --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
-            src_selector="family"
-            src_value="${src_family}"
-          fi
-
-          if [ -z "${src_selector}" ] && [ "${fallback_family}" != "${src_family}" ] && gcloud compute images describe-from-family "${fallback_family}" --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
-            src_selector="family"
-            src_value="${fallback_family}"
-          fi
-
-          if [ -z "${src_selector}" ]; then
-            latest_seed="$(gcloud compute images list \
-              --project "${SOURCE_IMAGE_PROJECT}" \
-              --filter "name~^easyenclave-agent-" \
-              --sort-by "~creationTimestamp" \
-              --limit 1 \
-              --format "value(name)")"
-            if [ -n "${latest_seed}" ]; then
-              src_selector="name"
-              src_value="${latest_seed}"
-            fi
-          fi
-
-          if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
-            echo "::error::No usable source image found in '${SOURCE_IMAGE_PROJECT}'. Checked SOURCE_IMAGE_NAME='${SOURCE_IMAGE_NAME:-}', SOURCE_IMAGE_FAMILY='${SOURCE_IMAGE_FAMILY:-}', fallback family '${fallback_family}', and latest easyenclave-agent-* images."
-            exit 1
-          fi
-
-          image_name="easyenclave-agent-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          source_args=(--source-image-project "${SOURCE_IMAGE_PROJECT}")
-          if [ "${src_selector}" = "name" ]; then
-            source_args+=(--source-image "${src_value}")
-          else
-            source_args+=(--source-image-family "${src_value}")
-          fi
-          echo "Creating staging seed image '${image_name}' from ${SOURCE_IMAGE_PROJECT} (${src_selector}=${src_value})"
-          gcloud compute images create "${image_name}" \
+          mapfile -t images < <(gcloud compute images list \
             --project "${GCP_PROJECT_ID}" \
-            "${source_args[@]}" \
-            --family "easyenclave-agent" \
-            --labels "easyenclave=managed,easyenclave_env=staging"
-
-      - name: Keep only latest staging seed image
-        if: steps.cfg.outputs.configured == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t seeds < <(gcloud compute images list \
-            --project "${GCP_PROJECT_ID}" \
-            --filter "name~^easyenclave-agent-seed-" \
+            --filter "name~^easyenclave-agent-main-" \
             --sort-by "~creationTimestamp" \
             --format "value(name)")
-          if [ "${#seeds[@]}" -le 1 ]; then
-            echo "Seed image cleanup not required."
+          if [ "${#images[@]}" -le 3 ]; then
+            echo "Staging image cleanup not required."
             exit 0
           fi
-          for old in "${seeds[@]:1}"; do
+          for old in "${images[@]:3}"; do
             [ -n "$old" ] || continue
-            echo "Deleting stale staging seed image: ${old}"
+            echo "Deleting stale staging image: ${old}"
             gcloud compute images delete "${old}" \
               --project "${GCP_PROJECT_ID}" \
               --quiet
           done
 
+  build-staging-gcp-image:
+    name: Build staging GCP image for commit
+    needs: [resolve]
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_project: ${{ steps.image.outputs.image_project }}
+      image_name: ${{ steps.image.outputs.image_name }}
+      image_family: ${{ steps.image.outputs.image_family }}
+    env:
+      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
+      SOURCE_IMAGE_PROJECT: ${{ vars.STAGING_GCP_SOURCE_IMAGE_PROJECT || vars.EE_GCP_SOURCE_IMAGE_PROJECT || secrets.PRODUCTION_GCP_PROJECT_ID }}
+      SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_SOURCE_IMAGE_NAME || vars.EE_GCP_SOURCE_IMAGE_NAME || '' }}
+      SOURCE_IMAGE_FAMILY: ${{ vars.STAGING_GCP_SOURCE_IMAGE_FAMILY || vars.EE_GCP_SOURCE_IMAGE_FAMILY || 'easyenclave-agent' }}
+      SOURCE_REF: ${{ needs.resolve.outputs.source_sha }}
+    steps:
+      - name: Validate staging GCP image config
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_IMAGE_PROJECT SOURCE_REF; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required value: $v"
+              exit 1
+            fi
+          done
+
+      - name: Checkout source ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REF }}
+
+      - name: Resolve source sha
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP (staging)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud (staging)
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Create or reuse staging commit image
+        id: image
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.sha.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
+          image_name="easyenclave-agent-main-${sha12}"
+          image_family="easyenclave-agent-main"
+
+          src_selector=""
+          src_project="${SOURCE_IMAGE_PROJECT}"
+          src_value=""
+          configured_name="${SOURCE_IMAGE_NAME:-}"
+          configured_family="${SOURCE_IMAGE_FAMILY:-}"
+
+          # Preferred deterministic source (configured exact name / family).
+          if [ -n "${configured_name}" ] && gcloud compute images describe "${configured_name}" --project "${src_project}" >/dev/null 2>&1; then
+            src_selector="name"
+            src_value="${configured_name}"
+          fi
+          if [ -z "${src_selector}" ] && [ -n "${configured_family}" ] && gcloud compute images describe-from-family "${configured_family}" --project "${src_project}" >/dev/null 2>&1; then
+            src_selector="family"
+            src_value="${configured_family}"
+          fi
+
+          # Staging fallback chain to keep main commits moving.
+          if [ -z "${src_selector}" ] && gcloud compute images describe-from-family "${image_family}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+            src_selector="family"
+            src_project="${GCP_PROJECT_ID}"
+            src_value="${image_family}"
+          fi
+          if [ -z "${src_selector}" ] && gcloud compute images describe-from-family "easyenclave-agent" --project "${src_project}" >/dev/null 2>&1; then
+            src_selector="family"
+            src_value="easyenclave-agent"
+          fi
+          if [ -z "${src_selector}" ] && gcloud compute images describe-from-family "ubuntu-2404-lts-amd64" --project "ubuntu-os-cloud" >/dev/null 2>&1; then
+            src_selector="family"
+            src_project="ubuntu-os-cloud"
+            src_value="ubuntu-2404-lts-amd64"
+            echo "::warning::Using stock Ubuntu family as staging bootstrap source because no EasyEnclave source image is currently available."
+          fi
+
+          if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
+            echo "::error::No usable source image found for staging image build."
+            echo "::error::Checked configured source name/family and fallback families in '${SOURCE_IMAGE_PROJECT}' and '${GCP_PROJECT_ID}'."
+            exit 1
+          fi
+
+          if gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+            echo "Staging image already exists: ${GCP_PROJECT_ID}/${image_name}"
+          else
+            source_args=(--source-image-project "${src_project}")
+            if [ "${src_selector}" = "name" ]; then
+              source_args+=(--source-image "${src_value}")
+            else
+              source_args+=(--source-image-family "${src_value}")
+            fi
+
+            gcloud compute images create "${image_name}" \
+              --project "${GCP_PROJECT_ID}" \
+              "${source_args[@]}" \
+              --family "${image_family}" \
+              --labels "easyenclave=managed,easyenclave_env=staging,gitsha=${sha12},ee_git_sha=${sha12}" \
+              --description "EasyEnclave staging commit ${SOURCE_SHA}"
+          fi
+
+          {
+            echo "image_project=${GCP_PROJECT_ID}"
+            echo "image_name=${image_name}"
+            echo "image_family=${image_family}"
+          } >> "$GITHUB_OUTPUT"
+
   bootstrap:
     name: Bootstrap staging control plane
-    needs: [resolve, cleanup-staging-gcp]
+    needs: [resolve, wait-ci, cleanup-staging-gcp, build-staging-gcp-image]
     if: needs.resolve.outputs.should_run == 'true'
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
-      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_ref) }}
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny
       # Keep staging warm spare footprint small.
       num_tiny_agents: '1'
@@ -338,6 +484,9 @@ jobs:
       billing_capacity_request_dev_simulation: ${{ 'true' }}
       billing_platform_account_id: ''
       billing_contributor_pool_bps: '0'
+      ee_gcp_image_project: ${{ needs.build-staging-gcp-image.outputs.image_project }}
+      ee_gcp_image_name: ${{ needs.build-staging-gcp-image.outputs.image_name }}
+      ee_gcp_image_family: ${{ needs.build-staging-gcp-image.outputs.image_family }}
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
@@ -347,7 +496,7 @@ jobs:
     with:
       cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
       easyenclave_env: staging
 
   deploy-gcp:
@@ -358,7 +507,7 @@ jobs:
     with:
       cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
       easyenclave_env: staging
 
   assert-rollout-executed:
