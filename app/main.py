@@ -3056,6 +3056,13 @@ async def get_deployment(deployment_id: str):
     return get_or_404(deployment_store, deployment_id, "Deployment")
 
 
+async def _delete_managed_gcp_instance(datacenter: str, instance_name: str) -> bool:
+    """Best-effort CP-native GCP instance delete used by admin cleanup routes."""
+    from app.gcp_capacity import delete_instance
+
+    return await delete_instance(datacenter=datacenter, instance_name=instance_name)
+
+
 register_admin_cloud_routes(
     app,
     logger=logger,
@@ -3079,6 +3086,9 @@ register_admin_cloud_routes(
     fetch_external_inventory_fn=lambda: fetch_external_inventory(),
     extract_cleanup_requested_count_fn=lambda payload: _extract_cleanup_requested_count(payload),
     cloudflare_delete_many_fn=lambda **kwargs: _cloudflare_delete_many(**kwargs),
+    delete_managed_gcp_instance_fn=lambda datacenter, instance_name: _delete_managed_gcp_instance(
+        datacenter, instance_name
+    ),
 )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
@@ -26,6 +27,10 @@ from .models import (
 
 CLOUDFLARE_AGENT_TUNNEL_PREFIX = "agent-"
 CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME = "easyenclave-control-plane"
+_GCP_INSTANCE_PATH_RE = re.compile(
+    r"/zones/(?P<zone>[^/]+)/instances/(?P<name>[^/]+)$", re.IGNORECASE
+)
+_GCP_ZONE_PATH_RE = re.compile(r"/zones/(?P<zone>[^/]+)(?:/|$)", re.IGNORECASE)
 
 
 def _is_agent_tunnel_name(name: str | None) -> bool:
@@ -34,6 +39,41 @@ def _is_agent_tunnel_name(name: str | None) -> bool:
 
 def _is_protected_tunnel_name(name: str | None) -> bool:
     return name == CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME
+
+
+def _detail_indicates_not_implemented(detail: str | None) -> bool:
+    text = (detail or "").strip().lower()
+    return "not implemented" in text
+
+
+def _gcp_datacenter_from_resource(*, datacenter: str | None, resource_id: str | None) -> str | None:
+    dc = (datacenter or "").strip().lower()
+    if dc.startswith("gcp:"):
+        return dc
+    rid = (resource_id or "").strip()
+    if rid:
+        match = _GCP_ZONE_PATH_RE.search(rid)
+        if match:
+            zone = (match.group("zone") or "").strip().lower()
+            if zone:
+                return f"gcp:{zone}"
+    return None
+
+
+def _gcp_instance_name_from_resource(*, name: str | None, resource_id: str | None) -> str | None:
+    vm_name = (name or "").strip().lower()
+    if vm_name:
+        return vm_name
+    rid = (resource_id or "").strip()
+    if not rid:
+        return None
+    match = _GCP_INSTANCE_PATH_RE.search(rid)
+    if match:
+        parsed = (match.group("name") or "").strip().lower()
+        return parsed or None
+    if "/" not in rid:
+        return rid.lower()
+    return None
 
 
 def register_admin_cloud_routes(
@@ -62,8 +102,88 @@ def register_admin_cloud_routes(
     fetch_external_inventory_fn: Callable[[], Awaitable[tuple[bool, int | None, str | None, dict]]],
     extract_cleanup_requested_count_fn: Callable[[dict], int],
     cloudflare_delete_many_fn: Callable[..., Awaitable[dict[str, int]]],
+    delete_managed_gcp_instance_fn: Callable[[str, str], Awaitable[bool]] | None = None,
 ) -> None:
     """Register admin and cloud management routes."""
+
+    async def _run_builtin_gcp_cleanup(
+        resources: list[dict[str, Any]],
+        *,
+        dry_run: bool,
+    ) -> ExternalCloudCleanupResponse | None:
+        """Best-effort fallback cleanup for GCP resources via CP-native credentials."""
+        if delete_managed_gcp_instance_fn is None:
+            return None
+
+        candidates: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for raw in resources:
+            cloud = str(raw.get("cloud") or raw.get("provider") or "").strip().lower()
+            if cloud and cloud not in {"gcp", "google"}:
+                continue
+            datacenter = _gcp_datacenter_from_resource(
+                datacenter=str(raw.get("datacenter") or "").strip(),
+                resource_id=str(raw.get("resource_id") or "").strip(),
+            )
+            instance_name = _gcp_instance_name_from_resource(
+                name=str(raw.get("name") or raw.get("linked_vm_name") or "").strip(),
+                resource_id=str(raw.get("resource_id") or "").strip(),
+            )
+            if not datacenter or not instance_name:
+                continue
+            key = (datacenter, instance_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(key)
+
+        if not candidates:
+            return ExternalCloudCleanupResponse(
+                configured=True,
+                dispatched=False,
+                dry_run=dry_run,
+                requested_count=0,
+                status_code=None,
+                detail="Built-in GCP cleanup found no matching VM candidates.",
+            )
+
+        if dry_run:
+            return ExternalCloudCleanupResponse(
+                configured=True,
+                dispatched=False,
+                dry_run=True,
+                requested_count=len(candidates),
+                status_code=None,
+                detail="Built-in GCP cleanup dry run.",
+            )
+
+        deleted = 0
+        failed = 0
+        errors: list[str] = []
+        for datacenter, instance_name in candidates:
+            try:
+                removed = await delete_managed_gcp_instance_fn(datacenter, instance_name)
+                if removed:
+                    deleted += 1
+            except Exception as exc:
+                failed += 1
+                errors.append(f"{instance_name}: {exc}")
+
+        detail_parts = [
+            f"Built-in GCP cleanup attempted {len(candidates)} VM(s), deleted {deleted}."
+        ]
+        if failed > 0:
+            detail_parts.append(f"Failed {failed}.")
+            if errors:
+                detail_parts.append("; ".join(errors[:3]))
+        return ExternalCloudCleanupResponse(
+            configured=True,
+            dispatched=True,
+            dry_run=False,
+            requested_count=len(candidates),
+            status_code=200 if failed == 0 else 207,
+            detail=" ".join(detail_parts).strip(),
+        )
 
     @app.get("/api/v1/trusted-mrtds")
     async def get_trusted_mrtds():
@@ -448,7 +568,8 @@ def register_admin_cloud_routes(
         ext_configured = bool(get_setting_fn("provisioner.cleanup_url").strip())
         if request.external_cloud:
             if not ext_configured:
-                detail_parts.append("External cloud cleanup webhook is not configured.")
+                if delete_managed_gcp_instance_fn is None:
+                    detail_parts.append("External cloud cleanup webhook is not configured.")
             else:
                 try:
                     (
@@ -483,6 +604,69 @@ def register_admin_cloud_routes(
                 except Exception as exc:
                     detail_parts.append(f"External cloud cleanup failed: {exc}")
 
+            should_try_builtin_gcp = delete_managed_gcp_instance_fn is not None and (
+                not ext_configured
+                or ext_result is None
+                or not ext_result.dispatched
+                or _detail_indicates_not_implemented(ext_result.detail)
+            )
+            if should_try_builtin_gcp:
+                inventory_resources: list[dict[str, Any]] = []
+                try:
+                    inventory = await list_external_cloud_resources_fn(_admin=session)
+                    for resource in getattr(inventory, "resources", []) or []:
+                        if hasattr(resource, "model_dump"):
+                            inventory_resources.append(resource.model_dump())
+                        elif isinstance(resource, dict):
+                            inventory_resources.append(resource)
+                except Exception as exc:
+                    detail_parts.append(f"Built-in GCP cleanup inventory lookup failed: {exc}")
+
+                resources_by_id: dict[str, dict[str, Any]] = {}
+                for resource in inventory_resources:
+                    rid = str(resource.get("resource_id") or "").strip()
+                    if rid:
+                        resources_by_id[rid] = resource
+
+                fallback_candidates: list[dict[str, Any]] = []
+                if request.external_resource_ids:
+                    for rid in request.external_resource_ids:
+                        rid_str = str(rid or "").strip()
+                        if not rid_str:
+                            continue
+                        fallback_candidates.append(
+                            resources_by_id.get(rid_str) or {"resource_id": rid_str, "cloud": "gcp"}
+                        )
+                else:
+                    allowed_providers = {p.strip().lower() for p in request.external_providers if p}
+                    for resource in inventory_resources:
+                        cloud = (
+                            str(resource.get("cloud") or resource.get("provider") or "")
+                            .strip()
+                            .lower()
+                        )
+                        if allowed_providers and cloud not in allowed_providers:
+                            continue
+                        if request.external_only_orphaned and not bool(resource.get("orphaned")):
+                            continue
+                        fallback_candidates.append(resource)
+
+                builtin_result = await _run_builtin_gcp_cleanup(
+                    fallback_candidates,
+                    dry_run=request.dry_run,
+                )
+                if builtin_result:
+                    ext_configured = True
+                    if ext_result is None or not ext_result.dispatched:
+                        ext_result = builtin_result
+                    elif builtin_result.detail:
+                        merged_detail = " ".join(
+                            part
+                            for part in [ext_result.detail or "", builtin_result.detail or ""]
+                            if part
+                        ).strip()
+                        ext_result.detail = merged_detail or None
+
         detail = " ".join([part for part in detail_parts if part]).strip() or None
         return UnifiedOrphanCleanupResponse(
             dry_run=request.dry_run,
@@ -506,14 +690,24 @@ def register_admin_cloud_routes(
         external_candidates: list[str] = []
         external_response: ExternalCloudCleanupResponse | None = None
         detail_parts: list[str] = []
+        gcp_datacenter = (agent.datacenter or "").strip().lower()
+        is_gcp_agent = gcp_datacenter.startswith("gcp:")
+        vm_name = (agent.vm_name or "").strip()
+        can_use_builtin_gcp = (
+            is_gcp_agent and bool(vm_name) and delete_managed_gcp_instance_fn is not None
+        )
 
         configured, _status_code, inv_detail, _payload = await fetch_external_inventory_fn()
         if not configured:
-            detail_parts.append("External inventory not configured; skipping linked VM cleanup.")
+            if not can_use_builtin_gcp:
+                detail_parts.append(
+                    "External inventory not configured; skipping linked VM cleanup."
+                )
         elif inv_detail:
-            detail_parts.append(
-                f"External inventory error; skipping linked VM cleanup: {inv_detail}"
-            )
+            if not can_use_builtin_gcp:
+                detail_parts.append(
+                    f"External inventory error; skipping linked VM cleanup: {inv_detail}"
+                )
         else:
             inventory = await list_external_cloud_resources_fn(_admin=session)
             vm_name_norm = (agent.vm_name or "").strip().lower()
@@ -574,6 +768,55 @@ def register_admin_cloud_routes(
                                 else None
                             ),
                         )
+
+        if is_gcp_agent and vm_name and delete_managed_gcp_instance_fn is not None:
+            should_fallback_to_builtin = (
+                external_response is None
+                or not external_response.dispatched
+                or _detail_indicates_not_implemented(external_response.detail)
+            )
+            if dry_run:
+                if external_response is None:
+                    external_response = ExternalCloudCleanupResponse(
+                        configured=True,
+                        dispatched=False,
+                        dry_run=True,
+                        requested_count=1,
+                        status_code=None,
+                        detail="Built-in GCP cleanup dry run for linked agent VM.",
+                    )
+            elif should_fallback_to_builtin:
+                try:
+                    deleted = await delete_managed_gcp_instance_fn(gcp_datacenter, vm_name)
+                    builtin_detail = (
+                        "Built-in GCP cleanup deleted linked VM."
+                        if deleted
+                        else "Built-in GCP cleanup found linked VM already absent."
+                    )
+                    if external_response is None:
+                        external_response = ExternalCloudCleanupResponse(
+                            configured=True,
+                            dispatched=True,
+                            dry_run=False,
+                            requested_count=1,
+                            status_code=200,
+                            detail=builtin_detail,
+                        )
+                    else:
+                        external_response.configured = True
+                        external_response.dispatched = True
+                        external_response.requested_count = max(
+                            external_response.requested_count, 1
+                        )
+                        merged = " ".join(
+                            part
+                            for part in [external_response.detail or "", builtin_detail]
+                            if part
+                        ).strip()
+                        external_response.detail = merged or None
+                    detail_parts.append(builtin_detail)
+                except Exception as exc:
+                    detail_parts.append(f"Built-in GCP cleanup failed for linked VM: {exc}")
 
         cloudflare_deleted = False
         agent_deleted = False
