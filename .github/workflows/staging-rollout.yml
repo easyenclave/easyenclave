@@ -53,6 +53,7 @@ jobs:
       source_ref: ${{ steps.resolve.outputs.source_ref }}
       staging_domain: ${{ steps.resolve.outputs.staging_domain }}
       staging_network_name: ${{ steps.resolve.outputs.staging_network_name }}
+      staging_release_tag: ${{ steps.resolve.outputs.staging_release_tag }}
       should_run: ${{ steps.resolve.outputs.should_run }}
       skip_reason: ${{ steps.resolve.outputs.skip_reason }}
     steps:
@@ -108,6 +109,12 @@ jobs:
           if [ -z "$expected_sha" ] && [ -n "${WORKFLOW_RUN_SHA:-}" ]; then
             expected_sha="${WORKFLOW_RUN_SHA}"
           fi
+          release_seed="${expected_sha:-$source_ref}"
+          release_seed="$(normalize_network_name "${release_seed}")"
+          if [ -z "$release_seed" ]; then
+            release_seed="${GITHUB_RUN_ID}"
+          fi
+          staging_release_tag="staging-${release_seed:0:20}"
 
           domain="${DEFAULT_DOMAIN:-easyenclave.com}"
           network_name="$(normalize_network_name "${DEFAULT_NETWORK_NAME:-}")"
@@ -180,14 +187,99 @@ jobs:
             echo "cp_expected_git_sha=${expected_sha}"
             echo "staging_domain=${domain}"
             echo "staging_network_name=${network_name}"
+            echo "staging_release_tag=${staging_release_tag}"
             echo "cp_url=${cp_url}"
             echo "should_run=${should_run}"
             echo "skip_reason=${skip_reason}"
           } >> "$GITHUB_OUTPUT"
 
+  cleanup-staging-gcp:
+    name: Cleanup stale staging GCP capacity
+    needs: [resolve]
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Validate staging GCP config
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GCP_PROJECT_ID:-}" ] || [ -z "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+            echo "::notice::Skipping staging GCP cleanup: STAGING_GCP_PROJECT_ID / STAGING_GCP_SERVICE_ACCOUNT_KEY not configured."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP (staging)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud (staging)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Delete previous staging managed instances
+        if: steps.cfg.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Project: ${GCP_PROJECT_ID}"
+          mapfile -t instances < <(gcloud compute instances list \
+            --project "${GCP_PROJECT_ID}" \
+            --filter "labels.easyenclave=managed" \
+            --format "value(name,zone.basename())")
+          if [ "${#instances[@]}" -eq 0 ]; then
+            echo "No managed staging instances to delete."
+            exit 0
+          fi
+          for row in "${instances[@]}"; do
+            [ -n "$row" ] || continue
+            name="$(echo "$row" | awk '{print $1}')"
+            zone="$(echo "$row" | awk '{print $2}')"
+            [ -n "$name" ] || continue
+            [ -n "$zone" ] || continue
+            echo "Deleting stale staging instance: ${name} (${zone})"
+            gcloud compute instances delete "${name}" \
+              --project "${GCP_PROJECT_ID}" \
+              --zone "${zone}" \
+              --quiet
+          done
+
+      - name: Keep only latest staging seed image
+        if: steps.cfg.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t seeds < <(gcloud compute images list \
+            --project "${GCP_PROJECT_ID}" \
+            --filter "name~^easyenclave-agent-seed-" \
+            --sort-by "~creationTimestamp" \
+            --format "value(name)")
+          if [ "${#seeds[@]}" -le 1 ]; then
+            echo "Seed image cleanup not required."
+            exit 0
+          fi
+          for old in "${seeds[@]:1}"; do
+            [ -n "$old" ] || continue
+            echo "Deleting stale staging seed image: ${old}"
+            gcloud compute images delete "${old}" \
+              --project "${GCP_PROJECT_ID}" \
+              --quiet
+          done
+
   bootstrap:
     name: Bootstrap staging control plane
-    needs: [resolve]
+    needs: [resolve, cleanup-staging-gcp]
     if: needs.resolve.outputs.should_run == 'true'
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
@@ -201,6 +293,7 @@ jobs:
       num_llm_agents: '0'
       easyenclave_domain: ${{ needs.resolve.outputs.staging_domain }}
       easyenclave_network_name: ${{ needs.resolve.outputs.staging_network_name }}
+      easyenclave_release_tag: ${{ needs.resolve.outputs.staging_release_tag }}
       easyenclave_env: staging
       tcb_enforcement_mode: warn
       allowed_tcb_statuses: UpToDate
