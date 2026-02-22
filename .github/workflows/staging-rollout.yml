@@ -164,6 +164,8 @@ jobs:
     env:
       GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
+      SOURCE_IMAGE_PROJECT: ${{ vars.STAGING_GCP_SOURCE_IMAGE_PROJECT || vars.EE_GCP_SOURCE_IMAGE_PROJECT || secrets.PRODUCTION_GCP_PROJECT_ID }}
+      SOURCE_IMAGE_FAMILY: ${{ vars.STAGING_GCP_SOURCE_IMAGE_FAMILY || vars.EE_GCP_SOURCE_IMAGE_FAMILY || 'easyenclave-agent' }}
     steps:
       - name: Validate staging GCP config
         id: cfg
@@ -215,6 +217,32 @@ jobs:
               --zone "${zone}" \
               --quiet
           done
+
+      - name: Ensure staging seed image exists for CP-native GCP provisioning
+        if: steps.cfg.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${SOURCE_IMAGE_PROJECT:-}" ] || [ -z "${SOURCE_IMAGE_FAMILY:-}" ]; then
+            echo "::error::Missing SOURCE_IMAGE_PROJECT/SOURCE_IMAGE_FAMILY for staging seed image creation."
+            exit 1
+          fi
+
+          # Validate source family exists before attempting to create a new seed.
+          if ! gcloud compute images describe-from-family "${SOURCE_IMAGE_FAMILY}" \
+            --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
+            echo "::error::Source image family '${SOURCE_IMAGE_FAMILY}' not found in project '${SOURCE_IMAGE_PROJECT}'."
+            exit 1
+          fi
+
+          image_name="easyenclave-agent-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "Creating staging seed image '${image_name}' from ${SOURCE_IMAGE_PROJECT}/${SOURCE_IMAGE_FAMILY}"
+          gcloud compute images create "${image_name}" \
+            --project "${GCP_PROJECT_ID}" \
+            --source-image-family "${SOURCE_IMAGE_FAMILY}" \
+            --source-image-project "${SOURCE_IMAGE_PROJECT}" \
+            --family "easyenclave-agent" \
+            --labels "easyenclave=managed,easyenclave_env=staging"
 
       - name: Keep only latest staging seed image
         if: steps.cfg.outputs.configured == 'true'
