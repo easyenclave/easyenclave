@@ -54,6 +54,7 @@ jobs:
       staging_domain: ${{ steps.resolve.outputs.staging_domain }}
       staging_network_name: ${{ steps.resolve.outputs.staging_network_name }}
       should_run: ${{ steps.resolve.outputs.should_run }}
+      skip_reason: ${{ steps.resolve.outputs.skip_reason }}
     steps:
       - name: Resolve URLs and refs
         id: resolve
@@ -64,6 +65,7 @@ jobs:
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
           FORCE_IF_PRODUCTION_ACTIVE: ${{ github.event.inputs.force_if_production_active || 'false' }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+          WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
           DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.STAGING_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
@@ -93,6 +95,13 @@ jobs:
           source_ref="${INPUT_SOURCE_REF:-}"
           if [ -z "$source_ref" ]; then
             source_ref="${WORKFLOW_RUN_SHA:-${GITHUB_SHA}}"
+          fi
+
+          event_name="${GITHUB_EVENT_NAME:-}"
+          workflow_run_conclusion="$(echo "${WORKFLOW_RUN_CONCLUSION:-}" | tr '[:upper:]' '[:lower:]')"
+          if [ "$event_name" = "workflow_run" ] && [ "$workflow_run_conclusion" != "success" ]; then
+            echo "::error::Upstream CI did not succeed (conclusion='${WORKFLOW_RUN_CONCLUSION:-unknown}'); refusing no-op green staging rollout."
+            exit 1
           fi
 
           expected_sha="${INPUT_EXPECTED_SHA:-}"
@@ -132,6 +141,7 @@ jobs:
           echo "::notice::Resolved staging network name: ${network_name}"
 
           should_run="true"
+          skip_reason=""
           force="$(echo "${FORCE_IF_PRODUCTION_ACTIVE:-false}" | tr '[:upper:]' '[:lower:]')"
           if [ "$force" = "true" ]; then
             echo "::notice::force_if_production_active=true; staging will run even if production is active."
@@ -160,6 +170,7 @@ jobs:
             active_count=$((in_progress_count + queued_count + pending_count))
             if [ "$active_count" -gt 0 ]; then
               should_run="false"
+              skip_reason="production_active"
               echo "::notice::Skipping staging rollout because production rollout is active/queued (${active_count})."
             fi
           fi
@@ -171,12 +182,13 @@ jobs:
             echo "staging_network_name=${network_name}"
             echo "cp_url=${cp_url}"
             echo "should_run=${should_run}"
+            echo "skip_reason=${skip_reason}"
           } >> "$GITHUB_OUTPUT"
 
   bootstrap:
     name: Bootstrap staging control plane
     needs: [resolve]
-    if: (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && needs.resolve.outputs.should_run == 'true'
+    if: needs.resolve.outputs.should_run == 'true'
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
@@ -228,3 +240,23 @@ jobs:
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
       easyenclave_env: staging
+
+  assert-rollout-executed:
+    name: Assert staging rollout executed
+    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp]
+    if: always() && needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any rollout stage was skipped/failed
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap="${{ needs.bootstrap.result }}"
+          baremetal="${{ needs['deploy-baremetal'].result }}"
+          gcp="${{ needs['deploy-gcp'].result }}"
+          echo "bootstrap=${bootstrap} baremetal=${baremetal} gcp=${gcp}"
+          if [ "$bootstrap" != "success" ] || [ "$baremetal" != "success" ] || [ "$gcp" != "success" ]; then
+            echo "::error::Staging rollout did not fully execute: bootstrap=${bootstrap}, baremetal=${baremetal}, gcp=${gcp}"
+            exit 1
+          fi
+          echo "Staging rollout executed all required stages."
