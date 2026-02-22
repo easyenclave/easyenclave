@@ -33,11 +33,6 @@ on:
         description: "Control plane image override"
         required: false
         default: ""
-      force_if_production_active:
-        description: "Force staging rollout even when production rollout is active"
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: easyenclave-staging-rollout
@@ -64,7 +59,6 @@ jobs:
           INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
           INPUT_EXPECTED_SHA: ${{ github.event.inputs.cp_expected_git_sha || '' }}
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
-          FORCE_IF_PRODUCTION_ACTIVE: ${{ github.event.inputs.force_if_production_active || 'false' }}
           WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha || '' }}
           WORKFLOW_RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
           DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
@@ -72,7 +66,6 @@ jobs:
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           make_network_name() {
@@ -149,38 +142,6 @@ jobs:
 
           should_run="true"
           skip_reason=""
-          force="$(echo "${FORCE_IF_PRODUCTION_ACTIVE:-false}" | tr '[:upper:]' '[:lower:]')"
-          if [ "$force" = "true" ]; then
-            echo "::notice::force_if_production_active=true; staging will run even if production is active."
-          else
-            in_progress_count="$(
-              curl -fsSL \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=in_progress&per_page=100" \
-                | jq '[.workflow_runs[] | select(.name == "Production Rollout")] | length'
-            )"
-            queued_count="$(
-              curl -fsSL \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=queued&per_page=100" \
-                | jq '[.workflow_runs[] | select(.name == "Production Rollout")] | length'
-            )"
-            pending_count="$(
-              curl -fsSL \
-                -H "Authorization: Bearer ${GH_TOKEN}" \
-                -H "Accept: application/vnd.github+json" \
-                "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runs?status=pending&per_page=100" \
-                | jq '[.workflow_runs[] | select(.name == "Production Rollout")] | length'
-            )"
-            active_count=$((in_progress_count + queued_count + pending_count))
-            if [ "$active_count" -gt 0 ]; then
-              should_run="false"
-              skip_reason="production_active"
-              echo "::notice::Skipping staging rollout because production rollout is active/queued (${active_count})."
-            fi
-          fi
 
           {
             echo "source_ref=${source_ref}"
