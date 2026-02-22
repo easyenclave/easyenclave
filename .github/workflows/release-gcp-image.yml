@@ -71,7 +71,7 @@ jobs:
       SOURCE_IMAGE_PROJECT: ${{ vars.EE_GCP_CONFIDENTIAL_BASE_IMAGE_PROJECT || '' }}
       SOURCE_IMAGE_FAMILY: ${{ vars.EE_GCP_CONFIDENTIAL_BASE_IMAGE_FAMILY || '' }}
       SOURCE_IMAGE_NAME: ${{ vars.EE_GCP_CONFIDENTIAL_BASE_IMAGE_NAME || '' }}
-      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || 'us-central1-a' }}
+      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || 'us-central1-f' }}
       BUILD_MACHINE_TYPE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
     steps:
       - name: Checkout release source

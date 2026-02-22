@@ -49,7 +49,7 @@ if [ -n "${BUILD_MACHINE_TYPE:-}" ] && [[ "${BUILD_MACHINE_TYPE}" == *,* ]]; the
   fail "BUILD_MACHINE_TYPE must be a single machine type; got '${BUILD_MACHINE_TYPE}'."
 fi
 
-BUILD_ZONE="$(trim "${BUILD_ZONE:-us-central1-a}")"
+BUILD_ZONE="$(trim "${BUILD_ZONE:-us-central1-f}")"
 BUILD_MACHINE_TYPE="$(trim "${BUILD_MACHINE_TYPE:-e2-standard-4}")"
 BUILD_BOOT_DISK_GB="$(trim "${BUILD_BOOT_DISK_GB:-200}")"
 BUILD_TIMEOUT_SECONDS="$(trim "${BUILD_TIMEOUT_SECONDS:-900}")"
