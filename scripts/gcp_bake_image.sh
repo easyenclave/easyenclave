@@ -52,13 +52,13 @@ fi
 BUILD_ZONE="$(trim "${BUILD_ZONE:-us-central1-a}")"
 BUILD_MACHINE_TYPE="$(trim "${BUILD_MACHINE_TYPE:-c3-standard-4}")"
 BUILD_BOOT_DISK_GB="$(trim "${BUILD_BOOT_DISK_GB:-200}")"
-BUILD_TIMEOUT_SECONDS="$(trim "${BUILD_TIMEOUT_SECONDS:-1800}")"
+BUILD_TIMEOUT_SECONDS="$(trim "${BUILD_TIMEOUT_SECONDS:-900}")"
 TARGET_IMAGE_FAMILY="$(trim "${TARGET_IMAGE_FAMILY:-}")"
 TARGET_IMAGE_DESCRIPTION="$(trim "${TARGET_IMAGE_DESCRIPTION:-EasyEnclave image bake}")"
 TARGET_IMAGE_LABELS="$(trim "${TARGET_IMAGE_LABELS:-}")"
 SOURCE_SHA="$(trim "${SOURCE_SHA:-}")"
 BAKE_METADATA_PATH="$(trim "${BAKE_METADATA_PATH:-}")"
-INSTANCE_CREATE_MAX_ATTEMPTS="$(trim "${INSTANCE_CREATE_MAX_ATTEMPTS:-5}")"
+INSTANCE_CREATE_CALL_TIMEOUT_SECONDS="$(trim "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS:-45}")"
 
 if [ ! -f "infra/launcher/launcher.py" ]; then
   fail "Missing required file: infra/launcher/launcher.py"
@@ -238,52 +238,35 @@ else
   source_args+=(--image-family "${source_value}")
 fi
 
-create_attempt=1
-while :; do
-  set +e
-  create_output="$(
+set +e
+create_output="$(
+  timeout "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS}" \
     gcloud compute instances create "${builder_name}" \
-      --project "${GCP_PROJECT_ID}" \
-      --zone "${BUILD_ZONE}" \
-      --machine-type "${BUILD_MACHINE_TYPE}" \
-      --boot-disk-size "${BUILD_BOOT_DISK_GB}" \
-      --metadata "serial-port-enable=1" \
-      --metadata-from-file "startup-script=${startup_script_file}" \
-      "${source_args[@]}" 2>&1
-  )"
-  create_rc=$?
-  set -e
+    --project "${GCP_PROJECT_ID}" \
+    --zone "${BUILD_ZONE}" \
+    --machine-type "${BUILD_MACHINE_TYPE}" \
+    --boot-disk-size "${BUILD_BOOT_DISK_GB}" \
+    --metadata "serial-port-enable=1" \
+    --metadata-from-file "startup-script=${startup_script_file}" \
+    "${source_args[@]}" 2>&1
+)"
+create_rc=$?
+set -e
 
-  if [ "${create_rc}" -eq 0 ]; then
-    [ -n "${create_output}" ] && echo "${create_output}"
-    break
+if [ "${create_rc}" -eq 0 ]; then
+  [ -n "${create_output}" ] && echo "${create_output}"
+else
+  if [ "${create_rc}" -eq 124 ]; then
+    create_output="${create_output}
+instance create timed out after ${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS}s"
   fi
-
   [ -n "${create_output}" ] && echo "${create_output}" >&2
   if gcloud compute instances describe "${builder_name}" --project "${GCP_PROJECT_ID}" --zone "${BUILD_ZONE}" >/dev/null 2>&1; then
     log "Create call returned non-zero but builder VM exists; continuing."
-    break
+  else
+    fail "Builder VM creation failed (single attempt)."
   fi
-
-  create_output_lc="$(echo "${create_output}" | tr '[:upper:]' '[:lower:]')"
-  transient="false"
-  if [[ "${create_output_lc}" == *"service is currently unavailable"* ]] || \
-     [[ "${create_output_lc}" == *"temporarily unavailable"* ]] || \
-     [[ "${create_output_lc}" == *"internal error"* ]] || \
-     [[ "${create_output_lc}" == *"backend error"* ]] || \
-     [[ "${create_output_lc}" == *"try again"* ]]; then
-    transient="true"
-  fi
-
-  if [ "${transient}" != "true" ] || [ "${create_attempt}" -ge "${INSTANCE_CREATE_MAX_ATTEMPTS}" ]; then
-    fail "Builder VM creation failed after ${create_attempt} attempt(s)."
-  fi
-
-  sleep_seconds=$((create_attempt * 10))
-  log "Transient instance create failure (attempt ${create_attempt}/${INSTANCE_CREATE_MAX_ATTEMPTS}); retrying in ${sleep_seconds}s."
-  sleep "${sleep_seconds}"
-  create_attempt=$((create_attempt + 1))
-done
+fi
 
 cleanup_instance="true"
 

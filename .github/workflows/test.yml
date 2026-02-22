@@ -157,7 +157,7 @@ jobs:
     permissions:
       contents: read
     env:
-      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      GCP_PROJECT_ID: eestaging
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
       SOURCE_IMAGE_PROJECT: ${{ vars.STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_PROJECT || '' }}
       SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_NAME || '' }}

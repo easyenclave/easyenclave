@@ -248,7 +248,7 @@ jobs:
     permissions:
       contents: read
     env:
-      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      GCP_PROJECT_ID: eestaging
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
     steps:
       - name: Validate staging GCP config
@@ -256,8 +256,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${GCP_PROJECT_ID:-}" ] || [ -z "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
-            echo "::notice::Skipping staging GCP cleanup: STAGING_GCP_PROJECT_ID / STAGING_GCP_SERVICE_ACCOUNT_KEY not configured."
+          if [ -z "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+            echo "::notice::Skipping staging GCP cleanup: STAGING_GCP_SERVICE_ACCOUNT_KEY not configured."
             echo "configured=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -332,7 +332,7 @@ jobs:
     permissions:
       contents: read
     env:
-      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      GCP_PROJECT_ID: eestaging
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
       SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
     steps:

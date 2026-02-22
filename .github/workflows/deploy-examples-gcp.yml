@@ -99,7 +99,7 @@ env:
   PRIVATE_LLM_OLLAMA_IMAGE: ${{ inputs.private_llm_ollama_image || github.event.inputs.private_llm_ollama_image || '' }}
   PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ inputs.private_llm_model_loader_image || github.event.inputs.private_llm_model_loader_image || '' }}
   EASYENCLAVE_ENV: ${{ inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging' }}
-  GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_PROJECT_ID) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && secrets.STAGING_GCP_PROJECT_ID) }}
+  GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_PROJECT_ID) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && 'eestaging') }}
   GCP_SERVICE_ACCOUNT_KEY: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY) }}
 
 jobs:
