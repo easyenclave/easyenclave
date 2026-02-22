@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: ""
+      cp_expected_boot_id:
+        required: false
+        type: string
+        default: ""
       cp_admin_token:
         required: false
         type: string
@@ -49,6 +53,10 @@ on:
         default: "https://app.easyenclave.com"
       cp_expected_git_sha:
         description: "Expected control-plane git SHA from /health (optional)"
+        required: false
+        default: ""
+      cp_expected_boot_id:
+        description: "Expected control-plane boot_id from /health (optional)"
         required: false
         default: ""
       cp_admin_token:
@@ -85,6 +93,7 @@ concurrency:
 env:
   CP_URL: ${{ inputs.cp_url || github.event.inputs.cp_url || 'https://app.easyenclave.com' }}
   CP_EXPECTED_GIT_SHA: ${{ inputs.cp_expected_git_sha || github.event.inputs.cp_expected_git_sha || '' }}
+  CP_EXPECTED_BOOT_ID: ${{ inputs.cp_expected_boot_id || github.event.inputs.cp_expected_boot_id || '' }}
   CP_ADMIN_TOKEN: ${{ inputs.cp_admin_token || github.event.inputs.cp_admin_token || '' }}
   HELLO_TDX_IMAGE: ${{ inputs.hello_tdx_image || github.event.inputs.hello_tdx_image || '' }}
   PRIVATE_LLM_OLLAMA_IMAGE: ${{ inputs.private_llm_ollama_image || github.event.inputs.private_llm_ollama_image || '' }}
@@ -120,28 +129,34 @@ jobs:
           fi
           echo "compose_file=$out" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for control plane bootstrap (git_sha match)
+      - name: Wait for control plane bootstrap (identity match)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
+          echo "Waiting for $CP_URL/health git_sha=${CP_EXPECTED_GIT_SHA:-<any>} boot_id=${CP_EXPECTED_BOOT_ID:-<any>}"
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            if [ -z "${CP_EXPECTED_GIT_SHA:-}" ]; then
-              if [ -n "${body:-}" ]; then
-                echo "Control plane ready (git_sha check skipped)"
-                break
-              fi
-            fi
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
-              echo "Control plane ready: git_sha=$sha"
+            boot_id="$(echo "${body:-}" | jq -r '.boot_id // empty' 2>/dev/null || true)"
+
+            ready=1
+            if [ -n "${CP_EXPECTED_GIT_SHA:-}" ] && [ "${sha:-}" != "${CP_EXPECTED_GIT_SHA}" ]; then
+              ready=0
+            fi
+            if [ -n "${CP_EXPECTED_BOOT_ID:-}" ] && [ "${boot_id:-}" != "${CP_EXPECTED_BOOT_ID}" ]; then
+              ready=0
+            fi
+
+            if [ -n "${body:-}" ] && [ "$ready" -eq 1 ]; then
+              echo "Control plane ready: git_sha=${sha:-unknown} boot_id=${boot_id:-unknown}"
               break
             fi
             now="$(date +%s)"
             if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
+              echo "::error::Timed out waiting for control plane identity match."
+              echo "::error::Expected git_sha='${CP_EXPECTED_GIT_SHA:-<any>}' boot_id='${CP_EXPECTED_BOOT_ID:-<any>}'"
+              echo "::error::Last seen git_sha='${sha:-<none>}' boot_id='${boot_id:-<none>}'"
               echo "Last /health:"
               echo "${body:-<empty>}"
               exit 1
@@ -301,28 +316,34 @@ jobs:
 
           echo "compose_file=$out" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for control plane bootstrap (git_sha match)
+      - name: Wait for control plane bootstrap (identity match)
         shell: bash
         run: |
           set -euo pipefail
-          echo "Waiting for $CP_URL/health git_sha=$CP_EXPECTED_GIT_SHA"
+          echo "Waiting for $CP_URL/health git_sha=${CP_EXPECTED_GIT_SHA:-<any>} boot_id=${CP_EXPECTED_BOOT_ID:-<any>}"
           deadline=$(( $(date +%s) + 900 ))
           while :; do
             body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
-            if [ -z "${CP_EXPECTED_GIT_SHA:-}" ]; then
-              if [ -n "${body:-}" ]; then
-                echo "Control plane ready (git_sha check skipped)"
-                break
-              fi
-            fi
             sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
-            if [ -n "${sha:-}" ] && [ "$sha" = "$CP_EXPECTED_GIT_SHA" ]; then
-              echo "Control plane ready: git_sha=$sha"
+            boot_id="$(echo "${body:-}" | jq -r '.boot_id // empty' 2>/dev/null || true)"
+
+            ready=1
+            if [ -n "${CP_EXPECTED_GIT_SHA:-}" ] && [ "${sha:-}" != "${CP_EXPECTED_GIT_SHA}" ]; then
+              ready=0
+            fi
+            if [ -n "${CP_EXPECTED_BOOT_ID:-}" ] && [ "${boot_id:-}" != "${CP_EXPECTED_BOOT_ID}" ]; then
+              ready=0
+            fi
+
+            if [ -n "${body:-}" ] && [ "$ready" -eq 1 ]; then
+              echo "Control plane ready: git_sha=${sha:-unknown} boot_id=${boot_id:-unknown}"
               break
             fi
             now="$(date +%s)"
             if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for control plane git_sha=$CP_EXPECTED_GIT_SHA"
+              echo "::error::Timed out waiting for control plane identity match."
+              echo "::error::Expected git_sha='${CP_EXPECTED_GIT_SHA:-<any>}' boot_id='${CP_EXPECTED_BOOT_ID:-<any>}'"
+              echo "::error::Last seen git_sha='${sha:-<none>}' boot_id='${boot_id:-<none>}'"
               echo "Last /health:"
               echo "${body:-<empty>}"
               exit 1

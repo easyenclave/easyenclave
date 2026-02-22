@@ -471,8 +471,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       DISPATCH_REF: ${{ github.ref_name }}
       SOURCE_REF: ${{ needs.resolve.outputs.source_ref }}
-      CP_URL_BAREMETAL: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
-      CP_URL_GCP: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      CP_URL_BAREMETAL: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+      CP_URL_GCP: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+      CP_EXPECTED_GIT_SHA: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      CP_EXPECTED_BOOT_ID: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       CP_ADMIN_TOKEN: ${{ needs.bootstrap.outputs.cp_admin_token }}
       HELLO_TDX_IMAGE: ${{ needs.example-images.outputs.hello_tdx_image }}
       PRIVATE_LLM_OLLAMA_IMAGE: ${{ needs.example-images.outputs.private_llm_ollama_image }}
@@ -490,7 +492,8 @@ jobs:
             payload="$(jq -cn \
               --arg ref "$DISPATCH_REF" \
               --arg cp_url "$cp_url" \
-              --arg cp_expected_git_sha "" \
+              --arg cp_expected_git_sha "$CP_EXPECTED_GIT_SHA" \
+              --arg cp_expected_boot_id "$CP_EXPECTED_BOOT_ID" \
               --arg cp_admin_token "$CP_ADMIN_TOKEN" \
               --arg source_ref "$SOURCE_REF" \
               --arg hello_tdx_image "$HELLO_TDX_IMAGE" \
@@ -502,6 +505,7 @@ jobs:
                 inputs: {
                   cp_url: $cp_url,
                   cp_expected_git_sha: $cp_expected_git_sha,
+                  cp_expected_boot_id: $cp_expected_boot_id,
                   cp_admin_token: $cp_admin_token,
                   source_ref: $source_ref,
                   hello_tdx_image: $hello_tdx_image,

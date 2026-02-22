@@ -145,7 +145,7 @@ def _image_project() -> str:
 
 
 def _image_family() -> str:
-    return (os.environ.get("EE_GCP_IMAGE_FAMILY") or "easyenclave-agent").strip()
+    return (os.environ.get("EE_GCP_IMAGE_FAMILY") or "").strip()
 
 
 def _image_name() -> str:
@@ -172,9 +172,10 @@ def _boot_source_image_params() -> dict[str, str]:
     """Return source image selector for Compute API initializeParams.
 
     Production can pin an exact release image via EE_GCP_IMAGE_NAME.
-    Otherwise we fall back to family-based selection.
+    Otherwise an explicit family must be set via EE_GCP_IMAGE_FAMILY.
     """
     name = _image_name()
+    family = _image_family()
     project = _image_project()
     if not project:
         raise GCPProvisionError(
@@ -182,7 +183,11 @@ def _boot_source_image_params() -> dict[str, str]:
         )
     if name:
         return {"sourceImage": f"projects/{project}/global/images/{name}"}
-    return {"sourceImage": f"projects/{project}/global/images/family/{_image_family()}"}
+    if family:
+        return {"sourceImage": f"projects/{project}/global/images/family/{family}"}
+    raise GCPProvisionError(
+        "Missing GCP image selector: set EE_GCP_IMAGE_NAME or EE_GCP_IMAGE_FAMILY."
+    )
 
 
 def _is_stock_ubuntu_source(*, image_project: str, image_family: str, image_name: str) -> bool:

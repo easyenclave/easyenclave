@@ -494,8 +494,9 @@ jobs:
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_internal_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       source_ref: ${{ needs.resolve.outputs.source_sha }}
       easyenclave_env: staging
 
@@ -505,8 +506,9 @@ jobs:
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       source_ref: ${{ needs.resolve.outputs.source_sha }}
       easyenclave_env: staging
 

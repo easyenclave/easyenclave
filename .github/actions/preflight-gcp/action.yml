@@ -114,83 +114,30 @@ runs:
         account_id="$(echo "${BILLING_ACCOUNT_ID:-}" | xargs)"
         api_key="$(echo "${BILLING_API_KEY:-}" | xargs)"
 
-        create_account() {
-          local account_name body http_code resp detail suffix attempt
-          for attempt in $(seq 1 8); do
-            suffix="$(date +%s)-${RANDOM}-${attempt}"
-            account_name="ci-gcp-preflight-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-${suffix}"
-            body="$(mktemp)"
-            http_code="$(
-              curl -sS -o "$body" -w "%{http_code}" \
-                -X POST "$CP_URL/api/v1/accounts" \
-                -H "Content-Type: application/json" \
-                -d "$(jq -cn --arg name "$account_name" '{name: $name, account_type: "deployer"}')" \
-                || echo 000
-            )"
-            resp="$(cat "$body")"
-            rm -f "$body"
-
-            if [ "$http_code" -lt 400 ]; then
-              account_id="$(echo "$resp" | jq -r '.account_id // empty')"
-              api_key="$(echo "$resp" | jq -r '.api_key // empty')"
-              if [ -z "$account_id" ] || [ -z "$api_key" ]; then
-                echo "::error::Control plane did not return billing account credentials"
-                exit 1
-              fi
-              echo "Created transient deployer billing account: $account_id"
-              return 0
-            fi
-
-            detail="$(echo "$resp" | jq -r '.detail // empty' 2>/dev/null || true)"
-            if [ "$http_code" = "409" ]; then
-              echo "::warning::Transient billing account name collision; retrying create ($attempt/8)..."
-              sleep 1
-              continue
-            fi
-
-            echo "::error::Failed to create deployer billing account (HTTP $http_code): ${detail:-$resp}"
-            exit 1
-          done
-          echo "::error::Failed to create deployer billing account after retries (name collisions)"
-          exit 1
-        }
-
-        if [ -n "$account_id" ] && [ -n "$api_key" ]; then
-          probe_body="$(mktemp)"
-          probe_code="$(
-            curl -sS -o "$probe_body" -w "%{http_code}" \
-              -H "Authorization: Bearer ${api_key}" \
-              -H "Accept: application/json" \
-              "$CP_URL/api/v1/accounts/${account_id}" \
-              || echo 000
-          )"
-          if [ "$probe_code" -ge 400 ]; then
-            probe_resp="$(cat "$probe_body")"
-            probe_detail="$(echo "$probe_resp" | jq -r '.detail // empty' 2>/dev/null || true)"
-            case "$probe_code" in
-              401|403|404)
-                echo "::warning::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
-                echo "::warning::Falling back to auto-created transient deployer billing account."
-                create_account
-                ;;
-              *)
-                echo "::error::Failed to validate provided billing credentials (HTTP $probe_code): ${probe_detail:-$probe_resp}"
-                rm -f "$probe_body"
-                exit 1
-                ;;
-            esac
-          else
-            echo "Using provided billing account for GCP preflight capacity request."
-          fi
-          rm -f "$probe_body"
-        elif [ -n "$account_id" ] || [ -n "$api_key" ]; then
+        if [ -z "$account_id" ] || [ -z "$api_key" ]; then
           echo "::error::billing_account_id and billing_api_key must be provided together."
-          echo "::error::Refusing to auto-create transient billing credentials due partial explicit configuration."
+          echo "::error::Transient account creation fallback has been removed for deterministic behavior."
           exit 1
-        else
-          echo "::warning::billing_account_id or billing_api_key not provided; creating transient deployer billing account."
-          create_account
         fi
+
+        probe_body="$(mktemp)"
+        probe_code="$(
+          curl -sS -o "$probe_body" -w "%{http_code}" \
+            -H "Authorization: Bearer ${api_key}" \
+            -H "Accept: application/json" \
+            "$CP_URL/api/v1/accounts/${account_id}" \
+            || echo 000
+        )"
+        if [ "$probe_code" -ge 400 ]; then
+          probe_resp="$(cat "$probe_body")"
+          probe_detail="$(echo "$probe_resp" | jq -r '.detail // empty' 2>/dev/null || true)"
+          echo "::error::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
+          echo "::error::Set CP_DEPLOYER_ACCOUNT_ID/CP_DEPLOYER_API_KEY for this exact control plane instance."
+          rm -f "$probe_body"
+          exit 1
+        fi
+        rm -f "$probe_body"
+        echo "Using provided billing account for GCP preflight capacity request."
 
         echo "::add-mask::${api_key}"
         echo "billing_account_id=${account_id}" >> "$GITHUB_OUTPUT"
@@ -228,7 +175,7 @@ runs:
         fi
 
         echo "need_provision=true" >> "$GITHUB_OUTPUT"
-        echo "::warning::No healthy verified GCP agents available; requesting control-plane capacity dispatch."
+        echo "::notice::No healthy verified GCP agents available; requesting control-plane capacity dispatch."
 
     - name: Request control-plane GCP capacity dispatch
       if: steps.precheck.outputs.need_provision == 'true'
