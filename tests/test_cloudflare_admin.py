@@ -134,12 +134,26 @@ class TestCloudflareTunnels:
                 "created_at": "2026-01-01T00:00:00Z",
             }
         ]
+        dns_records = [
+            {
+                "record_id": "rec-app",
+                "name": "app.easyenclave.com",
+                "content": "tun-cp.cfargotunnel.com",
+                "proxied": True,
+                "created_on": None,
+            }
+        ]
 
         with patch("app.main.cloudflare.is_configured", return_value=True):
             with patch(
                 "app.main.cloudflare.list_tunnels", new_callable=AsyncMock, return_value=tunnels
             ):
-                resp = client.get("/api/v1/admin/cloudflare/tunnels", headers=AUTH)
+                with patch(
+                    "app.main.cloudflare.list_dns_records",
+                    new_callable=AsyncMock,
+                    return_value=dns_records,
+                ):
+                    resp = client.get("/api/v1/admin/cloudflare/tunnels", headers=AUTH)
 
         assert resp.status_code == 200
         data = resp.json()
@@ -305,6 +319,13 @@ class TestCloudflareCleanup:
                 "created_on": None,
             },
             {
+                "record_id": "rec-app",
+                "name": "app.easyenclave.com",
+                "content": "tun-cp.cfargotunnel.com",
+                "proxied": True,
+                "created_on": None,
+            },
+            {
                 "record_id": "rec-orphan",
                 "name": "orphan.example.com",
                 "content": "tun-dead.cfargotunnel.com",
@@ -348,3 +369,75 @@ class TestCloudflareCleanup:
         # Only the orphan tunnel should have been deleted
         delete_tunnel_mock.assert_called_once_with("tun-orphan")
         delete_dns_mock.assert_called_once_with("rec-orphan")
+
+    def test_cleanup_deletes_orphaned_control_plane_not_attached_to_prod_or_staging(self, client):
+        tunnels = [
+            {
+                "tunnel_id": "tun-cp-live",
+                "name": "easyenclave-control-plane",
+                "status": "active",
+                "has_connections": True,
+                "connection_count": 1,
+                "created_at": None,
+            },
+            {
+                "tunnel_id": "tun-cp-old",
+                "name": "easyenclave-control-plane",
+                "status": "inactive",
+                "has_connections": False,
+                "connection_count": 0,
+                "created_at": None,
+            },
+        ]
+
+        dns_records = [
+            {
+                "record_id": "rec-app",
+                "name": "app.easyenclave.com",
+                "content": "tun-cp-live.cfargotunnel.com",
+                "proxied": True,
+                "created_on": None,
+            },
+            {
+                "record_id": "rec-old",
+                "name": "legacy-net.example.com",
+                "content": "tun-cp-old.cfargotunnel.com",
+                "proxied": True,
+                "created_on": None,
+            },
+        ]
+
+        delete_tunnel_mock = AsyncMock(return_value=True)
+        delete_dns_mock = AsyncMock(return_value=True)
+
+        with patch("app.main.cloudflare.is_configured", return_value=True):
+            with patch(
+                "app.main.cloudflare.list_tunnels",
+                new_callable=AsyncMock,
+                return_value=tunnels,
+            ):
+                with patch(
+                    "app.main.cloudflare.list_dns_records",
+                    new_callable=AsyncMock,
+                    return_value=dns_records,
+                ):
+                    with patch("app.main.cloudflare.delete_tunnel", delete_tunnel_mock):
+                        with patch("app.main.cloudflare.delete_dns_record_by_id", delete_dns_mock):
+                            resp = client.post(
+                                "/api/v1/admin/cleanup/orphans",
+                                headers=AUTH,
+                                json={
+                                    "dry_run": False,
+                                    "cloudflare": True,
+                                    "external_cloud": False,
+                                },
+                            )
+
+        assert resp.status_code == 200
+        data = resp.json()["cloudflare"]
+        assert data["tunnels_deleted"] == 1
+        assert data["dns_deleted"] == 1
+        assert data["tunnels_candidates"] == 1
+        assert data["dns_candidates"] == 1
+        delete_tunnel_mock.assert_called_once_with("tun-cp-old")
+        delete_dns_mock.assert_called_once_with("rec-old")

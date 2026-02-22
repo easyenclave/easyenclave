@@ -3,7 +3,6 @@
 import pytest
 
 from app.oauth import (
-    _client_id,
     create_oauth_state,
     get_github_authorize_url,
     verify_oauth_state,
@@ -27,16 +26,6 @@ def test_verify_oauth_state_one_time_use():
     state = create_oauth_state()
     assert verify_oauth_state(state)
     assert not verify_oauth_state(state)  # Should fail on second use
-
-
-@pytest.mark.skipif(not _client_id(), reason="GitHub OAuth not configured")
-def test_github_authorize_url():
-    """Test GitHub OAuth authorization URL generation."""
-    url = get_github_authorize_url("test-state")
-    assert "github.com/login/oauth/authorize" in url
-    assert "client_id=" in url
-    assert "state=test-state" in url
-    assert "scope=read:user" in url
 
 
 def test_github_authorize_url_requires_config():

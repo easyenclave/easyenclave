@@ -37,8 +37,66 @@ def _is_agent_tunnel_name(name: str | None) -> bool:
     return bool(name) and name.startswith(CLOUDFLARE_AGENT_TUNNEL_PREFIX)
 
 
-def _is_protected_tunnel_name(name: str | None) -> bool:
-    return name == CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME
+def _is_control_plane_tunnel_name(name: str | None) -> bool:
+    return (name or "").strip() == CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME
+
+
+def _normalize_hostname(value: str | None) -> str:
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def _linked_tunnel_id_from_dns_content(content: str | None) -> str | None:
+    raw = (content or "").strip().lower()
+    suffix = ".cfargotunnel.com"
+    if not raw.endswith(suffix):
+        return None
+    tunnel_id = raw[: -len(suffix)].strip()
+    return tunnel_id or None
+
+
+def _build_tunnel_hostnames_map(records: list[dict[str, Any]]) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for record in records:
+        tunnel_id = _linked_tunnel_id_from_dns_content(record.get("content"))
+        if not tunnel_id:
+            continue
+        hostname = _normalize_hostname(record.get("name"))
+        if not hostname:
+            continue
+        out.setdefault(tunnel_id, set()).add(hostname)
+    return out
+
+
+def _protected_control_plane_hostnames(domain: str | None) -> set[str]:
+    d = _normalize_hostname(domain)
+    if not d:
+        return set()
+    return {f"app.{d}", f"app-staging.{d}"}
+
+
+def _is_control_plane_tunnel(*, name: str | None, linked_hostnames: set[str]) -> bool:
+    if _is_control_plane_tunnel_name(name):
+        return True
+    # Any non-agent hostname routed to this tunnel is treated as control-plane-owned.
+    return any(not host.startswith(CLOUDFLARE_AGENT_TUNNEL_PREFIX) for host in linked_hostnames)
+
+
+def _is_protected_control_plane_tunnel(
+    *,
+    name: str | None,
+    linked_hostnames: set[str],
+    domain: str | None,
+    dns_lookup_ok: bool,
+) -> bool:
+    if not _is_control_plane_tunnel(name=name, linked_hostnames=linked_hostnames):
+        return False
+    protected_hostnames = _protected_control_plane_hostnames(domain)
+    if protected_hostnames and linked_hostnames.intersection(protected_hostnames):
+        return True
+    # If DNS lookup failed, keep the legacy hard guard.
+    if not dns_lookup_ok and _is_control_plane_tunnel_name(name):
+        return True
+    return False
 
 
 def _detail_indicates_not_implemented(detail: str | None) -> bool:
@@ -335,10 +393,12 @@ def register_admin_cloud_routes(
     @app.get("/api/v1/admin/cloudflare/status")
     async def cloudflare_status(_admin: AdminSession = Depends(require_admin_session)):
         """Check if Cloudflare is configured and return domain info."""
+        domain = cloudflare_module.get_domain()
         return {
             "configured": cloudflare_module.is_configured(),
-            "domain": cloudflare_module.get_domain(),
+            "domain": domain,
             "protected_tunnel_names": [CLOUDFLARE_CONTROL_PLANE_TUNNEL_NAME],
+            "protected_hostnames": sorted(_protected_control_plane_hostnames(domain)),
         }
 
     @app.get("/api/v1/admin/cloudflare/tunnels")
@@ -349,19 +409,44 @@ def register_admin_cloud_routes(
 
         tunnels = await cloudflare_module.list_tunnels()
         agents = agent_store.list()
+        domain = cloudflare_module.get_domain()
 
         tunnel_to_agent = {}
         for agent in agents:
             if agent.tunnel_id:
                 tunnel_to_agent[agent.tunnel_id] = agent
 
+        tunnel_hostnames: dict[str, set[str]] = {}
+        dns_lookup_ok = False
+        # We only need DNS linkage when non-agent tunnel names are present.
+        if any(not _is_agent_tunnel_name(tunnel.get("name")) for tunnel in tunnels):
+            try:
+                dns_records = await cloudflare_module.list_dns_records()
+                tunnel_hostnames = _build_tunnel_hostnames_map(dns_records)
+                dns_lookup_ok = True
+            except Exception as exc:
+                logger.warning(
+                    "Cloudflare tunnel classification DNS lookup failed; using conservative protection: %s",
+                    exc,
+                )
+
         enriched = []
         orphaned_count = 0
         for tunnel in tunnels:
             agent = tunnel_to_agent.get(tunnel["tunnel_id"])
             name = tunnel.get("name")
-            protected = _is_protected_tunnel_name(name)
-            is_orphaned = (agent is None) and (not protected) and _is_agent_tunnel_name(name)
+            linked_hostnames = tunnel_hostnames.get(tunnel["tunnel_id"], set())
+            is_control_plane = _is_control_plane_tunnel(
+                name=name, linked_hostnames=linked_hostnames
+            )
+            protected = _is_protected_control_plane_tunnel(
+                name=name,
+                linked_hostnames=linked_hostnames,
+                domain=domain,
+                dns_lookup_ok=dns_lookup_ok,
+            )
+            orphanable_kind = _is_agent_tunnel_name(name) or is_control_plane
+            is_orphaned = (agent is None) and (not protected) and orphanable_kind
             if is_orphaned:
                 orphaned_count += 1
             enriched.append(
@@ -372,9 +457,10 @@ def register_admin_cloud_routes(
                     "agent_status": agent.status if agent else None,
                     "orphaned": is_orphaned,
                     "protected": protected,
+                    "linked_hostnames": sorted(linked_hostnames),
                     "owner": "agent"
                     if _is_agent_tunnel_name(name)
-                    else ("control-plane" if protected else "unmanaged"),
+                    else ("control-plane" if is_control_plane else "unmanaged"),
                 }
             )
 
@@ -435,11 +521,36 @@ def register_admin_cloud_routes(
         try:
             tunnels = await cloudflare_module.list_tunnels()
             match = next((t for t in tunnels if t.get("tunnel_id") == tunnel_id), None)
-            if match and _is_protected_tunnel_name(match.get("name")):
-                raise HTTPException(
-                    status_code=400,
-                    detail="Refusing to delete the protected control plane tunnel.",
-                )
+            if match:
+                name = match.get("name")
+                linked_hostnames: set[str] = set()
+                dns_lookup_ok = False
+                if not _is_agent_tunnel_name(name):
+                    try:
+                        dns_records = await cloudflare_module.list_dns_records()
+                        linked_hostnames = _build_tunnel_hostnames_map(dns_records).get(
+                            tunnel_id, set()
+                        )
+                        dns_lookup_ok = True
+                    except Exception as exc:
+                        logger.warning(
+                            "Cloudflare tunnel delete precheck DNS lookup failed; using conservative protection: %s",
+                            exc,
+                        )
+
+                if _is_protected_control_plane_tunnel(
+                    name=name,
+                    linked_hostnames=linked_hostnames,
+                    domain=cloudflare_module.get_domain(),
+                    dns_lookup_ok=dns_lookup_ok,
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Refusing to delete protected control plane tunnel "
+                            "(attached to production/staging hostname)."
+                        ),
+                    )
         except HTTPException:
             raise
         except Exception as exc:
@@ -474,21 +585,44 @@ def register_admin_cloud_routes(
 
         tunnels = await cloudflare_module.list_tunnels()
         agents = agent_store.list()
+        domain = cloudflare_module.get_domain()
         tunnel_to_agent = {}
         for agent in agents:
             if agent.tunnel_id:
                 tunnel_to_agent[agent.tunnel_id] = agent
+
+        records: list[dict[str, Any]] = []
+        dns_lookup_ok = False
+        try:
+            records = await cloudflare_module.list_dns_records()
+            dns_lookup_ok = True
+        except Exception as exc:
+            logger.warning(
+                "Cloudflare cleanup DNS lookup failed; proceeding with conservative protection: %s",
+                exc,
+            )
+        tunnel_hostnames = _build_tunnel_hostnames_map(records)
 
         orphan_tunnel_ids = [
             tunnel["tunnel_id"]
             for tunnel in tunnels
             if tunnel.get("tunnel_id")
             and tunnel["tunnel_id"] not in tunnel_to_agent
-            and _is_agent_tunnel_name(tunnel.get("name"))
-            and not _is_protected_tunnel_name(tunnel.get("name"))
+            and (
+                _is_agent_tunnel_name(tunnel.get("name"))
+                or _is_control_plane_tunnel(
+                    name=tunnel.get("name"),
+                    linked_hostnames=tunnel_hostnames.get(tunnel["tunnel_id"], set()),
+                )
+            )
+            and not _is_protected_control_plane_tunnel(
+                name=tunnel.get("name"),
+                linked_hostnames=tunnel_hostnames.get(tunnel["tunnel_id"], set()),
+                domain=domain,
+                dns_lookup_ok=dns_lookup_ok,
+            )
         ]
 
-        records = await cloudflare_module.list_dns_records()
         tunnel_ids = {tunnel.get("tunnel_id") for tunnel in tunnels if tunnel.get("tunnel_id")}
         orphan_dns_record_ids: list[str] = []
         for record in records:
@@ -565,9 +699,10 @@ def register_admin_cloud_routes(
                     detail_parts.append(f"Cloudflare cleanup failed: {exc}")
 
         ext_result: ExternalCloudCleanupResponse | None = None
-        ext_configured = bool(get_setting_fn("provisioner.cleanup_url").strip())
+        # Tracks external webhook availability/usability, not CP-native fallback support.
+        ext_webhook_configured = bool(get_setting_fn("provisioner.cleanup_url").strip())
         if request.external_cloud:
-            if not ext_configured:
+            if not ext_webhook_configured:
                 if delete_managed_gcp_instance_fn is None:
                     detail_parts.append("External cloud cleanup webhook is not configured.")
             else:
@@ -600,12 +735,12 @@ def register_admin_cloud_routes(
                             else None
                         ),
                     )
-                    ext_configured = configured
+                    ext_webhook_configured = configured
                 except Exception as exc:
                     detail_parts.append(f"External cloud cleanup failed: {exc}")
 
             should_try_builtin_gcp = delete_managed_gcp_instance_fn is not None and (
-                not ext_configured
+                not ext_webhook_configured
                 or ext_result is None
                 or not ext_result.dispatched
                 or _detail_indicates_not_implemented(ext_result.detail)
@@ -656,7 +791,6 @@ def register_admin_cloud_routes(
                     dry_run=request.dry_run,
                 )
                 if builtin_result:
-                    ext_configured = True
                     if ext_result is None or not ext_result.dispatched:
                         ext_result = builtin_result
                     elif builtin_result.detail:
@@ -671,7 +805,7 @@ def register_admin_cloud_routes(
         return UnifiedOrphanCleanupResponse(
             dry_run=request.dry_run,
             cloudflare_configured=cf_configured,
-            external_cloud_configured=ext_configured,
+            external_cloud_configured=ext_webhook_configured,
             cloudflare=cf_result,
             external_cloud=ext_result,
             detail=detail,

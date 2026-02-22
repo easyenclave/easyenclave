@@ -91,6 +91,13 @@ def test_unified_orphan_cleanup_cloudflare_dry_run(client: TestClient):
     ]
     dns_records = [
         {
+            "record_id": "rec-app",
+            "name": "app.easyenclave.com",
+            "content": "tun-cp.cfargotunnel.com",
+            "proxied": True,
+            "created_on": None,
+        },
+        {
             "record_id": "rec-keep",
             "name": "keep.example.com",
             "content": "tun-keep.cfargotunnel.com",
