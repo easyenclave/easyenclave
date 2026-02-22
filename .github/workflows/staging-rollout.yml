@@ -165,6 +165,7 @@ jobs:
       GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
       SOURCE_IMAGE_PROJECT: ${{ vars.STAGING_GCP_SOURCE_IMAGE_PROJECT || vars.EE_GCP_SOURCE_IMAGE_PROJECT || secrets.PRODUCTION_GCP_PROJECT_ID }}
+      SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_SOURCE_IMAGE_NAME || vars.EE_GCP_SOURCE_IMAGE_NAME || '' }}
       SOURCE_IMAGE_FAMILY: ${{ vars.STAGING_GCP_SOURCE_IMAGE_FAMILY || vars.EE_GCP_SOURCE_IMAGE_FAMILY || 'easyenclave-agent' }}
     steps:
       - name: Validate staging GCP config
@@ -228,19 +229,56 @@ jobs:
             exit 1
           fi
 
-          # Validate source family exists before attempting to create a new seed.
-          if ! gcloud compute images describe-from-family "${SOURCE_IMAGE_FAMILY}" \
-            --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
-            echo "::error::Source image family '${SOURCE_IMAGE_FAMILY}' not found in project '${SOURCE_IMAGE_PROJECT}'."
+          src_selector=""
+          src_value=""
+          src_name="${SOURCE_IMAGE_NAME:-}"
+          src_family="${SOURCE_IMAGE_FAMILY:-}"
+          fallback_family="easyenclave-agent"
+
+          if [ -n "${src_name}" ] && gcloud compute images describe "${src_name}" --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
+            src_selector="name"
+            src_value="${src_name}"
+          fi
+
+          if [ -z "${src_selector}" ] && [ -n "${src_family}" ] && gcloud compute images describe-from-family "${src_family}" --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
+            src_selector="family"
+            src_value="${src_family}"
+          fi
+
+          if [ -z "${src_selector}" ] && [ "${fallback_family}" != "${src_family}" ] && gcloud compute images describe-from-family "${fallback_family}" --project "${SOURCE_IMAGE_PROJECT}" >/dev/null 2>&1; then
+            src_selector="family"
+            src_value="${fallback_family}"
+          fi
+
+          if [ -z "${src_selector}" ]; then
+            latest_seed="$(gcloud compute images list \
+              --project "${SOURCE_IMAGE_PROJECT}" \
+              --filter "name~^easyenclave-agent-" \
+              --sort-by "~creationTimestamp" \
+              --limit 1 \
+              --format "value(name)")"
+            if [ -n "${latest_seed}" ]; then
+              src_selector="name"
+              src_value="${latest_seed}"
+            fi
+          fi
+
+          if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
+            echo "::error::No usable source image found in '${SOURCE_IMAGE_PROJECT}'. Checked SOURCE_IMAGE_NAME='${SOURCE_IMAGE_NAME:-}', SOURCE_IMAGE_FAMILY='${SOURCE_IMAGE_FAMILY:-}', fallback family '${fallback_family}', and latest easyenclave-agent-* images."
             exit 1
           fi
 
           image_name="easyenclave-agent-seed-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          echo "Creating staging seed image '${image_name}' from ${SOURCE_IMAGE_PROJECT}/${SOURCE_IMAGE_FAMILY}"
+          source_args=(--source-image-project "${SOURCE_IMAGE_PROJECT}")
+          if [ "${src_selector}" = "name" ]; then
+            source_args+=(--source-image "${src_value}")
+          else
+            source_args+=(--source-image-family "${src_value}")
+          fi
+          echo "Creating staging seed image '${image_name}' from ${SOURCE_IMAGE_PROJECT} (${src_selector}=${src_value})"
           gcloud compute images create "${image_name}" \
             --project "${GCP_PROJECT_ID}" \
-            --source-image-family "${SOURCE_IMAGE_FAMILY}" \
-            --source-image-project "${SOURCE_IMAGE_PROJECT}" \
+            "${source_args[@]}" \
             --family "easyenclave-agent" \
             --labels "easyenclave=managed,easyenclave_env=staging"
 
