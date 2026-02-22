@@ -114,15 +114,38 @@ jobs:
           sha12="$(echo "$SOURCE_SHA" | cut -c1-12)"
           image_name="easyenclave-agent-${safe_tag}-${sha12}"
           family_name="easyenclave-agent-${safe_tag}"
+          source_name="${SOURCE_IMAGE_NAME:-}"
+          source_family="${SOURCE_IMAGE_FAMILY:-}"
+          fallback_family="easyenclave-agent"
+
+          if [ -n "$source_name" ]; then
+            if ! gcloud compute images describe "$source_name" --project "$SOURCE_IMAGE_PROJECT" >/dev/null 2>&1; then
+              echo "::warning::Configured source image '${source_name}' not found in project '${SOURCE_IMAGE_PROJECT}'. Falling back to family selection."
+              source_name=""
+            fi
+          fi
+
+          if [ -z "$source_name" ]; then
+            if ! gcloud compute images describe-from-family "$source_family" --project "$SOURCE_IMAGE_PROJECT" >/dev/null 2>&1; then
+              echo "::warning::Configured source image family '${source_family}' not found in project '${SOURCE_IMAGE_PROJECT}'."
+              if gcloud compute images describe-from-family "$fallback_family" --project "$SOURCE_IMAGE_PROJECT" >/dev/null 2>&1; then
+                source_family="$fallback_family"
+                echo "::notice::Falling back to source image family '${source_family}'."
+              else
+                echo "::error::No usable source image family found in project '${SOURCE_IMAGE_PROJECT}' (checked '${SOURCE_IMAGE_FAMILY}' and '${fallback_family}')."
+                exit 1
+              fi
+            fi
+          fi
 
           if gcloud compute images describe "$image_name" --project "$TARGET_PROJECT" >/dev/null 2>&1; then
             echo "Image already exists: $TARGET_PROJECT/$image_name"
           else
             source_args=(--source-image-project="$SOURCE_IMAGE_PROJECT")
-            if [ -n "${SOURCE_IMAGE_NAME:-}" ]; then
-              source_args+=(--source-image="$SOURCE_IMAGE_NAME")
+            if [ -n "$source_name" ]; then
+              source_args+=(--source-image="$source_name")
             else
-              source_args+=(--source-image-family="$SOURCE_IMAGE_FAMILY")
+              source_args+=(--source-image-family="$source_family")
             fi
             gcloud compute images create "$image_name" \
               --project="$TARGET_PROJECT" \
@@ -136,6 +159,8 @@ jobs:
             echo "image_project=$TARGET_PROJECT"
             echo "image_name=$image_name"
             echo "image_family=$family_name"
+            echo "source_image_name_used=$source_name"
+            echo "source_image_family_used=$source_family"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build release GCP image descriptor
@@ -145,6 +170,8 @@ jobs:
           IMAGE_PROJECT: ${{ steps.image.outputs.image_project }}
           IMAGE_NAME: ${{ steps.image.outputs.image_name }}
           IMAGE_FAMILY: ${{ steps.image.outputs.image_family }}
+          SOURCE_IMAGE_NAME_USED: ${{ steps.image.outputs.source_image_name_used }}
+          SOURCE_IMAGE_FAMILY_USED: ${{ steps.image.outputs.source_image_family_used }}
         run: |
           set -euo pipefail
           out="/tmp/gcp-image.${RELEASE_TAG}.json"
@@ -155,8 +182,8 @@ jobs:
             --arg image_name "$IMAGE_NAME" \
             --arg image_family "$IMAGE_FAMILY" \
             --arg source_image_project "$SOURCE_IMAGE_PROJECT" \
-            --arg source_image_family "$SOURCE_IMAGE_FAMILY" \
-            --arg source_image_name "$SOURCE_IMAGE_NAME" \
+            --arg source_image_family "$SOURCE_IMAGE_FAMILY_USED" \
+            --arg source_image_name "$SOURCE_IMAGE_NAME_USED" \
             --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
             '{
               release_tag: $release_tag,
