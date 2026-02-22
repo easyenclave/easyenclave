@@ -58,7 +58,7 @@ TARGET_IMAGE_DESCRIPTION="$(trim "${TARGET_IMAGE_DESCRIPTION:-EasyEnclave image 
 TARGET_IMAGE_LABELS="$(trim "${TARGET_IMAGE_LABELS:-}")"
 SOURCE_SHA="$(trim "${SOURCE_SHA:-}")"
 BAKE_METADATA_PATH="$(trim "${BAKE_METADATA_PATH:-}")"
-INSTANCE_CREATE_CALL_TIMEOUT_SECONDS="$(trim "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS:-45}")"
+INSTANCE_CREATE_CALL_TIMEOUT_SECONDS="$(trim "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS:-300}")"
 
 if [ ! -f "infra/launcher/launcher.py" ]; then
   fail "Missing required file: infra/launcher/launcher.py"
