@@ -1,0 +1,219 @@
+name: Release Deleted Cleanup
+
+on:
+  release:
+    types: [deleted]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to clean up (e.g. v0.1.12)"
+        required: true
+        default: ""
+
+concurrency:
+  group: easyenclave-release-deleted-cleanup-${{ github.event.release.tag_name || github.event.inputs.release_tag || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve deleted release tag
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      safe_tag: ${{ steps.resolve.outputs.safe_tag }}
+    steps:
+      - name: Resolve release tag
+        id: resolve
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name || '' }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${EVENT_TAG:-}}"
+          if [ -z "$tag" ]; then
+            echo "::error::release_tag is required."
+            exit 1
+          fi
+          safe_tag="$(echo "$tag" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+          if [ -z "$safe_tag" ]; then
+            echo "::error::Could not normalize release tag '$tag' for GCP label filter."
+            exit 1
+          fi
+          {
+            echo "release_tag=$tag"
+            echo "safe_tag=$safe_tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "::notice::Resolved release tag '$tag' -> safe label '$safe_tag'"
+
+  cleanup-production:
+    name: Cleanup GCP (production project)
+    runs-on: ubuntu-latest
+    needs: [resolve]
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+      SAFE_TAG: ${{ needs.resolve.outputs.safe_tag }}
+      GCP_PROJECT_ID: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Validate production GCP credentials
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GCP_PROJECT_ID:-}" ] || [ -z "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+            echo "::notice::Skipping production cleanup: PRODUCTION_GCP_PROJECT_ID / PRODUCTION_GCP_SERVICE_ACCOUNT_KEY not configured."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP (production)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud (production)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Delete release-scoped instances and images (production)
+        if: steps.cfg.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          inst_filter="labels.easyenclave=managed AND (labels.ee_release=${SAFE_TAG} OR labels.release=${SAFE_TAG})"
+          img_filter="labels.easyenclave=managed AND (labels.ee_release=${SAFE_TAG} OR labels.release=${SAFE_TAG})"
+
+          echo "Project: ${GCP_PROJECT_ID}"
+          echo "Deleting instances with filter: ${inst_filter}"
+          mapfile -t instances < <(gcloud compute instances list \
+            --project "${GCP_PROJECT_ID}" \
+            --filter "${inst_filter}" \
+            --format "value(zone.basename(),name)")
+
+          if [ "${#instances[@]}" -eq 0 ]; then
+            echo "No release-scoped instances found for '${RELEASE_TAG}'."
+          else
+            for row in "${instances[@]}"; do
+              [ -n "$row" ] || continue
+              zone="$(echo "$row" | awk '{print $1}')"
+              name="$(echo "$row" | awk '{print $2}')"
+              if [ -z "$zone" ] || [ -z "$name" ]; then
+                continue
+              fi
+              echo "Deleting instance: ${name} (zone=${zone})"
+              gcloud compute instances delete "${name}" \
+                --zone "${zone}" \
+                --project "${GCP_PROJECT_ID}" \
+                --quiet
+            done
+          fi
+
+          echo "Deleting images with filter: ${img_filter}"
+          mapfile -t images < <(gcloud compute images list \
+            --project "${GCP_PROJECT_ID}" \
+            --filter "${img_filter}" \
+            --format "value(name)")
+          if [ "${#images[@]}" -eq 0 ]; then
+            echo "No release-scoped images found for '${RELEASE_TAG}'."
+          else
+            for image in "${images[@]}"; do
+              [ -n "$image" ] || continue
+              echo "Deleting image: ${image}"
+              gcloud compute images delete "${image}" \
+                --project "${GCP_PROJECT_ID}" \
+                --quiet
+            done
+          fi
+
+  cleanup-staging:
+    name: Cleanup GCP (staging project)
+    runs-on: ubuntu-latest
+    needs: [resolve]
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+      SAFE_TAG: ${{ needs.resolve.outputs.safe_tag }}
+      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
+    steps:
+      - name: Validate staging GCP credentials
+        id: cfg
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${GCP_PROJECT_ID:-}" ] || [ -z "${GCP_SERVICE_ACCOUNT_KEY:-}" ]; then
+            echo "::notice::Skipping staging cleanup: STAGING_GCP_PROJECT_ID / STAGING_GCP_SERVICE_ACCOUNT_KEY not configured."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP (staging)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud (staging)
+        if: steps.cfg.outputs.configured == 'true'
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Delete release-scoped instances and images (staging)
+        if: steps.cfg.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          inst_filter="labels.easyenclave=managed AND (labels.ee_release=${SAFE_TAG} OR labels.release=${SAFE_TAG})"
+          img_filter="labels.easyenclave=managed AND (labels.ee_release=${SAFE_TAG} OR labels.release=${SAFE_TAG})"
+
+          echo "Project: ${GCP_PROJECT_ID}"
+          echo "Deleting instances with filter: ${inst_filter}"
+          mapfile -t instances < <(gcloud compute instances list \
+            --project "${GCP_PROJECT_ID}" \
+            --filter "${inst_filter}" \
+            --format "value(zone.basename(),name)")
+
+          if [ "${#instances[@]}" -eq 0 ]; then
+            echo "No release-scoped instances found for '${RELEASE_TAG}'."
+          else
+            for row in "${instances[@]}"; do
+              [ -n "$row" ] || continue
+              zone="$(echo "$row" | awk '{print $1}')"
+              name="$(echo "$row" | awk '{print $2}')"
+              if [ -z "$zone" ] || [ -z "$name" ]; then
+                continue
+              fi
+              echo "Deleting instance: ${name} (zone=${zone})"
+              gcloud compute instances delete "${name}" \
+                --zone "${zone}" \
+                --project "${GCP_PROJECT_ID}" \
+                --quiet
+            done
+          fi
+
+          echo "Deleting images with filter: ${img_filter}"
+          mapfile -t images < <(gcloud compute images list \
+            --project "${GCP_PROJECT_ID}" \
+            --filter "${img_filter}" \
+            --format "value(name)")
+          if [ "${#images[@]}" -eq 0 ]; then
+            echo "No release-scoped images found for '${RELEASE_TAG}'."
+          else
+            for image in "${images[@]}"; do
+              [ -n "$image" ] || continue
+              echo "Deleting image: ${image}"
+              gcloud compute images delete "${image}" \
+                --project "${GCP_PROJECT_ID}" \
+                --quiet
+            done
+          fi

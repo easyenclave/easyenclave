@@ -234,6 +234,18 @@ def _cp_host_env() -> str:
     return _sanitize_optional_label_value(host)
 
 
+def _release_tag_env() -> str:
+    return _sanitize_optional_label_value(
+        os.environ.get("EASYENCLAVE_RELEASE_TAG") or os.environ.get("RELEASE_TAG") or ""
+    )
+
+
+def _git_sha_env() -> str:
+    return _sanitize_optional_label_value(
+        os.environ.get("EASYENCLAVE_GIT_SHA") or os.environ.get("GITHUB_SHA") or ""
+    )
+
+
 def _ownership_scope_labels() -> dict[str, str]:
     labels: dict[str, str] = {}
     network = _network_name_env()
@@ -248,6 +260,15 @@ def _ownership_scope_labels() -> dict[str, str]:
     cp_host = _cp_host_env()
     if cp_host:
         labels["ee-cp-host"] = cp_host
+    release_tag = _release_tag_env()
+    if release_tag:
+        # Keep both key styles for backward/forward compatibility with filters.
+        labels["ee-release"] = release_tag
+        labels["ee_release"] = release_tag
+    git_sha = _git_sha_env()
+    if git_sha:
+        labels["ee-git-sha"] = git_sha
+        labels["ee_git_sha"] = git_sha
     return labels
 
 

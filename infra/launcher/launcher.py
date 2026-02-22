@@ -185,6 +185,7 @@ services:
       - EASYENCLAVE_CP_URL=${{EASYENCLAVE_CP_URL:-https://app.easyenclave.com}}
       - EASYENCLAVE_BOOT_ID=${{EASYENCLAVE_BOOT_ID:-}}
       - EASYENCLAVE_GIT_SHA=${{EASYENCLAVE_GIT_SHA:-}}
+      - EASYENCLAVE_RELEASE_TAG=${{EASYENCLAVE_RELEASE_TAG:-}}
       - EASYENCLAVE_NETWORK_NAME=${{EASYENCLAVE_NETWORK_NAME:-}}
       - TRUSTED_AGENT_MRTDS=${{TRUSTED_AGENT_MRTDS:-}}
       - TRUSTED_PROXY_MRTDS=${{TRUSTED_PROXY_MRTDS:-}}
@@ -2458,6 +2459,8 @@ def run_control_plane_mode(config: dict):
         env["EASYENCLAVE_BOOT_ID"] = config["easyenclave_boot_id"]
     if config.get("easyenclave_git_sha"):
         env["EASYENCLAVE_GIT_SHA"] = config["easyenclave_git_sha"]
+    if config.get("easyenclave_release_tag"):
+        env["EASYENCLAVE_RELEASE_TAG"] = config["easyenclave_release_tag"]
     # Control plane does not require an ITA API key to verify agent tokens.
     # Optional: CP-native provisioning can inject a key into provisioned agent VMs.
     if config.get("ee_agent_ita_api_key"):

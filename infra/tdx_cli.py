@@ -570,6 +570,7 @@ class TDXManager:
             # Debug/coordination: published on GET /health so CI can wait for the right CP instance.
             "easyenclave_boot_id": os.environ.get("EASYENCLAVE_BOOT_ID"),
             "easyenclave_git_sha": os.environ.get("EASYENCLAVE_GIT_SHA"),
+            "easyenclave_release_tag": os.environ.get("EASYENCLAVE_RELEASE_TAG"),
             # Cloudflare config for self-tunneling (if env vars are set)
             "cloudflare_api_token": os.environ.get("CLOUDFLARE_API_TOKEN"),
             "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID"),

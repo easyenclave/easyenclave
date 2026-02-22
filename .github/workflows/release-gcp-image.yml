@@ -128,7 +128,7 @@ jobs:
               --project="$TARGET_PROJECT" \
               "${source_args[@]}" \
               --family="$family_name" \
-              --labels="easyenclave=managed,release=${safe_tag},gitsha=${sha12}" \
+              --labels="easyenclave=managed,ee_env=production,release=${safe_tag},ee_release=${safe_tag},gitsha=${sha12},ee_git_sha=${sha12}" \
               --description="EasyEnclave release ${RELEASE_TAG} (${SOURCE_SHA})"
           fi
 

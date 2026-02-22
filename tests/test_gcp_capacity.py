@@ -10,6 +10,8 @@ def test_ownership_scope_labels_include_expected_values(monkeypatch):
     monkeypatch.setenv("EASYENCLAVE_ENV", "staging")
     monkeypatch.setenv("EASYENCLAVE_BOOT_ID", "bootstrap-22260503213-1")
     monkeypatch.setenv("EASYENCLAVE_CP_URL", "https://app-staging.easyenclave.com")
+    monkeypatch.setenv("EASYENCLAVE_RELEASE_TAG", "v0.1.10")
+    monkeypatch.setenv("EASYENCLAVE_GIT_SHA", "e451f2f3d9a4f0f0a61a8c0de5ce8b1f9ad2beef")
 
     labels = gcp_capacity._ownership_scope_labels()
 
@@ -17,6 +19,10 @@ def test_ownership_scope_labels_include_expected_values(monkeypatch):
     assert labels["ee-env"] == "staging"
     assert labels["ee-cp-boot"] == "bootstrap-22260503213-1"
     assert labels["ee-cp-host"] == "app-staging-easyenclave-com"
+    assert labels["ee-release"] == "v0-1-10"
+    assert labels["ee_release"] == "v0-1-10"
+    assert labels["ee-git-sha"] == "e451f2f3d9a4f0f0a61a8c0de5ce8b1f9ad2beef"
+    assert labels["ee_git_sha"] == "e451f2f3d9a4f0f0a61a8c0de5ce8b1f9ad2beef"
 
 
 def test_instance_owned_by_current_scope_requires_matching_network_and_env(monkeypatch):

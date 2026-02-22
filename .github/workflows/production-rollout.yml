@@ -343,6 +343,7 @@ jobs:
       easyenclave_domain: ${{ needs.resolve.outputs.production_domain }}
       easyenclave_network_name: ${{ needs.resolve.outputs.production_network_name }}
       easyenclave_env: production
+      easyenclave_release_tag: ${{ needs.resolve.outputs.release_tag }}
       tcb_enforcement_mode: strict
       # GCP TDX hosts can temporarily report OutOfDate while still providing valid quotes.
       # Keep strict enforcement but include both statuses for deterministic production GCP bring-up.

@@ -43,6 +43,10 @@ on:
         required: false
         type: string
         default: "staging"
+      easyenclave_release_tag:
+        required: false
+        type: string
+        default: ""
       tcb_enforcement_mode:
         required: false
         type: string
@@ -190,6 +194,10 @@ on:
         description: "Environment profile (staging|production)"
         required: false
         default: "staging"
+      easyenclave_release_tag:
+        description: "Release tag for release-scoped infra labels (optional)"
+        required: false
+        default: ""
       tcb_enforcement_mode:
         description: "TCB enforcement mode"
         required: false
@@ -280,6 +288,7 @@ jobs:
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       EASYENCLAVE_DOMAIN: ${{ inputs.easyenclave_domain || github.event.inputs.easyenclave_domain || 'easyenclave.com' }}
       EASYENCLAVE_NETWORK_NAME: ${{ inputs.easyenclave_network_name || github.event.inputs.easyenclave_network_name || '' }}
+      EASYENCLAVE_RELEASE_TAG: ${{ inputs.easyenclave_release_tag || github.event.inputs.easyenclave_release_tag || '' }}
 
       # GitHub OAuth (admin login + deployer identity).
       # Prefer env-specific OAuth app credentials for simultaneous staging/prod.
