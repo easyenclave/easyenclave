@@ -128,9 +128,85 @@ jobs:
             echo "cp_expected_git_sha=${expected_sha}"
           } >> "$GITHUB_OUTPUT"
 
+  wait-release-builds:
+    name: Wait for release build workflows
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for release workflows to complete successfully
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          required_workflows=(
+            "Release Trust Bundle"
+            "Release GCP Image"
+            "Release Example Images"
+          )
+
+          deadline=$(( $(date +%s) + 3600 ))
+          while :; do
+            runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=release&per_page=100")"
+            all_done=true
+            for wf in "${required_workflows[@]}"; do
+              status="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
+                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
+                | sort_by(.created_at)
+                | last
+                | .status // "missing"
+              ')"
+              conclusion="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
+                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
+                | sort_by(.created_at)
+                | last
+                | .conclusion // ""
+              ')"
+              html_url="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
+                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
+                | sort_by(.created_at)
+                | last
+                | .html_url // ""
+              ')"
+              echo "workflow='${wf}' status='${status}' conclusion='${conclusion}'"
+              if [ -n "$html_url" ]; then
+                echo "  ${html_url}"
+              fi
+
+              if [ "$status" = "completed" ]; then
+                if [ "$conclusion" != "success" ]; then
+                  echo "::error::Release workflow '${wf}' completed with conclusion='${conclusion}' for tag '${RELEASE_TAG}'."
+                  exit 1
+                fi
+                continue
+              fi
+
+              if [ "$status" = "missing" ]; then
+                echo "Release workflow '${wf}' not visible yet for tag '${RELEASE_TAG}'."
+              fi
+              all_done=false
+            done
+
+            if [ "$all_done" = "true" ]; then
+              echo "All release workflows completed successfully for tag '${RELEASE_TAG}'."
+              break
+            fi
+
+            now=$(date +%s)
+            if [ "$now" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for release workflows for tag '${RELEASE_TAG}'."
+              exit 1
+            fi
+            sleep 15
+          done
+
   trust-bundle:
     name: Resolve release trust bundle
-    needs: [resolve]
+    needs: [resolve, wait-release-builds]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -203,7 +279,7 @@ jobs:
 
   gcp-image:
     name: Resolve release GCP image
-    needs: [resolve]
+    needs: [resolve, wait-release-builds]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -270,7 +346,7 @@ jobs:
 
   example-images:
     name: Resolve release example images
-    needs: [resolve]
+    needs: [resolve, wait-release-builds]
     runs-on: ubuntu-latest
     permissions:
       contents: read
