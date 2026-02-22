@@ -173,6 +173,33 @@ class AgentStore:
         with get_db() as session:
             return session.exec(select(Agent).where(Agent.vm_name == vm_name)).first()
 
+    def get_recent_unverified_by_mrtd_datacenter(
+        self,
+        *,
+        mrtd: str,
+        datacenter: str,
+        within: timedelta,
+    ) -> Agent | None:
+        """Return the most recent unverified agent for an MRTD+datacenter window."""
+        mrtd_norm = (mrtd or "").strip().lower()
+        dc_norm = (datacenter or "").strip().lower()
+        if not mrtd_norm or not dc_norm:
+            return None
+        cutoff = datetime.now(timezone.utc) - within
+        with get_db() as session:
+            stmt = (
+                select(Agent)
+                .where(
+                    Agent.mrtd == mrtd_norm,
+                    Agent.datacenter == dc_norm,
+                    Agent.verified == False,  # noqa: E712
+                    Agent.status == "unverified",
+                    Agent.last_heartbeat >= cutoff,
+                )
+                .order_by(Agent.last_heartbeat.desc())
+            )
+            return session.exec(stmt).first()
+
     def heartbeat(self, agent_id: str) -> bool:
         with get_db() as session:
             agent = session.get(Agent, agent_id)

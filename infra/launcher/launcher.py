@@ -1460,10 +1460,34 @@ def get_vm_name() -> str:
     except Exception:
         pass
 
+    # If hostname is unavailable, persist a generated fallback so restarts keep identity.
+    # This prevents runaway re-registration rows when the launcher process restarts.
+    persistent_paths = [
+        Path("/data/easyenclave/vm_name"),
+        Path("/var/lib/easyenclave/vm_name"),
+        Path("/home/tdx/easyenclave/vm_name"),
+    ]
+    for path in persistent_paths:
+        try:
+            if path.exists():
+                cached = path.read_text(encoding="utf-8").strip()
+                if cached:
+                    return cached
+        except Exception:
+            continue
+
     # Fall back to a generated name
     import uuid
 
-    return f"tdx-agent-{uuid.uuid4().hex[:8]}"
+    generated = f"tdx-agent-{uuid.uuid4().hex[:8]}"
+    for path in persistent_paths:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(generated + "\n", encoding="utf-8")
+            break
+        except Exception:
+            continue
+    return generated
 
 
 def resolve_datacenter_label(config: dict | None = None) -> str:
@@ -2736,7 +2760,8 @@ def run_agent_mode(config: dict):
     cloudflared_proc = None
     tunnel_hostname = None
 
-    for attempt in range(10):
+    attempt = 0
+    while True:
         try:
             reg_response = register_with_control_plane(attestation, vm_name, config)
             agent_id = reg_response["agent_id"]
@@ -2760,10 +2785,20 @@ def run_agent_mode(config: dict):
 
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code == 403:
-                # MRTD not trusted - fatal error, don't retry
-                logger.error(f"Registration rejected (MRTD not trusted): {e.response.text}")
+                # Do not crash-loop on trust rejection. Keep identity stable and retry slowly.
+                detail = ""
+                try:
+                    detail = (e.response.text or "").strip()
+                except Exception:
+                    detail = ""
+                logger.error(
+                    "Registration rejected (MRTD not trusted); will retry in 60s. detail=%s",
+                    detail[:600] if detail else "",
+                )
                 _admin_state["status"] = "rejected"
-                raise RuntimeError("Registration rejected: MRTD not trusted") from e
+                write_status("rejected")
+                time.sleep(60)
+                continue
             detail = ""
             if e.response is not None:
                 try:
@@ -2779,10 +2814,10 @@ def run_agent_mode(config: dict):
         except Exception as e:
             logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
 
-        if attempt < 9:
-            time.sleep(10)
-    else:
-        raise RuntimeError("Failed to register with control plane after 10 attempts")
+        attempt += 1
+        if attempt >= 10:
+            raise RuntimeError("Failed to register with control plane after 10 attempts")
+        time.sleep(10)
 
     # 3. Start API server (handles deployments, logs, stats, health)
     _admin_state["status"] = "undeployed"

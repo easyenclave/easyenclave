@@ -68,19 +68,31 @@ jobs:
       RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
       SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
       TARGET_PROJECT: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
-      BASE_IMAGE_PROJECT: ${{ vars.EE_GCP_BASE_IMAGE_PROJECT || 'ubuntu-os-cloud' }}
-      BASE_IMAGE_FAMILY: ${{ vars.EE_GCP_BASE_IMAGE_FAMILY || 'ubuntu-2404-lts-amd64' }}
+      SOURCE_IMAGE_PROJECT: ${{ vars.EE_GCP_SOURCE_IMAGE_PROJECT || secrets.PRODUCTION_GCP_PROJECT_ID }}
+      SOURCE_IMAGE_FAMILY: ${{ vars.EE_GCP_SOURCE_IMAGE_FAMILY || 'easyenclave-agent' }}
+      SOURCE_IMAGE_NAME: ${{ vars.EE_GCP_SOURCE_IMAGE_NAME || '' }}
     steps:
       - name: Validate required config
         shell: bash
         run: |
           set -euo pipefail
-          for v in TARGET_PROJECT BASE_IMAGE_PROJECT BASE_IMAGE_FAMILY; do
+          for v in TARGET_PROJECT SOURCE_IMAGE_PROJECT; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required value: $v"
               exit 1
             fi
           done
+          if [ -z "${SOURCE_IMAGE_NAME:-}" ] && [ -z "${SOURCE_IMAGE_FAMILY:-}" ]; then
+            echo "::error::Set SOURCE_IMAGE_NAME or SOURCE_IMAGE_FAMILY."
+            exit 1
+          fi
+          src_project_lc="$(echo "${SOURCE_IMAGE_PROJECT}" | tr '[:upper:]' '[:lower:]')"
+          src_family_lc="$(echo "${SOURCE_IMAGE_FAMILY:-}" | tr '[:upper:]' '[:lower:]')"
+          src_name_lc="$(echo "${SOURCE_IMAGE_NAME:-}" | tr '[:upper:]' '[:lower:]')"
+          if [ "$src_project_lc" = "ubuntu-os-cloud" ] || [[ "$src_family_lc" == ubuntu-* ]] || [[ "$src_name_lc" == ubuntu-* ]]; then
+            echo "::error::Refusing to publish release image from stock Ubuntu source. Use an EasyEnclave source image."
+            exit 1
+          fi
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
@@ -106,10 +118,15 @@ jobs:
           if gcloud compute images describe "$image_name" --project "$TARGET_PROJECT" >/dev/null 2>&1; then
             echo "Image already exists: $TARGET_PROJECT/$image_name"
           else
+            source_args=(--source-image-project="$SOURCE_IMAGE_PROJECT")
+            if [ -n "${SOURCE_IMAGE_NAME:-}" ]; then
+              source_args+=(--source-image="$SOURCE_IMAGE_NAME")
+            else
+              source_args+=(--source-image-family="$SOURCE_IMAGE_FAMILY")
+            fi
             gcloud compute images create "$image_name" \
               --project="$TARGET_PROJECT" \
-              --source-image-project="$BASE_IMAGE_PROJECT" \
-              --source-image-family="$BASE_IMAGE_FAMILY" \
+              "${source_args[@]}" \
               --family="$family_name" \
               --labels="easyenclave=managed,release=${safe_tag},gitsha=${sha12}" \
               --description="EasyEnclave release ${RELEASE_TAG} (${SOURCE_SHA})"
@@ -137,8 +154,9 @@ jobs:
             --arg image_project "$IMAGE_PROJECT" \
             --arg image_name "$IMAGE_NAME" \
             --arg image_family "$IMAGE_FAMILY" \
-            --arg base_image_project "$BASE_IMAGE_PROJECT" \
-            --arg base_image_family "$BASE_IMAGE_FAMILY" \
+            --arg source_image_project "$SOURCE_IMAGE_PROJECT" \
+            --arg source_image_family "$SOURCE_IMAGE_FAMILY" \
+            --arg source_image_name "$SOURCE_IMAGE_NAME" \
             --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
             '{
               release_tag: $release_tag,
@@ -146,8 +164,9 @@ jobs:
               image_project: $image_project,
               image_name: $image_name,
               image_family: $image_family,
-              source_image_project: $base_image_project,
-              source_image_family: $base_image_family,
+              source_image_project: $source_image_project,
+              source_image_family: $source_image_family,
+              source_image_name: $source_image_name,
               generated_at: $generated_at
             }' > "$out"
           jq -e '.image_project | length > 0' "$out" >/dev/null

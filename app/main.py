@@ -1270,6 +1270,14 @@ async def register_agent(request: AgentRegistrationRequest):
                         request.attestation, node_size=node_size
                     )
                     rtmrs = extract_rtmrs(request.attestation)
+                    dedupe_unverified = (
+                        existing
+                        or agent_store.get_recent_unverified_by_mrtd_datacenter(
+                            mrtd=untrusted.mrtd,
+                            datacenter=datacenter,
+                            within=timedelta(hours=6),
+                        )
+                    )
                     agent_kwargs = {
                         "vm_name": vm_name,
                         "attestation": request.attestation,
@@ -1285,8 +1293,8 @@ async def register_agent(request: AgentRegistrationRequest):
                         "tcb_status": untrusted.tcb_status,
                         "tcb_verified_at": datetime.now(timezone.utc),
                     }
-                    if existing:
-                        agent_kwargs["agent_id"] = existing.agent_id
+                    if dedupe_unverified:
+                        agent_kwargs["agent_id"] = dedupe_unverified.agent_id
                     agent_store.register(Agent(**agent_kwargs))
                     logger.warning(
                         f"Recorded untrusted agent baseline: vm={vm_name} mrtd={untrusted.mrtd[:16]}..."

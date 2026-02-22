@@ -139,11 +139,13 @@ def _machine_types_for_size(node_size: str) -> list[str]:
 
 
 def _image_project() -> str:
-    return (os.environ.get("EE_GCP_IMAGE_PROJECT") or "ubuntu-os-cloud").strip()
+    return (
+        os.environ.get("EE_GCP_IMAGE_PROJECT") or os.environ.get("GCP_PROJECT_ID") or ""
+    ).strip()
 
 
 def _image_family() -> str:
-    return (os.environ.get("EE_GCP_IMAGE_FAMILY") or "ubuntu-2404-lts-amd64").strip()
+    return (os.environ.get("EE_GCP_IMAGE_FAMILY") or "easyenclave-agent").strip()
 
 
 def _image_name() -> str:
@@ -174,9 +176,26 @@ def _boot_source_image_params() -> dict[str, str]:
     """
     name = _image_name()
     project = _image_project()
+    if not project:
+        raise GCPProvisionError(
+            "EE_GCP_IMAGE_PROJECT (or GCP_PROJECT_ID) must be set for GCP capacity image source"
+        )
     if name:
         return {"sourceImage": f"projects/{project}/global/images/{name}"}
     return {"sourceImage": f"projects/{project}/global/images/family/{_image_family()}"}
+
+
+def _is_stock_ubuntu_source(*, image_project: str, image_family: str, image_name: str) -> bool:
+    project = (image_project or "").strip().lower()
+    family = (image_family or "").strip().lower()
+    name = (image_name or "").strip().lower()
+    if project == "ubuntu-os-cloud":
+        return True
+    if family.startswith("ubuntu-"):
+        return True
+    if name.startswith("ubuntu-"):
+        return True
+    return False
 
 
 def _launcher_url() -> str:
@@ -386,6 +405,19 @@ async def create_tdx_instance_for_order(
 
     machine_types = _machine_types_for_size(node_size)
     instance_name = _sanitize_name(f"ee-{node_size}-" + order_id[:8] + "-" + _rand_suffix())
+    image_project = _image_project()
+    image_family = _image_family()
+    image_name = _image_name()
+    env_name = (os.environ.get("EASYENCLAVE_ENV") or "").strip().lower()
+    if env_name == "production" and _is_stock_ubuntu_source(
+        image_project=image_project,
+        image_family=image_family,
+        image_name=image_name,
+    ):
+        raise GCPProvisionError(
+            "Refusing to provision production GCP capacity from stock Ubuntu image source. "
+            "Set EE_GCP_IMAGE_PROJECT and EE_GCP_IMAGE_NAME/EE_GCP_IMAGE_FAMILY to an EasyEnclave image."
+        )
 
     launcher_config: dict[str, Any] = {
         "mode": "agent",
