@@ -68,9 +68,9 @@ jobs:
       RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
       SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
       TARGET_PROJECT: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
-      SOURCE_IMAGE_PROJECT: ${{ vars.EE_GCP_SOURCE_IMAGE_PROJECT || secrets.PRODUCTION_GCP_PROJECT_ID }}
-      SOURCE_IMAGE_FAMILY: ${{ vars.EE_GCP_SOURCE_IMAGE_FAMILY || 'easyenclave-agent' }}
-      SOURCE_IMAGE_NAME: ${{ vars.EE_GCP_SOURCE_IMAGE_NAME || '' }}
+      SOURCE_IMAGE_PROJECT: ${{ vars.EE_GCP_CONFIDENTIAL_BASE_IMAGE_PROJECT || '' }}
+      SOURCE_IMAGE_FAMILY: ${{ vars.EE_GCP_CONFIDENTIAL_BASE_IMAGE_FAMILY || '' }}
+      SOURCE_IMAGE_NAME: ${{ vars.EE_GCP_CONFIDENTIAL_BASE_IMAGE_NAME || '' }}
     steps:
       - name: Validate required config
         shell: bash
@@ -116,25 +116,18 @@ jobs:
           family_name="easyenclave-agent-${safe_tag}"
           source_name="${SOURCE_IMAGE_NAME:-}"
           source_family="${SOURCE_IMAGE_FAMILY:-}"
-          fallback_family="easyenclave-agent"
 
           if [ -n "$source_name" ]; then
             if ! gcloud compute images describe "$source_name" --project "$SOURCE_IMAGE_PROJECT" >/dev/null 2>&1; then
-              echo "::warning::Configured source image '${source_name}' not found in project '${SOURCE_IMAGE_PROJECT}'. Falling back to family selection."
-              source_name=""
+              echo "::error::Configured source image '${source_name}' not found in project '${SOURCE_IMAGE_PROJECT}'."
+              exit 1
             fi
           fi
 
           if [ -z "$source_name" ]; then
             if ! gcloud compute images describe-from-family "$source_family" --project "$SOURCE_IMAGE_PROJECT" >/dev/null 2>&1; then
-              echo "::warning::Configured source image family '${source_family}' not found in project '${SOURCE_IMAGE_PROJECT}'."
-              if gcloud compute images describe-from-family "$fallback_family" --project "$SOURCE_IMAGE_PROJECT" >/dev/null 2>&1; then
-                source_family="$fallback_family"
-                echo "::notice::Falling back to source image family '${source_family}'."
-              else
-                echo "::error::No usable source image family found in project '${SOURCE_IMAGE_PROJECT}' (checked '${SOURCE_IMAGE_FAMILY}' and '${fallback_family}')."
-                exit 1
-              fi
+              echo "::error::Configured source image family '${source_family}' not found in project '${SOURCE_IMAGE_PROJECT}'."
+              exit 1
             fi
           fi
 

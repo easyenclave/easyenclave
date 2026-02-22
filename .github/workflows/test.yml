@@ -159,9 +159,9 @@ jobs:
     env:
       GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
-      SOURCE_IMAGE_PROJECT: ${{ secrets.STAGING_GCP_PROJECT_ID }}
-      SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_SOURCE_IMAGE_NAME || '' }}
-      SOURCE_IMAGE_FAMILY: easyenclave-agent-main
+      SOURCE_IMAGE_PROJECT: ${{ vars.STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_PROJECT || '' }}
+      SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_NAME || '' }}
+      SOURCE_IMAGE_FAMILY: ${{ vars.STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_FAMILY || '' }}
       SOURCE_SHA: ${{ github.sha }}
     steps:
       - name: Validate staging GCP image config
@@ -174,6 +174,17 @@ jobs:
               exit 1
             fi
           done
+          if [ -z "${SOURCE_IMAGE_NAME:-}" ] && [ -z "${SOURCE_IMAGE_FAMILY:-}" ]; then
+            echo "::error::Set STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_NAME or STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_FAMILY."
+            exit 1
+          fi
+          src_project_lc="$(echo "${SOURCE_IMAGE_PROJECT}" | tr '[:upper:]' '[:lower:]')"
+          src_family_lc="$(echo "${SOURCE_IMAGE_FAMILY:-}" | tr '[:upper:]' '[:lower:]')"
+          src_name_lc="$(echo "${SOURCE_IMAGE_NAME:-}" | tr '[:upper:]' '[:lower:]')"
+          if [ "$src_project_lc" = "ubuntu-os-cloud" ] || [[ "$src_family_lc" == ubuntu-* ]] || [[ "$src_name_lc" == ubuntu-* ]]; then
+            echo "::error::Refusing stock Ubuntu base image. Configure a known confidential base image."
+            exit 1
+          fi
 
       - name: Authenticate to GCP (staging)
         uses: google-github-actions/auth@v2
@@ -199,18 +210,27 @@ jobs:
           configured_name="${SOURCE_IMAGE_NAME:-}"
           configured_family="${SOURCE_IMAGE_FAMILY:-}"
 
-          if [ -n "${configured_name}" ] && gcloud compute images describe "${configured_name}" --project "${src_project}" >/dev/null 2>&1; then
-            src_selector="name"
-            src_value="${configured_name}"
+          if [ -n "${configured_name}" ]; then
+            if gcloud compute images describe "${configured_name}" --project "${src_project}" >/dev/null 2>&1; then
+              src_selector="name"
+              src_value="${configured_name}"
+            else
+              echo "::error::Configured base image '${configured_name}' not found in project '${src_project}'."
+              exit 1
+            fi
           fi
-          if [ -z "${src_selector}" ] && [ -n "${configured_family}" ] && gcloud compute images describe-from-family "${configured_family}" --project "${src_project}" >/dev/null 2>&1; then
-            src_selector="family"
-            src_value="${configured_family}"
+          if [ -z "${src_selector}" ] && [ -n "${configured_family}" ]; then
+            if gcloud compute images describe-from-family "${configured_family}" --project "${src_project}" >/dev/null 2>&1; then
+              src_selector="family"
+              src_value="${configured_family}"
+            else
+              echo "::error::Configured base image family '${configured_family}' not found in project '${src_project}'."
+              exit 1
+            fi
           fi
 
           if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
-            echo "::error::No usable source image found for staging image build in CI."
-            echo "::error::Checked source project '${SOURCE_IMAGE_PROJECT}' for name='${configured_name}' and family='${configured_family}'."
+            echo "::error::No usable confidential base image selector resolved."
             exit 1
           fi
 
