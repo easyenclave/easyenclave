@@ -50,7 +50,7 @@ if [ -n "${BUILD_MACHINE_TYPE:-}" ] && [[ "${BUILD_MACHINE_TYPE}" == *,* ]]; the
 fi
 
 BUILD_ZONE="$(trim "${BUILD_ZONE:-us-central1-a}")"
-BUILD_MACHINE_TYPE="$(trim "${BUILD_MACHINE_TYPE:-c3-standard-4}")"
+BUILD_MACHINE_TYPE="$(trim "${BUILD_MACHINE_TYPE:-e2-standard-4}")"
 BUILD_BOOT_DISK_GB="$(trim "${BUILD_BOOT_DISK_GB:-200}")"
 BUILD_TIMEOUT_SECONDS="$(trim "${BUILD_TIMEOUT_SECONDS:-900}")"
 TARGET_IMAGE_FAMILY="$(trim "${TARGET_IMAGE_FAMILY:-}")"
