@@ -163,7 +163,12 @@ jobs:
       SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_NAME || '' }}
       SOURCE_IMAGE_FAMILY: ${{ vars.STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_FAMILY || '' }}
       SOURCE_SHA: ${{ github.sha }}
+      BUILD_ZONE: ${{ vars.STAGING_GCP_IMAGE_BUILD_ZONE || 'us-central1-a' }}
+      BUILD_MACHINE_TYPE: ${{ vars.STAGING_GCP_IMAGE_BUILD_MACHINE_TYPE || 'c3-standard-4' }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Validate staging GCP image config
         shell: bash
         run: |
@@ -178,13 +183,6 @@ jobs:
             echo "::error::Set STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_NAME or STAGING_GCP_CONFIDENTIAL_BASE_IMAGE_FAMILY."
             exit 1
           fi
-          src_project_lc="$(echo "${SOURCE_IMAGE_PROJECT}" | tr '[:upper:]' '[:lower:]')"
-          src_family_lc="$(echo "${SOURCE_IMAGE_FAMILY:-}" | tr '[:upper:]' '[:lower:]')"
-          src_name_lc="$(echo "${SOURCE_IMAGE_NAME:-}" | tr '[:upper:]' '[:lower:]')"
-          if [ "$src_project_lc" = "ubuntu-os-cloud" ] || [[ "$src_family_lc" == ubuntu-* ]] || [[ "$src_name_lc" == ubuntu-* ]]; then
-            echo "::error::Refusing stock Ubuntu base image. Configure a known confidential base image."
-            exit 1
-          fi
 
       - name: Authenticate to GCP (staging)
         uses: google-github-actions/auth@v2
@@ -196,59 +194,15 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Create or reuse staging commit image
+      - name: Bake staging commit image from configured base
         shell: bash
         run: |
           set -euo pipefail
           sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
-          image_name="easyenclave-agent-main-${sha12}"
-          image_family="easyenclave-agent-main"
-
-          src_selector=""
-          src_project="${SOURCE_IMAGE_PROJECT}"
-          src_value=""
-          configured_name="${SOURCE_IMAGE_NAME:-}"
-          configured_family="${SOURCE_IMAGE_FAMILY:-}"
-
-          if [ -n "${configured_name}" ]; then
-            if gcloud compute images describe "${configured_name}" --project "${src_project}" >/dev/null 2>&1; then
-              src_selector="name"
-              src_value="${configured_name}"
-            else
-              echo "::error::Configured base image '${configured_name}' not found in project '${src_project}'."
-              exit 1
-            fi
-          fi
-          if [ -z "${src_selector}" ] && [ -n "${configured_family}" ]; then
-            if gcloud compute images describe-from-family "${configured_family}" --project "${src_project}" >/dev/null 2>&1; then
-              src_selector="family"
-              src_value="${configured_family}"
-            else
-              echo "::error::Configured base image family '${configured_family}' not found in project '${src_project}'."
-              exit 1
-            fi
-          fi
-
-          if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
-            echo "::error::No usable confidential base image selector resolved."
-            exit 1
-          fi
-
-          if gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
-            echo "Staging image already exists: ${GCP_PROJECT_ID}/${image_name}"
-            exit 0
-          fi
-
-          source_args=(--source-image-project "${src_project}")
-          if [ "${src_selector}" = "name" ]; then
-            source_args+=(--source-image "${src_value}")
-          else
-            source_args+=(--source-image-family "${src_value}")
-          fi
-
-          gcloud compute images create "${image_name}" \
-            --project "${GCP_PROJECT_ID}" \
-            "${source_args[@]}" \
-            --family "${image_family}" \
-            --labels "easyenclave=managed,easyenclave_env=staging,gitsha=${sha12},ee_git_sha=${sha12}" \
-            --description "EasyEnclave staging commit ${SOURCE_SHA}"
+          TARGET_IMAGE_NAME="easyenclave-agent-main-${sha12}"
+          TARGET_IMAGE_FAMILY="easyenclave-agent-main"
+          TARGET_IMAGE_DESCRIPTION="EasyEnclave staging commit ${SOURCE_SHA}"
+          TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=staging,gitsha=${sha12},ee_git_sha=${sha12}"
+          BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
+          export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE
+          ./scripts/gcp_bake_image.sh
