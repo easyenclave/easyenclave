@@ -145,10 +145,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-launcher_b64="$(base64 -w0 infra/launcher/launcher.py)"
+launcher_b64="$(base64 infra/launcher/launcher.py)"
 admin_b64=""
 if [ -f "infra/launcher/admin.html" ]; then
-  admin_b64="$(base64 -w0 infra/launcher/admin.html)"
+  admin_b64="$(base64 infra/launcher/admin.html)"
 fi
 
 cat > "${startup_script_file}" <<EOF
@@ -169,8 +169,26 @@ apt-get install -y --no-install-recommends \
   jq \
   python3 \
   python3-requests \
-  python3-psutil \
-  docker.io \
+  python3-psutil
+
+docker_codename="\$(. /etc/os-release && echo "\${VERSION_CODENAME:-}")"
+if [ -z "\${docker_codename}" ]; then
+  echo "__EE_BAKE_FAIL__:missing VERSION_CODENAME for Docker repo setup"
+  exit 1
+fi
+docker_arch="\$(dpkg --print-architecture)"
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod 0644 /etc/apt/keyrings/docker.gpg
+cat > /etc/apt/sources.list.d/docker.list <<DOCKERREPO
+deb [arch=\${docker_arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \${docker_codename} stable
+DOCKERREPO
+apt-get update
+apt-get install -y --no-install-recommends \
+  containerd.io \
+  docker-buildx-plugin \
+  docker-ce \
+  docker-ce-cli \
   docker-compose-plugin
 
 install -d -m 0755 /opt/launcher /home/tdx /etc/easyenclave /etc/apt/keyrings
