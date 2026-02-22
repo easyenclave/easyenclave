@@ -413,16 +413,10 @@ jobs:
             src_selector="family"
             src_value="easyenclave-agent"
           fi
-          if [ -z "${src_selector}" ] && gcloud compute images describe-from-family "ubuntu-2404-lts-amd64" --project "ubuntu-os-cloud" >/dev/null 2>&1; then
-            src_selector="family"
-            src_project="ubuntu-os-cloud"
-            src_value="ubuntu-2404-lts-amd64"
-            echo "::warning::Using stock Ubuntu family as staging bootstrap source because no EasyEnclave source image is currently available."
-          fi
-
           if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
             echo "::error::No usable source image found for staging image build."
-            echo "::error::Checked configured source name/family and fallback families in '${SOURCE_IMAGE_PROJECT}' and '${GCP_PROJECT_ID}'."
+            echo "::error::Checked configured source name/family and EasyEnclave families in '${SOURCE_IMAGE_PROJECT}' and '${GCP_PROJECT_ID}'."
+            echo "::error::Set STAGING_GCP_SOURCE_IMAGE_NAME or STAGING_GCP_SOURCE_IMAGE_FAMILY (or EE_* equivalents) to an EasyEnclave image."
             exit 1
           fi
 
