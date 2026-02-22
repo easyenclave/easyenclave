@@ -3,7 +3,7 @@
 # Canonical staging network pipeline:
 # 1) Trigger on push to main (in parallel with CI).
 # 2) Wait for CI success on the same commit SHA.
-# 3) Build/pin a staging GCP image for that exact commit.
+# 3) CI builds/pins a staging GCP image for that exact commit.
 # 4) Bootstrap staging control plane and run builtin deploy examples in parallel (baremetal + gcp).
 #
 # Staging profile is intentionally no-cost:
@@ -324,48 +324,28 @@ jobs:
               --quiet
           done
 
-  build-staging-gcp-image:
-    name: Build staging GCP image for commit
-    needs: [resolve]
+  verify-staging-gcp-image:
+    name: Verify CI-built staging GCP image exists
+    needs: [resolve, wait-ci]
     if: needs.resolve.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    outputs:
-      image_project: ${{ steps.image.outputs.image_project }}
-      image_name: ${{ steps.image.outputs.image_name }}
-      image_family: ${{ steps.image.outputs.image_family }}
     env:
       GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
-      # Deterministic staging source selection (no cross-env fallback).
-      SOURCE_IMAGE_PROJECT: ${{ vars.STAGING_GCP_SOURCE_IMAGE_PROJECT || secrets.STAGING_GCP_PROJECT_ID }}
-      SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_SOURCE_IMAGE_NAME || '' }}
-      SOURCE_IMAGE_FAMILY: ${{ vars.STAGING_GCP_SOURCE_IMAGE_FAMILY || 'easyenclave-agent-main' }}
-      SOURCE_REF: ${{ needs.resolve.outputs.source_sha }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
     steps:
-      - name: Validate staging GCP image config
+      - name: Validate staging GCP config
         shell: bash
         run: |
           set -euo pipefail
-          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_IMAGE_PROJECT SOURCE_REF; do
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_SHA; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required value: $v"
               exit 1
             fi
           done
-
-      - name: Checkout source ref
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ env.SOURCE_REF }}
-
-      - name: Resolve source sha
-        id: sha
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Authenticate to GCP (staging)
         uses: google-github-actions/auth@v2
@@ -377,73 +357,18 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Create or reuse staging commit image
-        id: image
+      - name: Require CI-built image for rollout commit
         shell: bash
-        env:
-          SOURCE_SHA: ${{ steps.sha.outputs.source_sha }}
         run: |
           set -euo pipefail
           sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
           image_name="easyenclave-agent-main-${sha12}"
-          image_family="easyenclave-agent-main"
-
-          src_selector=""
-          src_project="${SOURCE_IMAGE_PROJECT}"
-          src_value=""
-          configured_name="${SOURCE_IMAGE_NAME:-}"
-          configured_family="${SOURCE_IMAGE_FAMILY:-}"
-
-          # Preferred deterministic source (configured exact name / family).
-          if [ -n "${configured_name}" ] && gcloud compute images describe "${configured_name}" --project "${src_project}" >/dev/null 2>&1; then
-            src_selector="name"
-            src_value="${configured_name}"
-          fi
-          if [ -z "${src_selector}" ] && [ -n "${configured_family}" ] && gcloud compute images describe-from-family "${configured_family}" --project "${src_project}" >/dev/null 2>&1; then
-            src_selector="family"
-            src_value="${configured_family}"
-          fi
-
-          # Staging fallback chain to keep main commits moving.
-          if [ -z "${src_selector}" ] && gcloud compute images describe-from-family "${image_family}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
-            src_selector="family"
-            src_project="${GCP_PROJECT_ID}"
-            src_value="${image_family}"
-          fi
-          if [ -z "${src_selector}" ] && gcloud compute images describe-from-family "easyenclave-agent" --project "${src_project}" >/dev/null 2>&1; then
-            src_selector="family"
-            src_value="easyenclave-agent"
-          fi
-          if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
-            echo "::error::No usable source image found for staging image build."
-            echo "::error::Checked configured source name/family and EasyEnclave families in '${SOURCE_IMAGE_PROJECT}' and '${GCP_PROJECT_ID}'."
-            echo "::error::Set STAGING_GCP_SOURCE_IMAGE_NAME or STAGING_GCP_SOURCE_IMAGE_FAMILY (or EE_* equivalents) to an EasyEnclave image."
+          if ! gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::error::Missing CI-built staging image '${GCP_PROJECT_ID}/${image_name}'."
+            echo "::error::CI must create this image before GCP deploy can run."
             exit 1
           fi
-
-          if gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
-            echo "Staging image already exists: ${GCP_PROJECT_ID}/${image_name}"
-          else
-            source_args=(--source-image-project "${src_project}")
-            if [ "${src_selector}" = "name" ]; then
-              source_args+=(--source-image "${src_value}")
-            else
-              source_args+=(--source-image-family "${src_value}")
-            fi
-
-            gcloud compute images create "${image_name}" \
-              --project "${GCP_PROJECT_ID}" \
-              "${source_args[@]}" \
-              --family "${image_family}" \
-              --labels "easyenclave=managed,easyenclave_env=staging,gitsha=${sha12},ee_git_sha=${sha12}" \
-              --description "EasyEnclave staging commit ${SOURCE_SHA}"
-          fi
-
-          {
-            echo "image_project=${GCP_PROJECT_ID}"
-            echo "image_name=${image_name}"
-            echo "image_family=${image_family}"
-          } >> "$GITHUB_OUTPUT"
+          echo "Found CI-built staging image: ${GCP_PROJECT_ID}/${image_name}"
 
   bootstrap:
     name: Bootstrap staging control plane
@@ -479,11 +404,9 @@ jobs:
       billing_capacity_request_dev_simulation: ${{ 'true' }}
       billing_platform_account_id: ''
       billing_contributor_pool_bps: '0'
-      # Deterministic CP-native provisioning selector for staging:
-      # build-staging-gcp-image updates this family before deploy-gcp runs.
-      ee_gcp_image_project: ${{ vars.STAGING_GCP_IMAGE_PROJECT || '' }}
+      ee_gcp_image_project: ''
       ee_gcp_image_name: ''
-      ee_gcp_image_family: ${{ vars.STAGING_GCP_IMAGE_FAMILY || 'easyenclave-agent-main' }}
+      ee_gcp_image_family: easyenclave-agent-main
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
@@ -499,7 +422,7 @@ jobs:
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
-    needs: [resolve, bootstrap, build-staging-gcp-image]
+    needs: [resolve, bootstrap, verify-staging-gcp-image]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:

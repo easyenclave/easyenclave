@@ -1,8 +1,9 @@
 # CI for EasyEnclave
 #
-# This workflow is intentionally non-mutating:
+# This workflow is intentionally non-network-mutating:
 # - lint + tests
-# - image build (+ push/sign on main)
+# - control-plane image build (+ push/sign on main)
+# - staging GCP boot image build on main (for rollout consumption)
 #
 # Network/bootstrap mutations live in dedicated rollout workflows.
 
@@ -148,3 +149,86 @@ jobs:
             -f visibility=public || echo "::warning::Could not set package visibility to public"
         env:
           GH_TOKEN: ${{ github.token }}
+
+  build-staging-gcp-image:
+    name: Build staging GCP image for commit
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
+      SOURCE_IMAGE_PROJECT: ${{ secrets.STAGING_GCP_PROJECT_ID }}
+      SOURCE_IMAGE_NAME: ${{ vars.STAGING_GCP_SOURCE_IMAGE_NAME || '' }}
+      SOURCE_IMAGE_FAMILY: easyenclave-agent-main
+      SOURCE_SHA: ${{ github.sha }}
+    steps:
+      - name: Validate staging GCP image config
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_IMAGE_PROJECT SOURCE_SHA; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required value: $v"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to GCP (staging)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud (staging)
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Create or reuse staging commit image
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
+          image_name="easyenclave-agent-main-${sha12}"
+          image_family="easyenclave-agent-main"
+
+          src_selector=""
+          src_project="${SOURCE_IMAGE_PROJECT}"
+          src_value=""
+          configured_name="${SOURCE_IMAGE_NAME:-}"
+          configured_family="${SOURCE_IMAGE_FAMILY:-}"
+
+          if [ -n "${configured_name}" ] && gcloud compute images describe "${configured_name}" --project "${src_project}" >/dev/null 2>&1; then
+            src_selector="name"
+            src_value="${configured_name}"
+          fi
+          if [ -z "${src_selector}" ] && [ -n "${configured_family}" ] && gcloud compute images describe-from-family "${configured_family}" --project "${src_project}" >/dev/null 2>&1; then
+            src_selector="family"
+            src_value="${configured_family}"
+          fi
+
+          if [ -z "${src_selector}" ] || [ -z "${src_value}" ]; then
+            echo "::error::No usable source image found for staging image build in CI."
+            echo "::error::Checked source project '${SOURCE_IMAGE_PROJECT}' for name='${configured_name}' and family='${configured_family}'."
+            exit 1
+          fi
+
+          if gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+            echo "Staging image already exists: ${GCP_PROJECT_ID}/${image_name}"
+            exit 0
+          fi
+
+          source_args=(--source-image-project "${src_project}")
+          if [ "${src_selector}" = "name" ]; then
+            source_args+=(--source-image "${src_value}")
+          else
+            source_args+=(--source-image-family "${src_value}")
+          fi
+
+          gcloud compute images create "${image_name}" \
+            --project "${GCP_PROJECT_ID}" \
+            "${source_args[@]}" \
+            --family "${image_family}" \
+            --labels "easyenclave=managed,easyenclave_env=staging,gitsha=${sha12},ee_git_sha=${sha12}" \
+            --description "EasyEnclave staging commit ${SOURCE_SHA}"
