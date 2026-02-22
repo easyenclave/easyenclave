@@ -12,24 +12,8 @@
 name: Production Rollout
 
 on:
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Release tag to roll out (must have trust bundle asset)"
-        required: true
-        default: ""
-      cp_url:
-        description: "Production control plane URL"
-        required: false
-        default: ""
-      control_plane_image:
-        description: "Control plane image override"
-        required: false
-        default: ""
-      expected_git_sha:
-        description: "Expected git SHA in /health (optional; default = release commit)"
-        required: false
-        default: ""
+  release:
+    types: [published]
 
 concurrency:
   group: easyenclave-production-rollout
@@ -55,8 +39,7 @@ jobs:
         id: resolve
         shell: bash
         env:
-          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
-          INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
           DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.PRODUCTION_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
@@ -82,9 +65,9 @@ jobs:
               | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
           }
 
-          release_tag="${INPUT_RELEASE_TAG:-}"
+          release_tag="${EVENT_RELEASE_TAG:-}"
           if [ -z "$release_tag" ]; then
-            echo "::error::release_tag is required for production rollout."
+            echo "::error::release.tag_name is required for production rollout."
             exit 1
           fi
 
@@ -102,10 +85,7 @@ jobs:
             exit 1
           fi
           network_name="${network_name:0:48}"
-          cp_url="${INPUT_CP_URL:-}"
-          if [ -z "$cp_url" ]; then
-            cp_url="${DEFAULT_CP_URL:-}"
-          fi
+          cp_url="${DEFAULT_CP_URL:-}"
           if [ -z "$cp_url" ]; then
             cp_url="https://app.${domain}"
           fi
@@ -139,12 +119,10 @@ jobs:
       - name: Resolve release commit sha
         id: sha
         shell: bash
-        env:
-          INPUT_EXPECTED_SHA: ${{ github.event.inputs.expected_git_sha || '' }}
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse HEAD)"
-          expected_sha="${INPUT_EXPECTED_SHA:-$source_sha}"
+          expected_sha="${source_sha}"
           {
             echo "source_sha=${source_sha}"
             echo "cp_expected_git_sha=${expected_sha}"
@@ -172,16 +150,25 @@ jobs:
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
-
-          asset_url="$(echo "$release_json" | jq -r --arg n "trusted_values.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.json") | .url' | head -n1)"
-          fi
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            # Backward compatibility for earlier release workflow naming.
-            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.release.json") | .url' | head -n1)"
-          fi
+          asset_url=""
+          for attempt in $(seq 1 60); do
+            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+            asset_url="$(echo "$release_json" | jq -r --arg n "trusted_values.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.json") | .url' | head -n1)"
+            fi
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              # Backward compatibility for earlier release workflow naming.
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.release.json") | .url' | head -n1)"
+            fi
+            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 60 ]; then
+              echo "Trust bundle asset not available yet; waiting (${attempt}/60)..."
+              sleep 15
+            fi
+          done
           if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
             echo "::error::Release ${RELEASE_TAG} missing trust bundle asset (expected trusted_values.${RELEASE_TAG}.json or trusted_values.json)."
             echo "::error::Run .github/workflows/release-trust-bundle.yml for this tag first."
@@ -234,16 +221,25 @@ jobs:
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
-
-          asset_url="$(echo "$release_json" | jq -r --arg n "gcp-image.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.json") | .url' | head -n1)"
-          fi
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            # Backward compatibility for earlier release workflow naming.
-            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.release.json") | .url' | head -n1)"
-          fi
+          asset_url=""
+          for attempt in $(seq 1 60); do
+            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+            asset_url="$(echo "$release_json" | jq -r --arg n "gcp-image.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.json") | .url' | head -n1)"
+            fi
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              # Backward compatibility for earlier release workflow naming.
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.release.json") | .url' | head -n1)"
+            fi
+            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 60 ]; then
+              echo "GCP image descriptor not available yet; waiting (${attempt}/60)..."
+              sleep 15
+            fi
+          done
           if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
             echo "::error::Release ${RELEASE_TAG} missing GCP image asset (expected gcp-image.${RELEASE_TAG}.json or gcp-image.json)."
             echo "::error::Run .github/workflows/release-gcp-image.yml for this tag first."
@@ -292,12 +288,21 @@ jobs:
         run: |
           set -euo pipefail
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
-
-          asset_url="$(echo "$release_json" | jq -r --arg n "example-images.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "example-images.json") | .url' | head -n1)"
-          fi
+          asset_url=""
+          for attempt in $(seq 1 60); do
+            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+            asset_url="$(echo "$release_json" | jq -r --arg n "example-images.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "example-images.json") | .url' | head -n1)"
+            fi
+            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 60 ]; then
+              echo "Example image descriptor not available yet; waiting (${attempt}/60)..."
+              sleep 15
+            fi
+          done
           if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
             echo "::error::Release ${RELEASE_TAG} missing example image asset (expected example-images.${RELEASE_TAG}.json or example-images.json)."
             echo "::error::Run .github/workflows/release-example-images.yml for this tag first."
@@ -333,7 +338,7 @@ jobs:
     secrets: inherit
     with:
       source_ref: ${{ needs.resolve.outputs.source_ref }}
-      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
+      control_plane_image: ${{ format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny,llm
       # Keep at least one warm tiny agent so production cannot come up with zero
       # deployable capacity when builtin example jobs are skipped.
