@@ -153,11 +153,11 @@ def _image_name() -> str:
 
 
 def _boot_disk_size_gb() -> int:
-    raw = (os.environ.get("EE_GCP_BOOT_DISK_GB") or "80").strip()
+    raw = (os.environ.get("EE_GCP_BOOT_DISK_GB") or "200").strip()
     try:
         return max(20, int(raw))
     except ValueError:
-        return 80
+        return 200
 
 
 def _boot_disk_type() -> str:
