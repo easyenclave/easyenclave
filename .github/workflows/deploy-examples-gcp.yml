@@ -225,12 +225,10 @@ jobs:
               "$CP_URL/api/v1/accounts/${account_id}" || echo 000)"
             if [ "$probe_code" -lt 400 ]; then
               probe_valid=true
-            elif [ "$env_name" != "staging" ]; then
-              detail="$(jq -r '.detail // empty' /tmp/hello-billing-probe.json 2>/dev/null || true)"
-              echo "::error::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${detail:-$(cat /tmp/hello-billing-probe.json 2>/dev/null || true)}"
-              exit 1
             else
-              echo "::warning::Staging billing credentials are invalid (HTTP $probe_code); creating a fresh run-scoped deployer account."
+              detail="$(jq -r '.detail // empty' /tmp/hello-billing-probe.json 2>/dev/null || true)"
+              echo "::warning::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${detail:-$(cat /tmp/hello-billing-probe.json 2>/dev/null || true)}"
+              echo "::warning::Creating a fresh run-scoped deployer account for ${env_name} hello deploy."
             fi
             rm -f /tmp/hello-billing-probe.json
           fi
@@ -480,7 +478,23 @@ jobs:
           account_id="$(echo "${BILLING_ACCOUNT_ID:-}" | xargs)"
           api_key="$(echo "${BILLING_API_KEY:-}" | xargs)"
 
-          if [ -z "$account_id" ] || [ -z "$api_key" ]; then
+          probe_valid=false
+          if [ -n "$account_id" ] && [ -n "$api_key" ]; then
+            probe_code="$(curl -sS -o /tmp/llm-billing-probe.json -w "%{http_code}" \
+              -H "Authorization: Bearer ${api_key}" \
+              -H "Accept: application/json" \
+              "$CP_URL/api/v1/accounts/${account_id}" || echo 000)"
+            if [ "$probe_code" -lt 400 ]; then
+              probe_valid=true
+            else
+              detail="$(jq -r '.detail // empty' /tmp/llm-billing-probe.json 2>/dev/null || true)"
+              echo "::warning::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${detail:-$(cat /tmp/llm-billing-probe.json 2>/dev/null || true)}"
+              echo "::warning::Creating a fresh run-scoped deployer account for ${env_name} llm deploy."
+            fi
+            rm -f /tmp/llm-billing-probe.json
+          fi
+
+          if [ "$probe_valid" != "true" ]; then
             token="$(echo "${CP_ADMIN_TOKEN:-}" | xargs)"
             if [ -z "$token" ] && [ -n "${CP_ADMIN_PASSWORD:-}" ]; then
               payload="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
@@ -515,17 +529,6 @@ jobs:
               echo "::error::Account create response missing account_id/api_key."
               exit 1
             fi
-          else
-            probe_code="$(curl -sS -o /tmp/llm-billing-probe.json -w "%{http_code}" \
-              -H "Authorization: Bearer ${api_key}" \
-              -H "Accept: application/json" \
-              "$CP_URL/api/v1/accounts/${account_id}" || echo 000)"
-            if [ "$probe_code" -ge 400 ]; then
-              detail="$(jq -r '.detail // empty' /tmp/llm-billing-probe.json 2>/dev/null || true)"
-              echo "::error::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${detail:-$(cat /tmp/llm-billing-probe.json 2>/dev/null || true)}"
-              exit 1
-            fi
-            rm -f /tmp/llm-billing-probe.json
           fi
 
           echo "::add-mask::$api_key"
