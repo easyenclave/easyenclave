@@ -107,6 +107,12 @@ jobs:
           set -euo pipefail
           safe_tag="$(echo "$RELEASE_TAG" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
           [ -n "$safe_tag" ] || safe_tag="release"
+          # GCP image names max out at 63 chars. Keep a deterministic tag component
+          # that always fits and preserves uniqueness for long release tags.
+          tag_hash="$(printf '%s' "$safe_tag" | sha256sum | awk '{print $1}' | cut -c1-8)"
+          if [ "${#safe_tag}" -gt 32 ]; then
+            safe_tag="${safe_tag:0:23}-${tag_hash}"
+          fi
           sha12="$(echo "$SOURCE_SHA" | cut -c1-12)"
           image_name="easyenclave-agent-${safe_tag}-${sha12}"
           family_name="easyenclave-agent-${safe_tag}"
