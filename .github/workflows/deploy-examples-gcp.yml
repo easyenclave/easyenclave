@@ -369,6 +369,9 @@ jobs:
 
   deploy-private-llm-gcp:
     name: Deploy Private LLM (gcp)
+    # Production quota is tight in some projects (SSD_TOTAL_GB). Run after hello
+    # teardown to avoid parallel GCP capacity spikes.
+    needs: [deploy-hello-tdx-gcp]
     if: ${{ (inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' }}
     runs-on: ubuntu-latest
     steps:
