@@ -321,14 +321,24 @@ def _cloud_init_user_data(*, launcher_config: dict[str, Any]) -> str:
     launcher_url = _launcher_url()
     return f"""#cloud-config
 package_update: true
+# Explicitly grow the root partition/filesystem on first boot when
+# diskSizeGb > source image size.
+growpart:
+  mode: auto
+  devices: ["/"]
+  ignore_growroot_disabled: false
+resize_rootfs: true
 packages:
   - ca-certificates
+  - cloud-guest-utils
   - curl
+  - e2fsprogs
   - gnupg
   - lsb-release
   - python3
   - python3-requests
   - python3-psutil
+  - xfsprogs
   - docker.io
   - docker-compose-plugin
 write_files:
@@ -362,6 +372,7 @@ runcmd:
   - mkdir -p /opt/launcher /home/tdx /etc/easyenclave
   - [bash, -lc, "curl -fsSL '{launcher_url}' -o /opt/launcher/launcher.py"]
   - chmod +x /opt/launcher/launcher.py
+  - [bash, -lc, "echo '[easyenclave] rootfs after cloud-init resize:' && df -h / || true"]
   - systemctl enable --now docker
   - [bash, -lc, "apt-get install -y docker-compose || true"]
   - [bash, -lc, "curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb && (dpkg -i /tmp/cloudflared.deb || apt-get install -f -y) && rm -f /tmp/cloudflared.deb || true"]

@@ -333,6 +333,8 @@ jobs:
       DEFAULT_GCP_TINY_CAPACITY_ENABLED: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && 'true') || 'false' }}
       DEFAULT_GCP_TINY_CAPACITY_COUNT: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && '1') || '0' }}
       DEFAULT_GCP_TINY_CAPACITY_DISPATCH: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && 'true') || 'false' }}
+      EE_GCP_BOOT_DISK_GB: ${{ vars.EE_GCP_BOOT_DISK_GB || vars.GCP_BOOT_DISK_GB || '200' }}
+      EE_GCP_BOOT_DISK_TYPE: ${{ vars.EE_GCP_BOOT_DISK_TYPE || vars.GCP_BOOT_DISK_TYPE || 'pd-balanced' }}
       EE_GCP_IMAGE_PROJECT: ${{ inputs.ee_gcp_image_project || '' }}
       EE_GCP_IMAGE_FAMILY: ${{ inputs.ee_gcp_image_family || '' }}
       EE_GCP_IMAGE_NAME: ${{ inputs.ee_gcp_image_name || '' }}
