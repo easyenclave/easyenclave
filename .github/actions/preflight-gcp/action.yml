@@ -132,7 +132,7 @@ runs:
           probe_resp="$(cat "$probe_body")"
           probe_detail="$(echo "$probe_resp" | jq -r '.detail // empty' 2>/dev/null || true)"
           echo "::error::Provided billing credentials are invalid for this control plane (HTTP $probe_code): ${probe_detail:-$probe_resp}"
-          echo "::error::Set CP_DEPLOYER_ACCOUNT_ID/CP_DEPLOYER_API_KEY for this exact control plane instance."
+          echo "::error::Provide billing_account_id/billing_api_key minted for this exact control plane instance."
           rm -f "$probe_body"
           exit 1
         fi
