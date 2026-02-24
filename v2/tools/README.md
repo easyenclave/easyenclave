@@ -1,4 +1,7 @@
 # v2 Tools
 
-Host bootstrap tooling should be implemented in `cmd/installer`.
-Avoid adding new ad-hoc shell/python scripts for platform control paths.
+Tooling policy for this rewrite:
+- Product control paths must be implemented as Go binaries.
+- Use `cmd/installer` for host bootstrap/service install logic.
+- Keep workflow glue minimal in GitHub Actions.
+- Do not add ad-hoc Python/Bash control scripts for core runtime behavior.
