@@ -65,7 +65,7 @@ Repository name can be `easyenclave-go` (or keep `easyenclave` and migrate in-pl
 
 - `cmd/control-plane/`
 - `cmd/agent/`
-- `cmd/eectl/` (replacement for CI scripts and operational helpers)
+- `cmd/installer/` (host installer for agent service bootstrap)
 - `internal/controlplane/`
 - `internal/agent/`
 - `internal/shared/` (strictly protocol primitives, no cyclic domain coupling)
@@ -233,18 +233,14 @@ API boundary additions:
 
 - Do not keep shell/python scripts as product control surface.
 - Replace with:
-  - `eectl` Go subcommands for reusable operations.
-  - Small inline workflow shell for trivial glue.
+  - typed Go binaries (`control-plane`, `agent`, `installer`)
+  - minimal inline workflow shell for orchestration glue only
 
-Current script intent maps to these Go commands:
+Script replacement rule:
 
-- `scripts/ci-reproducibility-check.sh` -> `eectl trust reproducibility-check`
-- `scripts/ci-build-measure.sh` -> `eectl trust measure`
-- `scripts/ci-deploy.sh` -> `eectl cp bootstrap`
-- `scripts/deploy_action.sh` -> `eectl deploy wait-attested` and `eectl deploy run`
-- `scripts/verify-tdx-clouds.sh` -> `eectl capacity verify-clouds`
-- `scripts/prune_tdvirsh_vms.sh` -> `eectl vm prune`
-- `scripts/gcp_bake_image.sh` -> `eectl image bake-gcp`
+- CI/release logic moves into workflows + Go binaries, not a new CLI layer.
+- Host bootstrap/install logic lives in `installer`.
+- VM lifecycle/provisioning logic belongs to CP/provider orchestration services, not a host-side operator CLI.
 
 Local-only utilities with no production dependency should be dropped or moved to `tools/` if still needed.
 
@@ -265,12 +261,12 @@ Exit:
 
 - Create monorepo structure and build both binaries.
 - Add shared config/logging/telemetry packages.
-- Add `eectl` skeleton for operational flows.
+- Add installer skeleton for host bootstrap flows.
 
 Exit:
 
 - `go test ./...` passes.
-- Core binaries and CLI build/test in clean v2 CI.
+- Core binaries build/test in clean v2 CI.
 
 ### Phase 2: Agent v2 implementation
 
@@ -327,7 +323,7 @@ Exit:
 Exit:
 
 - No workflow depends on `scripts/*.sh` or `scripts/*.py`.
-- CI can run from typed commands (`go test`, `eectl ...`) with minimal shell.
+- CI can run from typed commands (`go test`, binary start/health checks) with minimal shell.
 
 ### Phase 5: Cutover
 
@@ -351,7 +347,7 @@ Exit:
 - `e2e.yml`
   - build CP and agent
   - boot ephemeral environment
-  - run contract + deploy + capacity smoke via `eectl`
+  - run contract + deploy + capacity smoke via direct API calls and binaries
   - run on existing `self-hosted, tdx` GitHub runner for real attestation/TDX paths
 
 - `release.yml`
@@ -365,7 +361,7 @@ This is the intended simple glue: compiled tools + typed interfaces, not ad-hoc 
 
 1. Approve monorepo decision (single Go platform repo).
 2. Define v2 API contracts in `api/openapi/*.yaml` plus black-box tests.
-3. Scaffold `cmd/control-plane`, `cmd/agent`, and `cmd/eectl`.
+3. Scaffold `cmd/control-plane`, `cmd/agent`, and `cmd/installer`.
 4. Build new CI workflows (`ci.yml`, `e2e.yml`, `release.yml`) without reusing legacy script glue.
 5. Remove SDK install from CI and backfill v2 direct HTTP examples.
 
@@ -673,14 +669,14 @@ For the rewrite, these are product requirements unless explicitly marked optiona
   - cloudflared process supervision/restart
 - Keep optional agent tunnel setup from CP registration response (`tunnel_token`, `hostname`).
 
-### 11.6 VM orchestration semantics (`tdx_cli` -> `eectl`)
+### 11.6 Host install semantics (`tdx_cli` replacement scope)
 
-- Replace legacy `tdx` Python CLI with Go `eectl` commands, preserving behavior:
-  - VM create/list/status/delete/measure
-  - CP bootstrap VM creation with optional wait + bootstrap agent bring-up
-  - cleanup of orphaned libvirt/workdir artifacts
-- Keep node size presets + env overrides + explicit resource override flags.
-- Keep naming/label semantics for role/network/size (exact format may change; diagnostics value must remain).
+- Replace legacy host-side Python control scripts with a Go installer process:
+  - install/upgrade agent binary on host
+  - render env + service definition
+  - enable/start supervised agent service
+- Keep node size/datacenter/VM identity bootstrap metadata as installer-fed runtime config.
+- VM lifecycle/provisioning controls move to CP/provider orchestration paths (not a local operator CLI).
 
 ### 11.7 Failure behavior semantics to keep
 
@@ -694,7 +690,7 @@ For the rewrite, these are product requirements unless explicitly marked optiona
 
 - `customize.sh` / cloud-init heavy path is not part of the v2 control surface.
 - Python launcher/CLI/scripts are removed as runtime dependencies.
-- Legacy script entrypoints are replaced by Go binaries (`control-plane`, `agent`, `eectl`).
+- Legacy script entrypoints are replaced by Go binaries (`control-plane`, `agent`, `installer`).
 - SDK-dependent CI and SDK release/test flows stay removed.
 
 ## 12. Delivery Plan to Incorporate Legacy Infra Logic
@@ -707,7 +703,7 @@ For the rewrite, these are product requirements unless explicitly marked optiona
 
 ### Phase B: Go VM/bootstrap toolchain parity
 
-- Implement `eectl vm` + `eectl cp bootstrap` with libvirt and image artifact handling.
+- Implement installer-driven host bootstrap with image/runtime artifact handling.
 - Implement cmdline-size safety + config-drive fallback logic.
 - Implement measurement mode with deterministic boot constraints and serial extraction.
 

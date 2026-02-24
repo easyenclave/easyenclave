@@ -32,8 +32,8 @@ jobs:
           ldflags="-X github.com/easyenclave/easyenclave/v2/internal/shared/version.Version=${VERSION:-v2-dev}"
           GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/linux-amd64/control-plane ./cmd/control-plane
           GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/linux-amd64/agent ./cmd/agent
-          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/linux-amd64/eectl ./cmd/eectl
-          (cd dist/linux-amd64 && sha256sum control-plane agent eectl > checksums.txt)
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$ldflags" -o dist/linux-amd64/installer ./cmd/installer
+          (cd dist/linux-amd64 && sha256sum control-plane agent installer > checksums.txt)
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -43,5 +43,5 @@ jobs:
           path: |
             v2/dist/linux-amd64/control-plane
             v2/dist/linux-amd64/agent
-            v2/dist/linux-amd64/eectl
+            v2/dist/linux-amd64/installer
             v2/dist/linux-amd64/checksums.txt

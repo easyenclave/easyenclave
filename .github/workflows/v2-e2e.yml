@@ -33,7 +33,7 @@ jobs:
           mkdir -p bin
           go build -o bin/control-plane ./cmd/control-plane
           go build -o bin/agent ./cmd/agent
-          go build -o bin/eectl ./cmd/eectl
+          go build -o bin/installer ./cmd/installer
 
       - name: Run v2 smoke checks
         working-directory: v2
