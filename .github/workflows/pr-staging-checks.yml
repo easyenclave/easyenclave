@@ -102,6 +102,8 @@ jobs:
     name: Staging readiness (no-cost)
     runs-on: ubuntu-latest
     needs: [workflow-policy]
+    outputs:
+      ready: ${{ steps.readiness.outputs.ready }}
     env:
       CP_URL: ${{ vars.STAGING_CP_URL || 'https://app-staging.easyenclave.com' }}
       CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
@@ -116,11 +118,26 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Verify staging cloud readiness
+        id: verify
+        continue-on-error: true
         run: ./scripts/verify-tdx-clouds.sh
+
+      - name: Record readiness result
+        id: readiness
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.verify.outcome }}" = "success" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "Staging readiness checks passed."
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Staging readiness checks failed; skipping deploy-example PR jobs for this run."
+          fi
 
   deploy-baremetal-pr:
     name: Builtin deploy examples (baremetal, PR)
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.staging-readiness.outputs.ready == 'true'
     needs: [staging-readiness]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
@@ -132,7 +149,7 @@ jobs:
 
   deploy-gcp-pr:
     name: Builtin deploy examples (gcp, PR)
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && needs.staging-readiness.outputs.ready == 'true'
     needs: [staging-readiness]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
