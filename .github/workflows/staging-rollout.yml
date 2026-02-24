@@ -442,17 +442,29 @@ jobs:
         shell: bash
         env:
           CP_URL: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
-          ADMIN_TOKEN: ${{ needs.bootstrap.outputs.cp_admin_token }}
+          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           if [ -z "${CP_URL:-}" ]; then
             echo "::error::Missing CP URL for cleanup."
             exit 1
           fi
-          if [ -z "${ADMIN_TOKEN:-}" ]; then
-            echo "::error::Missing bootstrap admin token for cleanup."
+          token="$(echo "${CP_ADMIN_TOKEN:-}" | xargs)"
+          if [ -z "$token" ]; then
+            if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
+              echo "::error::Missing CP_ADMIN_PASSWORD (and CP_ADMIN_TOKEN empty); cannot authenticate cleanup."
+              exit 1
+            fi
+            payload_login="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
+            token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload_login" | jq -r '.token // empty' 2>/dev/null || true)"
+          fi
+          if [ -z "$token" ]; then
+            echo "::error::Failed to mint admin token via $CP_URL/admin/login for cleanup."
             exit 1
           fi
+          echo "::add-mask::$token"
+          ADMIN_TOKEN="$token"
 
           agents_json="$(curl -sSf -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
           mapfile -t stale_ids < <(
