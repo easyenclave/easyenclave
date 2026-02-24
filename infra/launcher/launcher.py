@@ -2815,6 +2815,44 @@ def run_agent_mode(config: dict):
     cloudflared_proc = None
     tunnel_hostname = None
 
+    max_registration_attempts = _coerce_nonnegative_int(
+        config.get("registration_max_attempts")
+        or os.environ.get("AGENT_REGISTRATION_MAX_ATTEMPTS")
+        or "0",
+        0,
+    )
+    registration_retry_base_seconds = max(
+        1,
+        _coerce_nonnegative_int(
+            config.get("registration_retry_seconds")
+            or os.environ.get("AGENT_REGISTRATION_RETRY_SECONDS")
+            or "10",
+            10,
+        ),
+    )
+    registration_retry_max_seconds = max(
+        registration_retry_base_seconds,
+        _coerce_nonnegative_int(
+            config.get("registration_retry_max_seconds")
+            or os.environ.get("AGENT_REGISTRATION_RETRY_MAX_SECONDS")
+            or "60",
+            60,
+        ),
+    )
+    if max_registration_attempts > 0:
+        logger.info(
+            "Agent registration retry policy: max_attempts=%s base=%ss max=%ss",
+            max_registration_attempts,
+            registration_retry_base_seconds,
+            registration_retry_max_seconds,
+        )
+    else:
+        logger.info(
+            "Agent registration retry policy: unlimited attempts base=%ss max=%ss",
+            registration_retry_base_seconds,
+            registration_retry_max_seconds,
+        )
+
     attempt = 0
     while True:
         try:
@@ -2860,19 +2898,49 @@ def run_agent_mode(config: dict):
                     detail = (e.response.text or "").strip()
                 except Exception:
                     detail = ""
+            attempt_label = (
+                f"{attempt + 1}/{max_registration_attempts}"
+                if max_registration_attempts > 0
+                else f"{attempt + 1}/unbounded"
+            )
             if detail:
                 logger.warning(
-                    f"Registration failed (attempt {attempt + 1}/10): {e} detail={detail[:600]}"
+                    f"Registration failed (attempt {attempt_label}): {e} detail={detail[:600]}"
                 )
             else:
-                logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
+                logger.warning(f"Registration failed (attempt {attempt_label}): {e}")
         except Exception as e:
-            logger.warning(f"Registration failed (attempt {attempt + 1}/10): {e}")
+            attempt_label = (
+                f"{attempt + 1}/{max_registration_attempts}"
+                if max_registration_attempts > 0
+                else f"{attempt + 1}/unbounded"
+            )
+            logger.warning(f"Registration failed (attempt {attempt_label}): {e}")
 
         attempt += 1
-        if attempt >= 10:
-            raise RuntimeError("Failed to register with control plane after 10 attempts")
-        time.sleep(10)
+        if max_registration_attempts > 0 and attempt >= max_registration_attempts:
+            raise RuntimeError(
+                f"Failed to register with control plane after {max_registration_attempts} attempts"
+            )
+        backoff_power = min(attempt - 1, 5)
+        sleep_seconds = min(
+            registration_retry_max_seconds,
+            registration_retry_base_seconds * (2**backoff_power),
+        )
+        if max_registration_attempts > 0:
+            logger.info(
+                "Retrying registration in %ss (attempt %s/%s)",
+                sleep_seconds,
+                attempt + 1,
+                max_registration_attempts,
+            )
+        else:
+            logger.info(
+                "Retrying registration in %ss (attempt %s/unbounded)",
+                sleep_seconds,
+                attempt + 1,
+            )
+        time.sleep(sleep_seconds)
 
     # 3. Start API server (handles deployments, logs, stats, health)
     _admin_state["status"] = "undeployed"
