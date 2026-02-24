@@ -47,34 +47,53 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          has_match() {
+            local pattern="$1"
+            shift
+            if command -v rg >/dev/null 2>&1; then
+              rg -n "$pattern" "$@" -S >/dev/null
+            else
+              grep -nE "$pattern" "$@" >/dev/null
+            fi
+          }
+          print_matches() {
+            local pattern="$1"
+            shift
+            if command -v rg >/dev/null 2>&1; then
+              rg -n "$pattern" "$@" -S
+            else
+              grep -nE "$pattern" "$@"
+            fi
+          }
+
           # Deploy-example workflows are reusable/manual components only.
-          if rg -n "workflow_run:" .github/workflows/deploy-examples.yml .github/workflows/deploy-examples-gcp.yml -S; then
+          if print_matches "workflow_run:" .github/workflows/deploy-examples.yml .github/workflows/deploy-examples-gcp.yml; then
             echo "::error::deploy-examples workflows must not have workflow_run triggers. Use staging-rollout.yml as orchestrator."
             exit 1
           fi
 
           # Production rollout must be release-gated + manual dispatch.
-          if rg -n "pull_request:|push:" .github/workflows/production-rollout.yml -S; then
+          if print_matches "pull_request:|push:" .github/workflows/production-rollout.yml; then
             echo "::error::production-rollout.yml must not trigger on pull_request/push."
             exit 1
           fi
-          if rg -n "workflow_run:" .github/workflows/production-rollout.yml -S >/dev/null; then
+          if has_match "workflow_run:" .github/workflows/production-rollout.yml; then
             echo "::error::production-rollout.yml must not include workflow_run trigger."
             exit 1
           fi
-          if ! rg -n "workflow_dispatch:" .github/workflows/production-rollout.yml -S >/dev/null; then
+          if ! has_match "workflow_dispatch:" .github/workflows/production-rollout.yml; then
             echo "::error::production-rollout.yml must include workflow_dispatch trigger."
             exit 1
           fi
-          if ! rg -n "release:" .github/workflows/release-trust-bundle.yml -S >/dev/null; then
+          if ! has_match "release:" .github/workflows/release-trust-bundle.yml; then
             echo "::error::release-trust-bundle.yml must include release trigger."
             exit 1
           fi
-          if ! rg -n "release:" .github/workflows/release-gcp-image.yml -S >/dev/null; then
+          if ! has_match "release:" .github/workflows/release-gcp-image.yml; then
             echo "::error::release-gcp-image.yml must include release trigger."
             exit 1
           fi
-          if ! rg -n "release:" .github/workflows/release-example-images.yml -S >/dev/null; then
+          if ! has_match "release:" .github/workflows/release-example-images.yml; then
             echo "::error::release-example-images.yml must include release trigger."
             exit 1
           fi
