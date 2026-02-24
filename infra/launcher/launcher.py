@@ -2206,6 +2206,19 @@ def stream_container_logs(cwd: Path, stop_event: threading.Event) -> None:
 
 def _control_plane_hostnames(config: dict) -> tuple[str, str]:
     """Return canonical and alias hostnames for the control plane."""
+
+    def _alias_label_for_env(env_name: str) -> str:
+        env = (env_name or "").strip().lower()
+        if env in ("", "production", "prod"):
+            return "app"
+        if env == "staging":
+            return "app-staging"
+        slug = re.sub(r"[^a-z0-9-]+", "-", env).strip("-")
+        slug = re.sub(r"-{2,}", "-", slug)
+        if not slug:
+            return "app"
+        return f"app-{slug}"[:63].rstrip("-")
+
     domain = (config.get("easyenclave_domain") or "easyenclave.com").strip()
     env_name = (config.get("easyenclave_env") or "").strip().lower()
     network_name = (
@@ -2218,7 +2231,7 @@ def _control_plane_hostnames(config: dict) -> tuple[str, str]:
     if not network_slug:
         network_slug = "network"
     canonical_hostname = f"{network_slug}.{domain}"
-    alias_label = "app-staging" if env_name == "staging" else "app"
+    alias_label = _alias_label_for_env(env_name)
     alias_hostname = f"{alias_label}.{domain}"
     return canonical_hostname, alias_hostname
 

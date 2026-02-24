@@ -4,7 +4,8 @@
 # 1) Trigger on push to main (in parallel with CI).
 # 2) Wait for CI success on the same commit SHA.
 # 3) CI builds/pins a staging GCP image for that exact commit.
-# 4) Bootstrap staging control plane and run builtin deploy examples in parallel (baremetal + gcp).
+# 4) Bootstrap an isolated staging-candidate control plane and run builtin deploy examples.
+# 5) Promote app-staging DNS alias to the validated candidate network.
 #
 # Staging profile is intentionally no-cost:
 # - billing disabled
@@ -465,7 +466,7 @@ jobs:
       easyenclave_domain: ${{ needs.resolve.outputs.staging_domain }}
       easyenclave_network_name: ${{ needs.resolve.outputs.staging_network_name }}
       easyenclave_release_tag: ${{ needs.resolve.outputs.staging_release_tag }}
-      easyenclave_env: staging
+      easyenclave_env: staging-candidate
       tcb_enforcement_mode: warn
       allowed_tcb_statuses: UpToDate
       # Staging is intentionally non-production: keep nonce enforcement permissive
@@ -497,7 +498,7 @@ jobs:
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       source_ref: ${{ needs.resolve.outputs.source_sha }}
@@ -512,7 +513,7 @@ jobs:
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       source_ref: ${{ needs.resolve.outputs.source_sha }}
@@ -530,7 +531,7 @@ jobs:
       - name: Delete stale legacy vm_name agent rows (tdx-agent-*)
         shell: bash
         env:
-          CP_URL: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+          CP_URL: ${{ needs.bootstrap.outputs.cp_public_url || needs.bootstrap.outputs.cp_url || needs.resolve.outputs.cp_url }}
           CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
           CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
         run: |
@@ -594,9 +595,83 @@ jobs:
             exit 1
           fi
 
+  promote-staging-alias:
+    name: Promote candidate network to app-staging alias
+    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp, cleanup-legacy-gcp-agents]
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    env:
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+      STAGING_DOMAIN: ${{ needs.resolve.outputs.staging_domain }}
+      CANDIDATE_NETWORK_NAME: ${{ needs.resolve.outputs.staging_network_name }}
+      EXPECTED_SHA: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+    steps:
+      - name: Promote app-staging DNS to candidate tunnel target
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in CF_API_TOKEN CF_ZONE_ID STAGING_DOMAIN CANDIDATE_NETWORK_NAME; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required value: $v"
+              exit 1
+            fi
+          done
+
+          candidate_host="${CANDIDATE_NETWORK_NAME}.${STAGING_DOMAIN}"
+          staging_alias="app-staging.${STAGING_DOMAIN}"
+          base="https://api.cloudflare.com/client/v4/zones/${CF_ZONE_ID}/dns_records"
+          auth=(-H "Authorization: Bearer ${CF_API_TOKEN}" -H "Content-Type: application/json")
+
+          candidate_json="$(curl -fsS "${auth[@]}" "${base}?type=CNAME&name=${candidate_host}")"
+          candidate_content="$(echo "$candidate_json" | jq -r --arg n "$candidate_host" '.result[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .content' | head -n1)"
+          if [ -z "${candidate_content:-}" ]; then
+            echo "::error::Candidate canonical DNS record not found: ${candidate_host}"
+            exit 1
+          fi
+          if ! echo "$candidate_content" | grep -q '\.cfargotunnel\.com$'; then
+            echo "::error::Candidate DNS record does not point to a tunnel target: ${candidate_content}"
+            exit 1
+          fi
+
+          alias_json="$(curl -fsS "${auth[@]}" "${base}?type=CNAME&name=${staging_alias}")"
+          alias_id="$(echo "$alias_json" | jq -r --arg n "$staging_alias" '.result[] | select((.name | ascii_downcase) == ($n | ascii_downcase)) | .id' | head -n1)"
+          payload="$(jq -cn --arg name "$staging_alias" --arg content "$candidate_content" '{type:"CNAME", name:$name, content:$content, proxied:true, ttl:1}')"
+
+          if [ -n "${alias_id:-}" ]; then
+            curl -fsS -X PATCH "${auth[@]}" --data "$payload" "${base}/${alias_id}" >/dev/null
+            echo "Updated ${staging_alias} -> ${candidate_content}"
+          else
+            curl -fsS -X POST "${auth[@]}" --data "$payload" "${base}" >/dev/null
+            echo "Created ${staging_alias} -> ${candidate_content}"
+          fi
+
+      - name: Verify promoted staging alias serves expected control plane
+        shell: bash
+        run: |
+          set -euo pipefail
+          alias_url="https://app-staging.${STAGING_DOMAIN}"
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            body="$(curl -fsS "${alias_url}/health" 2>/dev/null || true)"
+            sha="$(echo "${body:-}" | jq -r '.git_sha // empty' 2>/dev/null || true)"
+            if [ -n "${body:-}" ]; then
+              if [ -z "${EXPECTED_SHA:-}" ] || [ "${sha:-}" = "${EXPECTED_SHA}" ]; then
+                echo "Promoted staging alias is healthy at ${alias_url} (git_sha=${sha:-unknown})."
+                break
+              fi
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Timed out verifying promoted staging alias ${alias_url}."
+              echo "::error::Expected git_sha='${EXPECTED_SHA:-<any>}' saw='${sha:-<none>}'"
+              exit 1
+            fi
+            sleep 5
+          done
+
   assert-rollout-executed:
     name: Assert staging rollout executed
-    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp, cleanup-legacy-gcp-agents]
+    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp, cleanup-legacy-gcp-agents, promote-staging-alias]
     if: always() && needs.resolve.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -608,9 +683,10 @@ jobs:
           baremetal="${{ needs['deploy-baremetal'].result }}"
           gcp="${{ needs['deploy-gcp'].result }}"
           cleanup_legacy="${{ needs['cleanup-legacy-gcp-agents'].result }}"
-          echo "bootstrap=${bootstrap} baremetal=${baremetal} gcp=${gcp} cleanup_legacy=${cleanup_legacy}"
-          if [ "$bootstrap" != "success" ] || [ "$baremetal" != "success" ] || [ "$gcp" != "success" ] || [ "$cleanup_legacy" != "success" ]; then
-            echo "::error::Staging rollout did not fully execute: bootstrap=${bootstrap}, baremetal=${baremetal}, gcp=${gcp}, cleanup_legacy=${cleanup_legacy}"
+          promote_alias="${{ needs['promote-staging-alias'].result }}"
+          echo "bootstrap=${bootstrap} baremetal=${baremetal} gcp=${gcp} cleanup_legacy=${cleanup_legacy} promote_alias=${promote_alias}"
+          if [ "$bootstrap" != "success" ] || [ "$baremetal" != "success" ] || [ "$gcp" != "success" ] || [ "$cleanup_legacy" != "success" ] || [ "$promote_alias" != "success" ]; then
+            echo "::error::Staging rollout did not fully execute: bootstrap=${bootstrap}, baremetal=${baremetal}, gcp=${gcp}, cleanup_legacy=${cleanup_legacy}, promote_alias=${promote_alias}"
             exit 1
           fi
           echo "Staging rollout executed all required stages."

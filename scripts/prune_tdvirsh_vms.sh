@@ -87,8 +87,8 @@ network_is_same_environment() {
   [ -n "$proxy_url" ] || return 1
 
   case "$env_slug" in
-    staging)
-      [[ "$proxy_url" == *"app-staging."* ]]
+    staging|staging-*)
+      [[ "$proxy_url" == *"app-staging."* || "$proxy_url" == *"app-staging-"* ]]
       ;;
     production|prod)
       [[ "$proxy_url" == *"app."* && "$proxy_url" != *"app-staging."* ]]

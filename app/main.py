@@ -882,11 +882,24 @@ async def background_measurement_processor():
 
 def _get_proxy_url() -> str:
     """Get the proxy URL for service routing."""
+
+    def _alias_label_for_env(env_name: str) -> str:
+        env = (env_name or "").strip().lower()
+        if env in ("", "production", "prod"):
+            return "app"
+        if env == "staging":
+            return "app-staging"
+        slug = re.sub(r"[^a-z0-9-]+", "-", env).strip("-")
+        slug = re.sub(r"-{2,}", "-", slug)
+        if not slug:
+            return "app"
+        return f"app-{slug}"[:63].rstrip("-")
+
     domain = get_setting("cloudflare.domain")
     env_name = (
         (os.environ.get("EASYENCLAVE_ENV") or os.environ.get("ENVIRONMENT") or "").strip().lower()
     )
-    alias_label = "app-staging" if env_name == "staging" else "app"
+    alias_label = _alias_label_for_env(env_name)
     return f"https://{alias_label}.{domain}"
 
 

@@ -28,6 +28,20 @@ import uuid
 import zlib
 from pathlib import Path
 
+
+def _control_plane_alias_label_for_env(env_name: str) -> str:
+    env = (env_name or "").strip().lower()
+    if env in ("", "production", "prod"):
+        return "app"
+    if env == "staging":
+        return "app-staging"
+    slug = re.sub(r"[^a-z0-9-]+", "-", env).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    if not slug:
+        return "app"
+    return f"app-{slug}"[:63].rstrip("-")
+
+
 # Control plane mode config
 CONTROL_PLANE_MODE = "control-plane"
 AGENT_MODE = "agent"
@@ -650,7 +664,7 @@ class TDXManager:
         if config.get("cloudflare_api_token"):
             domain = config["easyenclave_domain"]
             env_name = (config.get("easyenclave_env") or "").strip().lower()
-            alias_label = "app-staging" if env_name == "staging" else "app"
+            alias_label = _control_plane_alias_label_for_env(env_name)
             result["control_plane_hostname"] = f"{alias_label}.{domain}"
             network_name = (config.get("easyenclave_network_name") or "").strip().lower()
             network_slug = re.sub(r"[^a-z0-9-]+", "-", network_name).strip("-")
