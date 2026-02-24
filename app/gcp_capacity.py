@@ -369,9 +369,10 @@ write_files:
       [Install]
       WantedBy=multi-user.target
 runcmd:
-  - mkdir -p /opt/launcher /home/tdx /etc/easyenclave
+  - mkdir -p /opt/launcher /home/tdx /etc/easyenclave /var/lib/easyenclave
   - [bash, -lc, "curl -fsSL '{launcher_url}' -o /opt/launcher/launcher.py"]
   - chmod +x /opt/launcher/launcher.py
+  - [bash, -lc, "curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/name > /var/lib/easyenclave/vm_name || true"]
   - [bash, -lc, "echo '[easyenclave] rootfs after cloud-init resize:' && df -h / || true"]
   - systemctl enable --now docker
   - [bash, -lc, "apt-get install -y docker-compose || true"]

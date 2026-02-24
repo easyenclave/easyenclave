@@ -1448,29 +1448,57 @@ def get_launcher_config() -> dict:
     return {"mode": MODE_AGENT}
 
 
-def get_vm_name() -> str:
-    """Get the VM name from environment or hostname."""
-    # Try environment variable first
-    vm_name = os.environ.get("VM_NAME")
-    if vm_name:
-        return vm_name
+def get_vm_name(config: dict | None = None) -> str:
+    """Get the VM name from environment, hostname, cache, or cloud metadata."""
+    cfg = config or {}
 
-    # Try to get from libvirt domain name (if available via cloud-init or similar)
-    try:
-        with open("/etc/hostname") as f:
-            hostname = f.read().strip()
-            if hostname:
-                return hostname
-    except Exception:
-        pass
-
-    # If hostname is unavailable, persist a generated fallback so restarts keep identity.
-    # This prevents runaway re-registration rows when the launcher process restarts.
     persistent_paths = [
         Path("/data/easyenclave/vm_name"),
         Path("/var/lib/easyenclave/vm_name"),
         Path("/home/tdx/easyenclave/vm_name"),
     ]
+
+    def _persist(value: str) -> None:
+        for path in persistent_paths:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(value + "\n", encoding="utf-8")
+                return
+            except Exception:
+                continue
+
+    def _looks_like_gcp() -> bool:
+        provider = (
+            str(
+                cfg.get("cloud_provider")
+                or os.environ.get("CLOUD_PROVIDER")
+                or os.environ.get("EASYENCLAVE_CLOUD_PROVIDER")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        datacenter = str(cfg.get("datacenter") or os.environ.get("EASYENCLAVE_DATACENTER") or "")
+        datacenter = datacenter.strip().lower()
+        return provider in {"gcp", "google"} or datacenter.startswith("gcp:")
+
+    # Try environment variable first
+    vm_name = (os.environ.get("VM_NAME") or "").strip()
+    if vm_name:
+        _persist(vm_name)
+        return vm_name
+
+    # Try configured hostname.
+    try:
+        with open("/etc/hostname") as f:
+            hostname = f.read().strip()
+            if hostname:
+                _persist(hostname)
+                return hostname
+    except Exception:
+        pass
+
+    # Try cached VM name file.
     for path in persistent_paths:
         try:
             if path.exists():
@@ -1480,17 +1508,22 @@ def get_vm_name() -> str:
         except Exception:
             continue
 
+    # On GCP, resolve VM name from metadata so CP order.vm_name and agent vm_name match.
+    if _looks_like_gcp():
+        try:
+            metadata_name = _gcp_metadata_get("instance/name")
+            if metadata_name:
+                _persist(metadata_name)
+                logger.info("Resolved VM name from GCP metadata: %s", metadata_name)
+                return metadata_name
+        except Exception as e:
+            logger.warning("Could not resolve GCP instance name from metadata: %s", e)
+
     # Fall back to a generated name
     import uuid
 
     generated = f"tdx-agent-{uuid.uuid4().hex[:8]}"
-    for path in persistent_paths:
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(generated + "\n", encoding="utf-8")
-            break
-        except Exception:
-            continue
+    _persist(generated)
     return generated
 
 
@@ -2764,7 +2797,7 @@ def run_agent_mode(config: dict):
         CP_TO_AGENT_ATTESTATION_MODE,
     )
 
-    vm_name = get_vm_name()
+    vm_name = get_vm_name(config)
     logger.info(f"VM name: {vm_name}")
     _admin_state["vm_name"] = vm_name
     datacenter_label = resolve_datacenter_label(config) or None
