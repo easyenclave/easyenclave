@@ -329,6 +329,25 @@ def _coerce_nonnegative_int(value, default: int) -> int:
         return max(0, int(default))
 
 
+def _coerce_bool(value, default: bool) -> bool:
+    if value is None:
+        return bool(default)
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _resolve_registration_failure_stop_vm(config: dict, *, is_gcp_agent: bool) -> bool:
+    """Resolve whether to stop the VM when registration attempts are exhausted."""
+    if "registration_failure_stop_vm" in config:
+        return _coerce_bool(config.get("registration_failure_stop_vm"), is_gcp_agent)
+    env_value = os.environ.get("AGENT_REGISTRATION_FAILURE_STOP_VM")
+    return _coerce_bool(env_value, is_gcp_agent)
+
+
 def _resolve_gcp_disconnect_self_terminate_seconds(config: dict) -> int:
     """Resolve self-terminate timeout for unrecoverable GCP disconnects."""
     if "disconnect_self_terminate_seconds" in config:
@@ -2804,6 +2823,7 @@ def run_agent_mode(config: dict):
     _admin_state["vm_name"] = vm_name
     datacenter_label = resolve_datacenter_label(config) or None
     _admin_state["datacenter"] = datacenter_label
+    is_gcp_agent = str(datacenter_label or "").lower().startswith("gcp")
 
     # 1. Generate initial attestation (requires Intel TA - will crash if fails)
     # Pass vm_name for nonce challenge (replay attack prevention)
@@ -2839,18 +2859,23 @@ def run_agent_mode(config: dict):
             60,
         ),
     )
+    registration_failure_stop_vm = _resolve_registration_failure_stop_vm(
+        config, is_gcp_agent=is_gcp_agent
+    )
     if max_registration_attempts > 0:
         logger.info(
-            "Agent registration retry policy: max_attempts=%s base=%ss max=%ss",
+            "Agent registration retry policy: max_attempts=%s base=%ss max=%ss stop_vm_on_exhausted=%s",
             max_registration_attempts,
             registration_retry_base_seconds,
             registration_retry_max_seconds,
+            registration_failure_stop_vm,
         )
     else:
         logger.info(
-            "Agent registration retry policy: unlimited attempts base=%ss max=%ss",
+            "Agent registration retry policy: unlimited attempts base=%ss max=%ss stop_vm_on_exhausted=%s",
             registration_retry_base_seconds,
             registration_retry_max_seconds,
+            registration_failure_stop_vm,
         )
 
     attempt = 0
@@ -2919,6 +2944,11 @@ def run_agent_mode(config: dict):
 
         attempt += 1
         if max_registration_attempts > 0 and attempt >= max_registration_attempts:
+            if registration_failure_stop_vm:
+                _commit_vm_death(
+                    (f"agent registration failed after {max_registration_attempts} attempts"),
+                    is_gcp=is_gcp_agent,
+                )
             raise RuntimeError(
                 f"Failed to register with control plane after {max_registration_attempts} attempts"
             )
@@ -2953,7 +2983,6 @@ def run_agent_mode(config: dict):
     # Control plane will still do frequent health pulls, but it no longer needs to pull attestation.
     start_periodic_attestation_push(agent_id=agent_id, vm_name=vm_name, config=config)
 
-    is_gcp_agent = str(datacenter_label or "").lower().startswith("gcp")
     disconnect_timeout_seconds = _resolve_gcp_disconnect_self_terminate_seconds(config)
     monitor_sleep_seconds = max(
         5,
