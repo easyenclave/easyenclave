@@ -240,6 +240,86 @@ jobs:
             sleep 15
           done
 
+  resolve-ci-artifacts:
+    name: Resolve CI rollout artifacts for SHA
+    needs: [resolve, wait-ci]
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      control_plane_image_digest: ${{ steps.resolve.outputs.control_plane_image_digest }}
+      image_project: ${{ steps.resolve.outputs.image_project }}
+      image_name: ${{ steps.resolve.outputs.image_name }}
+      image_family: ${{ steps.resolve.outputs.image_family }}
+      trusted_agent_mrtds: ${{ steps.resolve.outputs.trusted_agent_mrtds }}
+      trusted_agent_mrtds_by_size: ${{ steps.resolve.outputs.trusted_agent_mrtds_by_size }}
+      trusted_agent_rtmrs: ${{ steps.resolve.outputs.trusted_agent_rtmrs }}
+      trusted_agent_rtmrs_by_size: ${{ steps.resolve.outputs.trusted_agent_rtmrs_by_size }}
+      hello_tdx_image: ${{ steps.resolve.outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ steps.resolve.outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ steps.resolve.outputs.private_llm_model_loader_image }}
+    steps:
+      - name: Download CI rollout artifact for target SHA
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TARGET_SHA:-}" ]; then
+            echo "::error::Missing target SHA for rollout artifact lookup."
+            exit 1
+          fi
+
+          runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${TARGET_SHA}&per_page=100")"
+          run_id="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find successful CI run for SHA ${TARGET_SHA}."
+            exit 1
+          fi
+
+          artifacts="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100")"
+          artifact_name="rollout-artifacts-${TARGET_SHA}"
+          artifact_id="$(echo "$artifacts" | jq -r --arg n "$artifact_name" '[.artifacts[] | select(.name == $n and .expired == false)] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$artifact_id" ]; then
+            echo "::error::CI run ${run_id} does not contain artifact '${artifact_name}'."
+            exit 1
+          fi
+
+          zip_path="/tmp/rollout-artifacts.zip"
+          out_dir="/tmp/rollout-artifacts"
+          rm -rf "$out_dir"
+          gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$zip_path"
+          unzip -q "$zip_path" -d "$out_dir"
+          artifact_json="$(find "$out_dir" -type f -name 'rollout-artifacts.json' | head -n1)"
+          if [ -z "${artifact_json:-}" ] || [ ! -f "$artifact_json" ]; then
+            echo "::error::rollout-artifacts.json not found in downloaded artifact."
+            exit 1
+          fi
+
+          artifact_sha="$(jq -r '.git_sha // empty' "$artifact_json")"
+          if [ "$artifact_sha" != "$TARGET_SHA" ]; then
+            echo "::error::Artifact git_sha mismatch: expected ${TARGET_SHA}, got ${artifact_sha:-<empty>}"
+            exit 1
+          fi
+
+          {
+            echo "control_plane_image_digest=$(jq -r '.control_plane_image_digest' "$artifact_json")"
+            echo "image_project=$(jq -r '.gcp_image.image_project' "$artifact_json")"
+            echo "image_name=$(jq -r '.gcp_image.image_name' "$artifact_json")"
+            echo "image_family=$(jq -r '.gcp_image.image_family' "$artifact_json")"
+            echo "trusted_agent_mrtds=$(jq -r '.trusted_values.mrtds' "$artifact_json")"
+            echo "trusted_agent_mrtds_by_size=$(jq -c '.trusted_values.mrtds_by_size' "$artifact_json")"
+            echo "trusted_agent_rtmrs=$(jq -c '.trusted_values.rtmrs' "$artifact_json")"
+            echo "trusted_agent_rtmrs_by_size=$(jq -c '.trusted_values.rtmrs_by_size' "$artifact_json")"
+            echo "hello_tdx_image=$(jq -r '.example_images.hello_tdx_image' "$artifact_json")"
+            echo "private_llm_ollama_image=$(jq -r '.example_images.private_llm_ollama_image' "$artifact_json")"
+            echo "private_llm_model_loader_image=$(jq -r '.example_images.private_llm_model_loader_image' "$artifact_json")"
+          } >> "$GITHUB_OUTPUT"
+
   cleanup-staging-gcp:
     name: Cleanup stale staging GCP resources
     needs: [resolve]
@@ -326,21 +406,21 @@ jobs:
 
   verify-staging-gcp-image:
     name: Verify CI-built staging GCP image exists
-    needs: [resolve, wait-ci]
+    needs: [resolve, wait-ci, resolve-ci-artifacts]
     if: needs.resolve.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
     env:
-      GCP_PROJECT_ID: eestaging
+      GCP_PROJECT_ID: ${{ needs['resolve-ci-artifacts'].outputs.image_project }}
+      GCP_IMAGE_NAME: ${{ needs['resolve-ci-artifacts'].outputs.image_name }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
-      SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
     steps:
       - name: Validate staging GCP config
         shell: bash
         run: |
           set -euo pipefail
-          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_SHA; do
+          for v in GCP_PROJECT_ID GCP_IMAGE_NAME GCP_SERVICE_ACCOUNT_KEY; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required value: $v"
               exit 1
@@ -361,24 +441,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
-          image_name="easyenclave-agent-main-${sha12}"
-          if ! gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
-            echo "::error::Missing CI-built staging image '${GCP_PROJECT_ID}/${image_name}'."
+          if ! gcloud compute images describe "${GCP_IMAGE_NAME}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::error::Missing CI-built staging image '${GCP_PROJECT_ID}/${GCP_IMAGE_NAME}'."
             echo "::error::CI must create this image before GCP deploy can run."
             exit 1
           fi
-          echo "Found CI-built staging image: ${GCP_PROJECT_ID}/${image_name}"
+          echo "Found CI-built staging image: ${GCP_PROJECT_ID}/${GCP_IMAGE_NAME}"
 
   bootstrap:
     name: Bootstrap staging control plane
-    needs: [resolve, wait-ci, cleanup-staging-gcp]
+    needs: [resolve, wait-ci, resolve-ci-artifacts, cleanup-staging-gcp]
     if: needs.resolve.outputs.should_run == 'true'
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
       source_ref: ${{ needs.resolve.outputs.source_sha }}
-      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
+      control_plane_image: ${{ github.event.inputs.control_plane_image || needs['resolve-ci-artifacts'].outputs.control_plane_image_digest }}
       cp_bootstrap_sizes: tiny
       # Keep staging warm spare footprint small.
       num_tiny_agents: '1'
@@ -404,13 +482,18 @@ jobs:
       billing_capacity_request_dev_simulation: ${{ 'true' }}
       billing_platform_account_id: ''
       billing_contributor_pool_bps: '0'
-      ee_gcp_image_project: ''
-      ee_gcp_image_name: ''
-      ee_gcp_image_family: easyenclave-agent-main
+      use_precomputed_trusted_values: ${{ 'true' }}
+      trusted_agent_mrtds: ${{ needs['resolve-ci-artifacts'].outputs.trusted_agent_mrtds }}
+      trusted_agent_mrtds_by_size: ${{ needs['resolve-ci-artifacts'].outputs.trusted_agent_mrtds_by_size }}
+      trusted_agent_rtmrs: ${{ needs['resolve-ci-artifacts'].outputs.trusted_agent_rtmrs }}
+      trusted_agent_rtmrs_by_size: ${{ needs['resolve-ci-artifacts'].outputs.trusted_agent_rtmrs_by_size }}
+      ee_gcp_image_project: ${{ needs['resolve-ci-artifacts'].outputs.image_project }}
+      ee_gcp_image_name: ${{ needs['resolve-ci-artifacts'].outputs.image_name }}
+      ee_gcp_image_family: ${{ needs['resolve-ci-artifacts'].outputs.image_family }}
 
   deploy-baremetal:
     name: Builtin deploy examples (baremetal)
-    needs: [resolve, bootstrap]
+    needs: [resolve, resolve-ci-artifacts, bootstrap]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
     with:
@@ -418,11 +501,14 @@ jobs:
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       source_ref: ${{ needs.resolve.outputs.source_sha }}
+      hello_tdx_image: ${{ needs['resolve-ci-artifacts'].outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ needs['resolve-ci-artifacts'].outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ needs['resolve-ci-artifacts'].outputs.private_llm_model_loader_image }}
       easyenclave_env: staging
 
   deploy-gcp:
     name: Builtin deploy examples (gcp)
-    needs: [resolve, bootstrap, verify-staging-gcp-image]
+    needs: [resolve, resolve-ci-artifacts, bootstrap, verify-staging-gcp-image]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
     with:
@@ -430,6 +516,9 @@ jobs:
       cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       source_ref: ${{ needs.resolve.outputs.source_sha }}
+      hello_tdx_image: ${{ needs['resolve-ci-artifacts'].outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ needs['resolve-ci-artifacts'].outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ needs['resolve-ci-artifacts'].outputs.private_llm_model_loader_image }}
       easyenclave_env: staging
 
   cleanup-legacy-gcp-agents:

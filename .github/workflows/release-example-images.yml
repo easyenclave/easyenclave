@@ -64,6 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [resolve]
     permissions:
+      actions: read
       id-token: write
       contents: write
       packages: write
@@ -78,86 +79,59 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
-      - name: Login to GHCR
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
-
-      - name: Mirror and sign builtin example images
+      - name: Resolve/sign promoted example images from CI artifact
         id: mirror
         shell: bash
         run: |
           set -euo pipefail
+          runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${SOURCE_SHA}&per_page=100")"
+          run_id="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find successful CI run for ${SOURCE_SHA}."
+            exit 1
+          fi
 
-          retry_push() {
-            local image_ref="$1"
-            local attempts=5
-            local delay=3
-            local out
-            for attempt in $(seq 1 "$attempts"); do
-              if out="$(docker push "$image_ref" 2>&1)"; then
-                echo "$out"
-                return 0
-              fi
-              echo "$out"
-              if [ "$attempt" -lt "$attempts" ]; then
-                echo "Push failed for $image_ref (attempt $attempt/$attempts), retrying in ${delay}s..."
-                sleep "$delay"
-              fi
-            done
-            echo "::error::Failed to push $image_ref after $attempts attempts"
-            return 1
-          }
+          artifacts="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100")"
+          artifact_name="rollout-artifacts-${SOURCE_SHA}"
+          artifact_id="$(echo "$artifacts" | jq -r --arg n "$artifact_name" '[.artifacts[] | select(.name == $n and .expired == false)] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$artifact_id" ]; then
+            echo "::error::CI run ${run_id} missing artifact '${artifact_name}'."
+            exit 1
+          fi
 
-          set_public() {
-            local pkg_path="$1"
-            if gh api --method PATCH "/orgs/${REPOSITORY_OWNER}/packages/container/${pkg_path}" -f visibility=public >/dev/null 2>&1; then
-              echo "Set package public: org/${pkg_path}"
-              return 0
-            fi
-            if gh api --method PATCH "/users/${REPOSITORY_OWNER}/packages/container/${pkg_path}" -f visibility=public >/dev/null 2>&1; then
-              echo "Set package public: user/${pkg_path}"
-              return 0
-            fi
-            echo "::warning::Could not set package visibility to public for ${pkg_path} (configure in GHCR package settings)."
-            return 0
-          }
+          zip_path="/tmp/rollout-artifacts.zip"
+          out_dir="/tmp/rollout-artifacts"
+          rm -rf "$out_dir"
+          gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$zip_path"
+          unzip -q "$zip_path" -d "$out_dir"
 
-          safe_tag="$(echo "$RELEASE_TAG" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
-          [ -n "$safe_tag" ] || safe_tag="release"
-          sha12="$(echo "$SOURCE_SHA" | cut -c1-12)"
-          repo_lc="$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-          prefix="ghcr.io/${repo_lc}/examples"
-          image_tag="${safe_tag}-${sha12}"
+          src="$(find "$out_dir" -type f -name 'example-images.commit.json' | head -n1)"
+          if [ -z "${src:-}" ] || [ ! -f "$src" ]; then
+            echo "::error::example-images.commit.json missing in rollout artifact."
+            exit 1
+          fi
+          artifact_sha="$(jq -r '.git_sha // empty' "$src")"
+          if [ "$artifact_sha" != "$SOURCE_SHA" ]; then
+            echo "::error::Example image descriptor git_sha mismatch: expected ${SOURCE_SHA}, got ${artifact_sha:-<empty>}"
+            exit 1
+          fi
 
-          mirror_image() {
-            local source_ref="$1"
-            local target_name="$2"
-            local output_key="$3"
-            local target_tag_ref="${prefix}/${target_name}:${image_tag}"
-
-            echo "Mirroring ${source_ref} -> ${target_tag_ref}"
-            docker pull "$source_ref"
-            docker tag "$source_ref" "$target_tag_ref"
-            push_out="$(retry_push "$target_tag_ref")"
-
-            digest="$(echo "$push_out" | grep -Eo 'sha256:[0-9a-f]{64}' | tail -n1)"
-            if ! echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
-              echo "::error::Failed to parse digest from push output for ${target_tag_ref}"
+          hello="$(jq -r '.hello_tdx_image // empty' "$src")"
+          ollama="$(jq -r '.private_llm_ollama_image // empty' "$src")"
+          loader="$(jq -r '.private_llm_model_loader_image // empty' "$src")"
+          for ref in "$hello" "$ollama" "$loader"; do
+            if ! echo "${ref}" | grep -Eq '^ghcr\.io/.+@sha256:[0-9a-f]{64}$'; then
+              echo "::error::Invalid promoted example image ref: '${ref}'"
               exit 1
             fi
-            digest_ref="${prefix}/${target_name}@${digest}"
-            cosign sign --yes "$digest_ref"
-            echo "${output_key}=${digest_ref}" >> "$GITHUB_OUTPUT"
+            cosign sign --yes "$ref"
+          done
 
-            pkg_path="${REPOSITORY_NAME}%2Fexamples%2F${target_name}"
-            set_public "$pkg_path"
-          }
-
-          mirror_image "hashicorp/http-echo:latest" "hello-tdx-http-echo" "hello_tdx_image"
-          mirror_image "ollama/ollama:latest" "private-llm-ollama" "private_llm_ollama_image"
-          mirror_image "curlimages/curl:latest" "private-llm-model-loader" "private_llm_model_loader_image"
+          {
+            echo "hello_tdx_image=${hello}"
+            echo "private_llm_ollama_image=${ollama}"
+            echo "private_llm_model_loader_image=${loader}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build release example image descriptor
         id: descriptor

@@ -211,6 +211,68 @@ jobs:
             sleep 15
           done
 
+  ci-rollout-artifacts:
+    name: Resolve CI rollout artifact for release commit
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      control_plane_image_digest: ${{ steps.resolve.outputs.control_plane_image_digest }}
+    steps:
+      - name: Download CI rollout artifact for release SHA
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_SHA: ${{ needs.resolve.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TARGET_SHA:-}" ]; then
+            echo "::error::Missing release source SHA for rollout artifact lookup."
+            exit 1
+          fi
+
+          runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${TARGET_SHA}&per_page=100")"
+          run_id="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find successful CI run for release SHA ${TARGET_SHA}."
+            exit 1
+          fi
+
+          artifacts="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100")"
+          artifact_name="rollout-artifacts-${TARGET_SHA}"
+          artifact_id="$(echo "$artifacts" | jq -r --arg n "$artifact_name" '[.artifacts[] | select(.name == $n and .expired == false)] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$artifact_id" ]; then
+            echo "::error::CI run ${run_id} missing artifact '${artifact_name}'."
+            exit 1
+          fi
+
+          zip_path="/tmp/rollout-artifacts.zip"
+          out_dir="/tmp/rollout-artifacts"
+          rm -rf "$out_dir"
+          gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$zip_path"
+          unzip -q "$zip_path" -d "$out_dir"
+          artifact_json="$(find "$out_dir" -type f -name 'rollout-artifacts.json' | head -n1)"
+          if [ -z "${artifact_json:-}" ] || [ ! -f "$artifact_json" ]; then
+            echo "::error::rollout-artifacts.json not found in artifact."
+            exit 1
+          fi
+
+          artifact_sha="$(jq -r '.git_sha // empty' "$artifact_json")"
+          if [ "$artifact_sha" != "$TARGET_SHA" ]; then
+            echo "::error::Artifact git_sha mismatch: expected ${TARGET_SHA}, got ${artifact_sha:-<empty>}"
+            exit 1
+          fi
+
+          digest_ref="$(jq -r '.control_plane_image_digest // empty' "$artifact_json")"
+          if ! echo "${digest_ref:-}" | grep -Eq '^ghcr\.io/.+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::Invalid control_plane_image_digest in rollout artifact: ${digest_ref:-<empty>}"
+            exit 1
+          fi
+          echo "control_plane_image_digest=${digest_ref}" >> "$GITHUB_OUTPUT"
+
   trust-bundle:
     name: Resolve release trust bundle
     needs: [resolve, wait-release-builds]
@@ -416,12 +478,12 @@ jobs:
 
   bootstrap:
     name: Bootstrap production control plane
-    needs: [resolve, trust-bundle, gcp-image]
+    needs: [resolve, ci-rollout-artifacts, trust-bundle, gcp-image]
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
       source_ref: ${{ needs.resolve.outputs.source_ref }}
-      control_plane_image: ${{ format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
+      control_plane_image: ${{ needs['ci-rollout-artifacts'].outputs.control_plane_image_digest }}
       cp_bootstrap_sizes: tiny,llm
       # Keep at least one warm tiny agent so production cannot come up with zero
       # deployable capacity when builtin example jobs are skipped.
@@ -478,6 +540,9 @@ jobs:
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
+      hello_tdx_image: ${{ needs['example-images'].outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ needs['example-images'].outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ needs['example-images'].outputs.private_llm_model_loader_image }}
       easyenclave_env: production
 
   deploy-gcp:
@@ -491,4 +556,7 @@ jobs:
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
+      hello_tdx_image: ${{ needs['example-images'].outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ needs['example-images'].outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ needs['example-images'].outputs.private_llm_model_loader_image }}
       easyenclave_env: production

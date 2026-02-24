@@ -27,6 +27,7 @@ jobs:
       contents: read
     outputs:
       release_tag: ${{ steps.resolve.outputs.release_tag }}
+      source_sha: ${{ steps.sha.outputs.source_sha }}
     steps:
       - name: Resolve tag
         id: resolve
@@ -43,47 +44,71 @@ jobs:
           fi
           echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ steps.resolve.outputs.release_tag }}
+
+      - name: Resolve release commit sha
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
-    name: Build deterministic trust bundle
-    runs-on: [self-hosted, tdx]
+    name: Promote trust bundle from CI artifact
+    runs-on: ubuntu-latest
     needs: [resolve]
     permissions:
+      actions: read
       contents: read
     outputs:
       bundle_name: ${{ steps.bundle.outputs.bundle_name }}
     steps:
-      - name: Checkout release tag
-        uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ needs.resolve.outputs.release_tag }}
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-
-      - name: Run strict reproducibility check
-        run: ./scripts/ci-reproducibility-check.sh
-
-      - name: Build release trust bundle payload
+      - name: Fetch trust bundle from commit rollout artifact
         id: bundle
         shell: bash
         env:
           RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          src="infra/output/reproducibility/trusted_values.json"
-          if [ ! -f "$src" ]; then
-            echo "::error::Missing trusted values output: $src"
+          runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${SOURCE_SHA}&per_page=100")"
+          run_id="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI" and .conclusion == "success")] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$run_id" ]; then
+            echo "::error::Could not find successful CI run for ${SOURCE_SHA}."
             exit 1
           fi
 
-          git_sha="$(git rev-parse HEAD)"
+          artifacts="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}/artifacts?per_page=100")"
+          artifact_name="rollout-artifacts-${SOURCE_SHA}"
+          artifact_id="$(echo "$artifacts" | jq -r --arg n "$artifact_name" '[.artifacts[] | select(.name == $n and .expired == false)] | sort_by(.created_at) | last | .id // empty')"
+          if [ -z "$artifact_id" ]; then
+            echo "::error::CI run ${run_id} missing artifact '${artifact_name}'."
+            exit 1
+          fi
+
+          zip_path="/tmp/rollout-artifacts.zip"
+          out_dir="/tmp/rollout-artifacts"
+          rm -rf "$out_dir"
+          gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" > "$zip_path"
+          unzip -q "$zip_path" -d "$out_dir"
+          src="$(find "$out_dir" -type f -name 'trusted_values.commit.json' | head -n1)"
+          if [ -z "${src:-}" ] || [ ! -f "$src" ]; then
+            echo "::error::trusted_values.commit.json missing in rollout artifact."
+            exit 1
+          fi
+
+          artifact_sha="$(jq -r '.git_sha // empty' "$src")"
+          if [ "$artifact_sha" != "$SOURCE_SHA" ]; then
+            echo "::error::Trust bundle git_sha mismatch: expected ${SOURCE_SHA}, got ${artifact_sha:-<empty>}"
+            exit 1
+          fi
+
           out="/tmp/trusted_values.${RELEASE_TAG}.json"
-          jq -c \
-            --arg release_tag "$RELEASE_TAG" \
-            --arg git_sha "$git_sha" \
-            --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-            '. + {release_tag: $release_tag, git_sha: $git_sha, generated_at: $generated_at}' \
-            "$src" > "$out"
+          jq -c --arg release_tag "$RELEASE_TAG" '. + {release_tag: $release_tag}' "$src" > "$out"
 
           jq -e '.digest | type == "string"' "$out" >/dev/null
           jq -e '.mrtds | type == "string" and length > 0' "$out" >/dev/null

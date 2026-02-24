@@ -85,6 +85,9 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    outputs:
+      control_plane_image: ${{ steps.control_plane.outputs.image }}
+      control_plane_image_digest: ${{ steps.control_plane.outputs.digest }}
 
     permissions:
       id-token: write
@@ -156,6 +159,10 @@ jobs:
     runs-on: [self-hosted, tdx]
     permissions:
       contents: read
+    outputs:
+      image_project: ${{ steps.bake.outputs.image_project }}
+      image_name: ${{ steps.bake.outputs.image_name }}
+      image_family: ${{ steps.bake.outputs.image_family }}
     env:
       GCP_PROJECT_ID: eestaging
       SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
@@ -197,6 +204,7 @@ jobs:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Bake staging commit image from configured base
+        id: bake
         shell: bash
         run: |
           set -euo pipefail
@@ -208,3 +216,268 @@ jobs:
           BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
           export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE
           ./scripts/gcp_bake_image.sh
+          {
+            echo "image_project=${GCP_PROJECT_ID}"
+            echo "image_name=${TARGET_IMAGE_NAME}"
+            echo "image_family=${TARGET_IMAGE_FAMILY}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-commit-trust-bundle:
+    name: Build commit trust bundle
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, tdx]
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Build trusted values for commit
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ./scripts/ci-reproducibility-check.sh
+          src="infra/output/reproducibility/trusted_values.json"
+          if [ ! -f "$src" ]; then
+            echo "::error::Missing trusted values output: $src"
+            exit 1
+          fi
+          out="/tmp/trusted_values.commit.json"
+          jq -c \
+            --arg git_sha "$SOURCE_SHA" \
+            --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '. + {git_sha: $git_sha, generated_at: $generated_at}' \
+            "$src" > "$out"
+          jq -e '.digest | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.mrtds_by_size | type == "object"' "$out" >/dev/null
+          jq -e '.rtmrs_by_size | type == "object"' "$out" >/dev/null
+
+      - name: Upload commit trust bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit-trust-bundle
+          if-no-files-found: error
+          path: /tmp/trusted_values.commit.json
+
+  mirror-commit-example-images:
+    name: Mirror/sign commit example images
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+    env:
+      SOURCE_SHA: ${{ github.sha }}
+      REPOSITORY: ${{ github.repository }}
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+      REPOSITORY_NAME: ${{ github.event.repository.name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to GHCR
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Mirror and sign commit example images
+        id: mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          retry_push() {
+            local image_ref="$1"
+            local attempts=5
+            local delay=3
+            local out
+            for attempt in $(seq 1 "$attempts"); do
+              if out="$(docker push "$image_ref" 2>&1)"; then
+                echo "$out"
+                return 0
+              fi
+              echo "$out"
+              if [ "$attempt" -lt "$attempts" ]; then
+                echo "Push failed for $image_ref (attempt $attempt/$attempts), retrying in ${delay}s..."
+                sleep "$delay"
+              fi
+            done
+            echo "::error::Failed to push $image_ref after $attempts attempts"
+            return 1
+          }
+
+          set_public() {
+            local pkg_path="$1"
+            if gh api --method PATCH "/orgs/${REPOSITORY_OWNER}/packages/container/${pkg_path}" -f visibility=public >/dev/null 2>&1; then
+              echo "Set package public: org/${pkg_path}"
+              return 0
+            fi
+            if gh api --method PATCH "/users/${REPOSITORY_OWNER}/packages/container/${pkg_path}" -f visibility=public >/dev/null 2>&1; then
+              echo "Set package public: user/${pkg_path}"
+              return 0
+            fi
+            echo "::warning::Could not set package visibility to public for ${pkg_path}."
+            return 0
+          }
+
+          sha12="$(echo "$SOURCE_SHA" | cut -c1-12)"
+          repo_lc="$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          prefix="ghcr.io/${repo_lc}/examples"
+          image_tag="main-${sha12}"
+
+          mirror_image() {
+            local source_ref="$1"
+            local target_name="$2"
+            local output_key="$3"
+            local target_tag_ref="${prefix}/${target_name}:${image_tag}"
+            local push_out digest digest_ref
+
+            echo "Mirroring ${source_ref} -> ${target_tag_ref}"
+            docker pull "$source_ref"
+            docker tag "$source_ref" "$target_tag_ref"
+            push_out="$(retry_push "$target_tag_ref")"
+            digest="$(echo "$push_out" | grep -Eo 'sha256:[0-9a-f]{64}' | tail -n1)"
+            if ! echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "::error::Failed to parse digest from push output for ${target_tag_ref}"
+              exit 1
+            fi
+            digest_ref="${prefix}/${target_name}@${digest}"
+            cosign sign --yes "$digest_ref"
+            echo "${output_key}=${digest_ref}" >> "$GITHUB_OUTPUT"
+            pkg_path="${REPOSITORY_NAME}%2Fexamples%2F${target_name}"
+            set_public "$pkg_path"
+          }
+
+          mirror_image "hashicorp/http-echo:latest" "hello-tdx-http-echo" "hello_tdx_image"
+          mirror_image "ollama/ollama:latest" "private-llm-ollama" "private_llm_ollama_image"
+          mirror_image "curlimages/curl:latest" "private-llm-model-loader" "private_llm_model_loader_image"
+
+      - name: Build commit example image descriptor
+        shell: bash
+        env:
+          HELLO_TDX_IMAGE: ${{ steps.mirror.outputs.hello_tdx_image }}
+          PRIVATE_LLM_OLLAMA_IMAGE: ${{ steps.mirror.outputs.private_llm_ollama_image }}
+          PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ steps.mirror.outputs.private_llm_model_loader_image }}
+        run: |
+          set -euo pipefail
+          out="/tmp/example-images.commit.json"
+          jq -cn \
+            --arg git_sha "$SOURCE_SHA" \
+            --arg hello_tdx_image "$HELLO_TDX_IMAGE" \
+            --arg private_llm_ollama_image "$PRIVATE_LLM_OLLAMA_IMAGE" \
+            --arg private_llm_model_loader_image "$PRIVATE_LLM_MODEL_LOADER_IMAGE" \
+            --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{
+              git_sha: $git_sha,
+              hello_tdx_image: $hello_tdx_image,
+              private_llm_ollama_image: $private_llm_ollama_image,
+              private_llm_model_loader_image: $private_llm_model_loader_image,
+              generated_at: $generated_at
+            }' > "$out"
+          jq -e '.hello_tdx_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_ollama_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_model_loader_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+
+      - name: Upload commit example image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit-example-images
+          if-no-files-found: error
+          path: /tmp/example-images.commit.json
+
+  publish-rollout-artifacts:
+    name: Publish commit rollout artifact
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [docker, build-staging-gcp-image, build-commit-trust-bundle, mirror-commit-example-images]
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ github.sha }}
+      CONTROL_PLANE_IMAGE: ${{ needs.docker.outputs.control_plane_image }}
+      CONTROL_PLANE_IMAGE_DIGEST: ${{ needs.docker.outputs.control_plane_image_digest }}
+      GCP_IMAGE_PROJECT: ${{ needs.build-staging-gcp-image.outputs.image_project }}
+      GCP_IMAGE_NAME: ${{ needs.build-staging-gcp-image.outputs.image_name }}
+      GCP_IMAGE_FAMILY: ${{ needs.build-staging-gcp-image.outputs.image_family }}
+    steps:
+      - name: Download commit artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/ci-commit-artifacts
+
+      - name: Build unified rollout artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          trust_json="/tmp/ci-commit-artifacts/commit-trust-bundle/trusted_values.commit.json"
+          examples_json="/tmp/ci-commit-artifacts/commit-example-images/example-images.commit.json"
+          out_dir="/tmp/rollout-artifacts"
+          out="${out_dir}/rollout-artifacts.json"
+
+          mkdir -p "$out_dir"
+          for f in "$trust_json" "$examples_json"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing commit artifact: $f"
+              exit 1
+            fi
+          done
+
+          if ! echo "${CONTROL_PLANE_IMAGE_DIGEST:-}" | grep -Eq '^ghcr\.io/.+@sha256:[0-9a-f]{64}$'; then
+            echo "::error::Invalid control-plane digest from docker job: '${CONTROL_PLANE_IMAGE_DIGEST:-}'"
+            exit 1
+          fi
+          for v in GCP_IMAGE_PROJECT GCP_IMAGE_NAME GCP_IMAGE_FAMILY; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing GCP image metadata: $v"
+              exit 1
+            fi
+          done
+
+          jq -cn \
+            --arg git_sha "$SOURCE_SHA" \
+            --arg control_plane_image "${CONTROL_PLANE_IMAGE:-}" \
+            --arg control_plane_image_digest "${CONTROL_PLANE_IMAGE_DIGEST}" \
+            --arg gcp_image_project "$GCP_IMAGE_PROJECT" \
+            --arg gcp_image_name "$GCP_IMAGE_NAME" \
+            --arg gcp_image_family "$GCP_IMAGE_FAMILY" \
+            --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            --slurpfile trust "$trust_json" \
+            --slurpfile examples "$examples_json" \
+            '{
+              git_sha: $git_sha,
+              control_plane_image: $control_plane_image,
+              control_plane_image_digest: $control_plane_image_digest,
+              gcp_image: {
+                image_project: $gcp_image_project,
+                image_name: $gcp_image_name,
+                image_family: $gcp_image_family
+              },
+              trusted_values: ($trust[0]),
+              example_images: ($examples[0]),
+              generated_at: $generated_at
+            }' > "$out"
+
+          jq -e '.git_sha | type == "string" and test("^[0-9a-f]{40}$")' "$out" >/dev/null
+          jq -e '.control_plane_image_digest | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.gcp_image.image_project | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.trusted_values.digest | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.example_images.hello_tdx_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+
+          cp "$trust_json" "${out_dir}/trusted_values.commit.json"
+          cp "$examples_json" "${out_dir}/example-images.commit.json"
+          jq -c '.gcp_image' "$out" > "${out_dir}/gcp-image.commit.json"
+
+      - name: Upload rollout artifact for promotion
+        uses: actions/upload-artifact@v4
+        with:
+          name: rollout-artifacts-${{ github.sha }}
+          if-no-files-found: error
+          path: /tmp/rollout-artifacts
