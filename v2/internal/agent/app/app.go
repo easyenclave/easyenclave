@@ -5,16 +5,27 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
+	"time"
 
 	"github.com/easyenclave/easyenclave/v2/internal/gen/agentapi"
 )
 
 type Config struct {
-	Addr string
+	Addr            string
+	NodeSize        string
+	Datacenter      string
+	VMName          string
+	SchedulerLabels map[string]string
 }
 
 func DefaultConfig() Config {
-	return Config{Addr: ":8000"}
+	return Config{
+		Addr:       ":8000",
+		NodeSize:   "tiny",
+		Datacenter: "baremetal:default",
+		VMName:     "unknown",
+	}
 }
 
 type App struct {
@@ -22,6 +33,11 @@ type App struct {
 	logger *slog.Logger
 	server *http.Server
 	mux    *http.ServeMux
+
+	deployedApp  atomic.Value
+	deploymentID atomic.Value
+	heartbeatSeq atomic.Int64
+	startedAt    time.Time
 }
 
 var _ agentapi.ServerInterface = (*App)(nil)
@@ -35,7 +51,14 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	}
 
 	mux := http.NewServeMux()
-	a := &App{cfg: cfg, logger: logger, mux: mux}
+	a := &App{
+		cfg:       cfg,
+		logger:    logger,
+		mux:       mux,
+		startedAt: time.Now().UTC(),
+	}
+	a.deployedApp.Store("")
+	a.deploymentID.Store("")
 	agentapi.HandlerFromMux(a, mux)
 
 	a.server = &http.Server{

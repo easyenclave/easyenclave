@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/easyenclave/easyenclave/v2/internal/gen/controlplaneapi"
 )
@@ -22,6 +24,10 @@ type App struct {
 	logger *slog.Logger
 	server *http.Server
 	mux    *http.ServeMux
+
+	mu         sync.Mutex
+	challenges map[string]challengeRecord
+	agents     map[string]*agentRecord
 }
 
 var _ controlplaneapi.ServerInterface = (*App)(nil)
@@ -35,7 +41,13 @@ func New(cfg Config, logger *slog.Logger) (*App, error) {
 	}
 
 	mux := http.NewServeMux()
-	a := &App{cfg: cfg, logger: logger, mux: mux}
+	a := &App{
+		cfg:        cfg,
+		logger:     logger,
+		mux:        mux,
+		challenges: map[string]challengeRecord{},
+		agents:     map[string]*agentRecord{},
+	}
 	controlplaneapi.HandlerFromMux(a, mux)
 	a.server = &http.Server{
 		Addr:    cfg.Addr,
@@ -60,4 +72,25 @@ func (a *App) Shutdown(ctx context.Context) error {
 
 func (a *App) Handler() http.Handler {
 	return a.mux
+}
+
+type challengeRecord struct {
+	VMName    string
+	ExpiresAt time.Time
+}
+
+type agentRecord struct {
+	AgentID        string
+	VMName         string
+	NodeSize       string
+	Datacenter     string
+	Secret         string
+	RegisteredAt   time.Time
+	LastHeartbeat  time.Time
+	Health         string
+	Status         string
+	DeployedApp    string
+	DeploymentID   string
+	LastTDXReport  string
+	LastQuoteError string
 }
