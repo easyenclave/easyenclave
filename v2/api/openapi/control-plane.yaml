@@ -1,0 +1,496 @@
+openapi: 3.0.3
+info:
+  title: EasyEnclave Control Plane API (v2)
+  version: 0.1.0
+  description: |
+    Clean-slate control-plane API.
+    Supports direct agent registration and optional datacenter federation.
+servers:
+  - url: https://cp.easyenclave.example
+security:
+  - bearerAuth: []
+paths:
+  /v2/health:
+    get:
+      operationId: GetControlPlaneHealth
+      tags: [system]
+      responses:
+        '200':
+          description: Control-plane health
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /v2/agents/challenge:
+    get:
+      operationId: GetAgentChallenge
+      tags: [agents]
+      parameters:
+        - name: vm_name
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent nonce challenge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChallengeResponse'
+  /v2/agents/register:
+    post:
+      operationId: RegisterAgent
+      tags: [agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRegisterRequest'
+      responses:
+        '200':
+          description: Registration accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegisterResponse'
+  /v2/agents/{agent_id}/heartbeat:
+    post:
+      operationId: AgentHeartbeat
+      tags: [agents]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: Heartbeat accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+  /v2/agents/{agent_id}/status:
+    post:
+      operationId: AgentStatus
+      tags: [agents]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentStatusRequest'
+      responses:
+        '200':
+          description: Status accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+  /v2/agents/{agent_id}/deployed:
+    post:
+      operationId: AgentDeployed
+      tags: [agents]
+      parameters:
+        - name: agent_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentDeployedRequest'
+      responses:
+        '200':
+          description: Deployment state accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+  /v2/apps/{app_name}/versions:
+    post:
+      operationId: PublishAppVersion
+      tags: [apps]
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublishVersionRequest'
+      responses:
+        '200':
+          description: Version published
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishVersionResponse'
+  /v2/apps/{app_name}/versions/{version}/deploy/preflight:
+    post:
+      operationId: DeployPreflight
+      tags: [deploy]
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployPreflightRequest'
+      responses:
+        '200':
+          description: Placement preflight
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployPreflightResponse'
+  /v2/apps/{app_name}/versions/{version}/deploy:
+    post:
+      operationId: DeployVersion
+      tags: [deploy]
+      parameters:
+        - name: app_name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployRequest'
+      responses:
+        '200':
+          description: Deployment launched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeployResponse'
+  /v2/federation/datacenters/{dc_id}/desired-state:
+    get:
+      operationId: GetDatacenterDesiredState
+      tags: [federation]
+      parameters:
+        - name: dc_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Desired state snapshot for the datacenter CP
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DatacenterDesiredStateResponse'
+  /v2/federation/datacenters/{dc_id}/events:
+    post:
+      operationId: PostDatacenterEvents
+      tags: [federation]
+      parameters:
+        - name: dc_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatacenterEventBatch'
+      responses:
+        '200':
+          description: Events accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+  /v2/federation/datacenters/{dc_id}/snapshot:
+    post:
+      operationId: PostDatacenterSnapshot
+      tags: [federation]
+      parameters:
+        - name: dc_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatacenterSnapshot'
+      responses:
+        '200':
+          description: Snapshot accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          example: control-plane-v2
+        version:
+          type: string
+    ChallengeResponse:
+      type: object
+      required: [nonce, expires_at]
+      properties:
+        nonce:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    AckResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        message:
+          type: string
+    AgentRegisterRequest:
+      type: object
+      required: [vm_name, node_size, datacenter, quote_b64, challenge_nonce]
+      properties:
+        vm_name:
+          type: string
+        node_size:
+          type: string
+          enum: [tiny, standard, llm]
+        datacenter:
+          type: string
+        quote_b64:
+          type: string
+        challenge_nonce:
+          type: string
+        intel_ta_token:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+    AgentRegisterResponse:
+      type: object
+      required: [agent_id, agent_api_secret]
+      properties:
+        agent_id:
+          type: string
+        agent_api_secret:
+          type: string
+        mode:
+          type: string
+          enum: [direct, federated]
+    HeartbeatRequest:
+      type: object
+      required: [timestamp]
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        health:
+          type: string
+          enum: [healthy, unhealthy]
+        deployed_app:
+          type: string
+        deployment_id:
+          type: string
+    AgentStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [registering, undeployed, deploying, deployed, error]
+        detail:
+          type: string
+    AgentDeployedRequest:
+      type: object
+      required: [deployment_id, app_name, version]
+      properties:
+        deployment_id:
+          type: string
+        app_name:
+          type: string
+        version:
+          type: string
+        service_url:
+          type: string
+    PublishVersionRequest:
+      type: object
+      required: [version, compose]
+      properties:
+        version:
+          type: string
+        compose:
+          type: string
+          description: base64-encoded compose manifest
+        node_size:
+          type: string
+          enum: [tiny, standard, llm]
+    PublishVersionResponse:
+      type: object
+      required: [version_id, status]
+      properties:
+        version_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, attesting, attested, failed, rejected]
+    DeployPreflightRequest:
+      type: object
+      properties:
+        node_size:
+          type: string
+          enum: [tiny, standard, llm]
+        allowed_datacenters:
+          type: array
+          items:
+            type: string
+        denied_datacenters:
+          type: array
+          items:
+            type: string
+    DeployPreflightResponse:
+      type: object
+      required: [eligible, issues]
+      properties:
+        eligible:
+          type: boolean
+        selected_agent_id:
+          type: string
+        selected_datacenter:
+          type: string
+        issues:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlacementIssue'
+    PlacementIssue:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        agent_id:
+          type: string
+    DeployRequest:
+      type: object
+      properties:
+        node_size:
+          type: string
+          enum: [tiny, standard, llm]
+        config:
+          type: object
+          additionalProperties: true
+    DeployResponse:
+      type: object
+      required: [deployment_id, agent_id]
+      properties:
+        deployment_id:
+          type: string
+        agent_id:
+          type: string
+        service_url:
+          type: string
+    DatacenterDesiredStateResponse:
+      type: object
+      required: [dc_id, sequence, generated_at]
+      properties:
+        dc_id:
+          type: string
+        sequence:
+          type: integer
+          format: int64
+        generated_at:
+          type: string
+          format: date-time
+        policy:
+          type: object
+          additionalProperties: true
+        apps:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    DatacenterEventBatch:
+      type: object
+      required: [sequence_start, sequence_end, events]
+      properties:
+        sequence_start:
+          type: integer
+          format: int64
+        sequence_end:
+          type: integer
+          format: int64
+        events:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    DatacenterSnapshot:
+      type: object
+      required: [observed_at, agents]
+      properties:
+        observed_at:
+          type: string
+          format: date-time
+        agents:
+          type: array
+          items:
+            type: object
+            additionalProperties: true

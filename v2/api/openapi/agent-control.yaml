@@ -1,0 +1,219 @@
+openapi: 3.0.3
+info:
+  title: EasyEnclave Agent Control API (v2)
+  version: 0.1.0
+  description: Agent runtime control and introspection API.
+servers:
+  - url: https://agent.easyenclave.example
+security:
+  - agentSecret: []
+paths:
+  /api/v2/health:
+    get:
+      operationId: GetAgentHealth
+      tags: [system]
+      responses:
+        '200':
+          description: Agent health
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentHealthResponse'
+  /api/v2/control/challenge:
+    get:
+      operationId: GetControlChallenge
+      tags: [control]
+      responses:
+        '200':
+          description: Challenge nonce for CP->agent attestation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ControlChallengeResponse'
+  /api/v2/deploy:
+    post:
+      operationId: DeployWorkload
+      tags: [control]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeployWorkloadRequest'
+      responses:
+        '200':
+          description: Deploy accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+  /api/v2/undeploy:
+    post:
+      operationId: UndeployWorkload
+      tags: [control]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UndeployWorkloadRequest'
+      responses:
+        '200':
+          description: Undeploy accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AckResponse'
+  /api/v2/logs:
+    get:
+      operationId: GetAgentLogs
+      tags: [introspection]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: Agent logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogsResponse'
+  /api/v2/stats:
+    get:
+      operationId: GetAgentStats
+      tags: [introspection]
+      responses:
+        '200':
+          description: Agent stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+  /api/v2/state-snapshot:
+    get:
+      operationId: GetAgentStateSnapshot
+      tags: [introspection]
+      responses:
+        '200':
+          description: Runtime snapshot used for CP rehydration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StateSnapshotResponse'
+components:
+  securitySchemes:
+    agentSecret:
+      type: apiKey
+      in: header
+      name: X-Agent-Secret
+  schemas:
+    AgentHealthResponse:
+      type: object
+      required: [status, service]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        service:
+          type: string
+          example: agent-v2
+        attested:
+          type: boolean
+    ControlChallengeResponse:
+      type: object
+      required: [nonce, expires_at]
+      properties:
+        nonce:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    DeployWorkloadRequest:
+      type: object
+      required: [deployment_id, app_name, version]
+      properties:
+        deployment_id:
+          type: string
+        app_name:
+          type: string
+        version:
+          type: string
+        compose:
+          type: string
+          description: base64-encoded compose
+        config:
+          type: object
+          additionalProperties: true
+    UndeployWorkloadRequest:
+      type: object
+      required: [deployment_id]
+      properties:
+        deployment_id:
+          type: string
+        reason:
+          type: string
+    AckResponse:
+      type: object
+      required: [ok]
+      properties:
+        ok:
+          type: boolean
+        message:
+          type: string
+    LogsResponse:
+      type: object
+      required: [logs]
+      properties:
+        logs:
+          type: array
+          items:
+            type: object
+            required: [timestamp, level, message]
+            properties:
+              timestamp:
+                type: string
+                format: date-time
+              level:
+                type: string
+              message:
+                type: string
+    StatsResponse:
+      type: object
+      required: [cpu_usage, memory_usage_bytes]
+      properties:
+        cpu_usage:
+          type: number
+          format: float
+        memory_usage_bytes:
+          type: integer
+          format: int64
+        deployed_app:
+          type: string
+        deployment_id:
+          type: string
+    StateSnapshotResponse:
+      type: object
+      required: [health, observed_at]
+      properties:
+        health:
+          type: string
+          enum: [healthy, unhealthy]
+        observed_at:
+          type: string
+          format: date-time
+        deployed_workload:
+          type: object
+          additionalProperties: true
+        scheduler_labels:
+          type: object
+          additionalProperties:
+            type: string
+        heartbeat_seq:
+          type: integer
+          format: int64

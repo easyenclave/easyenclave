@@ -1,0 +1,45 @@
+name: v2 CI
+
+on:
+  push:
+    paths:
+      - 'v2/**'
+      - '.github/workflows/v2-*.yml'
+  pull_request:
+    paths:
+      - 'v2/**'
+      - '.github/workflows/v2-*.yml'
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+          cache: true
+          cache-dependency-path: v2/go.mod
+
+      - name: Verify formatting
+        run: |
+          set -euo pipefail
+          bad="$(gofmt -l .)"
+          if [ -n "$bad" ]; then
+            echo "The following files are not gofmt'd:"
+            echo "$bad"
+            exit 1
+          fi
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Go test
+        run: go test ./...
