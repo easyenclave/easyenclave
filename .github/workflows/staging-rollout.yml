@@ -432,9 +432,70 @@ jobs:
       source_ref: ${{ needs.resolve.outputs.source_sha }}
       easyenclave_env: staging
 
+  cleanup-legacy-gcp-agents:
+    name: Cleanup legacy staging GCP agent rows
+    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp]
+    if: needs.resolve.outputs.should_run == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete stale legacy vm_name agent rows (tdx-agent-*)
+        shell: bash
+        env:
+          CP_URL: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+          ADMIN_TOKEN: ${{ needs.bootstrap.outputs.cp_admin_token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CP_URL:-}" ]; then
+            echo "::error::Missing CP URL for cleanup."
+            exit 1
+          fi
+          if [ -z "${ADMIN_TOKEN:-}" ]; then
+            echo "::error::Missing bootstrap admin token for cleanup."
+            exit 1
+          fi
+
+          agents_json="$(curl -sSf -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
+          mapfile -t stale_ids < <(
+            echo "$agents_json" | jq -r '
+              [.agents[]?
+                | select((.datacenter // "" | ascii_downcase) | startswith("gcp:"))
+                | select((.vm_name // "") | startswith("tdx-agent-"))
+                | select((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "unverified")
+                | select((.current_deployment_id // "") == "")
+                | .agent_id] | unique[]?'
+          )
+
+          if [ "${#stale_ids[@]}" -eq 0 ]; then
+            echo "No legacy staging gcp tdx-agent-* rows to clean up."
+            exit 0
+          fi
+
+          reason="staging-rollout:cleanup-legacy-gcp-vm-name"
+          payload="$(jq -cn --arg reason "$reason" '{dry_run:false, reason:$reason}')"
+          failed=0
+          echo "Cleaning ${#stale_ids[@]} legacy GCP agent row(s)..."
+          for agent_id in "${stale_ids[@]}"; do
+            code="$(curl -sS -o /tmp/cleanup-agent.json -w "%{http_code}" \
+              -X POST "$CP_URL/api/v1/admin/agents/${agent_id}/cleanup" \
+              -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              -d "$payload" || echo 000)"
+            if [ "$code" -ge 400 ]; then
+              echo "::error::Cleanup failed for agent=${agent_id} (HTTP $code): $(cat /tmp/cleanup-agent.json)"
+              failed=1
+            else
+              echo "Cleanup succeeded for agent=${agent_id} (HTTP $code)."
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more legacy GCP agent cleanups failed."
+            exit 1
+          fi
+
   assert-rollout-executed:
     name: Assert staging rollout executed
-    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp]
+    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp, cleanup-legacy-gcp-agents]
     if: always() && needs.resolve.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -445,9 +506,10 @@ jobs:
           bootstrap="${{ needs.bootstrap.result }}"
           baremetal="${{ needs['deploy-baremetal'].result }}"
           gcp="${{ needs['deploy-gcp'].result }}"
-          echo "bootstrap=${bootstrap} baremetal=${baremetal} gcp=${gcp}"
-          if [ "$bootstrap" != "success" ] || [ "$baremetal" != "success" ] || [ "$gcp" != "success" ]; then
-            echo "::error::Staging rollout did not fully execute: bootstrap=${bootstrap}, baremetal=${baremetal}, gcp=${gcp}"
+          cleanup_legacy="${{ needs['cleanup-legacy-gcp-agents'].result }}"
+          echo "bootstrap=${bootstrap} baremetal=${baremetal} gcp=${gcp} cleanup_legacy=${cleanup_legacy}"
+          if [ "$bootstrap" != "success" ] || [ "$baremetal" != "success" ] || [ "$gcp" != "success" ] || [ "$cleanup_legacy" != "success" ]; then
+            echo "::error::Staging rollout did not fully execute: bootstrap=${bootstrap}, baremetal=${baremetal}, gcp=${gcp}, cleanup_legacy=${cleanup_legacy}"
             exit 1
           fi
           echo "Staging rollout executed all required stages."
