@@ -138,12 +138,12 @@ jobs:
           out="${RUNNER_TEMP}/hello-tdx.compose.yml"
           cp "$src" "$out"
           if [ -n "${HELLO_TDX_IMAGE:-}" ]; then
-            if ! grep -qE 'image:[[:space:]]*hashicorp/http-echo:latest' "$out"; then
+            if ! grep -qE 'image:[[:space:]]*hashicorp/http-echo(@sha256:[0-9a-f]{64}|:latest)' "$out"; then
               echo "::error::Expected hello-tdx image line not found in $src"
               exit 1
             fi
             escaped="$(printf '%s' "${HELLO_TDX_IMAGE}" | sed -e 's/[&|]/\\&/g')"
-            sed -i -E "s|image:[[:space:]]*hashicorp/http-echo:latest|image: ${escaped}|g" "$out"
+            sed -i -E "s|image:[[:space:]]*hashicorp/http-echo(@sha256:[0-9a-f]{64}|:latest)|image: ${escaped}|g" "$out"
           fi
           echo "compose_file=$out" >> "$GITHUB_OUTPUT"
 
@@ -389,21 +389,21 @@ jobs:
           cp "$src" "$out"
 
           if [ -n "${PRIVATE_LLM_OLLAMA_IMAGE:-}" ]; then
-            if ! grep -qE 'image:[[:space:]]*ollama/ollama:latest' "$out"; then
+            if ! grep -qE 'image:[[:space:]]*ollama/ollama(@sha256:[0-9a-f]{64}|:latest)' "$out"; then
               echo "::error::Expected private-llm ollama image line not found in $src"
               exit 1
             fi
             escaped="$(printf '%s' "${PRIVATE_LLM_OLLAMA_IMAGE}" | sed -e 's/[&|]/\\&/g')"
-            sed -i -E "s|image:[[:space:]]*ollama/ollama:latest|image: ${escaped}|g" "$out"
+            sed -i -E "s|image:[[:space:]]*ollama/ollama(@sha256:[0-9a-f]{64}|:latest)|image: ${escaped}|g" "$out"
           fi
 
           if [ -n "${PRIVATE_LLM_MODEL_LOADER_IMAGE:-}" ]; then
-            if ! grep -qE 'image:[[:space:]]*curlimages/curl:latest' "$out"; then
+            if ! grep -qE 'image:[[:space:]]*curlimages/curl(@sha256:[0-9a-f]{64}|:latest)' "$out"; then
               echo "::error::Expected private-llm model-loader image line not found in $src"
               exit 1
             fi
             escaped="$(printf '%s' "${PRIVATE_LLM_MODEL_LOADER_IMAGE}" | sed -e 's/[&|]/\\&/g')"
-            sed -i -E "s|image:[[:space:]]*curlimages/curl:latest|image: ${escaped}|g" "$out"
+            sed -i -E "s|image:[[:space:]]*curlimages/curl(@sha256:[0-9a-f]{64}|:latest)|image: ${escaped}|g" "$out"
           fi
 
           echo "compose_file=$out" >> "$GITHUB_OUTPUT"

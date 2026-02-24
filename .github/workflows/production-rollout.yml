@@ -471,9 +471,6 @@ jobs:
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
-      hello_tdx_image: ${{ needs.example-images.outputs.hello_tdx_image }}
-      private_llm_ollama_image: ${{ needs.example-images.outputs.private_llm_ollama_image }}
-      private_llm_model_loader_image: ${{ needs.example-images.outputs.private_llm_model_loader_image }}
       easyenclave_env: production
 
   deploy-gcp:
@@ -487,7 +484,4 @@ jobs:
       cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
       cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
       source_ref: ${{ needs.resolve.outputs.source_ref }}
-      hello_tdx_image: ${{ needs.example-images.outputs.hello_tdx_image }}
-      private_llm_ollama_image: ${{ needs.example-images.outputs.private_llm_ollama_image }}
-      private_llm_model_loader_image: ${{ needs.example-images.outputs.private_llm_model_loader_image }}
       easyenclave_env: production

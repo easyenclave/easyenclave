@@ -46,6 +46,24 @@ is_json() {
   jq -e . >/dev/null 2>&1
 }
 
+json_get_or() {
+  local raw="${1:-}"
+  local filter="${2:-.}"
+  local fallback="${3:-}"
+  if echo "$raw" | is_json; then
+    echo "$raw" | jq -r "$filter" 2>/dev/null || echo "$fallback"
+  else
+    echo "$fallback"
+  fi
+}
+
+response_snippet() {
+  local raw="${1:-}"
+  local one_line
+  one_line="$(echo "$raw" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  echo "${one_line:0:200}"
+}
+
 measurer_service_name() {
   # Legacy (measuring-enclave) name kept for backward compatibility.
   # The control plane now measures versions directly.
@@ -245,22 +263,31 @@ find_and_deploy() {
   local preflight_code preflight_resp
   preflight_code="$(run_preflight)"
   preflight_resp="$(cat /tmp/deploy_preflight_response.json)"
-  if [ "$preflight_code" -lt 400 ]; then
+  if [ "$preflight_code" -lt 400 ] && echo "$preflight_resp" | is_json; then
     print_preflight_diagnostics "$preflight_resp"
+  elif [ "$preflight_code" -lt 400 ]; then
+    echo "::warning::Preflight returned non-JSON body: $(response_snippet "$preflight_resp")"
   else
     echo "::warning::Preflight request failed (HTTP $preflight_code): $preflight_resp"
   fi
 
   echo "Requesting control-plane placement and deploy for version $VERSION..."
   for attempt in {1..12}; do
-    local http_code response detail deployment_id agent_id
+    local http_code response detail response_hint deployment_id agent_id
     http_code="$(try_deploy)"
     response="$(cat /tmp/deploy_response.json)"
-    detail="$(echo "$response" | jq -r '.detail // empty')"
+    detail="$(json_get_or "$response" '.detail // empty' '')"
+    response_hint="$(response_snippet "$response")"
 
     if [ "$http_code" -lt 400 ]; then
-      deployment_id="$(echo "$response" | jq -r '.deployment_id // empty')"
-      agent_id="$(echo "$response" | jq -r '.agent_id // empty')"
+      if ! echo "$response" | is_json; then
+        echo "::warning::Deploy returned HTTP ${http_code} with non-JSON body (attempt ${attempt}/12): ${response_hint}"
+        sleep 10
+        continue
+      fi
+
+      deployment_id="$(json_get_or "$response" '.deployment_id // empty' '')"
+      agent_id="$(json_get_or "$response" '.agent_id // empty' '')"
       if [ -z "$agent_id" ] && [ -n "$deployment_id" ]; then
         agent_id="$(curl -sf "${CONTROL_PLANE_URL}/api/v1/deployments/${deployment_id}" 2>/dev/null | jq -r '.agent_id // empty')"
       fi
@@ -276,8 +303,12 @@ find_and_deploy() {
       return 0
     fi
 
-    echo "  HTTP $http_code: $detail"
-    if [ "$http_code" = "503" ] || echo "$detail" | grep -Eqi "No eligible agents|No warm capacity|pool reconcile"; then
+    if [ -n "$detail" ]; then
+      echo "  HTTP $http_code: $detail"
+    else
+      echo "  HTTP $http_code: ${response_hint:-<empty response>}"
+    fi
+    if [ "$http_code" = "503" ] || echo "${detail}${response_hint}" | grep -Eqi "No eligible agents|No warm capacity|pool reconcile|service unavailable|temporarily unavailable"; then
       echo "Control plane not placeable yet, waiting 30s... ($attempt/12)"
       sleep 30
       continue
@@ -285,8 +316,10 @@ find_and_deploy() {
 
     preflight_code="$(run_preflight)"
     preflight_resp="$(cat /tmp/deploy_preflight_response.json)"
-    if [ "$preflight_code" -lt 400 ]; then
+    if [ "$preflight_code" -lt 400 ] && echo "$preflight_resp" | is_json; then
       print_preflight_diagnostics "$preflight_resp"
+    elif [ "$preflight_code" -lt 400 ]; then
+      echo "::warning::Preflight returned non-JSON body: $(response_snippet "$preflight_resp")"
     fi
     echo "::error::Deploy request failed"
     exit 1
@@ -294,8 +327,10 @@ find_and_deploy() {
 
   preflight_code="$(run_preflight)"
   preflight_resp="$(cat /tmp/deploy_preflight_response.json)"
-  if [ "$preflight_code" -lt 400 ]; then
+  if [ "$preflight_code" -lt 400 ] && echo "$preflight_resp" | is_json; then
     print_preflight_diagnostics "$preflight_resp"
+  elif [ "$preflight_code" -lt 400 ]; then
+    echo "::warning::Preflight returned non-JSON body: $(response_snippet "$preflight_resp")"
   fi
   echo "::error::No eligible agents after 12 attempts"
   exit 1

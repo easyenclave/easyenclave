@@ -1,6 +1,6 @@
 services:
   private-llm:
-    image: ollama/ollama:latest
+    image: ollama/ollama@sha256:006ad593108a705eafc8ea8496a30765222bdab17b1a1b0bbe3d50ff2e70fbf4
     ports:
       - "8080:8080"
     environment:
@@ -14,7 +14,7 @@ services:
       retries: 5
 
   model-loader:
-    image: curlimages/curl:latest
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
     depends_on:
       private-llm:
         condition: service_healthy
