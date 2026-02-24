@@ -2491,7 +2491,9 @@ def run_control_plane_mode(config: dict):
     cp_url_for_agents = (config.get("easyenclave_cp_url") or "").strip()
     if not cp_url_for_agents:
         canonical_hostname, alias_hostname = _control_plane_hostnames(config)
-        cp_url_for_agents = f"https://{canonical_hostname or alias_hostname}"
+        # Prefer the stable public alias (app/app-staging) for agent registration.
+        # Network-scoped hostnames are useful as diagnostics but can become stale across rollouts.
+        cp_url_for_agents = f"https://{alias_hostname or canonical_hostname}"
     if cp_url_for_agents:
         env["EASYENCLAVE_CP_URL"] = cp_url_for_agents
         logger.info(

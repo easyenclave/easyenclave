@@ -206,7 +206,7 @@ def _is_stock_ubuntu_source(*, image_project: str, image_family: str, image_name
 def _launcher_url() -> str:
     # Prefer the pinned SHA URL if available; fall back to a stable path.
     repo = os.environ.get("GITHUB_REPOSITORY", "easyenclave/easyenclave")
-    sha = os.environ.get("GITHUB_SHA", "main")
+    sha = os.environ.get("EASYENCLAVE_GIT_SHA") or os.environ.get("GITHUB_SHA") or "main"
     return f"https://raw.githubusercontent.com/{repo}/{sha}/infra/launcher/launcher.py"
 
 
