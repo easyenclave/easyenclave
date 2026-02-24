@@ -6,6 +6,10 @@ on:
     paths:
       - 'v2/**'
       - '.github/workflows/v2-*.yml'
+  pull_request:
+    paths:
+      - 'v2/**'
+      - '.github/workflows/v2-*.yml'
   workflow_dispatch: {}
 
 jobs:
