@@ -296,10 +296,19 @@ jobs:
             [ -n "$name" ] || continue
             [ -n "$zone" ] || continue
             echo "Deleting stale staging instance: ${name} (${zone})"
-            gcloud compute instances delete "${name}" \
+            delete_output=""
+            if ! delete_output="$(gcloud compute instances delete "${name}" \
               --project "${GCP_PROJECT_ID}" \
               --zone "${zone}" \
-              --quiet
+              --quiet 2>&1)"; then
+              if echo "${delete_output}" | grep -qi "was not found"; then
+                echo "Instance already deleted, skipping: ${name} (${zone})"
+                continue
+              fi
+              echo "${delete_output}"
+              exit 1
+            fi
+            [ -z "${delete_output}" ] || echo "${delete_output}"
           done
 
       - name: Keep only latest 3 staging commit images
