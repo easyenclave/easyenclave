@@ -105,6 +105,7 @@ jobs:
     env:
       CP_URL: ${{ vars.STAGING_CP_URL || 'https://app-staging.easyenclave.com' }}
       CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
+      CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
       CLOUDS: baremetal,gcp
       NODE_SIZE: tiny
       DC_BAREMETAL: ${{ vars.BAREMETAL_DATACENTER || 'baremetal:github-runner' }}

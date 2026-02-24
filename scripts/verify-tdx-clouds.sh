@@ -17,6 +17,7 @@ NODE_SIZE="${NODE_SIZE:-standard}"
 VERIFY_APP_NAME="${VERIFY_APP_NAME:-}"
 VERIFY_APP_VERSION="${VERIFY_APP_VERSION:-}"
 CP_ADMIN_TOKEN="${CP_ADMIN_TOKEN:-}"
+CP_ADMIN_PASSWORD="${CP_ADMIN_PASSWORD:-}"
 ALLOW_MEASURER_FALLBACK="${ALLOW_MEASURER_FALLBACK:-false}"
 SKIP_MISSING_DATACENTER="${SKIP_MISSING_DATACENTER:-false}"
 FAIL_ON_UNSUPPORTED_CLOUDS="${FAIL_ON_UNSUPPORTED_CLOUDS:-false}"
@@ -33,9 +34,6 @@ CP_CURL_ARGS=(
   -H "Accept: application/json"
   -H "User-Agent: easyenclave-cloud-verify/1.0"
 )
-if [ -n "$CP_ADMIN_TOKEN" ]; then
-  CP_CURL_ARGS+=(-H "Authorization: Bearer $CP_ADMIN_TOKEN")
-fi
 
 require_tools() {
   local missing=0
@@ -54,6 +52,48 @@ trim() {
   local value="$1"
   # shellcheck disable=SC2001
   echo "$(echo "$value" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+}
+
+resolve_admin_token() {
+  local password payload tmp code body token
+  CP_ADMIN_TOKEN="$(trim "$CP_ADMIN_TOKEN")"
+  if [ -n "$CP_ADMIN_TOKEN" ]; then
+    return 0
+  fi
+
+  password="$(trim "$CP_ADMIN_PASSWORD")"
+  if [ -z "$password" ]; then
+    return 0
+  fi
+
+  payload="$(jq -cn --arg password "$password" '{password: $password}')"
+  tmp="$(mktemp)"
+  code="$(curl -sS -o "$tmp" -w "%{http_code}" \
+    -X POST "$CP_URL/admin/login" \
+    -H "Content-Type: application/json" \
+    -d "$payload")" || {
+      rm -f "$tmp"
+      return 1
+    }
+  if [ "$code" -ge 400 ]; then
+    body="$(tr '\n' ' ' < "$tmp" | sed 's/[[:space:]]\+/ /g' | cut -c1-240)"
+    rm -f "$tmp"
+    echo "::error::Control plane login returned HTTP $code (${body:-no body})" >&2
+    return 1
+  fi
+  token="$(jq -r '.token // empty' "$tmp" 2>/dev/null || true)"
+  rm -f "$tmp"
+  if [ -z "$token" ]; then
+    echo "::error::Control plane login response did not contain a token" >&2
+    return 1
+  fi
+  CP_ADMIN_TOKEN="$token"
+}
+
+add_auth_header() {
+  if [ -n "$CP_ADMIN_TOKEN" ]; then
+    CP_CURL_ARGS+=(-H "Authorization: Bearer $CP_ADMIN_TOKEN")
+  fi
 }
 
 datacenter_for_cloud() {
@@ -86,7 +126,7 @@ agents_json() {
     rm -f "$tmp"
     echo "::error::Control plane agents endpoint returned HTTP $code (${body:-no body})" >&2
     if [ "$code" = "401" ] || [ "$code" = "403" ]; then
-      echo "::error::Set CP_ADMIN_TOKEN for authenticated agent checks" >&2
+      echo "::error::Set CP_ADMIN_TOKEN or CP_ADMIN_PASSWORD for authenticated agent checks" >&2
     fi
     return 1
   fi
@@ -271,6 +311,12 @@ verify_one_cloud() {
 
 main() {
   require_tools
+  if ! resolve_admin_token; then
+    echo "::error::Failed to establish control-plane admin authentication"
+    exit 1
+  fi
+  add_auth_header
+
   echo "Pure-TDX cloud verification"
   echo "CP_URL=$CP_URL"
   if [ -n "$CP_ADMIN_TOKEN" ]; then
