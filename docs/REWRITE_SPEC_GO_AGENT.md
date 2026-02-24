@@ -595,3 +595,132 @@ Observability requirements by datacenter:
 - Per-datacenter attestation latency and failure reasons.
 - Per-datacenter deploy success/failure and queue delay.
 - GPU node utilization and saturation (`baremetal:chicago-h100`).
+
+## 11. Legacy `infra/` Logic to Carry Forward (Required)
+
+This section is derived from a full read of legacy `infra/` (`tdx_cli.py`, `launcher/launcher.py`, `image/*`, VM template, systemd units).
+For the rewrite, these are product requirements unless explicitly marked optional.
+
+### 11.1 Boot/Image/runtime invariants
+
+- Keep measured boot model:
+  - direct kernel/initrd boot
+  - dm-verity protected read-only root filesystem
+  - writable runtime state on `/data` (not on root)
+- Keep `/data` setup semantics:
+  - if `/dev/vdb` exists: create ephemeral-key dm-crypt mapping, format ext4, mount `/data`
+  - else: mount `/data` as tmpfs fallback
+- Keep container storage rooted at `/data`:
+  - Docker data root `/data/docker`
+  - containerd root `/data/containerd`
+- Keep ConfigFS-TSM setup at boot (`/sys/kernel/config/tsm/report`) for quote generation.
+- Keep network boot baseline:
+  - DHCP on wired interfaces
+  - reliable `network-online` before launcher/agent start
+- Keep serial console logging as first-class diagnostic path for CI and measurement capture.
+
+### 11.2 Config ingestion + bootstrap transport
+
+- Keep ordered config source chain in agent runtime:
+  1. file config (`/etc/easyenclave/config.json` or explicit override)
+  2. config-drive ISO (`/config.json`)
+  3. kernel cmdline payload (`easyenclave.config` or `easyenclave.configz`)
+- Keep cmdline payload compression support (`configz` zlib+base64) and size-aware fallback.
+- Keep deterministic measurement behavior:
+  - measurement mode must not add mutable/extra config-drive inputs
+  - if cmdline exceeds safe limit in measurement mode, fail fast
+- Keep host-side fallback behavior for non-measure VMs:
+  - if cmdline config too large, emit config-drive ISO and boot without embedded config blob.
+
+### 11.3 Attestation/control-channel security semantics
+
+- Keep nonce challenge flow for agent registration:
+  - CP issues nonce
+  - agent embeds nonce in TDX quote REPORTDATA
+  - CP verifies nonce binding
+- Keep agent registration payload shape semantics:
+  - includes `vm_name`, `node_size`, `datacenter`, attestation payload
+- Keep CP->agent authenticated control writes:
+  - per-agent shared secret required
+  - optional/required CP attestation envelope mode for write endpoints (`deploy`, `undeploy`)
+- Keep trusted-CP measurement policy support on agent side:
+  - configured trusted CP MRTDs allowlist
+  - optional first-seen CP MRTD pinning behavior
+- Keep periodic attestation heartbeat push from agent to CP.
+
+### 11.4 Deployment/runtime execution semantics
+
+- Keep agent control API surface in v2 equivalent form:
+  - health/status
+  - deploy/undeploy
+  - logs/stats
+  - control challenge endpoint for CP->agent attestation
+- Keep workload deploy flow semantics:
+  - decode compose + build context payloads
+  - run compose up with transient-network retry policy
+  - wait for health endpoint before marking deployed
+  - compute compose hash and bind into attestation metadata
+- Keep reverse proxy behavior:
+  - unknown HTTP routes on agent admin port proxy to workload port.
+
+### 11.5 CP-in-VM bootstrap/tunnel semantics
+
+- Keep CP bootstrap rule: pinned immutable `control_plane_image` required (no implicit `latest`).
+- Keep CP runtime env passthrough model for trust/auth/billing/provider config (typed in Go, same capability).
+- Keep Cloudflare control-plane tunnel automation semantics:
+  - canonical network hostname + stable alias hostname (`app` / `app-staging`)
+  - DNS upsert idempotency
+  - cloudflared process supervision/restart
+- Keep optional agent tunnel setup from CP registration response (`tunnel_token`, `hostname`).
+
+### 11.6 VM orchestration semantics (`tdx_cli` -> `eectl`)
+
+- Replace legacy `tdx` Python CLI with Go `eectl` commands, preserving behavior:
+  - VM create/list/status/delete/measure
+  - CP bootstrap VM creation with optional wait + bootstrap agent bring-up
+  - cleanup of orphaned libvirt/workdir artifacts
+- Keep node size presets + env overrides + explicit resource override flags.
+- Keep naming/label semantics for role/network/size (exact format may change; diagnostics value must remain).
+
+### 11.7 Failure behavior semantics to keep
+
+- Keep explicit registration retry policy with bounded backoff and configurable max attempts.
+- Keep connectivity-degradation handling for cloud-attached agents:
+  - probe tunnel reachability
+  - optional self-termination after threshold (especially GCP nodes)
+- Keep best-effort process supervision loops for CP container and tunnel connectors.
+
+### 11.8 Explicitly dropped from legacy infra
+
+- `customize.sh` / cloud-init heavy path is not part of the v2 control surface.
+- Python launcher/CLI/scripts are removed as runtime dependencies.
+- Legacy script entrypoints are replaced by Go binaries (`control-plane`, `agent`, `eectl`).
+- SDK-dependent CI and SDK release/test flows stay removed.
+
+## 12. Delivery Plan to Incorporate Legacy Infra Logic
+
+### Phase A: Go runtime parity foundation
+
+- Implement Go agent config loaders (file -> config-drive -> cmdline, including `configz`).
+- Implement Go TDX attestation module (quote parsing, nonce binding checks, ITA integration).
+- Implement Go agent API server with deploy/undeploy/health/logs/stats + workload proxy.
+
+### Phase B: Go VM/bootstrap toolchain parity
+
+- Implement `eectl vm` + `eectl cp bootstrap` with libvirt and image artifact handling.
+- Implement cmdline-size safety + config-drive fallback logic.
+- Implement measurement mode with deterministic boot constraints and serial extraction.
+
+### Phase C: Image/runtime build parity
+
+- Implement v2 image build path with:
+  - dm-verity root
+  - initrd content for verity boot
+  - systemd units for data disk + TSM + launcher/agent startup
+- Keep reproducible build hygiene and deterministic cleanup behaviors.
+
+### Phase D: Production rollout and federation
+
+- Land master+datacenter CP federation APIs and event sequencing.
+- Use Cloudflare weighted/cohort traffic routing for staged CP migration.
+- Execute DB-wipe recovery drill and federation outage/resync drill before >25% canary.
