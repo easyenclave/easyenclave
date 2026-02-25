@@ -1,0 +1,28 @@
+[package]
+name = "ee-cp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ee-cp"
+path = "src/main.rs"
+
+[dependencies]
+ee-common = { workspace = true }
+ee-attestation = { workspace = true }
+ee-aggregator = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+reqwest = { workspace = true }
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+url = { workspace = true }

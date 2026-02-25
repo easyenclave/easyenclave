@@ -1,25 +1,22 @@
-__pycache__/
-*.pyc
-*.pyo
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Environment
 .env
-.venv/
-venv/
-*.egg-info/
-dist/
-build/
+.env.local
+
+# SQLite
+easyenclave.db
+easyenclave.db-wal
+easyenclave.db-shm
 
 # VM images and build outputs
-infra/output/
 *.qcow2
 *.iso
 
 # Temporary files
 *.swp
-plan
 *.log
 /tmp/
-
-# SQLite database
-easyenclave.db
-easyenclave.db-wal
-easyenclave.db-shm
