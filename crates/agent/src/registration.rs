@@ -13,6 +13,7 @@ pub async fn register(
     client: &reqwest::Client,
     config: &AgentConfig,
     agent_id: &AgentId,
+    self_url: &str,
 ) -> Result<(), AgentError> {
     let mut attempt = 0u32;
 
@@ -20,7 +21,7 @@ pub async fn register(
         attempt += 1;
         info!(attempt, "attempting registration");
 
-        match try_register(client, config, agent_id).await {
+        match try_register(client, config, agent_id, self_url).await {
             Ok(()) => {
                 info!("registration successful");
                 return Ok(());
@@ -38,6 +39,7 @@ async fn try_register(
     client: &reqwest::Client,
     config: &AgentConfig,
     agent_id: &AgentId,
+    self_url: &str,
 ) -> Result<(), AgentError> {
     // Generate attestation token
     let attestation_token = if config.test_mode {
@@ -63,6 +65,7 @@ async fn try_register(
     };
 
     let registration = AgentRegistration {
+        url: self_url.to_string(),
         size: config.size,
         cloud: config.cloud,
         region: config.region.clone(),

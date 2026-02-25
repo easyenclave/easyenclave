@@ -2,8 +2,9 @@
 
 use crate::config::AggregatorConfig;
 use crate::registry::AgentRegistry;
+use ee_common::types::HealthResponse;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Start the health check scraping loop.
 pub fn start_health_scraper(
@@ -20,14 +21,44 @@ pub fn start_health_scraper(
     })
 }
 
-async fn scrape_health(registry: &AgentRegistry, _client: &reqwest::Client) {
+async fn scrape_health(registry: &AgentRegistry, client: &reqwest::Client) {
     let agents = registry.all_agents().await;
     for agent in agents {
         let agent_id = agent.id.to_string();
-        // We don't know the agent's URL from registration alone.
-        // In the full system, registration includes the agent's URL.
-        // For now this is a placeholder for the scraping logic.
-        debug!(agent_id = %agent_id, "health check placeholder");
+        let url = format!("{}/api/health", agent.url.trim_end_matches('/'));
+
+        let healthy = match client
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => match resp.json::<HealthResponse>().await {
+                Ok(health) => {
+                    debug!(
+                        agent_id = %agent_id,
+                        status = %health.status,
+                        uptime = health.uptime_secs,
+                        "agent health OK"
+                    );
+                    health.status == "ok"
+                }
+                Err(e) => {
+                    warn!(agent_id = %agent_id, ?e, "failed to parse health response");
+                    false
+                }
+            },
+            Ok(resp) => {
+                warn!(agent_id = %agent_id, status = %resp.status(), "agent health check failed");
+                false
+            }
+            Err(e) => {
+                warn!(agent_id = %agent_id, ?e, "agent unreachable");
+                false
+            }
+        };
+
+        registry.update_health(&agent_id, healthy).await;
     }
 }
 

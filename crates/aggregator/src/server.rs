@@ -10,7 +10,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use ee_common::error::ApiError;
 use ee_common::types::{
-    AgentId, AgentRegistration, AggregatorState, DeployRequest, HealthResponse, UndeployRequest,
+    AgentId, AgentRegistration, AggregatorState, DeployRequest, DeploymentInfo, HealthResponse,
+    UndeployRequest,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -99,29 +100,105 @@ async fn deploy(
     State(state): State<Arc<AppState>>,
     Json(req): Json<DeployRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    // Find a healthy agent and relay the deploy
+    // Find any registered agent and relay the deploy
     let agents = state.registry.all_agents().await;
     let agent = agents
         .first()
         .ok_or_else(|| ApiError::not_found("no agents available"))?;
 
+    let agent_url = format!("{}/api/deploy", agent.url.trim_end_matches('/'));
     tracing::info!(
         app = %req.app_name,
         agent_id = %agent.id,
-        "relaying deploy"
+        %agent_url,
+        "relaying deploy to agent"
     );
+
+    let resp = state
+        .client
+        .post(&agent_url)
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(120))
+        .send()
+        .await
+        .map_err(|e| ApiError::internal(format!("relay to agent failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ApiError::internal(format!(
+            "agent returned {status}: {body}"
+        )));
+    }
+
+    let body: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| ApiError::internal(format!("parse agent response: {e}")))?;
+
+    // Update registry with deployment info
+    if let Ok(info) = serde_json::from_value::<DeploymentInfo>(body.clone()) {
+        state
+            .registry
+            .update_deployment(&agent.id.to_string(), Some(info))
+            .await;
+    }
 
     Ok(Json(serde_json::json!({
         "status": "deployed",
         "agent_id": agent.id.to_string(),
+        "agent_response": body,
     })))
 }
 
 async fn undeploy(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Json(req): Json<UndeployRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    tracing::info!(app = %req.app_name, "relaying undeploy");
+    // Find agent running this app
+    let agents = state.registry.all_agents().await;
+    let agent = agents
+        .iter()
+        .find(|a| {
+            a.deployment
+                .as_ref()
+                .map(|d| d.app_name == req.app_name)
+                .unwrap_or(false)
+        })
+        .or_else(|| agents.first())
+        .ok_or_else(|| ApiError::not_found("no agents available"))?;
+
+    let agent_url = format!("{}/api/undeploy", agent.url.trim_end_matches('/'));
+    tracing::info!(
+        app = %req.app_name,
+        agent_id = %agent.id,
+        %agent_url,
+        "relaying undeploy to agent"
+    );
+
+    let resp = state
+        .client
+        .post(&agent_url)
+        .json(&req)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .map_err(|e| ApiError::internal(format!("relay to agent failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(ApiError::internal(format!(
+            "agent returned {status}: {body}"
+        )));
+    }
+
+    // Clear deployment in registry
+    state
+        .registry
+        .update_deployment(&agent.id.to_string(), None)
+        .await;
+
     Ok(Json(serde_json::json!({"status": "undeployed"})))
 }
 
@@ -159,9 +236,30 @@ async fn billing_invoice(
 }
 
 async fn billing_webhook(
-    State(_state): State<Arc<AppState>>,
-    _body: axum::body::Bytes,
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    // BTCPay webhook processing would go here
-    Ok(Json(serde_json::json!({"status": "ok"})))
+    let signature = headers
+        .get("btcpay-sig")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let invoice = state
+        .marketplace
+        .process_webhook(&body, signature.as_deref())
+        .await
+        .map_err(|e| ApiError::internal(format!("webhook processing failed: {e}")))?;
+
+    tracing::info!(
+        invoice_id = %invoice.id,
+        status = ?invoice.status,
+        "webhook processed"
+    );
+
+    Ok(Json(serde_json::json!({
+        "status": "ok",
+        "invoice_id": invoice.id,
+        "invoice_status": invoice.status,
+    })))
 }

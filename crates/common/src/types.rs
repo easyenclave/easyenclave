@@ -75,6 +75,7 @@ impl std::fmt::Display for Cloud {
 pub struct AgentInfo {
     pub id: AgentId,
     pub status: AgentStatus,
+    pub url: String,
     pub size: VmSize,
     pub cloud: Cloud,
     pub region: String,
@@ -87,6 +88,7 @@ pub struct AgentInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRegistration {
+    pub url: String,
     pub size: VmSize,
     pub cloud: Cloud,
     pub region: String,

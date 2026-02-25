@@ -32,9 +32,27 @@ pub async fn start(config: AgentConfig) -> anyhow::Result<AgentHandle> {
     info!(%agent_id, "starting agent");
 
     let deployment_manager = DeploymentManager::new()?;
+
+    // Set up tunnel manager if Cloudflare credentials are provided
+    let tunnel_manager = match (&config.cloudflare_api_token, &config.cloudflare_account_id) {
+        (Some(token), Some(account_id)) if !token.is_empty() && !account_id.is_empty() => {
+            info!("cloudflare tunnel support enabled");
+            Some(tunnel::TunnelManager::new(
+                token.clone(),
+                account_id.clone(),
+                config.easyenclave_domain.clone(),
+            ))
+        }
+        _ => {
+            info!("cloudflare tunnel support disabled (no credentials)");
+            None
+        }
+    };
+
     let state = Arc::new(Mutex::new(AppState {
         config: config.clone(),
         deployment_manager,
+        tunnel_manager,
         start_time: Instant::now(),
     }));
 
@@ -49,8 +67,9 @@ pub async fn start(config: AgentConfig) -> anyhow::Result<AgentHandle> {
     let client = ee_common::http::build_client();
     let reg_config = config.clone();
     let reg_id = agent_id.clone();
+    let reg_url = url.clone();
     tokio::spawn(async move {
-        if let Err(e) = registration::register(&client, &reg_config, &reg_id).await {
+        if let Err(e) = registration::register(&client, &reg_config, &reg_id, &reg_url).await {
             tracing::error!(?e, "registration failed permanently");
         }
     });

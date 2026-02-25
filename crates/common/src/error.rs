@@ -36,6 +36,10 @@ impl ApiError {
     pub fn internal(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, msg)
     }
+
+    pub fn bad_gateway(msg: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, msg)
+    }
 }
 
 impl IntoResponse for ApiError {

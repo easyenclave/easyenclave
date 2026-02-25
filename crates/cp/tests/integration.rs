@@ -47,6 +47,7 @@ async fn test_agent_registers_with_cp() {
     let agent_id = uuid::Uuid::new_v4();
 
     let registration = AgentRegistration {
+        url: "http://127.0.0.1:9999".to_string(),
         size: VmSize::Medium,
         cloud: Cloud::Gcp,
         region: "us-central1".to_string(),
@@ -218,6 +219,7 @@ async fn test_deploy_undeploy_via_cp() {
     // Register an agent first
     let agent_id = uuid::Uuid::new_v4();
     let registration = AgentRegistration {
+        url: "http://127.0.0.1:9998".to_string(),
         size: VmSize::Small,
         cloud: Cloud::Gcp,
         region: "us-east1".to_string(),
@@ -236,7 +238,8 @@ async fn test_deploy_undeploy_via_cp() {
         .await
         .unwrap();
 
-    // Deploy
+    // Deploy — this will attempt to relay to the fake agent URL.
+    // Since there's no real agent running, we expect the relay to fail with 500.
     let deploy_req = DeployRequest {
         app_name: "test-app".to_string(),
         image: "nginx:latest".to_string(),
@@ -250,9 +253,14 @@ async fn test_deploy_undeploy_via_cp() {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success());
+    // Relay should fail because there's no real agent at 127.0.0.1:9998
+    assert_eq!(
+        resp.status().as_u16(),
+        500,
+        "expected relay failure to fake agent"
+    );
 
-    // Undeploy
+    // Undeploy — same, relay to agent fails
     let undeploy_req = UndeployRequest {
         app_name: "test-app".to_string(),
     };
@@ -263,7 +271,11 @@ async fn test_deploy_undeploy_via_cp() {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success());
+    assert_eq!(
+        resp.status().as_u16(),
+        500,
+        "expected relay failure to fake agent"
+    );
 
     handle.shutdown().await;
 }

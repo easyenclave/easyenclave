@@ -89,6 +89,39 @@ impl Marketplace {
         self.provider.get_invoice(invoice_id).await
     }
 
+    /// Process a webhook from the payment provider.
+    pub async fn process_webhook(
+        &self,
+        payload: &[u8],
+        signature: Option<&str>,
+    ) -> Result<Invoice, anyhow::Error> {
+        let invoice = self.provider.process_webhook(payload, signature).await?;
+
+        // If invoice is now paid, create assignment
+        if invoice.paid_at.is_some() {
+            let mut assignments = self.assignments.write().await;
+            let already_assigned = assignments.values().any(|a| a.invoice_id == invoice.id);
+
+            if !already_assigned {
+                let assignment = Assignment {
+                    id: Uuid::new_v4().to_string(),
+                    invoice_id: invoice.id.clone(),
+                    agent_id: String::new(),
+                    buyer: invoice.buyer.clone(),
+                    expires_at: Utc::now() + Duration::hours(1), // default 1hr, real value from listing
+                };
+                info!(
+                    invoice_id = %invoice.id,
+                    assignment_id = %assignment.id,
+                    "assignment created from webhook"
+                );
+                assignments.insert(assignment.id.clone(), assignment);
+            }
+        }
+
+        Ok(invoice)
+    }
+
     /// Get active assignments for a buyer.
     pub async fn buyer_assignments(&self, buyer: &str) -> Vec<Assignment> {
         self.assignments

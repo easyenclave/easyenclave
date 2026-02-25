@@ -1,7 +1,7 @@
 //! Agent registration and state tracking.
 
 use chrono::Utc;
-use ee_common::types::{AgentId, AgentInfo, AgentRegistration, AgentStatus};
+use ee_common::types::{AgentId, AgentInfo, AgentRegistration, AgentStatus, DeploymentInfo};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -24,6 +24,7 @@ impl AgentRegistry {
         let info = AgentInfo {
             id: agent_id.clone(),
             status: AgentStatus::Registering,
+            url: registration.url,
             size: registration.size,
             cloud: registration.cloud,
             region: registration.region,
@@ -72,6 +73,14 @@ impl AgentRegistry {
     /// Get a specific agent.
     pub async fn get_agent(&self, agent_id: &str) -> Option<AgentInfo> {
         self.agents.read().await.get(agent_id).cloned()
+    }
+
+    /// Update agent deployment info.
+    pub async fn update_deployment(&self, agent_id: &str, deployment: Option<DeploymentInfo>) {
+        let mut agents = self.agents.write().await;
+        if let Some(agent) = agents.get_mut(agent_id) {
+            agent.deployment = deployment;
+        }
     }
 
     /// Remove an agent.

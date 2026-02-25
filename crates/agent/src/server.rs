@@ -2,6 +2,7 @@
 
 use crate::config::AgentConfig;
 use crate::deployment::DeploymentManager;
+use crate::tunnel::TunnelManager;
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -14,6 +15,7 @@ use tokio::sync::Mutex;
 pub struct AppState {
     pub config: AgentConfig,
     pub deployment_manager: DeploymentManager,
+    pub tunnel_manager: Option<TunnelManager>,
     pub start_time: Instant,
 }
 
@@ -39,12 +41,26 @@ async fn deploy(
     State(state): State<Arc<Mutex<AppState>>>,
     Json(req): Json<DeployRequest>,
 ) -> Result<Json<DeploymentInfo>, ApiError> {
-    let s = state.lock().await;
-    let info = s
+    let mut s = state.lock().await;
+    let mut info = s
         .deployment_manager
         .deploy(&req)
         .await
         .map_err(|e| ApiError::internal(e.to_string()))?;
+
+    // Create tunnel if configured
+    if let Some(ref mut tunnel) = s.tunnel_manager {
+        match tunnel.create(&req.app_name, 0).await {
+            Ok(url) => {
+                tracing::info!(app = %req.app_name, tunnel_url = %url, "tunnel created");
+                info.tunnel_url = Some(url);
+            }
+            Err(e) => {
+                tracing::warn!(app = %req.app_name, ?e, "tunnel creation failed, continuing without tunnel");
+            }
+        }
+    }
+
     Ok(Json(info))
 }
 
@@ -52,7 +68,15 @@ async fn undeploy(
     State(state): State<Arc<Mutex<AppState>>>,
     Json(req): Json<UndeployRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let s = state.lock().await;
+    let mut s = state.lock().await;
+
+    // Destroy tunnel first
+    if let Some(ref mut tunnel) = s.tunnel_manager {
+        if let Err(e) = tunnel.destroy().await {
+            tracing::warn!(app = %req.app_name, ?e, "tunnel destroy failed");
+        }
+    }
+
     s.deployment_manager
         .undeploy(&req.app_name)
         .await
