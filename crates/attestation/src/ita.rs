@@ -65,6 +65,7 @@ struct Jwk {
     kty: String,
     n: Option<String>,
     e: Option<String>,
+    #[allow(dead_code)]
     alg: Option<String>,
 }
 
@@ -145,12 +146,14 @@ impl JwksCache {
             )));
         }
 
-        let n = jwk.n.as_ref().ok_or_else(|| {
-            AttestationError::TokenVerification("missing n in JWK".to_string())
-        })?;
-        let e = jwk.e.as_ref().ok_or_else(|| {
-            AttestationError::TokenVerification("missing e in JWK".to_string())
-        })?;
+        let n = jwk
+            .n
+            .as_ref()
+            .ok_or_else(|| AttestationError::TokenVerification("missing n in JWK".to_string()))?;
+        let e = jwk
+            .e
+            .as_ref()
+            .ok_or_else(|| AttestationError::TokenVerification("missing e in JWK".to_string()))?;
 
         DecodingKey::from_rsa_components(n, e)
             .map_err(|e| AttestationError::TokenVerification(format!("RSA key decode: {e}")))

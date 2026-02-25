@@ -16,15 +16,13 @@ use tracing::info;
 /// Handle to a running CP.
 pub struct CpHandle {
     pub url: String,
-    pub builtin_aggregator: Option<ee_aggregator::AggregatorHandle>,
+    pub db: Database,
+    pub builtin_aggregator: Option<ee_aggregator::EmbeddedAggregator>,
     shutdown: tokio::sync::oneshot::Sender<()>,
 }
 
 impl CpHandle {
     pub async fn shutdown(self) {
-        if let Some(agg) = self.builtin_aggregator {
-            agg.shutdown().await;
-        }
         let _ = self.shutdown.send(());
     }
 }
@@ -44,14 +42,31 @@ pub async fn start(config: CpConfig) -> anyhow::Result<CpHandle> {
         start_time: Instant::now(),
     });
 
-    let app = server::router(cp_state);
+    // Build built-in aggregator if enabled
+    let (aggregator_state, embedded) = if config.builtin_aggregator {
+        info!("initializing built-in aggregator");
+        let agg_config = ee_aggregator::config::AggregatorConfig::builtin(config.listen_addr);
+        let embedded = ee_aggregator::build(agg_config).await?;
+        let state = embedded.state.clone();
+        (Some(state), Some(embedded))
+    } else {
+        (None, None)
+    };
+
+    // Build router: CP routes + optional aggregator routes merged in
+    let app = server::router(cp_state, aggregator_state);
+
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     let url = format!("http://{}", listener.local_addr()?);
-    info!(%url, "CP listening");
+
+    if embedded.is_some() {
+        info!(%url, "CP listening (with built-in aggregator)");
+    } else {
+        info!(%url, "CP listening");
+    }
 
     let (tx, rx) = tokio::sync::oneshot::channel();
 
-    // Start HTTP server
     tokio::spawn(async move {
         axum::serve(listener, app)
             .with_graceful_shutdown(async {
@@ -61,24 +76,10 @@ pub async fn start(config: CpConfig) -> anyhow::Result<CpHandle> {
             .ok();
     });
 
-    // Start built-in aggregator if enabled
-    let builtin_aggregator = if config.builtin_aggregator {
-        info!("starting built-in aggregator");
-        let agg_config =
-            ee_aggregator::config::AggregatorConfig::builtin(config.listen_addr);
-        // The built-in aggregator shares the CP's address conceptually.
-        // In practice it uses the same listen addr — agent registrations
-        // go through the CP's routes which delegate to the aggregator.
-        let handle = ee_aggregator::start(agg_config).await?;
-        info!(url = %handle.url, "built-in aggregator started");
-        Some(handle)
-    } else {
-        None
-    };
-
     Ok(CpHandle {
         url,
-        builtin_aggregator,
+        db,
+        builtin_aggregator: embedded,
         shutdown: tx,
     })
 }

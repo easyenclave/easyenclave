@@ -2,7 +2,7 @@
 
 use crate::error::CpError;
 use ee_common::types::{
-    AgentInfo, AgentStatus, AggregatorId, Cloud, MeasurementSubmission, TrustedMrtd, VmSize,
+    AgentInfo, AggregatorId, Cloud, MeasurementSubmission, TrustedMrtd, VmSize,
 };
 use rusqlite::{params, Connection};
 use std::sync::Arc;
@@ -37,9 +37,10 @@ impl Database {
     fn migrate_sync(&self) -> Result<(), CpError> {
         // We need to block on the lock for migration at startup
         // This is safe because we're single-threaded at this point
-        let conn = self.conn.try_lock().map_err(|_| {
-            CpError::Database("could not lock database for migration".to_string())
-        })?;
+        let conn = self
+            .conn
+            .try_lock()
+            .map_err(|_| CpError::Database("could not lock database for migration".to_string()))?;
 
         conn.execute_batch(
             "
@@ -96,7 +97,11 @@ impl Database {
 
     // --- Trusted MRTDs ---
 
-    pub async fn insert_mrtd(&self, submission: &MeasurementSubmission, submitted_by: &str) -> Result<(), CpError> {
+    pub async fn insert_mrtd(
+        &self,
+        submission: &MeasurementSubmission,
+        submitted_by: &str,
+    ) -> Result<(), CpError> {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO trusted_mrtds (mrtd, size, cloud, release_tag, submitted_by, submitted_at)
@@ -192,7 +197,11 @@ impl Database {
 
     // --- Agents (cache) ---
 
-    pub async fn upsert_agent(&self, agent: &AgentInfo, aggregator_id: Option<&str>) -> Result<(), CpError> {
+    pub async fn upsert_agent(
+        &self,
+        agent: &AgentInfo,
+        aggregator_id: Option<&str>,
+    ) -> Result<(), CpError> {
         let conn = self.conn.lock().await;
         conn.execute(
             "INSERT OR REPLACE INTO agents (id, status, size, cloud, region, tags, registered_at, last_health_check, aggregator_id)

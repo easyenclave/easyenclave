@@ -2,9 +2,8 @@
 
 use crate::config::AggregatorConfig;
 use crate::registry::AgentRegistry;
-use ee_common::types::HealthResponse;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::debug;
 
 /// Start the health check scraping loop.
 pub fn start_health_scraper(
@@ -21,7 +20,7 @@ pub fn start_health_scraper(
     })
 }
 
-async fn scrape_health(registry: &AgentRegistry, client: &reqwest::Client) {
+async fn scrape_health(registry: &AgentRegistry, _client: &reqwest::Client) {
     let agents = registry.all_agents().await;
     for agent in agents {
         let agent_id = agent.id.to_string();
@@ -34,9 +33,9 @@ async fn scrape_health(registry: &AgentRegistry, client: &reqwest::Client) {
 
 /// Start the attestation re-verify loop.
 pub fn start_attestation_scraper(
-    registry: AgentRegistry,
+    _registry: AgentRegistry,
     config: AggregatorConfig,
-    client: reqwest::Client,
+    _client: reqwest::Client,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval =

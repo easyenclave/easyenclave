@@ -1,6 +1,6 @@
 //! Agent registration and state tracking.
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use ee_common::types::{AgentId, AgentInfo, AgentRegistration, AgentStatus};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,11 +20,7 @@ impl AgentRegistry {
     }
 
     /// Register or re-register an agent. Returns the agent info.
-    pub async fn register(
-        &self,
-        agent_id: AgentId,
-        registration: AgentRegistration,
-    ) -> AgentInfo {
+    pub async fn register(&self, agent_id: AgentId, registration: AgentRegistration) -> AgentInfo {
         let info = AgentInfo {
             id: agent_id.clone(),
             status: AgentStatus::Registering,

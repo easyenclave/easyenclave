@@ -10,7 +10,7 @@ use bollard::Docker;
 use ee_common::types::{DeployRequest, DeploymentInfo, DeploymentStatus};
 use futures_util::TryStreamExt;
 use std::collections::HashMap;
-use tracing::{error, info};
+use tracing::info;
 
 /// Manage container deployments on this agent.
 pub struct DeploymentManager {
@@ -144,7 +144,11 @@ impl DeploymentManager {
                 .names
                 .as_ref()
                 .and_then(|n| n.first())
-                .map(|n| n.trim_start_matches('/').trim_start_matches("ee-").to_string())
+                .map(|n| {
+                    n.trim_start_matches('/')
+                        .trim_start_matches("ee-")
+                        .to_string()
+                })
                 .unwrap_or_default();
 
             let image = container.image.clone().unwrap_or_default();

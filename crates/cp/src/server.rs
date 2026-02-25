@@ -1,4 +1,5 @@
 //! CP HTTP server: REST API, admin, trusted aggregator management, measurements.
+//! When built-in aggregator is enabled, aggregator routes are merged in.
 
 use crate::config::CpConfig;
 use crate::db::Database;
@@ -17,7 +18,8 @@ pub struct AppState {
     pub start_time: Instant,
 }
 
-pub fn router(state: Arc<AppState>) -> Router {
+/// Build the CP-only routes.
+pub fn cp_router(state: Arc<AppState>) -> Router {
     Router::new()
         // Health
         .route("/api/health", get(health))
@@ -27,13 +29,54 @@ pub fn router(state: Arc<AppState>) -> Router {
         // Trusted aggregator management
         .route("/api/v1/aggregators/trust", get(list_trusted))
         .route("/api/v1/aggregators/trust", post(add_trusted))
-        .route("/api/v1/aggregators/trust/{id}", delete(remove_trusted))
-        // Agent registration (for direct-connect via built-in aggregator)
-        .route(
-            "/api/v1/agents/{agent_id}/register",
-            post(register_agent_direct),
-        )
+        .route("/api/v1/aggregators/trust/:id", delete(remove_trusted))
         .with_state(state)
+}
+
+/// Build the full router, optionally merging aggregator routes.
+pub fn router(
+    cp_state: Arc<AppState>,
+    aggregator_state: Option<Arc<ee_aggregator::server::AppState>>,
+) -> Router {
+    let mut app = cp_router(cp_state);
+
+    if let Some(agg_state) = aggregator_state {
+        // Merge aggregator routes into CP — agent registration, billing,
+        // state endpoint, deploy/undeploy all served on the same port.
+        // Uses mergeable_routes() to avoid /api/health overlap.
+        app = app.merge(ee_aggregator::mergeable_routes(agg_state));
+    }
+
+    // Serve admin UI at /admin
+    app = app.nest_service(
+        "/admin",
+        tower_http::services::ServeDir::new(admin_static_dir()).fallback(
+            tower_http::services::ServeFile::new(admin_static_dir().join("index.html")),
+        ),
+    );
+
+    app
+}
+
+/// Locate the admin static directory.
+/// In development: crates/cp/static/
+/// In production: /usr/share/easyenclave/static/ or next to binary.
+fn admin_static_dir() -> std::path::PathBuf {
+    // Check for dev path first
+    let dev = std::path::PathBuf::from("crates/cp/static");
+    if dev.exists() {
+        return dev;
+    }
+    // Production path
+    let prod = std::path::PathBuf::from("/usr/share/easyenclave/static");
+    if prod.exists() {
+        return prod;
+    }
+    // Fallback: next to binary
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("static")))
+        .unwrap_or(dev)
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -61,8 +104,6 @@ async fn submit_measurement(
     State(state): State<Arc<AppState>>,
     Json(submission): Json<MeasurementSubmission>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    // In production, we'd extract the aggregator ID from the auth token
-    // and verify it's in the trusted list. For now, accept all.
     tracing::info!(
         mrtd = %submission.mrtd,
         size = %submission.size,
@@ -81,9 +122,7 @@ async fn submit_measurement(
 
 // --- Trusted aggregators ---
 
-async fn list_trusted(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<String>>, ApiError> {
+async fn list_trusted(State(state): State<Arc<AppState>>) -> Result<Json<Vec<String>>, ApiError> {
     let ids = state
         .db
         .list_trusted_aggregators()
@@ -123,17 +162,4 @@ async fn remove_trusted(
 
     tracing::info!(%id, "aggregator trust revoked");
     Ok(Json(serde_json::json!({"status": "revoked"})))
-}
-
-// --- Direct agent registration (goes through built-in aggregator) ---
-
-async fn register_agent_direct(
-    State(_state): State<Arc<AppState>>,
-    Path(agent_id): Path<String>,
-    Json(_registration): Json<ee_common::types::AgentRegistration>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    // The built-in aggregator handles this.
-    // This route exists so agents can register with CP's URL directly.
-    tracing::info!(%agent_id, "direct agent registration (built-in aggregator)");
-    Ok(Json(serde_json::json!({"status": "registered"})))
 }

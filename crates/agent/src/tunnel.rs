@@ -3,11 +3,13 @@
 //! Creates and manages Cloudflare Argo Tunnels for exposing deployed containers.
 
 use crate::error::AgentError;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Manages a cloudflared tunnel for a deployment.
 pub struct TunnelManager {
+    #[allow(dead_code)]
     api_token: String,
+    #[allow(dead_code)]
     account_id: String,
     domain: String,
     active_tunnel: Option<ActiveTunnel>,
@@ -15,6 +17,7 @@ pub struct TunnelManager {
 
 struct ActiveTunnel {
     app_name: String,
+    #[allow(dead_code)]
     tunnel_id: String,
     hostname: String,
     child: Option<tokio::process::Child>,
@@ -31,11 +34,7 @@ impl TunnelManager {
     }
 
     /// Create a tunnel for the given app and local port.
-    pub async fn create(
-        &mut self,
-        app_name: &str,
-        local_port: u16,
-    ) -> Result<String, AgentError> {
+    pub async fn create(&mut self, app_name: &str, local_port: u16) -> Result<String, AgentError> {
         let hostname = format!("{app_name}.{}", self.domain);
         info!(app = %app_name, %hostname, "creating cloudflare tunnel");
 

@@ -4,12 +4,8 @@ use crate::billing::marketplace::Marketplace;
 use crate::billing::types::PurchaseRequest;
 use crate::config::AggregatorConfig;
 use crate::measurement::MeasurementObserver;
-use crate::proxy::ProxyState;
 use crate::registry::AgentRegistry;
-use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::Request;
-use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use ee_common::error::ApiError;
@@ -28,26 +24,28 @@ pub struct AppState {
     pub start_time: Instant,
 }
 
-pub fn router(state: Arc<AppState>) -> Router {
+/// Routes that can be merged into another router (e.g. CP) without conflicts.
+/// Excludes /api/health which the host router provides.
+pub fn mergeable_routes(state: Arc<AppState>) -> Router {
     Router::new()
-        // Core
-        .route("/api/health", get(health))
         .route("/api/state", get(get_state))
-        .route("/api/v1/agents/{agent_id}/register", post(register_agent))
+        .route("/api/v1/agents/:agent_id/register", post(register_agent))
         .route("/api/deploy", post(deploy))
         .route("/api/undeploy", post(undeploy))
         // Billing
         .route("/api/v1/billing/listings", get(billing_listings))
         .route("/api/v1/billing/purchase", post(billing_purchase))
-        .route(
-            "/api/v1/billing/invoices/{invoice_id}",
-            get(billing_invoice),
-        )
-        .route(
-            "/api/v1/billing/webhooks/btcpay",
-            post(billing_webhook),
-        )
+        .route("/api/v1/billing/invoices/:invoice_id", get(billing_invoice))
+        .route("/api/v1/billing/webhooks/btcpay", post(billing_webhook))
         .with_state(state)
+}
+
+/// Full router for standalone mode (includes /api/health).
+pub fn router(state: Arc<AppState>) -> Router {
+    let health_route = Router::new()
+        .route("/api/health", get(health))
+        .with_state(state.clone());
+    health_route.merge(mergeable_routes(state))
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -78,11 +76,8 @@ async fn register_agent(
             .map_err(|_| ApiError::bad_request("invalid agent ID"))?,
     );
 
-    let size = registration.size;
-    let cloud = registration.cloud;
-
     // If agent has an attestation token, verify it and observe the MRTD
-    if let Some(ref token) = registration.attestation_token {
+    if let Some(ref _token) = registration.attestation_token {
         // In a full implementation, we'd verify the ITA JWT here and pass
         // the claims to measurement.observe(). For now, register without
         // MRTD observation in non-TDX environments.
@@ -123,7 +118,7 @@ async fn deploy(
 }
 
 async fn undeploy(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Json(req): Json<UndeployRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     tracing::info!(app = %req.app_name, "relaying undeploy");
@@ -164,8 +159,8 @@ async fn billing_invoice(
 }
 
 async fn billing_webhook(
-    State(state): State<Arc<AppState>>,
-    body: axum::body::Bytes,
+    State(_state): State<Arc<AppState>>,
+    _body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     // BTCPay webhook processing would go here
     Ok(Json(serde_json::json!({"status": "ok"})))

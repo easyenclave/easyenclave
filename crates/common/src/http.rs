@@ -13,5 +13,7 @@ pub fn build_client() -> Client {
 
 /// Extract a bearer token from an Authorization header value.
 pub fn extract_bearer(header: &str) -> Option<&str> {
-    header.strip_prefix("Bearer ").or_else(|| header.strip_prefix("bearer "))
+    header
+        .strip_prefix("Bearer ")
+        .or_else(|| header.strip_prefix("bearer "))
 }

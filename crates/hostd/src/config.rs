@@ -15,9 +15,7 @@ impl HostdConfig {
         Self {
             listen_addr: listen_addr("LISTEN_ADDR", "0.0.0.0:8082"),
             image_dir: PathBuf::from(env_or("IMAGE_DIR", "/var/lib/easyenclave/images")),
-            vm_memory_mb: env_or("VM_MEMORY_MB", "4096")
-                .parse()
-                .unwrap_or(4096),
+            vm_memory_mb: env_or("VM_MEMORY_MB", "4096").parse().unwrap_or(4096),
             max_vms: env_or("MAX_VMS", "8").parse().unwrap_or(8),
         }
     }

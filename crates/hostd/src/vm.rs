@@ -47,11 +47,7 @@ impl VmManager {
     }
 
     /// Launch a new TDX VM.
-    pub async fn launch(
-        &mut self,
-        size: VmSize,
-        image: &str,
-    ) -> Result<VmInfo, HostdError> {
+    pub async fn launch(&mut self, size: VmSize, image: &str) -> Result<VmInfo, HostdError> {
         if self.vms.len() >= self.config.max_vms {
             return Err(HostdError::ResourceExhausted(format!(
                 "max VMs ({}) reached",
@@ -158,10 +154,7 @@ fn build_qemu_args(
         "-m".into(),
         format!("{memory_mb}M"),
         "-drive".into(),
-        format!(
-            "file={},format=qcow2,if=virtio",
-            image_path.display()
-        ),
+        format!("file={},format=qcow2,if=virtio", image_path.display()),
         "-netdev".into(),
         format!("user,id=net0,hostfwd=tcp::{agent_port}-:8081"),
         "-device".into(),

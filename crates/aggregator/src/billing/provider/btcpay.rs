@@ -116,10 +116,7 @@ impl PaymentProvider for BtcPayProvider {
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
-            buyer: metadata["buyer"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
+            buyer: metadata["buyer"].as_str().unwrap_or_default().to_string(),
             amount_sats: 0, // would need to convert back from BTC
             status,
             payment_url: data["checkoutLink"].as_str().map(|s| s.to_string()),

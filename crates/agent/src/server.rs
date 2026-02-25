@@ -39,7 +39,7 @@ async fn deploy(
     State(state): State<Arc<Mutex<AppState>>>,
     Json(req): Json<DeployRequest>,
 ) -> Result<Json<DeploymentInfo>, ApiError> {
-    let mut s = state.lock().await;
+    let s = state.lock().await;
     let info = s
         .deployment_manager
         .deploy(&req)
@@ -52,7 +52,7 @@ async fn undeploy(
     State(state): State<Arc<Mutex<AppState>>>,
     Json(req): Json<UndeployRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let mut s = state.lock().await;
+    let s = state.lock().await;
     s.deployment_manager
         .undeploy(&req.app_name)
         .await

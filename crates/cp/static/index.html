@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>easyenclave admin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e0e0e0; padding: 20px; }
+        h1 { font-size: 1.4em; margin-bottom: 20px; color: #fff; }
+        h2 { font-size: 1.1em; margin: 20px 0 10px; color: #ccc; border-bottom: 1px solid #333; padding-bottom: 5px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .card { background: #1a1a1a; border: 1px solid #333; border-radius: 8px; padding: 15px; }
+        .card-title { font-weight: 600; margin-bottom: 8px; color: #fff; }
+        .stat { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.9em; }
+        .stat-label { color: #888; }
+        .stat-value { color: #4ade80; font-family: monospace; }
+        .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; font-weight: 500; }
+        .badge-green { background: #064e3b; color: #6ee7b7; }
+        .badge-yellow { background: #713f12; color: #fcd34d; }
+        .badge-red { background: #7f1d1d; color: #fca5a5; }
+        .badge-blue { background: #1e3a5f; color: #93c5fd; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+        th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #222; }
+        th { color: #888; font-weight: 500; }
+        td { font-family: monospace; font-size: 0.85em; }
+        .mono { font-family: monospace; font-size: 0.85em; }
+        #error { color: #f87171; padding: 10px; display: none; }
+        .refresh { float: right; background: #333; border: 1px solid #555; color: #ccc; padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+        .refresh:hover { background: #444; }
+        .section { margin-bottom: 30px; }
+    </style>
+</head>
+<body>
+    <h1>easyenclave <button class="refresh" onclick="refresh()">refresh</button></h1>
+    <div id="error"></div>
+
+    <div class="section">
+        <h2>Overview</h2>
+        <div class="grid" id="overview"></div>
+    </div>
+
+    <div class="section">
+        <h2>Agents</h2>
+        <table id="agents-table">
+            <thead><tr><th>ID</th><th>Status</th><th>Size</th><th>Cloud</th><th>Region</th><th>Deployment</th><th>Last Check</th></tr></thead>
+            <tbody id="agents-body"></tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Trusted MRTDs</h2>
+        <table id="mrtds-table">
+            <thead><tr><th>MRTD</th><th>Size</th><th>Cloud</th><th>Release</th><th>Submitted</th></tr></thead>
+            <tbody id="mrtds-body"></tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Trusted Aggregators</h2>
+        <div id="trusted-aggs" class="mono"></div>
+    </div>
+
+    <script>
+        async function fetchJSON(url) {
+            const resp = await fetch(url);
+            if (!resp.ok) throw new Error(`${url}: ${resp.status}`);
+            return resp.json();
+        }
+
+        function badge(status) {
+            const map = {
+                healthy: 'green', attested: 'green', running: 'green',
+                registering: 'yellow', pending: 'yellow',
+                unhealthy: 'red', attestation_failed: 'red', failed: 'red', stopped: 'red'
+            };
+            const color = map[status] || 'blue';
+            return `<span class="badge badge-${color}">${status}</span>`;
+        }
+
+        function shortId(id) {
+            return id ? id.substring(0, 8) + '...' : '-';
+        }
+
+        async function refresh() {
+            try {
+                document.getElementById('error').style.display = 'none';
+                const [health, state, mrtds, trusted] = await Promise.all([
+                    fetchJSON('/api/health'),
+                    fetchJSON('/api/state').catch(() => ({ agents: [] })),
+                    fetchJSON('/api/v1/measurements').catch(() => []),
+                    fetchJSON('/api/v1/aggregators/trust').catch(() => []),
+                ]);
+
+                // Overview
+                const agents = state.agents || [];
+                const healthyCount = agents.filter(a => a.status === 'healthy' || a.status === 'attested').length;
+                const deployedCount = agents.filter(a => a.deployment).length;
+                document.getElementById('overview').innerHTML = `
+                    <div class="card">
+                        <div class="card-title">System</div>
+                        <div class="stat"><span class="stat-label">Version</span><span class="stat-value">${health.version}</span></div>
+                        <div class="stat"><span class="stat-label">Uptime</span><span class="stat-value">${Math.floor(health.uptime_secs / 60)}m</span></div>
+                        <div class="stat"><span class="stat-label">Status</span><span class="stat-value">${health.status}</span></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Fleet</div>
+                        <div class="stat"><span class="stat-label">Total Agents</span><span class="stat-value">${agents.length}</span></div>
+                        <div class="stat"><span class="stat-label">Healthy</span><span class="stat-value">${healthyCount}</span></div>
+                        <div class="stat"><span class="stat-label">Deployed</span><span class="stat-value">${deployedCount}</span></div>
+                    </div>
+                    <div class="card">
+                        <div class="card-title">Trust</div>
+                        <div class="stat"><span class="stat-label">Known MRTDs</span><span class="stat-value">${mrtds.length}</span></div>
+                        <div class="stat"><span class="stat-label">Trusted Aggregators</span><span class="stat-value">${trusted.length}</span></div>
+                    </div>
+                `;
+
+                // Agents table
+                document.getElementById('agents-body').innerHTML = agents.length === 0
+                    ? '<tr><td colspan="7" style="color:#666">No agents registered</td></tr>'
+                    : agents.map(a => `<tr>
+                        <td>${shortId(a.id)}</td>
+                        <td>${badge(a.status)}</td>
+                        <td>${a.size}</td>
+                        <td>${a.cloud}</td>
+                        <td>${a.region}</td>
+                        <td>${a.deployment ? a.deployment.app_name : '-'}</td>
+                        <td>${a.last_health_check ? new Date(a.last_health_check).toLocaleTimeString() : '-'}</td>
+                    </tr>`).join('');
+
+                // MRTDs table
+                document.getElementById('mrtds-body').innerHTML = mrtds.length === 0
+                    ? '<tr><td colspan="5" style="color:#666">No trusted MRTDs</td></tr>'
+                    : mrtds.map(m => `<tr>
+                        <td>${m.mrtd.substring(0, 16)}...</td>
+                        <td>${m.size}</td>
+                        <td>${m.cloud}</td>
+                        <td>${m.release_tag || '-'}</td>
+                        <td>${new Date(m.submitted_at).toLocaleDateString()}</td>
+                    </tr>`).join('');
+
+                // Trusted aggregators
+                document.getElementById('trusted-aggs').innerHTML = trusted.length === 0
+                    ? '<span style="color:#666">None (built-in aggregator is always trusted)</span>'
+                    : trusted.map(id => `<div style="padding:4px 0">${id}</div>`).join('');
+
+            } catch (err) {
+                const el = document.getElementById('error');
+                el.textContent = err.message;
+                el.style.display = 'block';
+            }
+        }
+
+        refresh();
+        setInterval(refresh, 15000);
+    </script>
+</body>
+</html>

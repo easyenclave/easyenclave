@@ -16,7 +16,10 @@ pub fn list_images(image_dir: &Path) -> Result<Vec<VmImage>, HostdError> {
     let mut images = Vec::new();
 
     let entries = std::fs::read_dir(image_dir).map_err(|e| {
-        HostdError::ImageNotFound(format!("cannot read image dir {}: {e}", image_dir.display()))
+        HostdError::ImageNotFound(format!(
+            "cannot read image dir {}: {e}",
+            image_dir.display()
+        ))
     })?;
 
     for entry in entries {

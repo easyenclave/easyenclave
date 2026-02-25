@@ -5,7 +5,7 @@ use crate::error::AgentError;
 use ee_attestation::{ita, tdx};
 use ee_common::types::{AgentId, AgentRegistration};
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Register this agent with the aggregator / CP.
 /// Retries indefinitely with backoff until successful.

@@ -8,11 +8,11 @@ pub mod vm;
 use config::HostdConfig;
 use resources::HostResources;
 use server::AppState;
-use vm::VmManager;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::info;
+use vm::VmManager;
 
 /// Handle to a running hostd.
 pub struct HostdHandle {

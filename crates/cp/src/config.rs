@@ -1,4 +1,4 @@
-use ee_common::config::{env_bool, env_csv, env_or, listen_addr, optional_env};
+use ee_common::config::{env_bool, env_csv, env_or, listen_addr};
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone)]

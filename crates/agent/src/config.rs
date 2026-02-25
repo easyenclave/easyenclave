@@ -25,16 +25,10 @@ impl AgentConfig {
             listen_addr: listen_addr("LISTEN_ADDR", "0.0.0.0:8081"),
             cp_url: require_env("CP_URL"),
             agent_secret: require_env("AGENT_SECRET"),
-            size: serde_json::from_str(&format!(
-                "\"{}\"",
-                env_or("VM_SIZE", "medium")
-            ))
-            .unwrap_or(VmSize::Medium),
-            cloud: serde_json::from_str(&format!(
-                "\"{}\"",
-                env_or("CLOUD", "gcp")
-            ))
-            .unwrap_or(Cloud::Gcp),
+            size: serde_json::from_str(&format!("\"{}\"", env_or("VM_SIZE", "medium")))
+                .unwrap_or(VmSize::Medium),
+            cloud: serde_json::from_str(&format!("\"{}\"", env_or("CLOUD", "gcp")))
+                .unwrap_or(Cloud::Gcp),
             region: env_or("REGION", "us-central1"),
             tags: ee_common::config::env_csv("TAGS"),
             test_mode: env_bool("TEST_MODE", false),

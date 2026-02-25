@@ -27,7 +27,9 @@ pub fn env_parse<T: FromStr>(key: &str, default: T) -> T {
 
 /// Parse a listen address from env.
 pub fn listen_addr(key: &str, default: &str) -> SocketAddr {
-    env_or(key, default).parse().expect("invalid listen address")
+    env_or(key, default)
+        .parse()
+        .expect("invalid listen address")
 }
 
 /// Parse a comma-separated list from env.

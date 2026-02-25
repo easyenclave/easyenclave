@@ -1,7 +1,6 @@
 //! Month-end SLA settlement: check uptime, payout or withhold.
 
 use super::types::{Payout, PayoutStatus, RevenueSplit};
-use chrono::{DateTime, Utc};
 use tracing::info;
 
 /// SLA threshold for payout (e.g. 99.5% uptime).
@@ -15,7 +14,7 @@ pub fn settle(
     period: &str,
     split: &RevenueSplit,
 ) -> Payout {
-    let (operator_share, platform_share) = split.split(total_sats);
+    let (operator_share, _platform_share) = split.split(total_sats);
 
     let status = if uptime_fraction >= SLA_THRESHOLD {
         PayoutStatus::Paid

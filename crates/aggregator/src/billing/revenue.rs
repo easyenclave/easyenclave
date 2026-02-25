@@ -3,10 +3,7 @@
 use super::types::RevenueSplit;
 
 /// Calculate the monthly revenue breakdown for an operator.
-pub fn monthly_breakdown(
-    total_revenue_sats: u64,
-    split: &RevenueSplit,
-) -> MonthlyBreakdown {
+pub fn monthly_breakdown(total_revenue_sats: u64, split: &RevenueSplit) -> MonthlyBreakdown {
     let (operator_share, platform_share) = split.split(total_revenue_sats);
     MonthlyBreakdown {
         total_revenue_sats,
