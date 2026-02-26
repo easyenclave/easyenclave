@@ -15,6 +15,12 @@ impl AgentId {
     }
 }
 
+impl Default for AgentId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl std::fmt::Display for AgentId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -143,6 +149,12 @@ pub struct AggregatorId(pub Uuid);
 impl AggregatorId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
+    }
+}
+
+impl Default for AggregatorId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

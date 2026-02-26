@@ -5,7 +5,6 @@ use crate::error::HostdError;
 use ee_common::types::VmSize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,7 +134,7 @@ fn size_resources(size: VmSize) -> (u64, u32) {
 
 fn build_qemu_args(
     vm_id: &str,
-    image_path: &PathBuf,
+    image_path: &std::path::Path,
     memory_mb: u64,
     cpus: u32,
     agent_port: u16,

@@ -22,6 +22,12 @@ impl StubProvider {
     }
 }
 
+impl Default for StubProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl PaymentProvider for StubProvider {
     async fn create_invoice(
