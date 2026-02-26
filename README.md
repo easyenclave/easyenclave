@@ -6,6 +6,7 @@ Rust rewrite of easyenclave focused on confidential workloads on Intel TDX.
 
 - Auth for publish/deploy: GitHub Actions OIDC only.
 - CP attestation verification: mandatory.
+- Attestation flow: agent submits TDX quote + CP nonce proof to CP; CP performs ITA appraisal centrally.
 - CP state: fully ephemeral (in-memory), no persistent DB.
 - Cloud provider scope: GCP only.
 - VM execution model: raw OS image with `supervisord` in guest.
@@ -30,6 +31,8 @@ Rust rewrite of easyenclave focused on confidential workloads on Intel TDX.
 - [x] Add launcher implementation
 - [x] Add integration tests for publish/register/deploy flow
 - [x] Add CI workflows (`ci.yml`, `pr-e2e.yml`, `deploy.yml`, `cleanup.yml`)
+- [ ] Move attestation from agent-side ITA minting to CP-side ITA appraisal (agent sends quote only)
+- [ ] Enforce nonce binding in CP appraisal pipeline (`challenge -> quote report_data -> ITA verify`)
 - [ ] Wire real TDX + CF + ITA flow for PR runner
 
 ## Quick Start
@@ -43,10 +46,10 @@ cargo run -p ee-cp
 
 ## Live Plan
 
-1. Finish compilable baseline for all crates.
-2. Add end-to-end integration test against local CP/agent test harness.
-3. Add CI + PR workflow that boots real TDX VMs on GCP and validates deploy through Cloudflare.
-4. Iterate on real attestation plumbing and tighten failure modes.
+1. Replace agent ITA token mint path with quote collection (`/dev/tdx-guest`/`configfs-tsm`) and submit quote to CP.
+2. Implement CP-side ITA appraisal client: send quote + nonce-bound report data, validate JWT claims/policy.
+3. Add negative tests for nonce mismatch, stale nonce, and non-`UpToDate` TCB.
+4. Update PR e2e workflow to validate real quote-based registration on GCP TDX + Cloudflare.
 
 ## Notes
 
