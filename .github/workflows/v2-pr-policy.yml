@@ -3,9 +3,6 @@ name: v2 PR Policy
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-    paths:
-      - "v2/**"
-      - ".github/workflows/v2-pr-policy.yml"
 
 jobs:
   require-preview-label:
