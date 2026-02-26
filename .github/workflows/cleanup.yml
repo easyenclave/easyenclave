@@ -1,0 +1,14 @@
+name: cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  cleanup:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Placeholder cleanup
+        run: |
+          echo "TODO: delete PR-scoped GCP VMs, images, CF tunnels, and DNS records"

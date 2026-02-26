@@ -1,25 +1,10 @@
-__pycache__/
-*.pyc
-*.pyo
+/target/
 .env
-.venv/
-venv/
-*.egg-info/
-dist/
-build/
-
-# VM images and build outputs
-infra/output/
+*.log
+*.db
+*.db-shm
+*.db-wal
 *.qcow2
 *.iso
-
-# Temporary files
-*.swp
-plan
-*.log
+*.img
 /tmp/
-
-# SQLite database
-easyenclave.db
-easyenclave.db-wal
-easyenclave.db-shm

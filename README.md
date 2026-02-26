@@ -26,10 +26,10 @@ Rust rewrite of easyenclave focused on confidential workloads on Intel TDX.
 - [x] Replace v1 repository layout with v2 Rust layout
 - [x] Create workspace + shared crates baseline
 - [x] Add CP route surface skeleton
-- [ ] Add agent binary implementation
-- [ ] Add launcher implementation
-- [ ] Add integration tests for publish/register/deploy flow
-- [ ] Add CI workflows (`ci.yml`, `pr-e2e.yml`, `deploy.yml`, `cleanup.yml`)
+- [x] Add agent binary implementation
+- [x] Add launcher implementation
+- [x] Add integration tests for publish/register/deploy flow
+- [x] Add CI workflows (`ci.yml`, `pr-e2e.yml`, `deploy.yml`, `cleanup.yml`)
 - [ ] Wire real TDX + CF + ITA flow for PR runner
 
 ## Quick Start
