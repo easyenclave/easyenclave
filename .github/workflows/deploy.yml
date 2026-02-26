@@ -7,12 +7,10 @@ on:
 jobs:
   release:
     runs-on: self-hosted
+    env:
+      PRODUCTION_GCP_PROJECT_ID: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+      PRODUCTION_GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build release artifacts
-        run: |
-          cargo build --release --workspace
-          image/build.sh
-      - name: Placeholder production deploy
-        run: |
-          echo "TODO: production rollout to GCP using PRODUCTION_GCP_* secrets"
+      - name: Run production deploy pipeline
+        run: scripts/deploy_main.sh

@@ -8,6 +8,7 @@ jobs:
   e2e:
     runs-on: self-hosted
     env:
+      PR_NUMBER: ${{ github.event.pull_request.number }}
       GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -16,15 +17,5 @@ jobs:
       ITA_API_KEY: ${{ secrets.ITA_API_KEY }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate required secrets
-        run: |
-          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CLOUDFLARE_ZONE_ID ITA_API_KEY; do
-            if [ -z "${!v}" ]; then
-              echo "missing secret: $v"
-              exit 1
-            fi
-          done
-      - name: Placeholder real TDX flow
-        run: |
-          echo "TODO: boot CP/agent TDX VMs on GCP, run attested deploy via Cloudflare"
-          echo "Current branch focuses on v2 code replacement baseline."
+      - name: Run PR e2e checks
+        run: scripts/pr_e2e.sh
