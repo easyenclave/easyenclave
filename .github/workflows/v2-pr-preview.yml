@@ -3,6 +3,9 @@ name: v2 PR Preview
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-pr-preview.yml"
   workflow_dispatch:
     inputs:
       pr_number:
@@ -46,16 +49,15 @@ jobs:
       - name: Wait for services
         run: |
           set -euo pipefail
-          attempts=0
-          until curl -fsS http://127.0.0.1:7000/health >/dev/null && curl -fsS http://127.0.0.1:7100/health >/dev/null; do
-            attempts=$((attempts + 1))
-            if [ "$attempts" -ge 40 ]; then
-              echo "services failed to become healthy" >&2
-              tail -n 200 /tmp/v2-devbox.log || true
-              exit 1
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:7000/health >/dev/null && curl -fsS http://127.0.0.1:7100/health >/dev/null; then
+              exit 0
             fi
             sleep 1
           done
+          echo "services failed to become healthy" >&2
+          tail -n 200 /tmp/v2-devbox.log || true
+          exit 1
 
       - name: Smoke deploy through aggregator
         run: |

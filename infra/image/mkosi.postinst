@@ -1,0 +1,76 @@
+#!/bin/bash
+# Post-installation script for EasyEnclave TDX VM image.
+# Runs with network access (WithNetwork=true in mkosi.conf).
+# Installs third-party packages and configures services.
+set -euo pipefail
+
+echo "[mkosi.postinst] Starting post-installation..."
+
+# =============================================================================
+# Third-party repos + packages (Docker CE, cloudflared)
+# =============================================================================
+echo "[mkosi.postinst] Adding third-party repos..."
+
+install -m 0755 -d /etc/apt/keyrings
+ARCH=$(dpkg --print-architecture)
+
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/ubuntu noble stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+    | gpg --batch --yes --dearmor -o /etc/apt/keyrings/cloudflare.gpg
+echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/cloudflare.gpg] \
+https://pkg.cloudflare.com/cloudflared noble main" \
+    > /etc/apt/sources.list.d/cloudflared.list
+
+echo "[mkosi.postinst] Installing packages..."
+apt-get update
+apt-get install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io \
+    docker-buildx-plugin docker-compose-plugin \
+    cloudflared
+
+# Redirect containerd storage to /data/containerd.
+# Must be written AFTER containerd.io installs its default config.
+mkdir -p /etc/containerd
+cat > /etc/containerd/config.toml <<'TOML'
+version = 2
+root = "/data/containerd"
+TOML
+
+echo "[mkosi.postinst] Third-party packages installed."
+
+# =============================================================================
+# Enable services
+# =============================================================================
+# Docker and containerd auto-enable during apt install.
+# systemd-resolved auto-enables too. systemd-networkd is part of the systemd
+# package on Ubuntu but not enabled by default (Ubuntu uses NetworkManager).
+# systemctl enable doesn't work in mkosi's build sandbox, so create symlinks.
+mkdir -p /etc/systemd/system/multi-user.target.wants \
+         /etc/systemd/system/network-online.target.wants \
+         /etc/systemd/system/sockets.target.wants
+ln -sf /usr/lib/systemd/system/systemd-networkd.service /etc/systemd/system/multi-user.target.wants/
+ln -sf /usr/lib/systemd/system/systemd-networkd.socket /etc/systemd/system/sockets.target.wants/
+ln -sf /usr/lib/systemd/system/systemd-networkd-wait-online.service /etc/systemd/system/network-online.target.wants/
+
+# Launcher (files placed by ExtraTrees)
+mkdir -p /opt/launcher
+chmod +x /opt/launcher/launcher.py 2>/dev/null || true
+systemctl enable tdx-launcher.service 2>/dev/null || true
+systemctl enable tdx-tsm-setup.service 2>/dev/null || true
+systemctl enable data-disk.service 2>/dev/null || true
+
+# Disable SSH by default (read-only rootfs, no password access)
+systemctl disable ssh.service 2>/dev/null || true
+
+# Create required directories
+mkdir -p /etc/easyenclave /data /mnt/config
+
+# Note: don't clean apt cache here — mkosi needs it for later build phases
+# (e.g. initrd). mkosi handles cleanup itself via CleanPackageMetadata=true.
+
+echo "[mkosi.postinst] Done."

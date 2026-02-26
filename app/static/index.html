@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EasyEnclave - App Store</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="container">
+            <div class="header-row">
+                <div>
+                    <h1>EasyEnclave App Store</h1>
+                    <p class="subtitle">Confidential Computing Platform</p>
+                </div>
+                <div class="header-links">
+                    <a href="https://easyenclave.com" target="_blank">Docs</a>
+                    <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/ARCHITECTURE.md" target="_blank">Architecture</a>
+                    <a href="/docs">API</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('apps')">Apps</button>
+            <button class="tab" onclick="showTab('agents')">Agents</button>
+            <button class="tab" onclick="showTab('deployments')">Deployments</button>
+        </div>
+
+        <!-- Stats -->
+        <section class="stats-section">
+            <div class="stat-card">
+                <span class="stat-value" id="totalApps">0</span>
+                <span class="stat-label">Apps</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="totalVersions">0</span>
+                <span class="stat-label">Versions</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="totalAgents">0</span>
+                <span class="stat-label">Agents</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="healthyAgents">0</span>
+                <span class="stat-label">Healthy</span>
+            </div>
+        </section>
+
+        <!-- Apps Tab -->
+        <section id="apps-tab" class="tab-content">
+            <div class="section-header">
+                <h2>Registered Apps</h2>
+                <button onclick="showRegisterAppModal()" class="btn-primary">Register App</button>
+            </div>
+            <div id="appsList" class="apps-grid">
+                <div class="loading">Loading apps...</div>
+            </div>
+        </section>
+
+        <!-- Agents Tab -->
+        <section id="agents-tab" class="tab-content hidden">
+            <h2>TDX Agents</h2>
+            <div id="agentsList" class="agents-grid">
+                <div class="loading">Loading agents...</div>
+            </div>
+        </section>
+
+        <!-- Deployments Tab -->
+        <section id="deployments-tab" class="tab-content hidden">
+            <h2>Recent Deployments</h2>
+            <div id="deploymentsList" class="deployments-list">
+                <div class="loading">Loading deployments...</div>
+            </div>
+        </section>
+
+        <!-- App Details Modal -->
+        <div id="appModal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close-btn" onclick="closeModal('appModal')">&times;</span>
+                <div id="appDetails"></div>
+            </div>
+        </div>
+
+        <!-- Register App Modal -->
+        <div id="registerModal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close-btn" onclick="closeModal('registerModal')">&times;</span>
+                <h2>Register New App</h2>
+                <form id="registerAppForm" onsubmit="registerApp(event)">
+                    <div class="form-group">
+                        <label for="appName">App Name *</label>
+                        <input type="text" id="appName" required placeholder="my-app">
+                    </div>
+                    <div class="form-group">
+                        <label for="appDescription">Description</label>
+                        <input type="text" id="appDescription" placeholder="What does this app do?">
+                    </div>
+                    <div class="form-group">
+                        <label for="sourceRepo">Source Repository</label>
+                        <input type="text" id="sourceRepo" placeholder="org/repo">
+                        <small>GitHub repo for source inspection</small>
+                    </div>
+                    <button type="submit" class="btn-primary">Register App</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Agent Details Modal -->
+        <div id="agentModal" class="modal hidden">
+            <div class="modal-content">
+                <span class="close-btn" onclick="closeModal('agentModal')">&times;</span>
+                <div id="agentDetails"></div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>EasyEnclave App Store | <a href="https://easyenclave.com">Documentation</a> | <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/ARCHITECTURE.md">Architecture</a> | <a href="/docs">API</a> | <a href="/health">Health</a></p>
+        </div>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

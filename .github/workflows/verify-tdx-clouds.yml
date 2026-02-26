@@ -1,0 +1,71 @@
+name: Verify TDX Clouds
+
+on:
+  workflow_dispatch:
+    inputs:
+      cp_url:
+        description: "Control plane URL"
+        required: false
+        default: "https://app.easyenclave.com"
+      clouds:
+        description: "Comma-separated targets (e.g. baremetal,gcp)"
+        required: false
+        default: "baremetal,gcp"
+      node_size:
+        description: "Required node size"
+        required: false
+        default: "standard"
+      verify_app_name:
+        description: "App name used for preflight checks (optional)"
+        required: false
+        default: ""
+      verify_app_version:
+        description: "App version used for preflight checks (optional)"
+        required: false
+        default: ""
+      dc_baremetal:
+        description: "Datacenter label for bare metal target"
+        required: false
+        default: "baremetal:github-runner"
+      dc_gcp:
+        description: "Datacenter label for GCP target (e.g. gcp:us-central1-a)"
+        required: false
+        default: ""
+      # TODO(azure): re-enable Azure datacenter input once Azure confidential VM reliability is fixed.
+      allow_measurer_fallback:
+        description: "Allow measuring-enclave fallback during preflight"
+        required: false
+        type: boolean
+        default: false
+      skip_missing_datacenter:
+        description: "Skip clouds with missing datacenter labels"
+        required: false
+        type: boolean
+        default: false
+      fail_on_unsupported_clouds:
+        description: "Fail when an unsupported cloud is requested"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  verify:
+    runs-on: [self-hosted, tdx]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify pure-TDX cloud readiness
+        env:
+          CP_URL: ${{ inputs.cp_url }}
+          CLOUDS: ${{ inputs.clouds }}
+          NODE_SIZE: ${{ inputs.node_size }}
+          VERIFY_APP_NAME: ${{ inputs.verify_app_name }}
+          VERIFY_APP_VERSION: ${{ inputs.verify_app_version }}
+          DC_BAREMETAL: ${{ inputs.dc_baremetal }}
+          DC_GCP: ${{ inputs.dc_gcp }}
+          ALLOW_MEASURER_FALLBACK: ${{ inputs.allow_measurer_fallback }}
+          SKIP_MISSING_DATACENTER: ${{ inputs.skip_missing_datacenter }}
+          FAIL_ON_UNSUPPORTED_CLOUDS: ${{ inputs.fail_on_unsupported_clouds }}
+        run: ./scripts/verify-tdx-clouds.sh

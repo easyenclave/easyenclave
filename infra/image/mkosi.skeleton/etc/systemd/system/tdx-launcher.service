@@ -1,0 +1,22 @@
+# TDX VM Launcher Service
+# Reads config from kernel cmdline (easyenclave.config=<b64>) or /etc/easyenclave/config.json (legacy)
+# and runs in control-plane or agent mode.
+
+[Unit]
+Description=TDX VM Launcher Service
+After=docker.service network-online.target data-disk.service
+Wants=docker.service network-online.target
+Requires=data-disk.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/launcher
+ExecStart=/usr/bin/python3 /opt/launcher/launcher.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

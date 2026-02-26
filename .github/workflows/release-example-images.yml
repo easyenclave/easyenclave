@@ -1,0 +1,211 @@
+# Release Example Images
+#
+# Mirrors builtin deploy example images into GHCR under this repository namespace,
+# signs them with the release-tag workflow identity, and publishes a descriptor
+# asset consumed by production-rollout builtin example jobs.
+
+name: Release Example Images
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (e.g. v0.4.0)"
+        required: true
+        default: ""
+
+concurrency:
+  group: easyenclave-release-example-images-${{ github.event.release.tag_name || github.event.inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_sha: ${{ steps.sha.outputs.source_sha }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name || '' }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${EVENT_TAG:-}}"
+          if [ -z "$tag" ]; then
+            echo "::error::release_tag is required (event release tag or workflow_dispatch input)."
+            exit 1
+          fi
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "source_ref=refs/tags/$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.source_ref }}
+
+      - name: Resolve release commit sha
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  mirror-sign:
+    name: Mirror/sign example images
+    runs-on: ubuntu-latest
+    needs: [resolve]
+    permissions:
+      id-token: write
+      contents: write
+      packages: write
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+      REPOSITORY: ${{ github.repository }}
+      REPOSITORY_OWNER: ${{ github.repository_owner }}
+      REPOSITORY_NAME: ${{ github.event.repository.name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to GHCR
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Mirror and sign builtin example images
+        id: mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          retry_push() {
+            local image_ref="$1"
+            local attempts=5
+            local delay=3
+            local out
+            for attempt in $(seq 1 "$attempts"); do
+              if out="$(docker push "$image_ref" 2>&1)"; then
+                echo "$out"
+                return 0
+              fi
+              echo "$out"
+              if [ "$attempt" -lt "$attempts" ]; then
+                echo "Push failed for $image_ref (attempt $attempt/$attempts), retrying in ${delay}s..."
+                sleep "$delay"
+              fi
+            done
+            echo "::error::Failed to push $image_ref after $attempts attempts"
+            return 1
+          }
+
+          set_public() {
+            local pkg_path="$1"
+            if gh api --method PATCH "/orgs/${REPOSITORY_OWNER}/packages/container/${pkg_path}" -f visibility=public >/dev/null 2>&1; then
+              echo "Set package public: org/${pkg_path}"
+              return 0
+            fi
+            if gh api --method PATCH "/users/${REPOSITORY_OWNER}/packages/container/${pkg_path}" -f visibility=public >/dev/null 2>&1; then
+              echo "Set package public: user/${pkg_path}"
+              return 0
+            fi
+            echo "::warning::Could not set package visibility to public for ${pkg_path} (configure in GHCR package settings)."
+            return 0
+          }
+
+          safe_tag="$(echo "$RELEASE_TAG" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+          [ -n "$safe_tag" ] || safe_tag="release"
+          sha12="$(echo "$SOURCE_SHA" | cut -c1-12)"
+          repo_lc="$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          prefix="ghcr.io/${repo_lc}/examples"
+          image_tag="${safe_tag}-${sha12}"
+
+          mirror_image() {
+            local source_ref="$1"
+            local target_name="$2"
+            local output_key="$3"
+            local target_tag_ref="${prefix}/${target_name}:${image_tag}"
+
+            echo "Mirroring ${source_ref} -> ${target_tag_ref}"
+            docker pull "$source_ref"
+            docker tag "$source_ref" "$target_tag_ref"
+            push_out="$(retry_push "$target_tag_ref")"
+
+            digest="$(echo "$push_out" | grep -Eo 'sha256:[0-9a-f]{64}' | tail -n1)"
+            if ! echo "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+              echo "::error::Failed to parse digest from push output for ${target_tag_ref}"
+              exit 1
+            fi
+            digest_ref="${prefix}/${target_name}@${digest}"
+            cosign sign --yes "$digest_ref"
+            echo "${output_key}=${digest_ref}" >> "$GITHUB_OUTPUT"
+
+            pkg_path="${REPOSITORY_NAME}%2Fexamples%2F${target_name}"
+            set_public "$pkg_path"
+          }
+
+          mirror_image "hashicorp/http-echo:latest" "hello-tdx-http-echo" "hello_tdx_image"
+          mirror_image "ollama/ollama:latest" "private-llm-ollama" "private_llm_ollama_image"
+          mirror_image "curlimages/curl:latest" "private-llm-model-loader" "private_llm_model_loader_image"
+
+      - name: Build release example image descriptor
+        id: descriptor
+        shell: bash
+        env:
+          HELLO_TDX_IMAGE: ${{ steps.mirror.outputs.hello_tdx_image }}
+          PRIVATE_LLM_OLLAMA_IMAGE: ${{ steps.mirror.outputs.private_llm_ollama_image }}
+          PRIVATE_LLM_MODEL_LOADER_IMAGE: ${{ steps.mirror.outputs.private_llm_model_loader_image }}
+        run: |
+          set -euo pipefail
+          out="/tmp/example-images.${RELEASE_TAG}.json"
+          jq -cn \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg git_sha "$SOURCE_SHA" \
+            --arg hello_tdx_image "$HELLO_TDX_IMAGE" \
+            --arg private_llm_ollama_image "$PRIVATE_LLM_OLLAMA_IMAGE" \
+            --arg private_llm_model_loader_image "$PRIVATE_LLM_MODEL_LOADER_IMAGE" \
+            --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{
+              release_tag: $release_tag,
+              git_sha: $git_sha,
+              hello_tdx_image: $hello_tdx_image,
+              private_llm_ollama_image: $private_llm_ollama_image,
+              private_llm_model_loader_image: $private_llm_model_loader_image,
+              generated_at: $generated_at
+            }' > "$out"
+
+          jq -e '.hello_tdx_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_ollama_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_model_loader_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+
+          cp "$out" /tmp/example-images.release.json
+          echo "descriptor_name=example-images.${RELEASE_TAG}.json" >> "$GITHUB_OUTPUT"
+
+      - name: Upload descriptor to release assets
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          DESCRIPTOR_NAME: ${{ steps.descriptor.outputs.descriptor_name }}
+        run: |
+          set -euo pipefail
+          descriptor="/tmp/example-images.release.json"
+          versioned="/tmp/${DESCRIPTOR_NAME}"
+          canonical="/tmp/example-images.json"
+          cp "$descriptor" "$versioned"
+          cp "$descriptor" "$canonical"
+
+          gh release upload "$RELEASE_TAG" "$versioned" --clobber -R "$GH_REPO"
+          gh release upload "$RELEASE_TAG" "$canonical" --clobber -R "$GH_REPO"
+          echo "Published release assets: $DESCRIPTOR_NAME, example-images.json"

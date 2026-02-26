@@ -1,0 +1,195 @@
+# Release GCP Image
+#
+# Publishes a release-pinned GCP boot image descriptor for CP-native provisioning.
+# The image name is deterministic per release tag + commit SHA.
+
+name: Release GCP Image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (e.g. v0.4.0)"
+        required: true
+        default: ""
+
+concurrency:
+  group: easyenclave-release-gcp-image-${{ github.event.release.tag_name || github.event.inputs.release_tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_sha: ${{ steps.sha.outputs.source_sha }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        shell: bash
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name || '' }}
+          INPUT_TAG: ${{ github.event.inputs.release_tag || '' }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-${EVENT_TAG:-}}"
+          if [ -z "$tag" ]; then
+            echo "::error::release_tag is required (event release tag or workflow_dispatch input)."
+            exit 1
+          fi
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "source_ref=refs/tags/$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.source_ref }}
+
+      - name: Resolve release commit sha
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build/pin GCP image for release
+    runs-on: ubuntu-latest
+    needs: [resolve]
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+      TARGET_PROJECT: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+      SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
+      SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
+      SOURCE_IMAGE_NAME: ""
+      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || 'us-central1-f' }}
+      BUILD_MACHINE_TYPE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+
+      - name: Validate required config
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in TARGET_PROJECT SOURCE_IMAGE_PROJECT; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required value: $v"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.TARGET_PROJECT }}
+
+      - name: Create or reuse release-pinned image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          safe_tag="$(echo "$RELEASE_TAG" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+          [ -n "$safe_tag" ] || safe_tag="release"
+          # GCP image names max out at 63 chars. Keep a deterministic tag component
+          # that always fits and preserves uniqueness for long release tags.
+          tag_hash="$(printf '%s' "$safe_tag" | sha256sum | awk '{print $1}' | cut -c1-8)"
+          if [ "${#safe_tag}" -gt 32 ]; then
+            safe_tag="${safe_tag:0:23}-${tag_hash}"
+          fi
+          sha12="$(echo "$SOURCE_SHA" | cut -c1-12)"
+          image_name="easyenclave-agent-${safe_tag}-${sha12}"
+          family_name="easyenclave-agent-${safe_tag}"
+          metadata_path="${RUNNER_TEMP}/release-gcp-bake-metadata.json"
+          GCP_PROJECT_ID="${TARGET_PROJECT}"
+          TARGET_IMAGE_NAME="${image_name}"
+          TARGET_IMAGE_FAMILY="${family_name}"
+          TARGET_IMAGE_DESCRIPTION="EasyEnclave release ${RELEASE_TAG} (${SOURCE_SHA})"
+          TARGET_IMAGE_LABELS="easyenclave=managed,ee_env=production,release=${safe_tag},ee_release=${safe_tag},gitsha=${sha12},ee_git_sha=${sha12}"
+          BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
+          BAKE_METADATA_PATH="${metadata_path}"
+          export GCP_PROJECT_ID TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE BAKE_METADATA_PATH
+          ./scripts/gcp_bake_image.sh
+
+          source_image_name_used="$(jq -r '.source_image_name_resolved // ""' "${metadata_path}")"
+          source_image_family_used="$(jq -r '.source_image_family_resolved // ""' "${metadata_path}")"
+
+          {
+            echo "image_project=$TARGET_PROJECT"
+            echo "image_name=$image_name"
+            echo "image_family=$family_name"
+            echo "source_image_name_used=$source_image_name_used"
+            echo "source_image_family_used=$source_image_family_used"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build release GCP image descriptor
+        id: descriptor
+        shell: bash
+        env:
+          IMAGE_PROJECT: ${{ steps.image.outputs.image_project }}
+          IMAGE_NAME: ${{ steps.image.outputs.image_name }}
+          IMAGE_FAMILY: ${{ steps.image.outputs.image_family }}
+          SOURCE_IMAGE_NAME_USED: ${{ steps.image.outputs.source_image_name_used }}
+          SOURCE_IMAGE_FAMILY_USED: ${{ steps.image.outputs.source_image_family_used }}
+        run: |
+          set -euo pipefail
+          out="/tmp/gcp-image.${RELEASE_TAG}.json"
+          jq -cn \
+            --arg release_tag "$RELEASE_TAG" \
+            --arg git_sha "$SOURCE_SHA" \
+            --arg image_project "$IMAGE_PROJECT" \
+            --arg image_name "$IMAGE_NAME" \
+            --arg image_family "$IMAGE_FAMILY" \
+            --arg source_image_project "$SOURCE_IMAGE_PROJECT" \
+            --arg source_image_family "$SOURCE_IMAGE_FAMILY_USED" \
+            --arg source_image_name "$SOURCE_IMAGE_NAME_USED" \
+            --arg generated_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{
+              release_tag: $release_tag,
+              git_sha: $git_sha,
+              image_project: $image_project,
+              image_name: $image_name,
+              image_family: $image_family,
+              source_image_project: $source_image_project,
+              source_image_family: $source_image_family,
+              source_image_name: $source_image_name,
+              generated_at: $generated_at
+            }' > "$out"
+          jq -e '.image_project | length > 0' "$out" >/dev/null
+          jq -e '.image_name | length > 0' "$out" >/dev/null
+          cp "$out" /tmp/gcp-image.release.json
+          echo "descriptor_name=gcp-image.${RELEASE_TAG}.json" >> "$GITHUB_OUTPUT"
+
+      - name: Upload descriptor to release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DESCRIPTOR_NAME: ${{ steps.descriptor.outputs.descriptor_name }}
+        run: |
+          set -euo pipefail
+          descriptor="/tmp/gcp-image.release.json"
+          versioned="/tmp/${DESCRIPTOR_NAME}"
+          canonical="/tmp/gcp-image.json"
+          cp "$descriptor" "$versioned"
+          cp "$descriptor" "$canonical"
+
+          gh release upload "$RELEASE_TAG" "$versioned" --clobber
+          gh release upload "$RELEASE_TAG" "$canonical" --clobber
+          echo "Published release assets: $DESCRIPTOR_NAME, gcp-image.json"

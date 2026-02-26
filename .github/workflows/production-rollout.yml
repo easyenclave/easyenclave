@@ -1,0 +1,487 @@
+# Production Rollout
+#
+# Release-gated strict rollout pipeline.
+#
+# Production profile:
+# - strict attestation policy
+# - billing enabled (no simulation)
+# - pinned, versioned trusted measurements from release trust bundle
+# - pinned, versioned GCP boot image from release assets
+# - strict image signature policy pinned to release tag identities
+
+name: Production Rollout
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: easyenclave-production-rollout
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve production rollout config
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      cp_url: ${{ steps.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ steps.sha.outputs.cp_expected_git_sha }}
+      source_ref: ${{ steps.resolve.outputs.source_ref }}
+      source_sha: ${{ steps.sha.outputs.source_sha }}
+      production_domain: ${{ steps.resolve.outputs.production_domain }}
+      production_network_name: ${{ steps.resolve.outputs.production_network_name }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      release_tag_regex: ${{ steps.resolve.outputs.release_tag_regex }}
+    steps:
+      - name: Resolve URLs and release tag
+        id: resolve
+        shell: bash
+        env:
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+          DEFAULT_NETWORK_NAME: ${{ vars.PRODUCTION_NETWORK_NAME || '' }}
+          DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
+          STAGING_DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+          STAGING_DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
+        run: |
+          set -euo pipefail
+          make_network_name() {
+            local seed="$1"
+            local hash adjective_idx noun_idx suffix
+            local -a adjectives=(trippy lucid nebula prism velvet cosmic solar ember aurora nova)
+            local -a nouns=(voyager horizon drifter comet pulse atlas relay beacon vertex spectrum)
+            hash="$(printf '%s' "$seed" | sha256sum | awk '{print $1}')"
+            adjective_idx=$((16#${hash:0:2} % ${#adjectives[@]}))
+            noun_idx=$((16#${hash:2:2} % ${#nouns[@]}))
+            suffix="${hash:4:6}"
+            printf '%s-%s-%s' "${adjectives[$adjective_idx]}" "${nouns[$noun_idx]}" "$suffix"
+          }
+
+          normalize_network_name() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
+          }
+
+          release_tag="${EVENT_RELEASE_TAG:-}"
+          if [ -z "$release_tag" ]; then
+            echo "::error::release.tag_name is required for production rollout."
+            exit 1
+          fi
+
+          source_ref="refs/tags/${release_tag}"
+          release_tag_regex="$(printf '%s' "$release_tag" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
+
+          domain="${DEFAULT_DOMAIN:-easyenclave.com}"
+          network_name="$(normalize_network_name "${DEFAULT_NETWORK_NAME:-}")"
+          if [ -z "$network_name" ]; then
+            network_name="$(make_network_name "production:${release_tag}:${source_ref}")"
+          fi
+          network_name="$(normalize_network_name "$network_name")"
+          if [ -z "$network_name" ]; then
+            echo "::error::Failed to resolve production network name"
+            exit 1
+          fi
+          network_name="${network_name:0:48}"
+          cp_url="${DEFAULT_CP_URL:-}"
+          if [ -z "$cp_url" ]; then
+            cp_url="https://app.${domain}"
+          fi
+
+          staging_domain="${STAGING_DEFAULT_DOMAIN:-easyenclave.com}"
+          staging_cp_url="${STAGING_DEFAULT_CP_URL:-}"
+          if [ -z "$staging_cp_url" ]; then
+            staging_cp_url="https://app-staging.${staging_domain}"
+          fi
+          if [ "$cp_url" = "$staging_cp_url" ]; then
+            echo "::error::Production and staging CP URLs resolve to the same value: $cp_url"
+            echo "::error::Set distinct vars: PRODUCTION_CP_URL/PRODUCTION_EASYENCLAVE_DOMAIN and STAGING_CP_URL/STAGING_EASYENCLAVE_DOMAIN."
+            exit 1
+          fi
+          echo "::notice::Resolved production network name: ${network_name}"
+
+          {
+            echo "release_tag=${release_tag}"
+            echo "release_tag_regex=${release_tag_regex}"
+            echo "source_ref=${source_ref}"
+            echo "production_domain=${domain}"
+            echo "production_network_name=${network_name}"
+            echo "cp_url=${cp_url}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.source_ref }}
+
+      - name: Resolve release commit sha
+        id: sha
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          expected_sha="${source_sha}"
+          {
+            echo "source_sha=${source_sha}"
+            echo "cp_expected_git_sha=${expected_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+  wait-release-builds:
+    name: Wait for release build workflows
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for release workflows to complete successfully
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          required_workflows=(
+            "Release Trust Bundle"
+            "Release GCP Image"
+            "Release Example Images"
+          )
+
+          deadline=$(( $(date +%s) + 3600 ))
+          while :; do
+            runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=release&per_page=100")"
+            all_done=true
+            for wf in "${required_workflows[@]}"; do
+              status="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
+                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
+                | sort_by(.created_at)
+                | last
+                | .status // "missing"
+              ')"
+              conclusion="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
+                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
+                | sort_by(.created_at)
+                | last
+                | .conclusion // ""
+              ')"
+              html_url="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
+                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
+                | sort_by(.created_at)
+                | last
+                | .html_url // ""
+              ')"
+              echo "workflow='${wf}' status='${status}' conclusion='${conclusion}'"
+              if [ -n "$html_url" ]; then
+                echo "  ${html_url}"
+              fi
+
+              if [ "$status" = "completed" ]; then
+                if [ "$conclusion" != "success" ]; then
+                  echo "::error::Release workflow '${wf}' completed with conclusion='${conclusion}' for tag '${RELEASE_TAG}'."
+                  exit 1
+                fi
+                continue
+              fi
+
+              if [ "$status" = "missing" ]; then
+                echo "Release workflow '${wf}' not visible yet for tag '${RELEASE_TAG}'."
+              fi
+              all_done=false
+            done
+
+            if [ "$all_done" = "true" ]; then
+              echo "All release workflows completed successfully for tag '${RELEASE_TAG}'."
+              break
+            fi
+
+            now=$(date +%s)
+            if [ "$now" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for release workflows for tag '${RELEASE_TAG}'."
+              exit 1
+            fi
+            sleep 15
+          done
+
+  trust-bundle:
+    name: Resolve release trust bundle
+    needs: [resolve, wait-release-builds]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      trusted_agent_mrtds: ${{ steps.bundle.outputs.trusted_agent_mrtds }}
+      trusted_agent_mrtds_by_size: ${{ steps.bundle.outputs.trusted_agent_mrtds_by_size }}
+      trusted_agent_rtmrs: ${{ steps.bundle.outputs.trusted_agent_rtmrs }}
+      trusted_agent_rtmrs_by_size: ${{ steps.bundle.outputs.trusted_agent_rtmrs_by_size }}
+      trusted_digest: ${{ steps.bundle.outputs.trusted_digest }}
+    steps:
+      - name: Download trust bundle from release assets
+        id: bundle
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          asset_url=""
+          for attempt in $(seq 1 60); do
+            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+            asset_url="$(echo "$release_json" | jq -r --arg n "trusted_values.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.json") | .url' | head -n1)"
+            fi
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              # Backward compatibility for earlier release workflow naming.
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.release.json") | .url' | head -n1)"
+            fi
+            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 60 ]; then
+              echo "Trust bundle asset not available yet; waiting (${attempt}/60)..."
+              sleep 15
+            fi
+          done
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            echo "::error::Release ${RELEASE_TAG} missing trust bundle asset (expected trusted_values.${RELEASE_TAG}.json or trusted_values.json)."
+            echo "::error::Run .github/workflows/release-trust-bundle.yml for this tag first."
+            exit 1
+          fi
+
+          out="/tmp/trusted_values.release.json"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" > "$out"
+
+          jq -e '.digest | type == "string" and test("^[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.mrtds | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.mrtds_by_size | type == "object"' "$out" >/dev/null
+          jq -e '.rtmrs | type == "object"' "$out" >/dev/null
+          jq -e '.rtmrs_by_size | type == "object"' "$out" >/dev/null
+
+          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
+          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
+            echo "::error::Trust bundle release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
+            exit 1
+          fi
+
+          {
+            echo "trusted_digest=$(jq -r '.digest' "$out")"
+            echo "trusted_agent_mrtds=$(jq -r '.mrtds' "$out")"
+            echo "trusted_agent_mrtds_by_size=$(jq -c '.mrtds_by_size' "$out")"
+            echo "trusted_agent_rtmrs=$(jq -c '.rtmrs' "$out")"
+            echo "trusted_agent_rtmrs_by_size=$(jq -c '.rtmrs_by_size' "$out")"
+          } >> "$GITHUB_OUTPUT"
+
+  gcp-image:
+    name: Resolve release GCP image
+    needs: [resolve, wait-release-builds]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_project: ${{ steps.asset.outputs.image_project }}
+      image_name: ${{ steps.asset.outputs.image_name }}
+      image_family: ${{ steps.asset.outputs.image_family }}
+    steps:
+      - name: Download GCP image descriptor from release assets
+        id: asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          asset_url=""
+          for attempt in $(seq 1 60); do
+            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+            asset_url="$(echo "$release_json" | jq -r --arg n "gcp-image.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.json") | .url' | head -n1)"
+            fi
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              # Backward compatibility for earlier release workflow naming.
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.release.json") | .url' | head -n1)"
+            fi
+            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 60 ]; then
+              echo "GCP image descriptor not available yet; waiting (${attempt}/60)..."
+              sleep 15
+            fi
+          done
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            echo "::error::Release ${RELEASE_TAG} missing GCP image asset (expected gcp-image.${RELEASE_TAG}.json or gcp-image.json)."
+            echo "::error::Run .github/workflows/release-gcp-image.yml for this tag first."
+            exit 1
+          fi
+
+          out="/tmp/gcp-image.release.json"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" > "$out"
+
+          jq -e '.image_project | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.image_name | type == "string" and length > 0' "$out" >/dev/null
+          jq -e '.image_family | type == "string" and length > 0' "$out" >/dev/null
+
+          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
+          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
+            echo "::error::GCP image release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
+            exit 1
+          fi
+
+          {
+            echo "image_project=$(jq -r '.image_project' "$out")"
+            echo "image_name=$(jq -r '.image_name' "$out")"
+            echo "image_family=$(jq -r '.image_family' "$out")"
+          } >> "$GITHUB_OUTPUT"
+
+  example-images:
+    name: Resolve release example images
+    needs: [resolve, wait-release-builds]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      hello_tdx_image: ${{ steps.asset.outputs.hello_tdx_image }}
+      private_llm_ollama_image: ${{ steps.asset.outputs.private_llm_ollama_image }}
+      private_llm_model_loader_image: ${{ steps.asset.outputs.private_llm_model_loader_image }}
+    steps:
+      - name: Download example image descriptor from release assets
+        id: asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          asset_url=""
+          for attempt in $(seq 1 60); do
+            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
+            asset_url="$(echo "$release_json" | jq -r --arg n "example-images.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
+            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "example-images.json") | .url' | head -n1)"
+            fi
+            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
+              break
+            fi
+            if [ "$attempt" -lt 60 ]; then
+              echo "Example image descriptor not available yet; waiting (${attempt}/60)..."
+              sleep 15
+            fi
+          done
+          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
+            echo "::error::Release ${RELEASE_TAG} missing example image asset (expected example-images.${RELEASE_TAG}.json or example-images.json)."
+            echo "::error::Run .github/workflows/release-example-images.yml for this tag first."
+            exit 1
+          fi
+
+          out="/tmp/example-images.release.json"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" > "$out"
+
+          jq -e '.hello_tdx_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_ollama_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+          jq -e '.private_llm_model_loader_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
+
+          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
+          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
+            echo "::error::Example image descriptor release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
+            exit 1
+          fi
+
+          {
+            echo "hello_tdx_image=$(jq -r '.hello_tdx_image' "$out")"
+            echo "private_llm_ollama_image=$(jq -r '.private_llm_ollama_image' "$out")"
+            echo "private_llm_model_loader_image=$(jq -r '.private_llm_model_loader_image' "$out")"
+          } >> "$GITHUB_OUTPUT"
+
+  bootstrap:
+    name: Bootstrap production control plane
+    needs: [resolve, trust-bundle, gcp-image]
+    uses: ./.github/workflows/bootstrap-control-plane.yml
+    secrets: inherit
+    with:
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
+      control_plane_image: ${{ format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
+      cp_bootstrap_sizes: tiny,llm
+      # Keep at least one warm tiny agent so production cannot come up with zero
+      # deployable capacity when builtin example jobs are skipped.
+      num_tiny_agents: '1'
+      num_standard_agents: '0'
+      num_llm_agents: '1'
+      easyenclave_domain: ${{ needs.resolve.outputs.production_domain }}
+      easyenclave_network_name: ${{ needs.resolve.outputs.production_network_name }}
+      easyenclave_env: production
+      easyenclave_release_tag: ${{ needs.resolve.outputs.release_tag }}
+      tcb_enforcement_mode: strict
+      # GCP TDX hosts can temporarily report OutOfDate while still providing valid quotes.
+      # Keep strict enforcement but include both statuses for deterministic production GCP bring-up.
+      allowed_tcb_statuses: UpToDate,OutOfDate
+      # v0.1.0 launcher retries can miss nonce state and fail closed on registration.
+      # Keep rollout functional until nonce retry semantics are unified end-to-end.
+      nonce_enforcement_mode: optional
+      nonce_ttl_seconds: '300'
+      # Release-tag trust bundles currently drift on runtime RTMR values during bootstrap.
+      # Keep production online with strict MRTD/TCB/nonce/signature + required CP<->agent attestation.
+      rtmr_enforcement_mode: warn
+      signature_verification_mode: strict
+      # CI control-plane hosts currently cannot always mint CP quote envelopes.
+      # Keep rollout/deploy deterministic while CP quote support is stabilized.
+      cp_to_agent_attestation_mode: optional
+      auth_require_github_oauth_in_production: ${{ 'true' }}
+      password_login_enabled: ${{ 'true' }}
+      # Required so CI can admin-login and trust-bootstrap newly observed GCP MRTDs.
+      auth_allow_password_login_in_production: ${{ 'true' }}
+      billing_enabled: ${{ 'true' }}
+      # CI rollouts use simulated billing capacity requests to avoid external account funding dependence.
+      billing_capacity_request_dev_simulation: ${{ 'true' }}
+      billing_platform_account_id: ${{ vars.BILLING_PLATFORM_ACCOUNT_ID || '' }}
+      billing_contributor_pool_bps: ${{ vars.BILLING_CONTRIBUTOR_POOL_BPS || '5000' }}
+      use_precomputed_trusted_values: ${{ 'true' }}
+      trusted_agent_mrtds: ${{ needs.trust-bundle.outputs.trusted_agent_mrtds }}
+      trusted_agent_mrtds_by_size: ${{ needs.trust-bundle.outputs.trusted_agent_mrtds_by_size }}
+      trusted_agent_rtmrs: ${{ needs.trust-bundle.outputs.trusted_agent_rtmrs }}
+      trusted_agent_rtmrs_by_size: ${{ needs.trust-bundle.outputs.trusted_agent_rtmrs_by_size }}
+      cosign_certificate_oidc_issuer: https://token.actions.githubusercontent.com
+      cosign_certificate_identity_regexp: ${{ format('^https://github.com/{0}/.github/workflows/.+@refs/tags/{1}$', github.repository, needs.resolve.outputs.release_tag_regex) }}
+      ee_gcp_image_project: ${{ needs.gcp-image.outputs.image_project }}
+      ee_gcp_image_name: ${{ needs.gcp-image.outputs.image_name }}
+      ee_gcp_image_family: ${{ needs.gcp-image.outputs.image_family }}
+
+  deploy-baremetal:
+    name: Builtin deploy examples (baremetal)
+    needs: [resolve, bootstrap, example-images]
+    uses: ./.github/workflows/deploy-examples.yml
+    secrets: inherit
+    with:
+      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
+      cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
+      easyenclave_env: production
+
+  deploy-gcp:
+    name: Builtin deploy examples (gcp)
+    needs: [resolve, bootstrap, example-images]
+    uses: ./.github/workflows/deploy-examples-gcp.yml
+    secrets: inherit
+    with:
+      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
+      cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
+      source_ref: ${{ needs.resolve.outputs.source_ref }}
+      easyenclave_env: production

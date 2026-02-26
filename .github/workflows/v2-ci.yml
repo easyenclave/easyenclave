@@ -2,7 +2,13 @@ name: v2 Rust CI
 
 on:
   push:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-ci.yml"
   pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-ci.yml"
 
 jobs:
   checks:

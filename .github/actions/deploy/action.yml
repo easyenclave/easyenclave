@@ -1,0 +1,285 @@
+# Deploy to EasyEnclave - Composite Action
+#
+# Deploys a docker-compose.yml to a TDX agent via the EasyEnclave control plane.
+# This action handles all the TDX complexity - users just need Docker files.
+#
+# IMPORTANT: The app must be pre-registered in the app catalog before deployment.
+# Register apps via: POST /api/v1/apps or the register-app action.
+#
+# Usage:
+#   - uses: easyenclave/easyenclave/.github/actions/deploy@main
+#     with:
+#       app_name: my-app
+#       compose_file: docker-compose.yml
+#       service_name: my-app
+
+name: Deploy to EasyEnclave
+description: Deploy a Docker Compose application to EasyEnclave's confidential computing platform
+
+inputs:
+  app_name:
+    description: 'App name (must be pre-registered in the app catalog)'
+    required: true
+  compose_file:
+    description: Path to docker-compose.yml file
+    required: true
+  service_name:
+    description: Service name for deployment
+    required: true
+  health_endpoint:
+    description: Health check endpoint path
+    required: false
+    default: '/health'
+  control_plane_url:
+    description: EasyEnclave control plane URL
+    required: false
+    default: 'https://app.easyenclave.com'
+  agent_admin_password:
+    description: Agent admin panel password (will be set during deployment)
+    required: false
+    default: ''
+  github_owner:
+    description: GitHub user or org to set as the agent owner (for owner-scoped access)
+    required: false
+    default: ''
+  node_size:
+    description: 'Required agent node_size (e.g., "tiny", "standard", "llm"). Empty = any.'
+    required: false
+    default: ''
+  allowed_datacenters:
+    description: 'Comma-separated datacenter allow-list (e.g., "gcp:us-central1-a,azure:eastus2-1")'
+    required: false
+    default: ''
+  denied_datacenters:
+    description: 'Comma-separated datacenter deny-list'
+    required: false
+    default: ''
+  allowed_clouds:
+    description: 'Comma-separated cloud allow-list (e.g., "baremetal,gcp,azure")'
+    required: false
+    default: ''
+  denied_clouds:
+    description: 'Comma-separated cloud deny-list'
+    required: false
+    default: ''
+  allow_measuring_enclave_fallback:
+    description: 'If true, allows deploying onto measuring-enclave agents when no other agents match.'
+    required: false
+    default: 'false'
+
+outputs:
+  deployment_id:
+    description: The deployment ID
+    value: ${{ steps.deploy.outputs.deployment_id }}
+  agent_id:
+    description: The agent ID used for deployment
+    value: ${{ steps.deploy.outputs.agent_id }}
+  service_url:
+    description: The deployed service URL
+    value: ${{ steps.health.outputs.service_url }}
+  version:
+    description: The published app version
+    value: ${{ steps.publish.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ ! -f "${{ inputs.compose_file }}" ]; then
+          echo "::error::Compose file not found: ${{ inputs.compose_file }}"
+          exit 1
+        fi
+        echo "Deploying ${{ inputs.app_name }} from ${{ inputs.compose_file }}"
+
+    - name: Verify app is registered
+      shell: bash
+      run: |
+        set -e
+        echo "Verifying app '${{ inputs.app_name }}' is registered..."
+        HTTP_CODE=$(curl -s -o /tmp/app_response.json -w "%{http_code}" \
+          "${{ inputs.control_plane_url }}/api/v1/apps/${{ inputs.app_name }}" 2>/dev/null) || true
+
+        if [ "$HTTP_CODE" != "200" ]; then
+          echo "::error::App '${{ inputs.app_name }}' is not registered (HTTP $HTTP_CODE). Please register the app first using:"
+          echo "::error::  curl -X POST ${{ inputs.control_plane_url }}/api/v1/apps -H 'Content-Type: application/json' -d '{\"name\": \"${{ inputs.app_name }}\", \"source_repo\": \"your-org/your-repo\"}'"
+          echo "Response body: $(cat /tmp/app_response.json 2>/dev/null || echo 'empty')"
+          exit 1
+        fi
+        echo "App '${{ inputs.app_name }}' found"
+
+    - name: Generate version string
+      id: version
+      shell: bash
+      run: |
+        TIMESTAMP=$(date -u +%Y%m%d-%H%M%S)
+        SHORT_SHA="${GITHUB_SHA:0:7}"
+        RUN_ID="${GITHUB_RUN_ID:-0}"
+        RUN_ATTEMPT="${GITHUB_RUN_ATTEMPT:-1}"
+        PLACEMENT_HINT="${{ inputs.allowed_clouds }}"
+        if [ -z "$PLACEMENT_HINT" ]; then
+          PLACEMENT_HINT="${{ inputs.allowed_datacenters }}"
+        fi
+        if [ -z "$PLACEMENT_HINT" ]; then
+          PLACEMENT_HINT="${GITHUB_JOB:-deploy}"
+        fi
+        PLACEMENT_HINT=$(echo "$PLACEMENT_HINT" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-*//; s/-*$//' | cut -c1-24)
+        VERSION="${TIMESTAMP}-${SHORT_SHA}-${RUN_ID}-${RUN_ATTEMPT}-${PLACEMENT_HINT}"
+        echo "Generated version: $VERSION"
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Publish version
+      id: publish
+      uses: ./.github/actions/publish
+      with:
+        app_name: ${{ inputs.app_name }}
+        version: ${{ steps.version.outputs.version }}
+        compose_file: ${{ inputs.compose_file }}
+        source_commit: ${{ github.sha }}
+        control_plane_url: ${{ inputs.control_plane_url }}
+        node_size: ${{ inputs.node_size }}
+
+    - name: Wait for version to be attested
+      shell: bash
+      env:
+        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
+        APP_NAME: ${{ inputs.app_name }}
+        VERSION: ${{ steps.publish.outputs.version }}
+        INITIAL_STATUS: ${{ steps.publish.outputs.status }}
+        NODE_SIZE: ${{ inputs.node_size }}
+        ALLOWED_DATACENTERS: ${{ inputs.allowed_datacenters }}
+        DENIED_DATACENTERS: ${{ inputs.denied_datacenters }}
+        ALLOWED_CLOUDS: ${{ inputs.allowed_clouds }}
+        DENIED_CLOUDS: ${{ inputs.denied_clouds }}
+      run: bash ./scripts/deploy_action.sh wait-attested
+
+    - name: Find agent and deploy
+      id: deploy
+      shell: bash
+      env:
+        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
+        APP_NAME: ${{ inputs.app_name }}
+        VERSION: ${{ steps.publish.outputs.version }}
+        SERVICE_NAME: ${{ inputs.service_name }}
+        HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
+        AGENT_ADMIN_PASSWORD: ${{ inputs.agent_admin_password }}
+        GITHUB_OWNER: ${{ inputs.github_owner }}
+        NODE_SIZE: ${{ inputs.node_size }}
+        ALLOWED_DATACENTERS: ${{ inputs.allowed_datacenters }}
+        DENIED_DATACENTERS: ${{ inputs.denied_datacenters }}
+        ALLOWED_CLOUDS: ${{ inputs.allowed_clouds }}
+        DENIED_CLOUDS: ${{ inputs.denied_clouds }}
+        ALLOW_MEASURER_FALLBACK: ${{ inputs.allow_measuring_enclave_fallback }}
+      run: bash ./scripts/deploy_action.sh find-and-deploy
+
+    - name: Wait for deployment health
+      id: health
+      shell: bash
+      env:
+        CONTROL_PLANE_URL: ${{ inputs.control_plane_url }}
+        AGENT_ID: ${{ steps.deploy.outputs.agent_id }}
+        DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+        HEALTH_ENDPOINT: ${{ inputs.health_endpoint }}
+      run: |
+        set -e
+
+        fetch_agent_logs() {
+          local agent_id="$1"
+          local limit="${2:-50}"
+          echo ""
+          echo "=== Agent Logs (last $limit entries) ==="
+          LOGS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$agent_id/logs?limit=$limit&min_level=INFO" 2>/dev/null || echo '{"logs":[]}')
+          echo "$LOGS" | jq -r '.logs[] | "[\(.container // "unknown")] \(.line)"' 2>/dev/null || echo "No logs available"
+          echo "=== End Logs ==="
+          echo ""
+        }
+
+        SEEN_LINES=0
+        stream_new_logs() {
+          local logs_json
+          logs_json=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID/logs?since=10m" 2>/dev/null || echo '{"logs":[]}')
+          local total
+          total=$(echo "$logs_json" | jq '.logs | length')
+          if [ "$total" -gt "$SEEN_LINES" ]; then
+            echo "$logs_json" | jq -r ".logs[$SEEN_LINES:][] | \"  [\(.container // \"agent\")] \(.line)\""
+            SEEN_LINES=$total
+          fi
+        }
+
+        echo "Waiting for deployment to become healthy..."
+        for i in {1..60}; do
+          AGENT_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/agents/$AGENT_ID" 2>/dev/null || echo '{}')
+          AGENT_STATE=$(echo "$AGENT_STATUS" | jq -r '.status // "unknown"')
+          HEALTH=$(echo "$AGENT_STATUS" | jq -r '.health_status // "unknown"')
+          SERVICE_URL=$(echo "$AGENT_STATUS" | jq -r '.service_url // empty')
+
+          if [ "$AGENT_STATE" = "error" ]; then
+            DEPLOY_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/deployments/$DEPLOYMENT_ID" 2>/dev/null || echo '{}')
+            DEPLOY_ERROR=$(echo "$DEPLOY_STATUS" | jq -r '.error // "Unknown error"')
+            echo "::error::Deployment failed on agent: $DEPLOY_ERROR"
+            echo ""
+            echo "Debug info:"
+            echo "  Agent ID: $AGENT_ID"
+            echo "  Agent status: $AGENT_STATE"
+            echo "  Deployment ID: $DEPLOYMENT_ID"
+            echo "  Deployment status: $(echo "$DEPLOY_STATUS" | jq -r '.status // "unknown"')"
+            fetch_agent_logs "$AGENT_ID" 100
+            exit 1
+          fi
+
+          DEPLOY_STATUS=$(curl -sf "$CONTROL_PLANE_URL/api/v1/deployments/$DEPLOYMENT_ID" 2>/dev/null || echo '{}')
+          DEPLOY_STATE=$(echo "$DEPLOY_STATUS" | jq -r '.status // "unknown"')
+
+          if [ "$DEPLOY_STATE" = "failed" ]; then
+            DEPLOY_ERROR=$(echo "$DEPLOY_STATUS" | jq -r '.error // "Unknown error"')
+            echo "::error::Deployment failed: $DEPLOY_ERROR"
+            echo ""
+            echo "Debug info:"
+            echo "  Agent ID: $AGENT_ID"
+            echo "  Agent status: $AGENT_STATE"
+            echo "  Deployment ID: $DEPLOYMENT_ID"
+            fetch_agent_logs "$AGENT_ID" 100
+            exit 1
+          fi
+
+          if [ "$HEALTH" = "healthy" ] && [ -n "$SERVICE_URL" ]; then
+            stream_new_logs
+            echo ""
+            echo "Agent reports healthy at $SERVICE_URL"
+            echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
+
+            echo "Verifying tunnel connectivity..."
+            for j in {1..30}; do
+              if curl -sf "${SERVICE_URL}${HEALTH_ENDPOINT}" > /dev/null 2>&1; then
+                echo "Tunnel verification passed!"
+                BODY=$(curl -s "${SERVICE_URL}${HEALTH_ENDPOINT}" 2>/dev/null || true)
+                echo "${BODY:0:500}"
+                echo ""
+                echo "Deployment complete!"
+                exit 0
+              fi
+              echo "  Waiting for tunnel... ($j/30)"
+              sleep 10
+            done
+
+            echo "::error::Deployment completed but tunnel not accessible after 5 minutes"
+            echo "Agent is healthy but ${SERVICE_URL}${HEALTH_ENDPOINT} is not reachable"
+            exit 1
+          fi
+
+          stream_new_logs
+          echo "--- Agent: $AGENT_STATE | Health: $HEALTH | Deploy: $DEPLOY_STATE ($i/60) ---"
+          sleep 5
+        done
+
+        echo "::error::Deployment timed out waiting for health"
+        echo ""
+        echo "Final state:"
+        echo "  Agent status: $(echo "$AGENT_STATUS" | jq -r '.status // "unknown"')"
+        echo "  Agent health: $HEALTH"
+        echo "  Agent service_url: $SERVICE_URL"
+        echo "  Deployment status: $DEPLOY_STATE"
+        echo "  Deployment error: $(echo "$DEPLOY_STATUS" | jq -r '.error // "none"')"
+        fetch_agent_logs "$AGENT_ID" 100
+        exit 1

@@ -1,0 +1,48 @@
+services:
+  easyenclave:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - ITA_API_URL=${ITA_API_URL:-https://api.trustauthority.intel.com/appraisal/v2}
+      - ITA_API_KEY=${ITA_API_KEY:-}
+      # Cloudflare Tunnel integration (optional)
+      - CLOUDFLARE_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+      - CLOUDFLARE_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID:-}
+      - CLOUDFLARE_ZONE_ID=${CLOUDFLARE_ZONE_ID:-}
+      - EASYENCLAVE_DOMAIN=${EASYENCLAVE_DOMAIN:-easyenclave.com}
+      # Stripe (optional billing)
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY:-}
+      - STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET:-}
+      # GitHub OAuth (optional admin login)
+      - GITHUB_OAUTH_CLIENT_ID=${GITHUB_OAUTH_CLIENT_ID:-}
+      - GITHUB_OAUTH_CLIENT_SECRET=${GITHUB_OAUTH_CLIENT_SECRET:-}
+      - GITHUB_OAUTH_REDIRECT_URI=${GITHUB_OAUTH_REDIRECT_URI:-}
+      - ADMIN_GITHUB_LOGINS=${ADMIN_GITHUB_LOGINS:-}
+      # Trusted MRTDs (comma-separated for rolling updates)
+      - TRUSTED_AGENT_MRTDS=${TRUSTED_AGENT_MRTDS:-${SYSTEM_AGENT_MRTD:-}}
+      - TRUSTED_PROXY_MRTDS=${TRUSTED_PROXY_MRTDS:-${SYSTEM_PROXY_MRTD:-}}
+      # TCB Status Enforcement (strict mode rejects vulnerable platforms)
+      - TCB_ENFORCEMENT_MODE=${TCB_ENFORCEMENT_MODE:-warn}
+      - ALLOWED_TCB_STATUSES=${ALLOWED_TCB_STATUSES:-UpToDate}
+      # Nonce Challenge (replay attack prevention)
+      - NONCE_ENFORCEMENT_MODE=${NONCE_ENFORCEMENT_MODE:-optional}
+      - NONCE_TTL_SECONDS=${NONCE_TTL_SECONDS:-300}
+      - NONCE_LENGTH=${NONCE_LENGTH:-32}
+      # Measurement signature enforcement
+      - SIGNATURE_VERIFICATION_MODE=${SIGNATURE_VERIFICATION_MODE:-warn}
+      # Attestation refresh interval (seconds, 0 to disable)
+      - AGENT_ATTESTATION_INTERVAL=${AGENT_ATTESTATION_INTERVAL:-3600}
+      # Stale agent cleanup (hours without heartbeat before deletion)
+      - AGENT_STALE_HOURS=${AGENT_STALE_HOURS:-24}
+      # Admin authentication (bcrypt hash)
+      - ADMIN_PASSWORD_HASH=${ADMIN_PASSWORD_HASH:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped

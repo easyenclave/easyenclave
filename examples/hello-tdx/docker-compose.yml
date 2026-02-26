@@ -1,0 +1,6 @@
+services:
+  app:
+    image: hashicorp/http-echo@sha256:fcb75f691c8b0414d670ae570240cbf95502cc18a9ba57e982ecac589760a186
+    command: ["-text=Hello from TDX!", "-listen=:8080"]
+    ports:
+      - "8080:8080"

@@ -1,0 +1,87 @@
+name: Deploy Example
+description: Thin wrapper around the deploy action for example apps
+
+inputs:
+  app_name:
+    description: App name (must be pre-registered in the app catalog)
+    required: true
+  compose_file:
+    description: Path to docker-compose.yml file
+    required: true
+  service_name:
+    description: Service name for deployment
+    required: true
+  health_endpoint:
+    description: Health check endpoint path
+    required: false
+    default: "/health"
+  control_plane_url:
+    description: EasyEnclave control plane URL
+    required: false
+    default: "https://app.easyenclave.com"
+  agent_admin_password:
+    description: Agent admin panel password (will be set during deployment)
+    required: false
+    default: ""
+  github_owner:
+    description: GitHub user or org to set as the agent owner (for owner-scoped access)
+    required: false
+    default: ""
+  node_size:
+    description: Required agent node_size (e.g., tiny, llm). Empty = any.
+    required: false
+    default: ""
+  allowed_datacenters:
+    description: Comma-separated datacenter allow-list
+    required: false
+    default: ""
+  denied_datacenters:
+    description: Comma-separated datacenter deny-list
+    required: false
+    default: ""
+  allowed_clouds:
+    description: Comma-separated cloud allow-list (e.g., baremetal,gcp)
+    required: false
+    default: ""
+  denied_clouds:
+    description: Comma-separated cloud deny-list
+    required: false
+    default: ""
+  allow_measuring_enclave_fallback:
+    description: If true, allows deploying onto measuring-enclave agents when no other agents match.
+    required: false
+    default: "false"
+
+outputs:
+  deployment_id:
+    description: The deployment ID
+    value: ${{ steps.deploy.outputs.deployment_id }}
+  agent_id:
+    description: The agent ID used for deployment
+    value: ${{ steps.deploy.outputs.agent_id }}
+  service_url:
+    description: The deployed service URL
+    value: ${{ steps.deploy.outputs.service_url }}
+  version:
+    description: The published app version
+    value: ${{ steps.deploy.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: deploy
+      uses: ./.github/actions/deploy
+      with:
+        app_name: ${{ inputs.app_name }}
+        compose_file: ${{ inputs.compose_file }}
+        service_name: ${{ inputs.service_name }}
+        health_endpoint: ${{ inputs.health_endpoint }}
+        control_plane_url: ${{ inputs.control_plane_url }}
+        agent_admin_password: ${{ inputs.agent_admin_password }}
+        github_owner: ${{ inputs.github_owner }}
+        node_size: ${{ inputs.node_size }}
+        allowed_datacenters: ${{ inputs.allowed_datacenters }}
+        denied_datacenters: ${{ inputs.denied_datacenters }}
+        allowed_clouds: ${{ inputs.allowed_clouds }}
+        denied_clouds: ${{ inputs.denied_clouds }}
+        allow_measuring_enclave_fallback: ${{ inputs.allow_measuring_enclave_fallback }}

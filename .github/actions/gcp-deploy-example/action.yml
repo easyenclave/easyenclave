@@ -1,0 +1,157 @@
+name: GCP Deploy Example
+description: Ask the control plane for GCP capacity, then deploy an example app restricted to GCP agents
+
+inputs:
+  app_name:
+    description: App name (must be pre-registered in the app catalog)
+    required: true
+  compose_file:
+    description: Path to docker-compose.yml file
+    required: true
+  service_name:
+    description: Service name for deployment
+    required: true
+  health_endpoint:
+    description: Health check endpoint path
+    required: false
+    default: "/health"
+  control_plane_url:
+    description: EasyEnclave control plane URL
+    required: false
+    default: "https://app.easyenclave.com"
+  agent_admin_password:
+    description: Agent admin panel password (will be set during deployment)
+    required: false
+    default: ""
+  github_owner:
+    description: GitHub user or org to set as the agent owner (for owner-scoped access)
+    required: false
+    default: ""
+  node_size:
+    description: Required agent node_size (e.g. tiny). Empty = any.
+    required: false
+    default: "tiny"
+
+  # Billing-backed preflight inputs.
+  billing_account_id:
+    description: Billing deployer account_id used for capacity purchases
+    required: false
+    default: ""
+  billing_api_key:
+    description: Billing account API key used for capacity purchases
+    required: false
+    default: ""
+  billing_months:
+    description: Number of months to purchase for warm capacity
+    required: false
+    default: "1"
+
+  gcp_datacenter:
+    description: Preferred CP dispatch target (e.g. gcp:us-central1-a). Empty = derived from gcp_zone.
+    required: false
+    default: ""
+
+  # Optional provisioning inputs used by preflight when no GCP capacity exists.
+  intel_api_key:
+    description: Intel Trust Authority API key (used when provisioning capacity from CI)
+    required: false
+    default: ""
+  gcp_project_id:
+    description: GCP project ID (used when provisioning capacity from CI)
+    required: false
+    default: ""
+  gcp_wif_provider:
+    description: Deprecated (ignored)
+    required: false
+    default: ""
+  gcp_wif_service_account:
+    description: Deprecated (ignored)
+    required: false
+    default: ""
+  gcp_service_account_key:
+    description: GCP service account JSON key (used when provisioning capacity from CI)
+    required: false
+    default: ""
+  gcp_zone:
+    description: Comma-separated zones; first zone is used as default dispatch target
+    required: false
+    default: "us-central1-a,us-central1-b,us-central1-c,us-central1-f,us-east4-a,us-west1-b"
+  gcp_region:
+    description: Deprecated (ignored)
+    required: false
+    default: ""
+  gcp_machine_type:
+    description: Deprecated (ignored)
+    required: false
+    default: ""
+  gcp_boot_disk_size:
+    description: Deprecated (ignored)
+    required: false
+    default: ""
+  wait_seconds:
+    description: Seconds to wait for agent registration
+    required: false
+    default: "900"
+
+  # Optional admin credentials to bootstrap trust for newly-provisioned agents (CI use).
+  cp_admin_token:
+    description: Optional control plane admin bearer token
+    required: false
+    default: ""
+  cp_admin_password:
+    description: Optional control plane admin password
+    required: false
+    default: ""
+
+outputs:
+  deployment_id:
+    description: The deployment ID
+    value: ${{ steps.deploy.outputs.deployment_id }}
+  agent_id:
+    description: The agent ID used for deployment
+    value: ${{ steps.deploy.outputs.agent_id }}
+  service_url:
+    description: The deployed service URL
+    value: ${{ steps.deploy.outputs.service_url }}
+  version:
+    description: The published app version
+    value: ${{ steps.deploy.outputs.version }}
+  gcp_eligible_agents:
+    description: Count of eligible verified healthy GCP agents after preflight
+    value: ${{ steps.preflight.outputs.gcp_eligible_agents }}
+  gcp_provisioned:
+    description: Whether the action attempted provisioning (true/false)
+    value: ${{ steps.preflight.outputs.gcp_provisioned }}
+
+runs:
+  using: composite
+  steps:
+    - id: preflight
+      uses: ./.github/actions/preflight-gcp
+      with:
+        control_plane_url: ${{ inputs.control_plane_url }}
+        node_size: ${{ inputs.node_size }}
+        wait_seconds: ${{ inputs.wait_seconds }}
+        billing_account_id: ${{ inputs.billing_account_id }}
+        billing_api_key: ${{ inputs.billing_api_key }}
+        billing_months: ${{ inputs.billing_months }}
+        gcp_datacenter: ${{ inputs.gcp_datacenter }}
+        intel_api_key: ${{ inputs.intel_api_key }}
+        gcp_project_id: ${{ inputs.gcp_project_id }}
+        gcp_service_account_key: ${{ inputs.gcp_service_account_key }}
+        gcp_zone: ${{ inputs.gcp_zone }}
+        cp_admin_token: ${{ inputs.cp_admin_token }}
+        cp_admin_password: ${{ inputs.cp_admin_password }}
+
+    - id: deploy
+      uses: ./.github/actions/deploy-example
+      with:
+        app_name: ${{ inputs.app_name }}
+        compose_file: ${{ inputs.compose_file }}
+        service_name: ${{ inputs.service_name }}
+        health_endpoint: ${{ inputs.health_endpoint }}
+        control_plane_url: ${{ inputs.control_plane_url }}
+        agent_admin_password: ${{ inputs.agent_admin_password }}
+        github_owner: ${{ inputs.github_owner }}
+        node_size: ${{ inputs.node_size }}
+        allowed_clouds: gcp
