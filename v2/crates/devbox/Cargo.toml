@@ -1,0 +1,21 @@
+[package]
+name = "ee-devbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+ee-agent = { path = "../agent" }
+ee-aggregator = { path = "../aggregator" }
+ee-cp = { path = "../cp" }
+ee-common = { path = "../common" }
+reqwest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+reqwest.workspace = true
+tokio.workspace = true

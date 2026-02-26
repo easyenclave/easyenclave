@@ -1,0 +1,25 @@
+name: v2 PR Policy
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-pr-policy.yml"
+
+jobs:
+  require-preview-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require preview label for v2 PRs
+        run: |
+          set -euo pipefail
+          labels="$(jq -r '.pull_request.labels[].name' "$GITHUB_EVENT_PATH" || true)"
+          if echo "$labels" | grep -Fxq "preview"; then
+            echo "preview label present"
+            exit 0
+          fi
+
+          echo "Missing required label: preview" >&2
+          echo "Add the 'preview' label to trigger the TDX preview workflow (.github/workflows/v2-pr-preview.yml)." >&2
+          exit 1

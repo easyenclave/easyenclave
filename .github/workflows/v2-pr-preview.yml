@@ -1,0 +1,97 @@
+name: v2 PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-pr-preview.yml"
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number (optional for manual runs)"
+        required: false
+        type: string
+
+concurrency:
+  group: v2-pr-preview-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'preview')
+    runs-on: [self-hosted, tdx]
+    defaults:
+      run:
+        working-directory: v2
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Build v2 workspace
+        run: cargo build --workspace
+
+      - name: Run in-process integration test
+        run: cargo test -p ee-devbox --test full_lifecycle
+
+      - name: Start devbox stack
+        run: |
+          set -euo pipefail
+          cargo run -p ee-devbox > /tmp/v2-devbox.log 2>&1 &
+          echo $! > /tmp/v2-devbox.pid
+
+      - name: Wait for services
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:7000/health >/dev/null && curl -fsS http://127.0.0.1:7100/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "services failed to become healthy" >&2
+          tail -n 200 /tmp/v2-devbox.log || true
+          exit 1
+
+      - name: Smoke deploy through aggregator
+        run: |
+          set -euo pipefail
+          payload='{"app_name":"hello-tdx","compose_url":"https://apps.easyenclave.io/apps/hello-tdx/versions/v1.0.0.compose.yml"}'
+          curl -fsS -X POST http://127.0.0.1:7100/api/deploy \
+            -H 'content-type: application/json' \
+            -d "$payload"
+
+      - name: Snapshot CP state
+        run: |
+          set -euo pipefail
+          curl -fsS http://127.0.0.1:7000/api/v1/agents | jq .
+          curl -fsS http://127.0.0.1:7000/api/v1/aggregators | jq .
+
+      - name: Upload preview logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v2-pr-preview-logs
+          path: /tmp/v2-devbox.log
+          if-no-files-found: ignore
+
+      - name: Stop devbox stack
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f /tmp/v2-devbox.pid ]; then
+            kill "$(cat /tmp/v2-devbox.pid)" || true
+          fi
+
+  skipped:
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'preview')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip notice
+        run: echo "Skipping v2 PR preview (add 'preview' label to run)."

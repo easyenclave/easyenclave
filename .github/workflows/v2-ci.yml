@@ -1,0 +1,35 @@
+name: v2 Rust CI
+
+on:
+  push:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-ci.yml"
+  pull_request:
+    paths:
+      - "v2/**"
+      - ".github/workflows/v2-ci.yml"
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: v2
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Cargo test
+        run: cargo test --workspace
