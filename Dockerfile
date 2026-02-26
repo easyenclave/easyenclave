@@ -15,6 +15,7 @@ COPY --from=builder /src/target/release/ee-cp /usr/local/bin/
 COPY --from=builder /src/target/release/ee-agent /usr/local/bin/
 COPY --from=builder /src/target/release/ee-aggregator /usr/local/bin/
 COPY --from=builder /src/target/release/ee-hostd /usr/local/bin/
+COPY --from=builder /src/crates/cp/static /usr/share/easyenclave/static
 
 # Default to running the control plane (with built-in aggregator)
 EXPOSE 8080

@@ -1,0 +1,150 @@
+name: Production Rollout
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  IMAGE_TAG: ${{ github.ref_name }}
+
+jobs:
+  deploy-cp:
+    name: Deploy CP (Production)
+    runs-on: [self-hosted, tdx]
+    steps:
+      - name: Pull release image
+        run: docker pull ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+
+      - name: Stop existing CP
+        run: docker stop ee-cp && docker rm ee-cp || true
+
+      - name: Start CP
+        run: |
+          docker run -d \
+            --name ee-cp \
+            --restart unless-stopped \
+            -p 8080:8080 \
+            -v /data/easyenclave:/data \
+            -e LISTEN_ADDR=0.0.0.0:8080 \
+            -e DB_PATH=/data/easyenclave.db \
+            -e BUILTIN_AGGREGATOR=true \
+            -e RUST_LOG=info \
+            -e INTEL_API_KEY=${{ secrets.INTEL_API_KEY }} \
+            -e CLOUDFLARE_API_TOKEN=${{ secrets.CLOUDFLARE_API_TOKEN }} \
+            -e CLOUDFLARE_ACCOUNT_ID=${{ secrets.CLOUDFLARE_ACCOUNT_ID }} \
+            -e CLOUDFLARE_ZONE_ID=${{ secrets.CLOUDFLARE_ZONE_ID }} \
+            -e GITHUB_OAUTH_CLIENT_ID=${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }} \
+            -e GITHUB_OAUTH_CLIENT_SECRET=${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }} \
+            -e GITHUB_OAUTH_REDIRECT_URI=${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI }} \
+            -e ADMIN_GITHUB_LOGINS=${{ secrets.ADMIN_GITHUB_LOGINS }} \
+            -e AGENT_SECRET=${{ secrets.PRODUCTION_AGENT_SECRET }} \
+            ${{ env.IMAGE }}:${{ env.IMAGE_TAG }}
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/api/health; then
+              echo "CP is healthy"
+              exit 0
+            fi
+            echo "Waiting for CP to start... ($i/30)"
+            sleep 2
+          done
+          echo "CP failed to start"
+          docker logs ee-cp
+          exit 1
+
+  deploy-agent:
+    name: Deploy Agent VM (Production)
+    needs: deploy-cp
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+
+      - name: Deploy agent VM
+        run: |
+          INSTANCE_NAME="ee-agent-production"
+          ZONE="us-central1-a"
+          MACHINE_TYPE="n2d-standard-2"
+
+          # Check if instance exists
+          if gcloud compute instances describe "$INSTANCE_NAME" --zone="$ZONE" &>/dev/null; then
+            echo "Updating existing agent VM..."
+            gcloud compute instances update-container "$INSTANCE_NAME" \
+              --zone="$ZONE" \
+              --container-image="${{ env.IMAGE }}:${{ env.IMAGE_TAG }}" \
+              --container-env="CP_URL=http://${{ secrets.CP_HOST }}:8080,AGENT_SECRET=${{ secrets.PRODUCTION_AGENT_SECRET }},VM_SIZE=medium,CLOUD=gcp,REGION=us-central1"
+          else
+            echo "Creating new agent VM..."
+            gcloud compute instances create-with-container "$INSTANCE_NAME" \
+              --zone="$ZONE" \
+              --machine-type="$MACHINE_TYPE" \
+              --container-image="${{ env.IMAGE }}:${{ env.IMAGE_TAG }}" \
+              --container-env="CP_URL=http://${{ secrets.CP_HOST }}:8080,AGENT_SECRET=${{ secrets.PRODUCTION_AGENT_SECRET }},VM_SIZE=medium,CLOUD=gcp,REGION=us-central1" \
+              --container-restart-policy=always \
+              --tags=ee-agent \
+              --scopes=default
+          fi
+
+      - name: Wait for agent registration
+        run: |
+          CP_URL="http://${{ secrets.CP_HOST }}:8080"
+          for i in $(seq 1 60); do
+            AGENT_COUNT=$(curl -sf "$CP_URL/api/state" | jq '.agents | length' 2>/dev/null || echo "0")
+            if [ "$AGENT_COUNT" -ge 1 ]; then
+              echo "Agent registered successfully (count: $AGENT_COUNT)"
+              exit 0
+            fi
+            echo "Waiting for agent registration... ($i/60)"
+            sleep 5
+          done
+          echo "Agent failed to register within timeout"
+          exit 1
+
+  smoke-test:
+    name: Smoke Tests
+    needs: deploy-agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Health check
+        run: |
+          CP_URL="http://${{ secrets.CP_HOST }}:8080"
+          curl -sf "$CP_URL/api/health" || { echo "Health check failed"; exit 1; }
+          echo "Health check passed"
+
+      - name: Verify agent registered
+        run: |
+          CP_URL="http://${{ secrets.CP_HOST }}:8080"
+          AGENT_COUNT=$(curl -sf "$CP_URL/api/state" | jq '.agents | length')
+          echo "Agent count: $AGENT_COUNT"
+          [ "$AGENT_COUNT" -ge 1 ] || { echo "No agents registered"; exit 1; }
+
+      - name: Verify measurements endpoint
+        run: |
+          CP_URL="http://${{ secrets.CP_HOST }}:8080"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$CP_URL/api/v1/measurements")
+          echo "Measurements endpoint status: $STATUS"
+          [ "$STATUS" = "200" ] || { echo "Measurements endpoint returned $STATUS"; exit 1; }
+
+      - name: Verify billing listings endpoint
+        run: |
+          CP_URL="http://${{ secrets.CP_HOST }}:8080"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$CP_URL/api/v1/billing/listings")
+          echo "Billing listings endpoint status: $STATUS"
+          [ "$STATUS" = "200" ] || { echo "Billing listings endpoint returned $STATUS"; exit 1; }
