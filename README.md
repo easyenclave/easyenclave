@@ -49,7 +49,7 @@ cargo run -p ee-cp
 ## Live Plan
 
 1. Switch default guest image to the final v2 image containing ee-agent/ee-cp/systemd wiring.
-2. Extend PR e2e from infrastructure lifecycle checks to full remote CP+agent register+deploy validation.
+2. Replace temporary local-CP API assertion in PR e2e with full in-guest CP bootstrap and end-to-end deploy validation.
 3. Add explicit non-`UpToDate` TCB integration test using controlled ITA test fixture response.
 
 ## Notes

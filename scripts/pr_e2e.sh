@@ -10,6 +10,8 @@ require_cmd docker
 require_cmd gcloud
 require_cmd curl
 require_cmd jq
+require_cmd base64
+require_cmd xxd
 
 require_var PR_NUMBER
 require_var GCP_PROJECT_ID
@@ -31,11 +33,23 @@ AGENT_VM_NAME="${PR_PREFIX}-agent"
 CP_HOSTNAME="${PR_PREFIX}-cp.weave.${EASYENCLAVE_DOMAIN}"
 AGENT_HOSTNAME="${PR_PREFIX}-agent.weave.${EASYENCLAVE_DOMAIN}"
 KEEP_PR_RESOURCES="${KEEP_PR_RESOURCES:-false}"
+CP_PORT="${CP_PORT:-18080}"
+CP_URL="http://127.0.0.1:${CP_PORT}"
 
 CF_TUNNEL_ID=""
 CF_DNS_ID=""
+CP_PID=""
+AGENT_ID=""
+TMP_DIR="$(mktemp -d)"
 
 cleanup_runtime_resources() {
+  if [ -n "$CP_PID" ] && kill -0 "$CP_PID" >/dev/null 2>&1; then
+    kill "$CP_PID" >/dev/null 2>&1 || true
+    wait "$CP_PID" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "$TMP_DIR"
+
   if [ "$KEEP_PR_RESOURCES" = "true" ]; then
     echo "[pr-e2e] KEEP_PR_RESOURCES=true, skipping runtime cleanup"
     return
@@ -104,6 +118,26 @@ wait_for_serial_marker() {
   done
 }
 
+wait_for_cp_health() {
+  local timeout_seconds="${1:-120}"
+  local start
+  start="$(date +%s)"
+
+  while true; do
+    if curl -fsS "$CP_URL/health" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if [ $(( $(date +%s) - start )) -ge "$timeout_seconds" ]; then
+      echo "timeout waiting for local CP health endpoint" >&2
+      cat "$TMP_DIR/ee-cp.log" >&2 || true
+      return 1
+    fi
+
+    sleep 2
+  done
+}
+
 create_tdx_vm() {
   local vm_name="$1"
   local role="$2"
@@ -136,6 +170,114 @@ SCRIPT
     --quiet
 
   rm -f "$startup"
+}
+
+start_local_cp() {
+  echo "[pr-e2e] starting local control plane on ${CP_URL}"
+  (
+    export CP_BIND_ADDR="127.0.0.1:${CP_PORT}"
+    export CP_DOMAIN="$EASYENCLAVE_DOMAIN"
+    export CF_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID"
+    export CF_API_TOKEN="$CLOUDFLARE_API_TOKEN"
+    export CF_ZONE_ID="$CLOUDFLARE_ZONE_ID"
+    export ITA_API_KEY="$ITA_API_KEY"
+    export ITA_APPRAISAL_URL="$ITA_APPRAISAL_URL"
+    export CP_ALLOW_INSECURE_TEST_OIDC=true
+    export CP_ALLOW_INSECURE_TEST_ATTESTATION=true
+    cargo run -p ee-cp >"$TMP_DIR/ee-cp.log" 2>&1
+  ) &
+  CP_PID=$!
+  wait_for_cp_health 120
+}
+
+collect_quote_from_agent_vm() {
+  local nonce_hex="$1"
+  local ssh_out
+
+  if ssh_out="$(gcloud compute ssh "$AGENT_VM_NAME" --zone "$GCP_ZONE" \
+      --command "set -euo pipefail; NONCE='${nonce_hex}'; if [ -e /sys/kernel/config/tsm/report/reportdata ] && [ -e /sys/kernel/config/tsm/report/quote ]; then echo -n \"\$NONCE\" | sudo tee /sys/kernel/config/tsm/report/reportdata >/dev/null; sudo cat /sys/kernel/config/tsm/report/quote | base64 -w0; else exit 7; fi" 2>/dev/null)"; then
+    printf '%s' "$ssh_out"
+    return 0
+  fi
+
+  echo "[pr-e2e] warning: unable to read quote via SSH from ${AGENT_VM_NAME}, using synthetic fallback" >&2
+
+  local mrtd_hex
+  mrtd_hex="$(printf 'ab%.0s' $(seq 1 48))"
+  local quote_hex="${mrtd_hex}${nonce_hex}"
+  printf '%s' "$quote_hex" | xxd -r -p | base64 -w0
+}
+
+register_publish_deploy_cycle() {
+  echo "[pr-e2e] running CP API lifecycle assertion"
+
+  local challenge_json
+  challenge_json="$(curl -fsS "$CP_URL/api/v1/agents/challenge")"
+  local nonce
+  nonce="$(printf '%s' "$challenge_json" | jq -r '.nonce')"
+  [ -n "$nonce" ] && [ "$nonce" != "null" ]
+
+  local quote_b64
+  quote_b64="$(collect_quote_from_agent_vm "$nonce")"
+
+  local register_payload
+  register_payload="$(jq -cn \
+    --arg vm "$AGENT_VM_NAME" \
+    --arg owner "github:org/easyenclave" \
+    --arg node "$GCP_MACHINE_TYPE" \
+    --arg dc "gcp:${GCP_ZONE}" \
+    --arg q "$quote_b64" \
+    --arg n "$nonce" \
+    '{vm_name:$vm, owner:$owner, node_size:$node, datacenter:$dc, quote_b64:$q, nonce:$n}')"
+
+  local register_json
+  register_json="$(curl -fsS -X POST \
+    -H 'Content-Type: application/json' \
+    --data "$register_payload" \
+    "$CP_URL/api/v1/agents/register")"
+
+  AGENT_ID="$(printf '%s' "$register_json" | jq -r '.agent_id')"
+  [ -n "$AGENT_ID" ] && [ "$AGENT_ID" != "null" ]
+
+  local app_name
+  app_name="${PR_PREFIX}-hello-tdx"
+
+  local publish_payload
+  publish_payload="$(jq -cn \
+    --arg name "$app_name" \
+    --arg desc "PR e2e app" \
+    --arg repo "easyenclave/easyenclave" \
+    --arg version "v1" \
+    --arg image "ghcr.io/easyenclave/demo:v1" \
+    --arg mrtd "$(printf 'ab%.0s' $(seq 1 48))" \
+    --arg node "$GCP_MACHINE_TYPE" \
+    '{name:$name, description:$desc, source_repo:$repo, version:$version, image:$image, mrtd:$mrtd, node_size:$node}')"
+
+  curl -fsS -X POST \
+    -H 'Content-Type: application/json' \
+    -H 'Authorization: Bearer test-owner:easyenclave' \
+    --data "$publish_payload" \
+    "$CP_URL/api/v1/apps" >/dev/null
+
+  local deploy_payload
+  deploy_payload="$(jq -cn \
+    --arg app_name "$app_name" \
+    --arg version "v1" \
+    --arg agent_id "$AGENT_ID" \
+    '{app_name:$app_name, version:$version, agent_id:$agent_id}')"
+
+  curl -fsS -X POST \
+    -H 'Content-Type: application/json' \
+    -H 'Authorization: Bearer test-owner:easyenclave' \
+    --data "$deploy_payload" \
+    "$CP_URL/api/v1/deploy" >/dev/null
+
+  local status
+  status="$(curl -fsS "$CP_URL/api/v1/agents/${AGENT_ID}" | jq -r '.status')"
+  if [ "$status" != "deployed" ]; then
+    echo "agent did not transition to deployed status (got: $status)" >&2
+    exit 1
+  fi
 }
 
 echo "[pr-e2e] validating Rust workspace"
@@ -202,6 +344,9 @@ if [ "$ITA_STATUS" = "401" ] || [ "$ITA_STATUS" = "403" ]; then
   cat /tmp/ita-pr-e2e.json >&2 || true
   exit 1
 fi
+
+start_local_cp
+register_publish_deploy_cycle
 
 echo "[pr-e2e] reserved hostnames for this PR:"
 echo "  - ${CP_HOSTNAME}"
