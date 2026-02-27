@@ -297,6 +297,7 @@ name = "ee-agent"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "clap",
  "ee-attestation",
  "ee-common",
@@ -336,6 +337,7 @@ name = "ee-cp"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "chrono",
  "dashmap",
  "ee-attestation",

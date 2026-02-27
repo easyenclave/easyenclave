@@ -9,6 +9,9 @@ pub struct CpConfig {
     pub cf_api_token: String,
     pub cf_zone_id: String,
     pub ita_jwks_url: String,
+    pub ita_appraisal_url: String,
+    pub ita_api_key: String,
+    pub allow_insecure_test_attestation: bool,
     pub github_oidc_jwks_url: String,
     pub github_oidc_issuer: String,
     pub github_oidc_audience: Option<String>,
@@ -28,6 +31,14 @@ impl CpConfig {
             ita_jwks_url: env::var("ITA_JWKS_URL").unwrap_or_else(|_| {
                 "https://api.trustauthority.intel.com/.well-known/jwks.json".to_owned()
             }),
+            ita_appraisal_url: env::var("ITA_APPRAISAL_URL").unwrap_or_else(|_| {
+                "https://api.trustauthority.intel.com/appraisal/v2/attest".to_owned()
+            }),
+            ita_api_key: env::var("ITA_API_KEY").unwrap_or_default(),
+            allow_insecure_test_attestation: env::var("CP_ALLOW_INSECURE_TEST_ATTESTATION")
+                .ok()
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "True"))
+                .unwrap_or(false),
             github_oidc_jwks_url: env::var("GITHUB_OIDC_JWKS_URL").unwrap_or_else(|_| {
                 "https://token.actions.githubusercontent.com/.well-known/jwks".to_owned()
             }),

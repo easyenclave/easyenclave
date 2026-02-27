@@ -9,7 +9,7 @@ pub struct NonceStore {
 
 impl NonceStore {
     pub fn issue(&self, ttl: Duration) -> String {
-        let nonce = uuid::Uuid::new_v4().to_string();
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
         self.values.insert(nonce.clone(), Instant::now() + ttl);
         nonce
     }

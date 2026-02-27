@@ -13,8 +13,7 @@ pub struct RegisterRequest {
     pub owner: String,
     pub node_size: String,
     pub datacenter: String,
-    pub attestation_jwt: String,
-    pub mrtd: String,
+    pub quote_b64: String,
     pub nonce: String,
 }
 

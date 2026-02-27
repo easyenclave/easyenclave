@@ -11,6 +11,9 @@ async fn cp_agent_publish_register_deploy_cycle() {
         cf_api_token: "".to_owned(),
         cf_zone_id: "".to_owned(),
         ita_jwks_url: "https://ita.invalid/jwks".to_owned(),
+        ita_appraisal_url: "https://ita.invalid/appraisal".to_owned(),
+        ita_api_key: "".to_owned(),
+        allow_insecure_test_attestation: true,
         github_oidc_jwks_url: "https://github.invalid/jwks".to_owned(),
         github_oidc_issuer: "https://token.actions.githubusercontent.com".to_owned(),
         github_oidc_audience: None,
@@ -44,9 +47,13 @@ async fn cp_agent_publish_register_deploy_cycle() {
         owner: "github:org/easyenclave".to_owned(),
         node_size: "c3-standard-4".to_owned(),
         datacenter: "gcp:us-central1-a".to_owned(),
-        attestation_jwt: format!("test-ita:{}", "ab".repeat(48)),
-        mrtd: "ab".repeat(48),
-        nonce: challenge.nonce,
+        quote_b64: {
+            let quote =
+                ee_attestation::tsm::build_mock_quote_blob(&"ab".repeat(48), &challenge.nonce)
+                    .expect("build mock quote");
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote)
+        },
+        nonce: challenge.nonce.clone(),
     };
 
     let register_response = client

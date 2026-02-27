@@ -43,8 +43,7 @@ async fn register_once(client: &Client, config: &AgentConfig) -> AppResult<Regis
         .await
         .map_err(|e| AppError::External(format!("challenge json error: {e}")))?;
 
-    let mrtd = "00".repeat(48);
-    let attestation_jwt = attestation::mint_attestation_token(config, &mrtd).await?;
+    let quote_b64 = attestation::collect_quote_b64(config, &challenge.nonce).await?;
 
     let register_url = format!("{}/api/v1/agents/register", config.cp_url);
     let request = RegisterRequest {
@@ -52,8 +51,7 @@ async fn register_once(client: &Client, config: &AgentConfig) -> AppResult<Regis
         owner: config.owner.clone(),
         node_size: config.node_size.clone(),
         datacenter: config.datacenter.clone(),
-        attestation_jwt,
-        mrtd,
+        quote_b64,
         nonce: challenge.nonce,
     };
 

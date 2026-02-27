@@ -8,6 +8,7 @@ license.workspace = true
 ee-attestation = { path = "../ee-attestation" }
 ee-common = { path = "../ee-common" }
 axum.workspace = true
+base64.workspace = true
 clap.workspace = true
 reqwest.workspace = true
 serde.workspace = true
