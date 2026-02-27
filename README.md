@@ -49,7 +49,7 @@ cargo run -p ee-cp
 ## Live Plan
 
 1. Switch default guest image to the final v2 image containing ee-agent/ee-cp/systemd wiring.
-2. Replace temporary local-CP API assertion in PR e2e with full in-guest CP bootstrap and end-to-end deploy validation.
+2. Remove local fallback once in-guest CP bootstrap is consistently green across PR runs.
 3. Expand e2e to assert remote workload reachability through Cloudflare tunnel after deploy.
 
 ## Notes

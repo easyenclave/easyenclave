@@ -20,6 +20,8 @@ jobs:
       EE_GCP_SOURCE_IMAGE_PROJECT: ${{ vars.EE_GCP_SOURCE_IMAGE_PROJECT }}
       GCP_ZONE: us-central1-a
       EASYENCLAVE_DOMAIN: easyenclave.com
+      CP_RUNTIME_MODE: guest
+      CP_RUNTIME_FALLBACK_LOCAL: true
     steps:
       - uses: actions/checkout@v4
       - name: Run PR e2e checks

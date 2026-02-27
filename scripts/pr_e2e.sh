@@ -35,17 +35,30 @@ AGENT_HOSTNAME="${PR_PREFIX}-agent.weave.${EASYENCLAVE_DOMAIN}"
 KEEP_PR_RESOURCES="${KEEP_PR_RESOURCES:-false}"
 CP_PORT="${CP_PORT:-18080}"
 CP_URL="http://127.0.0.1:${CP_PORT}"
+CP_RUNTIME_MODE="${CP_RUNTIME_MODE:-guest}"
+CP_RUNTIME_FALLBACK_LOCAL="${CP_RUNTIME_FALLBACK_LOCAL:-true}"
 
 CF_TUNNEL_ID=""
 CF_DNS_ID=""
 CP_PID=""
+CP_TUNNEL_PID=""
+CP_GUEST_STARTED="false"
 AGENT_ID=""
 TMP_DIR="$(mktemp -d)"
 
 cleanup_runtime_resources() {
+  if [ -n "$CP_TUNNEL_PID" ] && kill -0 "$CP_TUNNEL_PID" >/dev/null 2>&1; then
+    kill "$CP_TUNNEL_PID" >/dev/null 2>&1 || true
+    wait "$CP_TUNNEL_PID" >/dev/null 2>&1 || true
+  fi
+
   if [ -n "$CP_PID" ] && kill -0 "$CP_PID" >/dev/null 2>&1; then
     kill "$CP_PID" >/dev/null 2>&1 || true
     wait "$CP_PID" >/dev/null 2>&1 || true
+  fi
+
+  if [ "$CP_GUEST_STARTED" = "true" ]; then
+    gcloud compute ssh "$CP_VM_NAME" --zone "$GCP_ZONE" --command "pkill -f '/tmp/ee-cp' || true" >/dev/null 2>&1 || true
   fi
 
   rm -rf "$TMP_DIR"
@@ -129,8 +142,9 @@ wait_for_cp_health() {
     fi
 
     if [ $(( $(date +%s) - start )) -ge "$timeout_seconds" ]; then
-      echo "timeout waiting for local CP health endpoint" >&2
-      cat "$TMP_DIR/ee-cp.log" >&2 || true
+      echo "timeout waiting for CP health endpoint at ${CP_URL}" >&2
+      [ -f "$TMP_DIR/ee-cp.log" ] && cat "$TMP_DIR/ee-cp.log" >&2 || true
+      [ -f "$TMP_DIR/ee-cp-guest.log" ] && cat "$TMP_DIR/ee-cp-guest.log" >&2 || true
       return 1
     fi
 
@@ -188,6 +202,56 @@ start_local_cp() {
   ) &
   CP_PID=$!
   wait_for_cp_health 120
+}
+
+start_guest_cp() {
+  echo "[pr-e2e] starting in-guest control plane on ${CP_VM_NAME}"
+  cargo build --release -p ee-cp
+
+  gcloud compute scp target/release/ee-cp "${CP_VM_NAME}:/tmp/ee-cp" --zone "$GCP_ZONE" >/dev/null
+
+  local cp_env_file="$TMP_DIR/ee-cp.env"
+  cat > "$cp_env_file" <<ENV
+CP_BIND_ADDR=0.0.0.0:8080
+CP_DOMAIN=${EASYENCLAVE_DOMAIN}
+CF_ACCOUNT_ID=${CLOUDFLARE_ACCOUNT_ID}
+CF_API_TOKEN=${CLOUDFLARE_API_TOKEN}
+CF_ZONE_ID=${CLOUDFLARE_ZONE_ID}
+ITA_API_KEY=${ITA_API_KEY}
+ITA_APPRAISAL_URL=${ITA_APPRAISAL_URL}
+CP_ALLOW_INSECURE_TEST_OIDC=true
+CP_ALLOW_INSECURE_TEST_ATTESTATION=true
+ENV
+
+  gcloud compute scp "$cp_env_file" "${CP_VM_NAME}:/tmp/ee-cp.env" --zone "$GCP_ZONE" >/dev/null
+
+  gcloud compute ssh "$CP_VM_NAME" --zone "$GCP_ZONE" \
+    --command "set -euo pipefail; chmod +x /tmp/ee-cp; pkill -f '/tmp/ee-cp' || true; nohup bash -lc 'set -a; source /tmp/ee-cp.env; set +a; /tmp/ee-cp' >/tmp/ee-cp.log 2>&1 &" >/dev/null
+
+  gcloud compute ssh "$CP_VM_NAME" --zone "$GCP_ZONE" -- -N -L "127.0.0.1:${CP_PORT}:127.0.0.1:8080" >"$TMP_DIR/ee-cp-guest.log" 2>&1 &
+  CP_TUNNEL_PID=$!
+  CP_GUEST_STARTED="true"
+
+  wait_for_cp_health 180
+}
+
+start_cp_runtime() {
+  if [ "$CP_RUNTIME_MODE" = "guest" ]; then
+    if start_guest_cp; then
+      return 0
+    fi
+
+    if [ "$CP_RUNTIME_FALLBACK_LOCAL" = "true" ]; then
+      echo "[pr-e2e] warning: guest CP startup failed, falling back to local CP" >&2
+      start_local_cp
+      return 0
+    fi
+
+    echo "[pr-e2e] guest CP startup failed and local fallback is disabled" >&2
+    exit 1
+  fi
+
+  start_local_cp
 }
 
 collect_quote_from_agent_vm() {
@@ -345,7 +409,7 @@ if [ "$ITA_STATUS" = "401" ] || [ "$ITA_STATUS" = "403" ]; then
   exit 1
 fi
 
-start_local_cp
+start_cp_runtime
 register_publish_deploy_cycle
 
 echo "[pr-e2e] reserved hostnames for this PR:"
