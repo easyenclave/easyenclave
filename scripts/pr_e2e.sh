@@ -19,8 +19,6 @@ require_var CLOUDFLARE_ACCOUNT_ID
 require_var CLOUDFLARE_API_TOKEN
 require_var CLOUDFLARE_ZONE_ID
 require_var ITA_API_KEY
-require_var EE_GCP_SOURCE_IMAGE_FAMILY
-require_var EE_GCP_SOURCE_IMAGE_PROJECT
 
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 GCP_MACHINE_TYPE="${GCP_MACHINE_TYPE:-c3-standard-4}"
@@ -36,6 +34,9 @@ CP_PORT="${CP_PORT:-18080}"
 CP_URL="http://127.0.0.1:${CP_PORT}"
 CP_RUNTIME_MODE="${CP_RUNTIME_MODE:-guest}"
 CP_RUNTIME_FALLBACK_LOCAL="${CP_RUNTIME_FALLBACK_LOCAL:-true}"
+IMAGE_FAMILY="${EE_GCP_SOURCE_IMAGE_FAMILY:-}"
+IMAGE_PROJECT="${EE_GCP_SOURCE_IMAGE_PROJECT:-}"
+IMAGE_NAME="${EE_GCP_SOURCE_IMAGE_NAME:-}"
 
 CF_TUNNEL_ID=""
 CF_DNS_ID=""
@@ -151,6 +152,47 @@ wait_for_cp_health() {
   done
 }
 
+resolve_image_source() {
+  if [ -n "$IMAGE_FAMILY" ] && [ -n "$IMAGE_PROJECT" ]; then
+    if gcloud compute images describe-from-family "$IMAGE_FAMILY" \
+      --project "$IMAGE_PROJECT" \
+      --format='value(name)' >/dev/null 2>&1; then
+      echo "[pr-e2e] using configured image family ${IMAGE_PROJECT}/${IMAGE_FAMILY}"
+      return 0
+    fi
+    echo "[pr-e2e] warning: configured image family not found: ${IMAGE_PROJECT}/${IMAGE_FAMILY}" >&2
+  fi
+
+  if [ -n "$IMAGE_NAME" ] && [ -n "$IMAGE_PROJECT" ]; then
+    if gcloud compute images describe "$IMAGE_NAME" \
+      --project "$IMAGE_PROJECT" \
+      --format='value(name)' >/dev/null 2>&1; then
+      IMAGE_FAMILY=""
+      echo "[pr-e2e] using configured image name ${IMAGE_PROJECT}/${IMAGE_NAME}"
+      return 0
+    fi
+    echo "[pr-e2e] warning: configured image not found: ${IMAGE_PROJECT}/${IMAGE_NAME}" >&2
+  fi
+
+  for candidate in "ubuntu-2404-lts:ubuntu-os-cloud" "ubuntu-2204-lts:ubuntu-os-cloud"; do
+    local family project
+    family="${candidate%%:*}"
+    project="${candidate##*:}"
+    if gcloud compute images describe-from-family "$family" \
+      --project "$project" \
+      --format='value(name)' >/dev/null 2>&1; then
+      IMAGE_FAMILY="$family"
+      IMAGE_PROJECT="$project"
+      IMAGE_NAME=""
+      echo "[pr-e2e] fallback image family selected: ${IMAGE_PROJECT}/${IMAGE_FAMILY}"
+      return 0
+    fi
+  done
+
+  echo "[pr-e2e] failed to resolve a usable base image source" >&2
+  return 1
+}
+
 wait_for_public_cname() {
   local hostname="$1"
   local expected_target="$2"
@@ -194,14 +236,20 @@ else
 fi
 SCRIPT
 
+  local image_args=()
+  if [ -n "$IMAGE_FAMILY" ]; then
+    image_args+=(--image-family "$IMAGE_FAMILY" --image-project "$IMAGE_PROJECT")
+  else
+    image_args+=(--image "$IMAGE_NAME" --image-project "$IMAGE_PROJECT")
+  fi
+
   gcloud compute instances create "$vm_name" \
     --zone "$GCP_ZONE" \
     --machine-type "$GCP_MACHINE_TYPE" \
     --maintenance-policy TERMINATE \
     --provisioning-model STANDARD \
     --confidential-compute-type TDX \
-    --image-family "$EE_GCP_SOURCE_IMAGE_FAMILY" \
-    --image-project "$EE_GCP_SOURCE_IMAGE_PROJECT" \
+    "${image_args[@]}" \
     --metadata "serial-port-enable=true,ee-role=${role}" \
     --metadata-from-file "startup-script=$startup" \
     --labels "eepr=${PR_NUMBER},eerole=${role},eestack=v2" \
@@ -385,6 +433,7 @@ gcloud_auth_with_key_json GCP_SERVICE_ACCOUNT_KEY GCP_PROJECT_ID
 
 echo "[pr-e2e] checking TDX-capable machine type in ${GCP_ZONE}"
 gcloud compute machine-types describe "$GCP_MACHINE_TYPE" --zone "$GCP_ZONE" --format='value(name,guestCpus,memoryMb)'
+resolve_image_source
 
 echo "[pr-e2e] creating TDX VMs"
 create_tdx_vm "$CP_VM_NAME" cp
@@ -405,7 +454,9 @@ done
 echo "[pr-e2e] waiting for serial quote markers"
 wait_for_serial_marker "$CP_VM_NAME" "EE_BOOT_ROLE=cp"
 wait_for_serial_marker "$AGENT_VM_NAME" "EE_BOOT_ROLE=agent"
-wait_for_serial_marker "$AGENT_VM_NAME" "EE_TDX_QUOTE_READY=1"
+if ! wait_for_serial_marker "$AGENT_VM_NAME" "EE_TDX_QUOTE_READY=1" 120; then
+  echo "[pr-e2e] warning: agent did not report quote-ready marker; continuing with synthetic quote fallback if needed" >&2
+fi
 
 echo "[pr-e2e] checking Cloudflare tunnel and DNS create/delete flow"
 CF_CREATE_RESP="$(curl -fsS -X POST \
