@@ -1,10 +1,11 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
+use axum::{routing::post, Json, Router};
 use ee_common::api::{ChallengeResponse, DeployRequest, PublishAppRequest, RegisterRequest};
 use ee_common::config::CpConfig;
 
-async fn spawn_cp() -> (SocketAddr, reqwest::Client) {
-    let config = CpConfig {
+fn base_config() -> CpConfig {
+    CpConfig {
         bind_addr: "127.0.0.1:0".to_owned(),
         database_url: "".to_owned(),
         domain: "easyenclave.local".to_owned(),
@@ -19,8 +20,10 @@ async fn spawn_cp() -> (SocketAddr, reqwest::Client) {
         github_oidc_issuer: "https://token.actions.githubusercontent.com".to_owned(),
         github_oidc_audience: None,
         allow_insecure_test_oidc: true,
-    };
+    }
+}
 
+async fn spawn_cp(config: CpConfig) -> (SocketAddr, reqwest::Client) {
     let app = ee_cp::app_from_config(config).await.expect("app setup");
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -62,7 +65,7 @@ fn build_register(challenge_nonce: &str, quote_nonce: &str) -> RegisterRequest {
 
 #[tokio::test]
 async fn cp_agent_publish_register_deploy_cycle() {
-    let (addr, client) = spawn_cp().await;
+    let (addr, client) = spawn_cp(base_config()).await;
 
     let challenge = get_challenge(&client, addr).await;
     let register = build_register(&challenge.nonce, &challenge.nonce);
@@ -118,7 +121,7 @@ async fn cp_agent_publish_register_deploy_cycle() {
 
 #[tokio::test]
 async fn registration_rejects_nonce_mismatch() {
-    let (addr, client) = spawn_cp().await;
+    let (addr, client) = spawn_cp(base_config()).await;
 
     let challenge = get_challenge(&client, addr).await;
     let request = build_register(&challenge.nonce, &"cd".repeat(16));
@@ -135,7 +138,7 @@ async fn registration_rejects_nonce_mismatch() {
 
 #[tokio::test]
 async fn registration_rejects_replayed_nonce() {
-    let (addr, client) = spawn_cp().await;
+    let (addr, client) = spawn_cp(base_config()).await;
 
     let challenge = get_challenge(&client, addr).await;
     let request = build_register(&challenge.nonce, &challenge.nonce);
@@ -161,7 +164,7 @@ async fn registration_rejects_replayed_nonce() {
 
 #[tokio::test]
 async fn registration_rejects_malformed_quote_b64() {
-    let (addr, client) = spawn_cp().await;
+    let (addr, client) = spawn_cp(base_config()).await;
 
     let challenge = get_challenge(&client, addr).await;
     let mut request = build_register(&challenge.nonce, &challenge.nonce);
@@ -175,4 +178,54 @@ async fn registration_rejects_malformed_quote_b64() {
         .expect("register request");
 
     assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn registration_rejects_non_uptodate_tcb_from_ita() {
+    let mrtd = "ab".repeat(48);
+    let mock_ita_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock ita");
+    let mock_ita_addr = mock_ita_listener.local_addr().expect("mock ita addr");
+
+    let expected_mrtd = Arc::new(mrtd.clone());
+    let ita_app = Router::new().route(
+        "/appraisal/v2/attest",
+        post({
+            let expected_mrtd = expected_mrtd.clone();
+            move || {
+                let expected_mrtd = expected_mrtd.clone();
+                async move {
+                    Json(serde_json::json!({
+                        "status": "success",
+                        "result": {
+                            "mrtd": (*expected_mrtd).clone(),
+                            "tcb_status": "OutOfDate"
+                        }
+                    }))
+                }
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(mock_ita_listener, ita_app).await;
+    });
+
+    let mut config = base_config();
+    config.allow_insecure_test_attestation = false;
+    config.ita_api_key = "test-key".to_owned();
+    config.ita_appraisal_url = format!("http://{mock_ita_addr}/appraisal/v2/attest");
+    let (addr, client) = spawn_cp(config).await;
+
+    let challenge = get_challenge(&client, addr).await;
+    let request = build_register(&challenge.nonce, &challenge.nonce);
+
+    let response = client
+        .post(format!("http://{addr}/api/v1/agents/register"))
+        .json(&request)
+        .send()
+        .await
+        .expect("register request");
+
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
 }
