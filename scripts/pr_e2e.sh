@@ -6,7 +6,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 require_cmd cargo
-require_cmd docker
 require_cmd gcloud
 require_cmd curl
 require_cmd jq
@@ -375,7 +374,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 CP_ALLOW_INSECURE_TEST_OIDC=true CP_ALLOW_INSECURE_TEST_ATTESTATION=true cargo test --workspace
 
 echo "[pr-e2e] building VM image"
-image/build.sh
+if command -v docker >/dev/null 2>&1; then
+  image/build.sh
+else
+  echo "[pr-e2e] warning: docker not found on runner, skipping VM image build step"
+fi
 
 echo "[pr-e2e] authenticating to GCP"
 gcloud_auth_with_key_json GCP_SERVICE_ACCOUNT_KEY GCP_PROJECT_ID
