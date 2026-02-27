@@ -1,0 +1,8 @@
+[package]
+name = "ee-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ee-attestation = { path = "../ee-attestation" }
+ee-common = { path = "../ee-common" }

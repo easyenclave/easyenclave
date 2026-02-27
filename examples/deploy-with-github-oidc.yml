@@ -1,0 +1,67 @@
+name: Deploy With GitHub OIDC
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      CP_URL: https://app.easyenclave.com
+      OIDC_AUDIENCE: easyenclave
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Mint GitHub OIDC token
+        id: oidc
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}" | jq -r '.value')"
+          if [ -z "${token}" ] || [ "${token}" = "null" ]; then
+            echo "::error::Failed to mint GitHub OIDC token"
+            exit 1
+          fi
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to EasyEnclave with OIDC (no API key secret)
+        shell: bash
+        env:
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+        run: |
+          set -euo pipefail
+          agent_name="$(echo "${GITHUB_REPOSITORY#*/}-${GITHUB_RUN_NUMBER}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-')"
+          compose="$(cat <<'YAML'
+          services:
+            hello:
+              image: hashicorp/http-echo:latest
+              command:
+                - "-text=hello from easyenclave oidc deploy"
+          YAML
+          )"
+
+          payload="$(jq -n \
+            --arg compose "${compose}" \
+            --arg app_name "hello-tdx" \
+            --arg agent_name "${agent_name}" \
+            '{compose: $compose, app_name: $app_name, agent_name: $agent_name, dry_run: true}')"
+
+          response="$(curl -sS -X POST "${CP_URL}/api/v1/deploy" \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}")"
+
+          echo "${response}" | jq .
+          deployment_id="$(echo "${response}" | jq -r '.deployment_id // empty')"
+          if [ -z "${deployment_id}" ]; then
+            echo "::error::Deploy failed"
+            exit 1
+          fi
+          echo "Deployment submitted: ${deployment_id}"

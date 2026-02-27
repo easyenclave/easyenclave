@@ -7,6 +7,7 @@ venv/
 *.egg-info/
 dist/
 build/
+target/
 
 # VM images and build outputs
 infra/output/

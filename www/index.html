@@ -20,6 +20,7 @@
                 <a href="#security">Security</a>
                 <a href="#attestation">Attestation</a>
                 <a href="#run-agent">Run an Agent</a>
+                <a href="#oidc-deploy">OIDC Deploy</a>
                 <a href="#getting-started">Get Started</a>
                 <a href="https://app.easyenclave.com/docs" target="_blank">API Docs</a>
                 <a href="https://app.easyenclave.com" class="btn btn-primary">Open App Store</a>
@@ -647,6 +648,41 @@ response = my_service.post("/api/data", json={"input": "secret"})</code></pre>
                     </tbody>
                 </table>
                 <p class="level-note" style="margin-top: 20px;">Most users should use Proxy Trust - it requires no special code and works with any HTTP client. Use Client Verification when you want your application to independently verify the control plane's TDX attestation.</p>
+            </div>
+        </div>
+    </section>
+
+    <section id="oidc-deploy" class="getting-started">
+        <div class="container">
+            <h2>GitHub OIDC Deploy (No API Key Secret)</h2>
+            <p class="section-subtitle">Use GitHub's built-in OIDC token to call <code>/api/v1/deploy</code> directly.</p>
+
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <h3>Minimal Workflow</h3>
+                    <p>This deploy path prefers GitHub Actions OIDC and falls back to API keys only when needed.</p>
+                    <pre><code>permissions:
+  id-token: write
+  contents: read
+
+steps:
+  - uses: actions/checkout@v4
+  - name: Mint OIDC token
+    run: |
+      TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=easyenclave" | jq -r '.value')
+      echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+  - name: Deploy
+    run: |
+      curl -sS -X POST https://app.easyenclave.com/api/v1/deploy \
+        -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" \
+        -H "Content-Type: application/json" \
+        -d '{"compose":"services: {}","app_name":"hello-tdx","agent_name":"my-app-123","dry_run":true}'</code></pre>
+                    <p class="level-note">Full copy/paste workflow: <a href="https://github.com/easyenclave/easyenclave/blob/main/examples/deploy-with-github-oidc.yml" target="_blank">examples/deploy-with-github-oidc.yml</a></p>
+                    <p class="level-note">Your EasyEnclave account must be linked with <code>github_org</code> or <code>github_login</code> matching <code>github.repository_owner</code>.</p>
+                </div>
             </div>
         </div>
     </section>

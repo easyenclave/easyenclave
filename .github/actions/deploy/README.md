@@ -89,6 +89,15 @@ jobs:
     echo "Service URL: ${{ steps.deploy.outputs.service_url }}"
 ```
 
+### OIDC deploy (no API key secret)
+
+If your EasyEnclave account is linked to your GitHub owner (`github_org` or `github_login`),
+you can deploy with a GitHub Actions OIDC token instead of storing an API key secret.
+
+Use the minimal example workflow at:
+
+`examples/deploy-with-github-oidc.yml`
+
 ### With org ownership
 
 Set `github_owner` so that GitHub org members can manage agents via the owner-scoped API (`/api/v1/me/agents`) without needing full admin access:
