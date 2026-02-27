@@ -152,6 +152,31 @@ wait_for_cp_health() {
   done
 }
 
+wait_for_public_cname() {
+  local hostname="$1"
+  local expected_target="$2"
+  local timeout_seconds="${3:-180}"
+  local start
+  start="$(date +%s)"
+
+  while true; do
+    local dns_json target
+    dns_json="$(curl -fsS "https://cloudflare-dns.com/dns-query?name=${hostname}&type=CNAME" \
+      -H 'accept: application/dns-json' || true)"
+    target="$(printf '%s' "$dns_json" | jq -r '.Answer[0].data // empty' 2>/dev/null || true)"
+    target="${target%.}"
+    if [ "$target" = "$expected_target" ]; then
+      return 0
+    fi
+
+    if [ $(( $(date +%s) - start )) -ge "$timeout_seconds" ]; then
+      echo "timeout waiting for public CNAME ${hostname} -> ${expected_target}" >&2
+      return 1
+    fi
+    sleep 5
+  done
+}
+
 create_tdx_vm() {
   local vm_name="$1"
   local role="$2"
@@ -395,6 +420,9 @@ CF_DNS_RESP="$(curl -fsS -X POST \
   "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}/dns_records")"
 printf '%s' "$CF_DNS_RESP" | jq -e '.success == true' >/dev/null
 CF_DNS_ID="$(printf '%s' "$CF_DNS_RESP" | jq -r '.result.id')"
+
+echo "[pr-e2e] waiting for public DNS propagation"
+wait_for_public_cname "$AGENT_HOSTNAME" "${CF_TUNNEL_ID}.cfargotunnel.com" 180
 
 echo "[pr-e2e] checking ITA appraisal API access"
 ITA_STATUS="$(curl -sS -o /tmp/ita-pr-e2e.json -w '%{http_code}' \
