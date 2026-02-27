@@ -32,6 +32,8 @@ DIGEST=$(sha256sum "$ROOTFS" | cut -d' ' -f1)
 echo "Rootfs digest: $DIGEST"
 
 MEASURE_SIZES="${MEASURE_SIZES:-tiny}"
+MEASURE_ATTEMPTS="${MEASURE_ATTEMPTS:-3}"
+MEASURE_RETRY_SLEEP_SECONDS="${MEASURE_RETRY_SLEEP_SECONDS:-10}"
 
 # ---------- Measure ----------
 echo "==> Measuring MRTD and RTMRs from temp VMs (${MEASURE_SIZES})..."
@@ -60,9 +62,34 @@ RTMRS_BY_SIZE_JSON='{}'
 
 for SIZE in "${SIZES[@]}"; do
   echo "--- Measuring node_size=$SIZE ---"
-  MEASURES=$(python3 infra/tdx_cli.py vm measure --json --timeout 180 --size "$SIZE")
-  if [ -z "$MEASURES" ]; then
-    echo "::error::Failed to capture measurements for node_size=$SIZE"
+  MEASURES=""
+  measure_ok="false"
+  for attempt in $(seq 1 "$MEASURE_ATTEMPTS"); do
+    echo "Measurement attempt ${attempt}/${MEASURE_ATTEMPTS} for node_size=$SIZE"
+    set +e
+    MEASURES=$(python3 infra/tdx_cli.py vm measure --json --timeout 180 --size "$SIZE" 2>"/tmp/ci-build-measure-${SIZE}.err")
+    measure_rc=$?
+    set -e
+
+    if [ "$measure_rc" -eq 0 ] \
+      && [ -n "${MEASURES:-}" ] \
+      && echo "$MEASURES" | jq -e '.mrtd and .rtmr0 and .rtmr1 and .rtmr2 and .rtmr3' >/dev/null 2>&1; then
+      measure_ok="true"
+      break
+    fi
+
+    echo "::warning::Measurement attempt ${attempt}/${MEASURE_ATTEMPTS} failed for node_size=$SIZE (rc=${measure_rc})."
+    if [ -s "/tmp/ci-build-measure-${SIZE}.err" ]; then
+      tail -n 20 "/tmp/ci-build-measure-${SIZE}.err" || true
+    fi
+    ./scripts/prune_tdvirsh_vms.sh || true
+    if [ "$attempt" -lt "$MEASURE_ATTEMPTS" ]; then
+      sleep "$MEASURE_RETRY_SLEEP_SECONDS"
+    fi
+  done
+
+  if [ "$measure_ok" != "true" ]; then
+    echo "::error::Failed to capture measurements for node_size=$SIZE after ${MEASURE_ATTEMPTS} attempts"
     exit 1
   fi
 

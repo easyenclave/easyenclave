@@ -274,8 +274,8 @@ jobs:
 
       # Infra + trust.
       INTEL_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
-      EE_AGENT_ITA_API_KEY: ${{ secrets.INTEL_API_KEY }}
+      ITA_API_KEY: ${{ secrets.ITA_API_KEY || secrets.INTEL_API_KEY }}
+      EE_AGENT_ITA_API_KEY: ${{ secrets.ITA_API_KEY || secrets.INTEL_API_KEY }}
 
       # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
       # Strict environment isolation: no shared fallback secrets.
