@@ -158,6 +158,7 @@ jobs:
       contents: read
     env:
       GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID || 'eestaging' }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
       SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
       SOURCE_IMAGE_NAME: ""
       SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
@@ -172,24 +173,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for v in GCP_PROJECT_ID SOURCE_IMAGE_PROJECT SOURCE_SHA; do
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_IMAGE_PROJECT SOURCE_SHA; do
             if [ -z "${!v:-}" ]; then
               echo "::error::Missing required value: $v"
               exit 1
             fi
           done
 
-      - name: Require local gcloud auth on self-hosted runner
-        shell: bash
-        run: |
-          set -euo pipefail
-          account="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' | head -n1)"
-          if [ -z "${account:-}" ]; then
-            echo "::error::No active gcloud account on self-hosted runner."
-            echo "::error::Run gcloud auth login (or configure service account) on the runner host."
-            exit 1
-          fi
-          echo "Using active gcloud account: ${account}"
+      - name: Authenticate to GCP (staging)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
 
       - name: Set up gcloud (staging)
         uses: google-github-actions/setup-gcloud@v2
