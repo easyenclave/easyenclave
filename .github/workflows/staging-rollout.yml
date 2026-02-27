@@ -248,7 +248,7 @@ jobs:
     permissions:
       contents: read
     env:
-      GCP_PROJECT_ID: eestaging
+      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID || 'eestaging' }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
     steps:
       - name: Validate staging GCP config
@@ -332,7 +332,7 @@ jobs:
     permissions:
       contents: read
     env:
-      GCP_PROJECT_ID: eestaging
+      GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID || 'eestaging' }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
       SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
     steps:

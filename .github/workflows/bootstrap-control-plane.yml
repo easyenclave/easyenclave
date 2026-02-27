@@ -279,7 +279,7 @@ jobs:
 
       # Optional: CP-native GCP provisioning credentials (used to fulfill gcp:* launch orders).
       # Strict environment isolation: no shared fallback secrets.
-      GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_PROJECT_ID) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && 'eestaging') }}
+      GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_PROJECT_ID) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_GCP_PROJECT_ID || 'eestaging')) }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY) }}
 
       # Shared Cloudflare credentials; network separation is done by domain/hostname.
