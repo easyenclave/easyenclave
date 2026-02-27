@@ -15,6 +15,9 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
       ITA_API_KEY: ${{ secrets.ITA_API_KEY }}
+      ITA_APPRAISAL_URL: ${{ vars.ITA_APPRAISAL_URL }}
+      EE_GCP_SOURCE_IMAGE_FAMILY: ${{ vars.EE_GCP_SOURCE_IMAGE_FAMILY }}
+      EE_GCP_SOURCE_IMAGE_PROJECT: ${{ vars.EE_GCP_SOURCE_IMAGE_PROJECT }}
       GCP_ZONE: us-central1-a
       EASYENCLAVE_DOMAIN: easyenclave.com
     steps:

@@ -35,7 +35,7 @@ Rust rewrite of easyenclave focused on confidential workloads on Intel TDX.
 - [x] Enforce GitHub OIDC verification path in CP (test shortcut only when explicitly enabled)
 - [x] Move attestation from agent-side ITA minting to CP-side ITA appraisal (agent sends quote only)
 - [x] Enforce nonce binding in CP appraisal pipeline (`challenge -> quote report_data -> ITA verify`)
-- [ ] Wire real TDX + CF + ITA flow for PR runner
+- [x] Wire real TDX + CF + ITA flow for PR runner (TDX VM boot, CF tunnel+DNS create/delete, ITA key validation)
 
 ## Quick Start
 
@@ -48,10 +48,9 @@ cargo run -p ee-cp
 
 ## Live Plan
 
-1. Replace mock quote path with real TDX quote collection (`/dev/tdx-guest`/`configfs-tsm`) in agent runtime.
-2. Harden CP-side ITA response parsing with strict claim mapping from production ITA payloads.
-3. Add negative tests for nonce mismatch, stale nonce, malformed quote, and non-`UpToDate` TCB.
-4. Update PR e2e workflow to execute real quote-based registration and deployment on GCP TDX + Cloudflare.
+1. Switch default guest image to the final v2 image containing ee-agent/ee-cp/systemd wiring.
+2. Extend PR e2e from infrastructure lifecycle checks to full remote CP+agent register+deploy validation.
+3. Add explicit non-`UpToDate` TCB integration test using controlled ITA test fixture response.
 
 ## Notes
 

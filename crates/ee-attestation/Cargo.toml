@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ee-common = { path = "../ee-common" }
+base64.workspace = true
 chrono.workspace = true
 jsonwebtoken.workspace = true
 reqwest.workspace = true
