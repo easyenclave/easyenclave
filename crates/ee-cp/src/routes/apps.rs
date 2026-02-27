@@ -23,7 +23,7 @@ pub async fn publish_app(
         .to_str()
         .map_err(|_| AppError::Unauthorized("invalid authorization header".to_owned()))?;
 
-    let identity = github_oidc::verify_bearer(auth_header)?;
+    let identity = github_oidc::verify_bearer(&state.config, auth_header).await?;
 
     let app = AppRecord {
         name: request.name,
@@ -89,7 +89,7 @@ pub async fn publish_app_version(
         .to_str()
         .map_err(|_| AppError::Unauthorized("invalid authorization header".to_owned()))?;
 
-    let _identity = github_oidc::verify_bearer(auth_header)?;
+    let _identity = github_oidc::verify_bearer(&state.config, auth_header).await?;
 
     if !state.apps.contains_key(&name) {
         return Err(AppError::NotFound("app not found".to_owned()));

@@ -18,7 +18,7 @@ pub async fn deploy_app(
         .to_str()
         .map_err(|_| AppError::Unauthorized("invalid authorization header".to_owned()))?;
 
-    let identity = github_oidc::verify_bearer(auth_header)?;
+    let identity = github_oidc::verify_bearer(&state.config, auth_header).await?;
 
     let mut agent = state
         .agents

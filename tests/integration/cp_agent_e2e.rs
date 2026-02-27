@@ -12,6 +12,9 @@ async fn cp_agent_publish_register_deploy_cycle() {
         cf_zone_id: "".to_owned(),
         ita_jwks_url: "https://ita.invalid/jwks".to_owned(),
         github_oidc_jwks_url: "https://github.invalid/jwks".to_owned(),
+        github_oidc_issuer: "https://token.actions.githubusercontent.com".to_owned(),
+        github_oidc_audience: None,
+        allow_insecure_test_oidc: true,
     };
 
     let app = ee_cp::app_from_config(config).await.expect("app setup");

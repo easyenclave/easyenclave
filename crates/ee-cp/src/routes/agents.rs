@@ -28,7 +28,7 @@ pub async fn register(
 
     let assignment = state
         .cloudflare
-        .create_agent_tunnel(&request.vm_name, &state.config.domain)
+        .create_agent_tunnel(&request.vm_name, &request.owner, &state.config.domain)
         .await?;
 
     let now = Utc::now();

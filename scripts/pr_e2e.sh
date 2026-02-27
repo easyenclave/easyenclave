@@ -21,6 +21,9 @@ require_var ITA_API_KEY
 
 GCP_ZONE="${GCP_ZONE:-us-central1-a}"
 PR_PREFIX="ee-pr-${PR_NUMBER}"
+EASYENCLAVE_DOMAIN="${EASYENCLAVE_DOMAIN:-easyenclave.com}"
+CP_HOSTNAME="${PR_PREFIX}-cp.weave.${EASYENCLAVE_DOMAIN}"
+AGENT_HOSTNAME="${PR_PREFIX}-agent.weave.${EASYENCLAVE_DOMAIN}"
 
 echo "[pr-e2e] validating Rust workspace"
 cargo fmt --all -- --check
@@ -47,5 +50,9 @@ curl -fsS \
   -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
   "https://api.cloudflare.com/client/v4/zones/${CLOUDFLARE_ZONE_ID}" \
   | jq -e '.success == true' >/dev/null
+
+echo "[pr-e2e] reserved hostnames for this PR:"
+echo "  - ${CP_HOSTNAME}"
+echo "  - ${AGENT_HOSTNAME}"
 
 echo "[pr-e2e] completed preflight and local e2e checks for ${PR_PREFIX}"

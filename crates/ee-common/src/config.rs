@@ -10,6 +10,9 @@ pub struct CpConfig {
     pub cf_zone_id: String,
     pub ita_jwks_url: String,
     pub github_oidc_jwks_url: String,
+    pub github_oidc_issuer: String,
+    pub github_oidc_audience: Option<String>,
+    pub allow_insecure_test_oidc: bool,
 }
 
 impl CpConfig {
@@ -28,6 +31,19 @@ impl CpConfig {
             github_oidc_jwks_url: env::var("GITHUB_OIDC_JWKS_URL").unwrap_or_else(|_| {
                 "https://token.actions.githubusercontent.com/.well-known/jwks".to_owned()
             }),
+            github_oidc_issuer: env::var("GITHUB_OIDC_ISSUER")
+                .unwrap_or_else(|_| "https://token.actions.githubusercontent.com".to_owned()),
+            github_oidc_audience: env::var("GITHUB_OIDC_AUDIENCE").ok().and_then(|s| {
+                if s.trim().is_empty() {
+                    None
+                } else {
+                    Some(s)
+                }
+            }),
+            allow_insecure_test_oidc: env::var("CP_ALLOW_INSECURE_TEST_OIDC")
+                .ok()
+                .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "True"))
+                .unwrap_or(false),
         }
     }
 }

@@ -340,6 +340,7 @@ dependencies = [
  "dashmap",
  "ee-attestation",
  "ee-common",
+ "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",

@@ -11,6 +11,7 @@ Rust rewrite of easyenclave focused on confidential workloads on Intel TDX.
 - Cloud provider scope: GCP only.
 - VM execution model: raw OS image with `supervisord` in guest.
 - Delivery mode: PR branch only, no direct changes to `main`.
+- Production deployment workflow is manual-dispatch only during rewrite.
 
 ## Workspace
 
@@ -31,6 +32,7 @@ Rust rewrite of easyenclave focused on confidential workloads on Intel TDX.
 - [x] Add launcher implementation
 - [x] Add integration tests for publish/register/deploy flow
 - [x] Add CI workflows (`ci.yml`, `pr-e2e.yml`, `deploy.yml`, `cleanup.yml`)
+- [x] Enforce GitHub OIDC verification path in CP (test shortcut only when explicitly enabled)
 - [ ] Move attestation from agent-side ITA minting to CP-side ITA appraisal (agent sends quote only)
 - [ ] Enforce nonce binding in CP appraisal pipeline (`challenge -> quote report_data -> ITA verify`)
 - [ ] Wire real TDX + CF + ITA flow for PR runner
