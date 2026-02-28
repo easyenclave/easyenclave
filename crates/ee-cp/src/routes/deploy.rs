@@ -337,6 +337,7 @@ mod tests {
             .create(
                 "tdx-agent-deploy-1",
                 AgentStatus::Undeployed,
+                true,
                 Some("standard"),
                 Some("gcp:us-central1-a"),
                 None,

@@ -630,6 +630,10 @@ class TDXManager:
             "default_gcp_tiny_capacity_dispatch": os.environ.get(
                 "DEFAULT_GCP_TINY_CAPACITY_DISPATCH"
             ),
+            "cp_attestation_allow_insecure": os.environ.get("CP_ATTESTATION_ALLOW_INSECURE"),
+            # Plain admin password is required by ee-cp (/admin/login). The password hash is
+            # still forwarded for the legacy Python control plane.
+            "admin_password": os.environ.get("ADMIN_PASSWORD"),
             # Admin password hash for control plane dashboard
             "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH"),
         }

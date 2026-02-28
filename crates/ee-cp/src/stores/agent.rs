@@ -35,6 +35,7 @@ impl AgentStore {
         &self,
         vm_name: &str,
         status: AgentStatus,
+        verified: bool,
         node_size: Option<&str>,
         datacenter: Option<&str>,
         account_id: Option<Uuid>,
@@ -49,7 +50,7 @@ impl AgentStore {
         .bind(agent_id.to_string())
         .bind(vm_name)
         .bind(status_text)
-        .bind(0_i64)
+        .bind(if verified { 1_i64 } else { 0_i64 })
         .bind(node_size)
         .bind(datacenter)
         .bind(account_id.map(|v| v.to_string()))
@@ -272,6 +273,7 @@ mod tests {
             .create(
                 "tdx-agent-001",
                 AgentStatus::Undeployed,
+                false,
                 Some("standard"),
                 Some("gcp:us-central1-a"),
                 None,

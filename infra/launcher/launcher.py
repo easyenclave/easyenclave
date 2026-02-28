@@ -185,8 +185,12 @@ services:
       - EASYENCLAVE_CP_URL=${{EASYENCLAVE_CP_URL:-https://app.easyenclave.com}}
       - EASYENCLAVE_BOOT_ID=${{EASYENCLAVE_BOOT_ID:-}}
       - EASYENCLAVE_GIT_SHA=${{EASYENCLAVE_GIT_SHA:-}}
+      - GIT_SHA=${{GIT_SHA:-}}
       - EASYENCLAVE_RELEASE_TAG=${{EASYENCLAVE_RELEASE_TAG:-}}
       - EASYENCLAVE_NETWORK_NAME=${{EASYENCLAVE_NETWORK_NAME:-}}
+      - CP_DATABASE_URL=${{CP_DATABASE_URL:-sqlite://easyenclave.db?mode=rwc}}
+      - CP_ADMIN_PASSWORD=${{CP_ADMIN_PASSWORD:-}}
+      - CP_ATTESTATION_ALLOW_INSECURE=${{CP_ATTESTATION_ALLOW_INSECURE:-false}}
       - TRUSTED_AGENT_MRTDS=${{TRUSTED_AGENT_MRTDS:-}}
       - TRUSTED_PROXY_MRTDS=${{TRUSTED_PROXY_MRTDS:-}}
       - TRUSTED_AGENT_RTMRS=${{TRUSTED_AGENT_RTMRS:-}}
@@ -1842,6 +1846,7 @@ def generate_initial_attestation(
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "nonce": nonce,
         "tdx": tdx_payload,
     }
 
@@ -1870,7 +1875,7 @@ def request_nonce_challenge(vm_name: str) -> str:
         result = response.json()
 
         nonce = result["nonce"]
-        ttl_seconds = result.get("ttl_seconds", 300)
+        ttl_seconds = result.get("ttl_seconds", result.get("expires_in_seconds", 300))
         logger.info(f"Received nonce challenge (TTL: {ttl_seconds}s): {nonce[:16]}...")
         return nonce
 
@@ -1918,19 +1923,71 @@ def register_with_control_plane(
     logger.info(f"Using datacenter label: {datacenter}")
     logger.info(f"Using node_size: {node_size}")
 
-    response = requests.post(
-        f"{CONTROL_PLANE_URL}/api/v1/agents/register",
-        json={
-            "attestation": attestation,
+    register_url = f"{CONTROL_PLANE_URL}/api/v1/agents/register"
+    legacy_payload = {
+        "attestation": attestation,
+        "vm_name": vm_name,
+        "version": VERSION,
+        "node_size": node_size,
+        "datacenter": datacenter,
+    }
+
+    result = None
+    legacy_error_text = ""
+    try:
+        response = requests.post(register_url, json=legacy_payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+    except requests.exceptions.HTTPError as exc:
+        legacy_error_text = ""
+        if exc.response is not None:
+            try:
+                legacy_error_text = (exc.response.text or "").strip()
+            except Exception:
+                legacy_error_text = ""
+
+        status = exc.response.status_code if exc.response is not None else 0
+        should_try_v2 = status in (400, 404, 405, 422) or (
+            "intel_ta_token" in legacy_error_text
+            or "invalid_nonce" in legacy_error_text
+            or "nonce" in legacy_error_text.lower()
+        )
+        if not should_try_v2:
+            raise
+
+        intel_ta_token = (
+            ((attestation or {}).get("tdx") or {}).get("intel_ta_token") or ""
+        ).strip()
+        nonce = str((attestation or {}).get("nonce") or "").strip()
+        if not intel_ta_token:
+            raise RuntimeError(
+                "Registration fallback requires attestation.tdx.intel_ta_token for ee-cp"
+            ) from exc
+        if not nonce:
+            raise RuntimeError("Registration fallback requires nonce for ee-cp") from exc
+
+        logger.info(
+            "Legacy registration payload was rejected; retrying with ee-cp v2 payload"
+        )
+        v2_payload = {
+            "intel_ta_token": intel_ta_token,
             "vm_name": vm_name,
-            "version": VERSION,
+            "nonce": nonce,
             "node_size": node_size,
             "datacenter": datacenter,
-        },
-        timeout=30,
-    )
-    response.raise_for_status()
-    result = response.json()
+        }
+        response = requests.post(register_url, json=v2_payload, timeout=30)
+        response.raise_for_status()
+        result = response.json()
+    except requests.exceptions.RequestException:
+        raise
+
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            f"Unexpected registration response type: {type(result).__name__}"
+        )
+    if legacy_error_text:
+        logger.debug("Legacy registration rejection detail: %s", legacy_error_text[:300])
 
     agent_id = result["agent_id"]
     hostname = result.get("hostname")
@@ -2508,6 +2565,7 @@ def run_control_plane_mode(config: dict):
         env["EASYENCLAVE_BOOT_ID"] = config["easyenclave_boot_id"]
     if config.get("easyenclave_git_sha"):
         env["EASYENCLAVE_GIT_SHA"] = config["easyenclave_git_sha"]
+        env["GIT_SHA"] = config["easyenclave_git_sha"]
     if config.get("easyenclave_release_tag"):
         env["EASYENCLAVE_RELEASE_TAG"] = config["easyenclave_release_tag"]
     # Control plane does not require an ITA API key to verify agent tokens.
@@ -2600,6 +2658,10 @@ def run_control_plane_mode(config: dict):
         env["DEFAULT_GCP_TINY_CAPACITY_COUNT"] = str(config["default_gcp_tiny_capacity_count"])
     if config.get("default_gcp_tiny_capacity_dispatch"):
         env["DEFAULT_GCP_TINY_CAPACITY_DISPATCH"] = config["default_gcp_tiny_capacity_dispatch"]
+    if config.get("cp_attestation_allow_insecure"):
+        env["CP_ATTESTATION_ALLOW_INSECURE"] = config["cp_attestation_allow_insecure"]
+    if config.get("admin_password"):
+        env["CP_ADMIN_PASSWORD"] = config["admin_password"]
     if config.get("admin_password_hash"):
         env["ADMIN_PASSWORD_HASH"] = config["admin_password_hash"]
 
@@ -2861,9 +2923,13 @@ def run_agent_mode(config: dict):
             agent_id = reg_response["agent_id"]
             tunnel_hostname = reg_response.get("hostname")
             api_secret = (reg_response.get("agent_api_secret") or "").strip()
-            if not api_secret:
-                raise RuntimeError("Registration response missing agent_api_secret")
-            API_SECRET = api_secret
+            if api_secret:
+                API_SECRET = api_secret
+            else:
+                API_SECRET = ""
+                logger.warning(
+                    "Registration response did not include agent_api_secret; allowing unauthenticated CP->agent API for this session"
+                )
 
             _admin_state["agent_id"] = agent_id
             _admin_state["hostname"] = tunnel_hostname

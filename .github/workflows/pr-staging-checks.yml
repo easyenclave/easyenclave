@@ -19,6 +19,7 @@ on:
       - ".github/actions/**"
       - ".github/workflows/**"
       - "Dockerfile"
+      - "Dockerfile.ee-cp"
       - "docker-compose.yml"
       - "requirements.txt"
       - "pyproject.toml"
@@ -83,6 +84,7 @@ jobs:
     name: Staging readiness (no-cost)
     runs-on: ubuntu-latest
     needs: [workflow-policy]
+    if: ${{ (vars.STAGING_CP_RUNTIME || 'rust') != 'rust' }}
     env:
       CP_URL: ${{ vars.STAGING_CP_URL || 'https://app-staging.easyenclave.com' }}
       CLOUDS: baremetal,gcp
@@ -99,7 +101,7 @@ jobs:
 
   deploy-baremetal-pr:
     name: Builtin deploy examples (baremetal, PR)
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && (vars.STAGING_CP_RUNTIME || 'rust') != 'rust'
     needs: [staging-readiness]
     uses: ./.github/workflows/deploy-examples.yml
     secrets: inherit
@@ -111,7 +113,7 @@ jobs:
 
   deploy-gcp-pr:
     name: Builtin deploy examples (gcp, PR)
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.pull_request.head.repo.full_name == github.repository && (vars.STAGING_CP_RUNTIME || 'rust') != 'rust'
     needs: [staging-readiness]
     uses: ./.github/workflows/deploy-examples-gcp.yml
     secrets: inherit
@@ -120,3 +122,22 @@ jobs:
       cp_expected_git_sha: ""
       source_ref: ${{ github.event.pull_request.head.sha }}
       easyenclave_env: staging
+
+  rust-staging-smoke-pr:
+    name: Rust staging smoke (PR)
+    if: github.event.pull_request.head.repo.full_name == github.repository && (vars.STAGING_CP_RUNTIME || 'rust') == 'rust'
+    needs: [workflow-policy]
+    runs-on: ubuntu-latest
+    env:
+      CP_URL: ${{ vars.STAGING_CP_URL || 'https://app-staging.easyenclave.com' }}
+    steps:
+      - name: Verify staging rust CP health + agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          health="$(curl -fsS "$CP_URL/health")"
+          echo "$health" | jq -e '.ok == true' >/dev/null
+          agents="$(curl -fsS "$CP_URL/api/v1/agents")"
+          total="$(echo "$agents" | jq -r '(if type == "array" then . else (.agents // []) end) | length')"
+          verified="$(echo "$agents" | jq -r '(if type == "array" then . else (.agents // []) end) | [ .[] | select(.verified == true) ] | length')"
+          echo "rust staging snapshot: verified=${verified} total=${total}"

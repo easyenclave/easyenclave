@@ -21,6 +21,7 @@ on:
       - ".github/actions/**"
       - ".github/workflows/**"
       - "Dockerfile"
+      - "Dockerfile.ee-cp"
       - "docker-compose.yml"
       - "requirements.txt"
       - "pyproject.toml"
@@ -35,6 +36,7 @@ on:
       - ".github/actions/**"
       - ".github/workflows/**"
       - "Dockerfile"
+      - "Dockerfile.ee-cp"
       - "docker-compose.yml"
       - "requirements.txt"
       - "pyproject.toml"
@@ -112,6 +114,23 @@ jobs:
           docker stop easyenclave-test
           docker rm easyenclave-test
 
+      - name: Build Rust control plane image
+        run: |
+          docker build -f Dockerfile.ee-cp -t easyenclave-rust-cp:test .
+
+      - name: Test Rust control plane image
+        run: |
+          docker run -d --name easyenclave-rust-cp-test \
+            -p 18080:8080 \
+            -e EASYENCLAVE_ENV=local \
+            -e CP_ATTESTATION_ALLOW_INSECURE=true \
+            -e CP_ADMIN_PASSWORD=test-admin \
+            easyenclave-rust-cp:test
+          sleep 5
+          curl -f http://localhost:18080/health || exit 1
+          docker stop easyenclave-rust-cp-test
+          docker rm easyenclave-rust-cp-test
+
       - name: Build and push control plane image
         id: control_plane
         if: github.event_name != 'pull_request'
@@ -136,17 +155,31 @@ jobs:
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMAGE="ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}"
           LATEST="ghcr.io/${{ github.repository }}/control-plane:latest"
+          RUST_IMAGE="ghcr.io/${{ github.repository }}/control-plane-rust:${{ github.sha }}"
+          RUST_LATEST="ghcr.io/${{ github.repository }}/control-plane-rust:latest"
           docker build -t "$IMAGE" -t "$LATEST" .
+          docker build -f Dockerfile.ee-cp -t "$RUST_IMAGE" -t "$RUST_LATEST" .
           retry_push "$IMAGE"
           retry_push "$LATEST"
+          retry_push "$RUST_IMAGE"
+          retry_push "$RUST_LATEST"
           DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
+          RUST_DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$RUST_IMAGE")
           cosign sign --yes "$DIGEST_REF"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo "digest=$DIGEST_REF" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "$RUST_DIGEST_REF"
+          {
+            echo "image=$IMAGE"
+            echo "digest=$DIGEST_REF"
+            echo "rust_image=$RUST_IMAGE"
+            echo "rust_digest=$RUST_DIGEST_REF"
+          } >> "$GITHUB_OUTPUT"
 
           PACKAGE_NAME="${{ github.event.repository.name }}%2Fcontrol-plane"
           gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
             -f visibility=public || echo "::warning::Could not set package visibility to public"
+          RUST_PACKAGE_NAME="${{ github.event.repository.name }}%2Fcontrol-plane-rust"
+          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$RUST_PACKAGE_NAME" \
+            -f visibility=public || echo "::warning::Could not set rust package visibility to public"
         env:
           GH_TOKEN: ${{ github.token }}
 

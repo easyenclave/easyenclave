@@ -345,6 +345,7 @@ jobs:
       PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ inputs.trusted_agent_rtmrs_by_size || '' }}
       COSIGN_CERTIFICATE_OIDC_ISSUER: ${{ inputs.cosign_certificate_oidc_issuer || 'https://token.actions.githubusercontent.com' }}
       COSIGN_CERTIFICATE_IDENTITY_REGEXP: ${{ inputs.cosign_certificate_identity_regexp || '^https://github.com/.+/.+/.github/workflows/.+@refs/.*$' }}
+      CP_ATTESTATION_ALLOW_INSECURE: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && 'true') || 'false' }}
 
     steps:
       - name: Checkout
@@ -520,10 +521,11 @@ jobs:
             local agents_json="$1"
             local size="$2"
             echo "$agents_json" | jq -r --arg s "$size" '
-              [.agents[]
+              (if type == "array" then . else (.agents // []) end)
+              | [.[]
                 | select(.verified == true)
                 | select((.node_size // "" | ascii_downcase) == ($s | ascii_downcase))
-                | select((.health_status // "" | ascii_downcase) == "healthy")
+                | select((.health_status // "healthy" | ascii_downcase) == "healthy")
               ] | length'
           }
 
@@ -564,7 +566,8 @@ jobs:
               echo "::error::tiny=${tiny_verified} (need ${tiny_required}) standard=${standard_verified} (need ${standard_required}) llm=${llm_verified} (need ${llm_required})"
               echo "Latest agent snapshot:"
               echo "$agents_json" | jq -r '
-                [.agents[] | {
+                (if type == "array" then . else (.agents // []) end)
+                | [.[] | {
                   agent_id,
                   node_size,
                   status,

@@ -62,6 +62,7 @@ pub async fn register(
         .create(
             &payload.vm_name,
             AgentStatus::Undeployed,
+            true,
             payload.node_size.as_deref(),
             payload.datacenter.as_deref(),
             None,

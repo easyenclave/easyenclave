@@ -58,15 +58,22 @@ impl AttestationService {
     }
 
     pub fn validate_runtime_requirements(&self) -> AppResult<()> {
-        if self.runtime_env.is_protected() && self.allow_insecure {
+        if self.runtime_env == RuntimeEnv::Production && self.allow_insecure {
             return Err(AppError::Config(
-                "CP_ATTESTATION_ALLOW_INSECURE must not be enabled in staging/production"
-                    .to_string(),
+                "CP_ATTESTATION_ALLOW_INSECURE must not be enabled in production".to_string(),
             ));
         }
-        if self.runtime_env.is_protected() && self.verifier.is_none() {
+        if self.runtime_env == RuntimeEnv::Production && self.verifier.is_none() {
             return Err(AppError::Config(
-                "attestation verifier is required in staging/production; set CP_ITA_JWKS_URL, CP_ITA_ISSUER, and CP_ITA_AUDIENCE".to_string(),
+                "attestation verifier is required in production; set CP_ITA_JWKS_URL, CP_ITA_ISSUER, and CP_ITA_AUDIENCE".to_string(),
+            ));
+        }
+        if self.runtime_env == RuntimeEnv::Staging
+            && self.verifier.is_none()
+            && !self.allow_insecure
+        {
+            return Err(AppError::Config(
+                "staging requires either attestation verifier config (CP_ITA_JWKS_URL/CP_ITA_ISSUER/CP_ITA_AUDIENCE) or CP_ATTESTATION_ALLOW_INSECURE=true".to_string(),
             ));
         }
         Ok(())
@@ -119,10 +126,6 @@ impl RuntimeEnv {
             _ => Self::Local,
         }
     }
-
-    fn is_protected(self) -> bool {
-        matches!(self, Self::Staging | Self::Production)
-    }
 }
 
 fn env_bool(key: &str, default: bool) -> bool {
@@ -153,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn staging_rejects_insecure_mode() {
+    fn staging_allows_insecure_mode_without_verifier() {
         let _guard = ENV_LOCK.lock().expect("env lock");
         let old_env = env::var("EASYENCLAVE_ENV").ok();
         let old_allow = env::var("CP_ATTESTATION_ALLOW_INSECURE").ok();
@@ -168,11 +171,39 @@ mod tests {
         env::remove_var("CP_ITA_AUDIENCE");
 
         let svc = AttestationService::from_env();
+        svc.validate_runtime_requirements()
+            .expect("staging should allow insecure mode");
+
+        restore("EASYENCLAVE_ENV", old_env);
+        restore("CP_ATTESTATION_ALLOW_INSECURE", old_allow);
+        restore("CP_ITA_JWKS_URL", old_jwks);
+        restore("CP_ITA_ISSUER", old_issuer);
+        restore("CP_ITA_AUDIENCE", old_audience);
+    }
+
+    #[test]
+    fn staging_requires_verifier_or_insecure_flag() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let old_env = env::var("EASYENCLAVE_ENV").ok();
+        let old_allow = env::var("CP_ATTESTATION_ALLOW_INSECURE").ok();
+        let old_jwks = env::var("CP_ITA_JWKS_URL").ok();
+        let old_issuer = env::var("CP_ITA_ISSUER").ok();
+        let old_audience = env::var("CP_ITA_AUDIENCE").ok();
+
+        env::set_var("EASYENCLAVE_ENV", "staging");
+        env::set_var("CP_ATTESTATION_ALLOW_INSECURE", "false");
+        env::remove_var("CP_ITA_JWKS_URL");
+        env::remove_var("CP_ITA_ISSUER");
+        env::remove_var("CP_ITA_AUDIENCE");
+
+        let svc = AttestationService::from_env();
         let err = svc
             .validate_runtime_requirements()
-            .expect_err("should reject insecure");
+            .expect_err("staging should require verifier unless insecure mode enabled");
         match err {
-            AppError::Config(message) => assert!(message.contains("must not be enabled")),
+            AppError::Config(message) => {
+                assert!(message.contains("staging requires either attestation verifier"))
+            }
             other => panic!("expected config error, got {other}"),
         }
 

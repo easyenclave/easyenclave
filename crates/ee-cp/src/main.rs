@@ -23,8 +23,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     attestation.validate_runtime_requirements()?;
     tunnel.validate_runtime_requirements()?;
 
-    let git_sha = std::env::var("GIT_SHA").ok();
-    let boot_id = format!("cp-{}", std::process::id());
+    let git_sha = std::env::var("GIT_SHA")
+        .ok()
+        .or_else(|| std::env::var("EASYENCLAVE_GIT_SHA").ok());
+    let boot_id = std::env::var("EASYENCLAVE_BOOT_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("cp-{}", std::process::id()));
     let state = AppState::new(
         boot_id,
         git_sha,
