@@ -1966,9 +1966,7 @@ def register_with_control_plane(
         if not nonce:
             raise RuntimeError("Registration fallback requires nonce for ee-cp") from exc
 
-        logger.info(
-            "Legacy registration payload was rejected; retrying with ee-cp v2 payload"
-        )
+        logger.info("Legacy registration payload was rejected; retrying with ee-cp v2 payload")
         v2_payload = {
             "intel_ta_token": intel_ta_token,
             "vm_name": vm_name,
@@ -1983,9 +1981,7 @@ def register_with_control_plane(
         raise
 
     if not isinstance(result, dict):
-        raise RuntimeError(
-            f"Unexpected registration response type: {type(result).__name__}"
-        )
+        raise RuntimeError(f"Unexpected registration response type: {type(result).__name__}")
     if legacy_error_text:
         logger.debug("Legacy registration rejection detail: %s", legacy_error_text[:300])
 
