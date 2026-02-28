@@ -172,6 +172,33 @@ class GcpCli:
             _fatal(f"Unsupported size '{size}'. Allowed: {', '.join(NODE_SIZES.keys())}")
         return NODE_SIZES[normalized][3]
 
+    def _zone_candidates(self, primary_zone: str) -> list[str]:
+        zones: list[str] = []
+
+        def _extend(raw: str | None) -> None:
+            if not raw:
+                return
+            for item in raw.split(","):
+                zone = item.strip()
+                if zone:
+                    zones.append(zone)
+
+        _extend(primary_zone)
+        _extend(os.environ.get("GCP_FALLBACK_ZONES"))
+        _extend(os.environ.get("EE_GCP_FALLBACK_ZONES"))
+
+        # Keep retries inside us-central1 by default for low-latency staging/prod paths.
+        if primary_zone.startswith("us-central1-"):
+            _extend("us-central1-a,us-central1-b,us-central1-c,us-central1-f")
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for zone in zones:
+            if zone not in seen:
+                seen.add(zone)
+                deduped.append(zone)
+        return deduped or [primary_zone]
+
     def _boot_disk_gib(self, default_gib: int) -> int:
         raw = (
             os.environ.get("EE_GCP_BOOT_DISK_GB") or os.environ.get("GCP_BOOT_DISK_GB") or ""
@@ -211,35 +238,56 @@ systemctl restart tdx-launcher.service || true
         disk_gib: int,
     ) -> dict[str, Any]:
         labels_arg = ",".join(f"{k}={_normalize_name(v, max_len=63)}" for k, v in labels.items())
-        cmd = [
-            "compute",
-            "instances",
-            "create",
-            name,
-            "--project",
-            cfg.project_id,
-            "--zone",
-            cfg.zone,
-            "--machine-type",
-            machine_type,
-            "--boot-disk-size",
-            f"{disk_gib}GB",
-            "--maintenance-policy",
-            "TERMINATE",
-            "--provisioning-model",
-            "STANDARD",
-            "--confidential-compute-type",
-            "TDX",
-            "--scopes",
-            "https://www.googleapis.com/auth/cloud-platform",
-            "--labels",
-            labels_arg,
-            "--metadata-from-file",
-            f"startup-script={startup_script_path}",
-            *self._image_args(cfg),
-        ]
-        self._run(cmd, capture=True, check=True)
-        return self.describe_instance(cfg=cfg, name=name)
+        last_error: Exception | None = None
+
+        for zone in self._zone_candidates(cfg.zone):
+            cmd = [
+                "compute",
+                "instances",
+                "create",
+                name,
+                "--project",
+                cfg.project_id,
+                "--zone",
+                zone,
+                "--machine-type",
+                machine_type,
+                "--boot-disk-size",
+                f"{disk_gib}GB",
+                "--maintenance-policy",
+                "TERMINATE",
+                "--provisioning-model",
+                "STANDARD",
+                "--confidential-compute-type",
+                "TDX",
+                "--scopes",
+                "https://www.googleapis.com/auth/cloud-platform",
+                "--labels",
+                labels_arg,
+                "--metadata-from-file",
+                f"startup-script={startup_script_path}",
+                *self._image_args(cfg),
+            ]
+            try:
+                self._run(cmd, capture=True, check=True)
+                cfg.zone = zone
+                return self.describe_instance(cfg=cfg, name=name)
+            except Exception as exc:
+                last_error = exc
+                msg = str(exc).lower()
+                retryable = (
+                    "configuration_availability" in msg
+                    or "does not have enough resources" in msg
+                    or "not supported in the" in msg
+                )
+                if retryable:
+                    _log(f"Zone '{zone}' unavailable for {machine_type}; trying next zone")
+                    continue
+                raise
+
+        if last_error is not None:
+            raise last_error
+        _fatal("Instance creation failed without an error")
 
     def describe_instance(self, *, cfg: GcpConfig, name: str) -> dict[str, Any]:
         return self._run_json(
@@ -518,6 +566,9 @@ systemctl restart tdx-launcher.service || true
                 name=vm_name,
                 timeout_seconds=wait_timeout_seconds,
             )
+
+        if not datacenter:
+            datacenter_label = f"gcp:{cfg.zone}"
 
         internal_ip, external_ip = self._instance_ips(instance)
         return {
