@@ -1549,25 +1549,30 @@ def resolve_datacenter_label(config: dict | None = None) -> str:
     provider = provider_raw
     if provider_raw in ("google", "gcp"):
         provider = "gcp"
-    elif provider_raw in ("azure", "az"):
-        provider = "azure"
-    elif provider_raw in ("baremetal", "bare-metal", "onprem", "on-prem", "self-hosted"):
-        provider = "baremetal"
-
-    # Treat AZ as datacenter for cloud providers and bare metal topology labels.
-    if provider in ("gcp", "azure", "baremetal") and az_raw:
-        return f"{provider}:{az_raw}"
+    elif not provider_raw:
+        try:
+            _gcp_metadata_get("instance/name")
+            provider = "gcp"
+        except Exception:
+            provider = ""
 
     if provider and az_raw:
         return f"{provider}:{az_raw}"
     if provider and region_raw:
         return f"{provider}:{region_raw}"
-    if provider == "baremetal":
-        return "baremetal:default"
+
+    try:
+        zone_path = _gcp_metadata_get("instance/zone")
+        zone = zone_path.strip().split("/")[-1].lower()
+        if zone:
+            return f"gcp:{zone}"
+    except Exception:
+        pass
+
     fallback = str(os.environ.get("EASYENCLAVE_DEFAULT_DATACENTER", "")).strip().lower()
     if fallback:
         return fallback
-    return "baremetal:default"
+    return "gcp:unknown"
 
 
 def write_status(status: str):

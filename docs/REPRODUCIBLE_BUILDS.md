@@ -1,24 +1,23 @@
-# Reproducible Builds
+# Reproducible Trusted Values
 
-This runbook documents how we verify reproducibility for the TDX dm-verity image artifacts.
+This runbook documents how we verify deterministic trusted measurements for the pinned GCP TDX image.
 
 ## Simple model
 
-We build twice so we can detect nondeterminism from the same commit.
+We measure twice so we can detect nondeterminism from the same image/commit.
 
-- Build #1 and Build #2 should produce the same outputs.
-- If they differ, the build pipeline is not deterministic.
+- Pass #1 and Pass #2 should produce the same trusted values.
+- If they differ, the rollout is blocked.
 - Measurement drift is always treated as a deployment blocker.
 
 ## What is checked
 
-The CI reproducibility gate runs two builds and verifies:
+The CI reproducibility gate runs two passes and verifies:
 
-1. `infra/image/output/easyenclave.vmlinuz` SHA256 is identical
-2. `infra/image/output/easyenclave.initrd` SHA256 is identical
-3. `infra/image/output/easyenclave.root.raw` SHA256 is identical
-4. `infra/image/output/easyenclave.cmdline` SHA256 is identical
-5. Tiny-profile stable TDX measurement fields (`mrtd`, `rtmr0`, `rtmr1`, `rtmr2`) are identical
+1. Trusted digest is identical
+2. Trusted measurement payload is identical:
+3. `mrtds_by_size` map (`tiny`, `standard`, `llm`)
+4. `rtmrs_by_size` map (`tiny`, `standard`, `llm`)
 
 If any value differs, CI fails before deployment.
 
@@ -45,8 +44,9 @@ The same strict check runs locally with:
 ## Running locally
 
 Prerequisites:
-- Host with TDX tooling used by `infra/tdx_cli.py`
-- Nix installed
+- `gcloud` auth with access to the target project/image
+- `GCP_PROJECT_ID` and `GCP_SERVICE_ACCOUNT_KEY`
+- `EE_GCP_IMAGE_NAME` (preferred) or `EE_GCP_IMAGE_FAMILY`
 
 From repo root:
 

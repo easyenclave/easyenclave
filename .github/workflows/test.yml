@@ -150,7 +150,7 @@ jobs:
   build-staging-gcp-image:
     name: Build staging GCP image for commit
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, tdx]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     env:

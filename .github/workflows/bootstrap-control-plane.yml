@@ -148,7 +148,7 @@ on:
         description: "Preferred control-plane URL (public if reachable, else internal)"
         value: ${{ jobs.bootstrap.outputs.cp_url }}
       cp_internal_url:
-        description: "Internal control-plane URL on the self-hosted TDX network"
+        description: "Internal control-plane URL on the EasyEnclave network"
         value: ${{ jobs.bootstrap.outputs.cp_internal_url }}
       cp_public_url:
         description: "Public control-plane URL (empty if not yet reachable)"
@@ -260,7 +260,7 @@ concurrency:
 
 jobs:
   bootstrap:
-    runs-on: [self-hosted, tdx]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -398,12 +398,31 @@ jobs:
             fi
           done
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+      - name: Validate required GCP config
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required secret/env: $v"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
       - name: Derive ADMIN_PASSWORD_HASH (for control plane container)
         run: |
           set -euo pipefail
+          python3 -m pip install --user bcrypt >/dev/null
           python3 - <<'PY'
           import os
           import bcrypt
@@ -415,26 +434,13 @@ jobs:
             f.write("ADMIN_PASSWORD_HASH=" + hashed + "\n")
           PY
 
-      - name: Cleanup leaked measurement VMs (best effort)
-        if: ${{ vars.EASYENCLAVE_ENABLE_LEAKED_VM_CLEANUP == 'true' }}
-        run: |
-          set -euo pipefail
-          if command -v virsh >/dev/null 2>&1; then
-            libvirt_uri="qemu:///system"
-            for d in $(virsh --connect "$libvirt_uri" list --all --name | grep '^tdvirsh-trust_domain_verity-' || true); do
-              [ -n "$d" ] || continue
-              virsh --connect "$libvirt_uri" destroy "$d" >/dev/null 2>&1 || true
-              virsh --connect "$libvirt_uri" undefine "$d" --nvram >/dev/null 2>&1 || virsh --connect "$libvirt_uri" undefine "$d" >/dev/null 2>&1 || true
-            done
-          fi
-
       - name: Validate trusted-value source
         shell: bash
         run: |
           set -euo pipefail
           mode="$(echo "${USE_PRECOMPUTED_TRUSTED_VALUES:-false}" | tr '[:upper:]' '[:lower:]')"
           if [ "$mode" != "true" ]; then
-            echo "Trusted-value source: local measurement"
+            echo "Trusted-value source: GCP TDX measurement"
             exit 0
           fi
 
@@ -449,29 +455,12 @@ jobs:
           echo "${PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE}" | jq -e 'type == "object"' >/dev/null
           echo "Trusted-value source: precomputed bundle"
 
-      - name: Prune stale local tdvirsh VMs (current + orphaned networks)
-        if: ${{ env.EASYENCLAVE_ENV != 'production' }}
-        shell: bash
-        run: ./scripts/prune_tdvirsh_vms.sh
-
-      - name: Build verity artifacts (precomputed mode)
-        if: env.USE_PRECOMPUTED_TRUSTED_VALUES == 'true'
-        run: |
-          set -euo pipefail
-          cd infra/image
-          nix develop --command make build
-
       - name: Build and measure trusted values (bootstrap sizes)
         if: env.USE_PRECOMPUTED_TRUSTED_VALUES != 'true'
         id: measure
         env:
           MEASURE_SIZES: ${{ env.CP_BOOTSTRAP_SIZES }}
         run: ./scripts/ci-build-measure.sh
-
-      - name: Prune stale local tdvirsh VMs (production, after trusted-value build)
-        if: ${{ env.EASYENCLAVE_ENV == 'production' }}
-        shell: bash
-        run: ./scripts/prune_tdvirsh_vms.sh
 
       - name: Deploy control plane + bootstrap agents/apps
         id: deploy

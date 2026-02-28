@@ -8,7 +8,7 @@ Launchers consume those orders using a **launcher API key**.
 - Deployment and billing request capacity through CP APIs.
 - CP creates launch orders for shortfall (`tiny`/`standard`/`llm`).
 - Launcher workers claim and fulfill orders.
-- This worker is for local bare-metal TDX. GCP fulfillment is handled natively by the control plane.
+- This worker handles launcher-API driven capacity fulfillment and launches GCP TDX VMs via `infra/tdx_cli.py`.
 
 ## 1) Create a launcher account
 
@@ -20,26 +20,26 @@ curl -sS -X POST https://app.easyenclave.com/api/v1/accounts \
 
 Save the returned `api_key` (only shown once).
 
-## 2) Run the worker (bare metal)
+## 2) Run the worker (GCP)
 
 ```bash
 LAUNCHER_API_KEY='ee_live_...' \
 INTEL_API_KEY='...' \
 python3 scripts/capacity_launcher_worker.py \
   --cp-url https://app.easyenclave.com \
-  --providers baremetal
+  --providers gcp
 ```
 
 The worker will:
 1. `POST /api/v1/launchers/capacity/orders/claim`
-2. Launch local TDX VM via `infra/tdx_cli.py vm new ... --wait`
+2. Launch GCP TDX VM via `infra/tdx_cli.py vm new ... --wait`
 3. `POST /api/v1/launchers/capacity/orders/{order_id}` with `fulfilled`
 
 ## Helpful flags
 
 - `--one-shot`: claim/process at most one order
 - `--max-orders N`: process N orders then exit
-- `--datacenter baremetal:github-runner`: claim filter
+- `--datacenter gcp:us-central1-f`: claim filter
 - `--node-size tiny`: claim filter
 
 ## API summary

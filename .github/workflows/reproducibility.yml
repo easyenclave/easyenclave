@@ -9,26 +9,13 @@ concurrency:
 
 jobs:
   determinism:
-    # Manual-only deterministic build check.
-    runs-on: [self-hosted, tdx]
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Fix workspace permissions
-        run: |
-          if [ -d "infra/output" ]; then
-            sudo chown -R "$(id -u):$(id -g)" infra/output/ || true
-          fi
-          if [ -d "infra/image/output" ]; then
-            sudo chown -R "$(id -u):$(id -g)" infra/image/output/ || true
-          fi
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
 
       - name: Reproducibility and trusted measurements (strict)
         run: ./scripts/ci-reproducibility-check.sh

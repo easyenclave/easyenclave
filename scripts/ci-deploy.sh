@@ -16,9 +16,9 @@
 #   NUM_STANDARD_AGENTS - number of additional standard agents to launch (default: 0)
 #   NUM_LLM_AGENTS     - number of additional LLM-sized agents to launch (default: 0)
 #   CP_BOOTSTRAP_SIZES - comma-separated bootstrap measurer sizes for control-plane new (default: tiny)
-#   AGENT_DATACENTER - explicit datacenter label override (e.g. baremetal:github-runner-a)
-#   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: baremetal)
-#   AGENT_DATACENTER_AZ - availability zone/datacenter shard label (default: github-runner)
+#   AGENT_DATACENTER - explicit datacenter label override (e.g. gcp:us-central1-f)
+#   AGENT_CLOUD_PROVIDER - provider label if AGENT_DATACENTER is unset (default: gcp)
+#   AGENT_DATACENTER_AZ - availability zone/datacenter shard label (default: us-central1-f)
 #   AGENT_DATACENTER_REGION - optional region label for placement metadata
 #   AGENT_VERIFY_WAIT_ATTEMPTS - polling attempts while waiting for agent verification (default: 90)
 #   AGENT_VERIFY_WAIT_SECONDS - sleep between verification polls (default: 10)
@@ -229,7 +229,6 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
   done
 fi
 
-# TODO(azure): re-enable Azure-labeled agent launch once Azure confidential VM reliability is fixed.
 wait
 echo "Additional agent launches complete; expected verified total: $TOTAL_AGENTS"
 
@@ -287,15 +286,6 @@ if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
         [ -n "$line" ] || continue
         echo "::error::$line"
       done
-  echo ""
-  echo "=== Agent VM serial logs (last 80 lines each) ==="
-  for log in /var/tmp/tdvirsh/console.*.log; do
-    [ -f "$log" ] || continue
-    echo ""
-    echo "--- $log ---"
-    tail -80 "$log"
-  done
-  echo ""
   echo "=== Control plane container logs ==="
   curl -sf "$CP_URL/api/v1/logs/control-plane?limit=50" 2>/dev/null | jq -r '.logs[]?.message' || true
   exit 1

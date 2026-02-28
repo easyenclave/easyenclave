@@ -45,10 +45,13 @@ jobs:
 
   build:
     name: Build deterministic trust bundle
-    runs-on: [self-hosted, tdx]
+    runs-on: ubuntu-latest
     needs: [resolve]
     permissions:
       contents: read
+    env:
+      GCP_PROJECT_ID: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
     outputs:
       bundle_name: ${{ steps.bundle.outputs.bundle_name }}
     steps:
@@ -57,8 +60,64 @@ jobs:
         with:
           ref: refs/tags/${{ needs.resolve.outputs.release_tag }}
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
+      - name: Validate required GCP config
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required value: $v"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Resolve release image selector for trust measurement
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          safe_tag="$(echo "$RELEASE_TAG" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+          [ -n "$safe_tag" ] || safe_tag="release"
+          tag_hash="$(printf '%s' "$safe_tag" | sha256sum | awk '{print $1}' | cut -c1-8)"
+          if [ "${#safe_tag}" -gt 32 ]; then
+            safe_tag="${safe_tag:0:23}-${tag_hash}"
+          fi
+          sha12="$(echo "$source_sha" | cut -c1-12)"
+          image_name="easyenclave-agent-${safe_tag}-${sha12}"
+          image_family="easyenclave-agent-${safe_tag}"
+
+          {
+            echo "EE_GCP_IMAGE_PROJECT=${GCP_PROJECT_ID}"
+            echo "EE_GCP_IMAGE_NAME=${image_name}"
+            echo "EE_GCP_IMAGE_FAMILY=${image_family}"
+          } >> "$GITHUB_ENV"
+
+          for attempt in $(seq 1 60); do
+            if gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+              echo "Using release image for trust measurement: ${GCP_PROJECT_ID}/${image_name}"
+              exit 0
+            fi
+            if [ "$attempt" -lt 60 ]; then
+              echo "Release image not available yet: ${image_name} (${attempt}/60)"
+              sleep 15
+            fi
+          done
+
+          echo "::error::Timed out waiting for release image '${image_name}' in project '${GCP_PROJECT_ID}'."
+          echo "::error::Release GCP Image workflow must complete first."
+          exit 1
 
       - name: Run strict reproducibility check
         run: ./scripts/ci-reproducibility-check.sh
