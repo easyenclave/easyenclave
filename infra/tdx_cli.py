@@ -227,6 +227,32 @@ systemctl restart tdx-launcher.service || true
             tf.write(script)
             return tf.name
 
+    def _write_measure_startup_script(self, size: str) -> str:
+        config = {"mode": MEASURE_MODE, "node_size": size}
+        script = f"""#!/usr/bin/env bash
+set -euo pipefail
+exec > >(tee -a /var/log/easyenclave-measure.log /dev/ttyS0) 2>&1
+mkdir -p /etc/easyenclave
+cat > /etc/easyenclave/config.json <<'EOF_CONFIG'
+{json.dumps(config, indent=2, sort_keys=True)}
+EOF_CONFIG
+chmod 0600 /etc/easyenclave/config.json
+
+if [ ! -f /opt/launcher/launcher.py ]; then
+  echo "EASYENCLAVE_MEASURE_ERROR=missing_launcher_binary"
+  systemctl poweroff || true
+  exit 0
+fi
+
+# Avoid relying exclusively on service orchestration for measurement mode.
+timeout 300 /usr/bin/python3 /opt/launcher/launcher.py || true
+sleep 2
+systemctl poweroff || true
+"""
+        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tf:
+            tf.write(script)
+            return tf.name
+
     def _create_instance(
         self,
         *,
@@ -646,7 +672,7 @@ systemctl restart tdx-launcher.service || true
         self._activate_service_account_if_needed(cfg)
 
         name = _normalize_name(f"ee-measure-{size}-{uuid.uuid4().hex[:8]}")
-        startup_script = self._write_startup_script({"mode": MEASURE_MODE, "node_size": size})
+        startup_script = self._write_measure_startup_script(size)
 
         try:
             self._create_instance(
