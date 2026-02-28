@@ -22,8 +22,8 @@ from typing import Any
 
 NODE_SIZES: dict[str, tuple[int, int, int, str]] = {
     # memory_gib, vcpus, disk_gib, gcp machine type
-    "tiny": (8, 4, 50, "c3-standard-4"),
-    "standard": (16, 8, 100, "c3-standard-8"),
+    "tiny": (8, 4, 200, "c3-standard-4"),
+    "standard": (16, 8, 200, "c3-standard-8"),
     "llm": (44, 22, 200, "c3-standard-22"),
 }
 
@@ -171,6 +171,19 @@ class GcpCli:
         if normalized not in NODE_SIZES:
             _fatal(f"Unsupported size '{size}'. Allowed: {', '.join(NODE_SIZES.keys())}")
         return NODE_SIZES[normalized][3]
+
+    def _boot_disk_gib(self, default_gib: int) -> int:
+        raw = (
+            os.environ.get("EE_GCP_BOOT_DISK_GB") or os.environ.get("GCP_BOOT_DISK_GB") or ""
+        ).strip()
+        if not raw:
+            return default_gib
+        try:
+            parsed = int(raw)
+        except ValueError:
+            _log(f"Ignoring invalid EE_GCP_BOOT_DISK_GB value: {raw!r}")
+            return default_gib
+        return max(default_gib, parsed)
 
     def _write_startup_script(self, config: dict[str, Any]) -> str:
         script = f"""#!/usr/bin/env bash
@@ -491,7 +504,7 @@ systemctl restart tdx-launcher.service || true
                     "ee_network": os.environ.get("EASYENCLAVE_NETWORK_NAME", "default"),
                     "ee_node_size": node_size,
                 },
-                disk_gib=NODE_SIZES[node_size][2],
+                disk_gib=self._boot_disk_gib(NODE_SIZES[node_size][2]),
             )
         finally:
             try:
@@ -595,7 +608,7 @@ systemctl restart tdx-launcher.service || true
                     "ee_role": "measure",
                     "ee_env": os.environ.get("EASYENCLAVE_ENV", "staging"),
                 },
-                disk_gib=NODE_SIZES[size][2],
+                disk_gib=self._boot_disk_gib(NODE_SIZES[size][2]),
             )
 
             deadline = time.time() + max(30, timeout_seconds)
