@@ -276,25 +276,27 @@ if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
   waited_seconds=$((AGENT_VERIFY_WAIT_ATTEMPTS * AGENT_VERIFY_WAIT_SECONDS))
   echo "::error::Not all agents verified after ${waited_seconds}s ($VERIFIED/$TOTAL_AGENTS)"
   echo "::error::Dumping unverified agents (to surface root cause without VM logs)..."
-  curl -sf "$CP_URL/api/v1/agents" 2>/dev/null \
-    | agents_to_array \
-    | jq -r '
-      .[]
-      | select(.verified != true)
-      | "agent_id=\(.agent_id) vm=\(.vm_name) status=\(.status) health=\(.health_status) size=\(.node_size) dc=\(.datacenter) err=\(.verification_error // \"\")"
-    ' 2>/dev/null \
-    | head -n 30 \
-    | while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        echo "::error::$line"
-      done
+  {
+    curl -sf "$CP_URL/api/v1/agents" 2>/dev/null \
+      | agents_to_array \
+      | jq -r '
+        .[]
+        | select(.verified != true)
+        | "agent_id=\(.agent_id) vm=\(.vm_name) status=\(.status) health=\(.health_status) size=\(.node_size) dc=\(.datacenter) err=\(.verification_error // \"\")"
+      ' 2>/dev/null \
+      | head -n 30 \
+      | while IFS= read -r line; do
+          [ -n "$line" ] || continue
+          echo "::error::$line"
+        done
+  } || true
   if command -v gcloud >/dev/null 2>&1 && [ -n "${GCP_PROJECT_ID:-}" ]; then
     echo ""
     echo "=== Agent VM serial logs (GCP, last 120 lines) ==="
     mapfile -t _agent_vms < <(
       gcloud compute instances list \
         --project "$GCP_PROJECT_ID" \
-        --filter="labels.easyenclave=managed AND labels.ee_role=agent AND labels.ee_env=${EASYENCLAVE_ENV:-staging}" \
+        --filter="labels.easyenclave=managed AND labels.ee_env=${EASYENCLAVE_ENV:-staging}" \
         --format="value(name,zone)" 2>/dev/null || true
     )
     for vm_zone in "${_agent_vms[@]}"; do
