@@ -12,6 +12,7 @@ use ee_common::error::{AppError, AppResult};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AttestationClaims {
     pub iss: String,
+    #[serde(default)]
     pub aud: Value,
     pub exp: usize,
     #[serde(default)]
@@ -50,14 +51,14 @@ struct CachedJwks {
 pub struct ItaVerifier {
     jwks_url: String,
     issuer: String,
-    audience: String,
+    audience: Option<String>,
     ttl: Duration,
     client: reqwest::blocking::Client,
     cache: RwLock<Option<CachedJwks>>,
 }
 
 impl ItaVerifier {
-    pub fn new(jwks_url: String, issuer: String, audience: String, ttl: Duration) -> Self {
+    pub fn new(jwks_url: String, issuer: String, audience: Option<String>, ttl: Duration) -> Self {
         Self {
             jwks_url,
             issuer,
@@ -89,8 +90,10 @@ impl ItaVerifier {
         if claims.iss != self.issuer {
             return Err(AppError::Unauthorized);
         }
-        if !audience_matches(&claims.aud, &self.audience) {
-            return Err(AppError::Unauthorized);
+        if let Some(expected_audience) = self.audience.as_deref() {
+            if !audience_matches(&claims.aud, expected_audience) {
+                return Err(AppError::Unauthorized);
+            }
         }
 
         Ok(claims)
@@ -244,7 +247,7 @@ mod tests {
         let verifier = ItaVerifier::new(
             format!("{}/jwks", server.url()),
             "https://issuer.example".to_string(),
-            "expected-aud".to_string(),
+            Some("expected-aud".to_string()),
             Duration::from_secs(300),
         );
 
@@ -277,7 +280,7 @@ mod tests {
         let verifier = ItaVerifier::new(
             format!("{}/jwks", server.url()),
             "https://issuer.example".to_string(),
-            "expected-aud".to_string(),
+            Some("expected-aud".to_string()),
             Duration::from_secs(300),
         );
 
@@ -311,7 +314,7 @@ mod tests {
         let verifier = ItaVerifier::new(
             format!("{}/jwks", server.url()),
             "https://issuer.example".to_string(),
-            "expected-aud".to_string(),
+            Some("expected-aud".to_string()),
             Duration::from_secs(300),
         );
 
@@ -346,7 +349,7 @@ mod tests {
         let verifier = ItaVerifier::new(
             format!("{}/jwks", server.url()),
             "https://issuer.example".to_string(),
-            "expected-aud".to_string(),
+            Some("expected-aud".to_string()),
             Duration::from_secs(300),
         );
 
@@ -361,5 +364,45 @@ mod tests {
         verifier.verify_attestation_token(&token).expect("first");
         verifier.verify_attestation_token(&token).expect("second");
         jwks_mock.assert();
+    }
+
+    #[test]
+    fn allows_missing_audience_when_not_configured() {
+        let mut server = Server::new();
+        let secret = b"no-aud-secret";
+        let k = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(secret);
+
+        let _jwks_mock = server
+            .mock("GET", "/jwks")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json!({"keys": [{"kty": "oct", "kid": "kid-no-aud", "k": k}]}).to_string())
+            .create();
+
+        let verifier = ItaVerifier::new(
+            format!("{}/jwks", server.url()),
+            "https://issuer.example".to_string(),
+            None,
+            Duration::from_secs(300),
+        );
+
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some("kid-no-aud".to_string());
+        let token = encode(
+            &header,
+            &json!({
+                "iss": "https://issuer.example",
+                "exp": now_unix() + 300,
+                "nbf": now_unix() - 1,
+                "tdx_mrtd": "a".repeat(96),
+                "attester_tcb_status": "UpToDate"
+            }),
+            &EncodingKey::from_secret(secret),
+        )
+        .expect("token");
+
+        verifier
+            .verify_attestation_token(&token)
+            .expect("claims without audience");
     }
 }

@@ -26,8 +26,7 @@ impl AttestationService {
         let issuer = env::var("CP_ITA_ISSUER").ok();
         let audience = env::var("CP_ITA_AUDIENCE").ok();
 
-        let verifier =
-            if let (Some(jwks_url), Some(issuer), Some(audience)) = (jwks_url, issuer, audience) {
+        let verifier = if let (Some(jwks_url), Some(issuer)) = (jwks_url, issuer) {
                 let ttl_seconds = env::var("CP_ITA_JWKS_TTL_SECONDS")
                     .ok()
                     .and_then(|v| v.parse::<u64>().ok())
@@ -65,7 +64,7 @@ impl AttestationService {
         }
         if self.runtime_env == RuntimeEnv::Production && self.verifier.is_none() {
             return Err(AppError::Config(
-                "attestation verifier is required in production; set CP_ITA_JWKS_URL, CP_ITA_ISSUER, and CP_ITA_AUDIENCE".to_string(),
+                "attestation verifier is required in production; set CP_ITA_JWKS_URL and CP_ITA_ISSUER (CP_ITA_AUDIENCE is optional)".to_string(),
             ));
         }
         if self.runtime_env == RuntimeEnv::Staging
@@ -73,7 +72,7 @@ impl AttestationService {
             && !self.allow_insecure
         {
             return Err(AppError::Config(
-                "staging requires either attestation verifier config (CP_ITA_JWKS_URL/CP_ITA_ISSUER/CP_ITA_AUDIENCE) or CP_ATTESTATION_ALLOW_INSECURE=true".to_string(),
+                "staging requires either attestation verifier config (CP_ITA_JWKS_URL/CP_ITA_ISSUER, optional CP_ITA_AUDIENCE) or CP_ATTESTATION_ALLOW_INSECURE=true".to_string(),
             ));
         }
         Ok(())

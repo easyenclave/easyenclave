@@ -191,6 +191,10 @@ services:
       - CP_DATABASE_URL=${{CP_DATABASE_URL:-sqlite://easyenclave.db?mode=rwc}}
       - CP_ADMIN_PASSWORD=${{CP_ADMIN_PASSWORD:-}}
       - CP_ATTESTATION_ALLOW_INSECURE=${{CP_ATTESTATION_ALLOW_INSECURE:-false}}
+      - CP_ITA_JWKS_URL=${{CP_ITA_JWKS_URL:-https://portal.trustauthority.intel.com/certs}}
+      - CP_ITA_ISSUER=${{CP_ITA_ISSUER:-https://portal.trustauthority.intel.com}}
+      - CP_ITA_AUDIENCE=${{CP_ITA_AUDIENCE:-}}
+      - CP_ITA_JWKS_TTL_SECONDS=${{CP_ITA_JWKS_TTL_SECONDS:-300}}
       - TRUSTED_AGENT_MRTDS=${{TRUSTED_AGENT_MRTDS:-}}
       - TRUSTED_PROXY_MRTDS=${{TRUSTED_PROXY_MRTDS:-}}
       - TRUSTED_AGENT_RTMRS=${{TRUSTED_AGENT_RTMRS:-}}
@@ -2619,6 +2623,14 @@ def run_control_plane_mode(config: dict):
         env["DEFAULT_GCP_TINY_CAPACITY_DISPATCH"] = config["default_gcp_tiny_capacity_dispatch"]
     if config.get("cp_attestation_allow_insecure"):
         env["CP_ATTESTATION_ALLOW_INSECURE"] = config["cp_attestation_allow_insecure"]
+    if config.get("cp_ita_jwks_url"):
+        env["CP_ITA_JWKS_URL"] = config["cp_ita_jwks_url"]
+    if config.get("cp_ita_issuer"):
+        env["CP_ITA_ISSUER"] = config["cp_ita_issuer"]
+    if config.get("cp_ita_audience"):
+        env["CP_ITA_AUDIENCE"] = config["cp_ita_audience"]
+    if config.get("cp_ita_jwks_ttl_seconds"):
+        env["CP_ITA_JWKS_TTL_SECONDS"] = str(config["cp_ita_jwks_ttl_seconds"])
     if config.get("admin_password"):
         env["CP_ADMIN_PASSWORD"] = config["admin_password"]
     if config.get("admin_password_hash"):

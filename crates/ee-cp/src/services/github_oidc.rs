@@ -34,7 +34,7 @@ impl GithubOidcService {
             Arc::new(ItaVerifier::new(
                 jwks_url,
                 issuer,
-                aud,
+                Some(aud),
                 Duration::from_secs(ttl_seconds),
             ))
         });
@@ -177,7 +177,7 @@ mod tests {
         let verifier = ee_attestation::ita::ItaVerifier::new(
             format!("{}/jwks", server.url()),
             "https://token.actions.githubusercontent.com".to_string(),
-            "easyenclave".to_string(),
+            Some("easyenclave".to_string()),
             std::time::Duration::from_secs(300),
         );
         let service = GithubOidcService {
