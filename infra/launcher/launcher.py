@@ -1927,7 +1927,9 @@ def register_with_control_plane(
     intel_ta_token = (((attestation or {}).get("tdx") or {}).get("intel_ta_token") or "").strip()
     nonce = str((attestation or {}).get("nonce") or "").strip()
     if not intel_ta_token:
-        raise RuntimeError("Missing attestation.tdx.intel_ta_token for rust control-plane registration")
+        raise RuntimeError(
+            "Missing attestation.tdx.intel_ta_token for rust control-plane registration"
+        )
     if not nonce:
         raise RuntimeError("Missing nonce for rust control-plane registration")
 
