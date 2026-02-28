@@ -1924,66 +1924,27 @@ def register_with_control_plane(
     logger.info(f"Using node_size: {node_size}")
 
     register_url = f"{CONTROL_PLANE_URL}/api/v1/agents/register"
-    legacy_payload = {
-        "attestation": attestation,
+    intel_ta_token = (((attestation or {}).get("tdx") or {}).get("intel_ta_token") or "").strip()
+    nonce = str((attestation or {}).get("nonce") or "").strip()
+    if not intel_ta_token:
+        raise RuntimeError("Missing attestation.tdx.intel_ta_token for rust control-plane registration")
+    if not nonce:
+        raise RuntimeError("Missing nonce for rust control-plane registration")
+
+    payload = {
+        "intel_ta_token": intel_ta_token,
         "vm_name": vm_name,
-        "version": VERSION,
+        "nonce": nonce,
         "node_size": node_size,
         "datacenter": datacenter,
     }
 
-    result = None
-    legacy_error_text = ""
-    try:
-        response = requests.post(register_url, json=legacy_payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-    except requests.exceptions.HTTPError as exc:
-        legacy_error_text = ""
-        if exc.response is not None:
-            try:
-                legacy_error_text = (exc.response.text or "").strip()
-            except Exception:
-                legacy_error_text = ""
-
-        status = exc.response.status_code if exc.response is not None else 0
-        should_try_v2 = status in (400, 404, 405, 422) or (
-            "intel_ta_token" in legacy_error_text
-            or "invalid_nonce" in legacy_error_text
-            or "nonce" in legacy_error_text.lower()
-        )
-        if not should_try_v2:
-            raise
-
-        intel_ta_token = (
-            ((attestation or {}).get("tdx") or {}).get("intel_ta_token") or ""
-        ).strip()
-        nonce = str((attestation or {}).get("nonce") or "").strip()
-        if not intel_ta_token:
-            raise RuntimeError(
-                "Registration fallback requires attestation.tdx.intel_ta_token for ee-cp"
-            ) from exc
-        if not nonce:
-            raise RuntimeError("Registration fallback requires nonce for ee-cp") from exc
-
-        logger.info("Legacy registration payload was rejected; retrying with ee-cp v2 payload")
-        v2_payload = {
-            "intel_ta_token": intel_ta_token,
-            "vm_name": vm_name,
-            "nonce": nonce,
-            "node_size": node_size,
-            "datacenter": datacenter,
-        }
-        response = requests.post(register_url, json=v2_payload, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-    except requests.exceptions.RequestException:
-        raise
+    response = requests.post(register_url, json=payload, timeout=30)
+    response.raise_for_status()
+    result = response.json()
 
     if not isinstance(result, dict):
         raise RuntimeError(f"Unexpected registration response type: {type(result).__name__}")
-    if legacy_error_text:
-        logger.debug("Legacy registration rejection detail: %s", legacy_error_text[:300])
 
     agent_id = result["agent_id"]
     hostname = result.get("hostname")

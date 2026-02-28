@@ -4,7 +4,7 @@
 # 1) Trigger on push to main (in parallel with CI).
 # 2) Wait for CI success on the same commit SHA.
 # 3) CI builds/pins a staging GCP image for that exact commit.
-# 4) Bootstrap staging control plane and run builtin deploy examples in parallel (baremetal + gcp).
+# 4) Bootstrap staging rust control plane and verify agent bootstrap.
 #
 # Staging profile is intentionally no-cost:
 # - billing disabled
@@ -46,10 +46,6 @@ on:
         description: "Control plane image override"
         required: false
         default: ""
-      cp_runtime:
-        description: "Control plane runtime (rust or legacy)"
-        required: false
-        default: ""
 
 concurrency:
   group: easyenclave-staging-rollout
@@ -69,7 +65,6 @@ jobs:
       staging_domain: ${{ steps.resolve.outputs.staging_domain }}
       staging_network_name: ${{ steps.resolve.outputs.staging_network_name }}
       staging_release_tag: ${{ steps.resolve.outputs.staging_release_tag }}
-      cp_runtime: ${{ steps.resolve.outputs.cp_runtime }}
       should_run: ${{ steps.resolve.outputs.should_run }}
       skip_reason: ${{ steps.resolve.outputs.skip_reason }}
     steps:
@@ -80,12 +75,10 @@ jobs:
           INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
           INPUT_EXPECTED_SHA: ${{ github.event.inputs.cp_expected_git_sha || '' }}
           INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
-          INPUT_CP_RUNTIME: ${{ github.event.inputs.cp_runtime || '' }}
           GH_TOKEN: ${{ github.token }}
           DEFAULT_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.STAGING_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
-          DEFAULT_CP_RUNTIME: ${{ vars.STAGING_CP_RUNTIME || 'rust' }}
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
         run: |
@@ -182,13 +175,7 @@ jobs:
             echo "::error::Set distinct vars: STAGING_CP_URL/STAGING_EASYENCLAVE_DOMAIN and PRODUCTION_CP_URL/PRODUCTION_EASYENCLAVE_DOMAIN."
             exit 1
           fi
-          cp_runtime="$(echo "${INPUT_CP_RUNTIME:-${DEFAULT_CP_RUNTIME:-rust}}" | tr '[:upper:]' '[:lower:]' | xargs)"
-          if [ "$cp_runtime" != "legacy" ] && [ "$cp_runtime" != "rust" ]; then
-            echo "::error::Invalid cp_runtime='${cp_runtime}'. Expected 'rust' or 'legacy'."
-            exit 1
-          fi
           echo "::notice::Resolved staging network name: ${network_name}"
-          echo "::notice::Resolved staging control-plane runtime: ${cp_runtime}"
 
           should_run="true"
           skip_reason=""
@@ -201,7 +188,6 @@ jobs:
             echo "staging_network_name=${network_name}"
             echo "staging_release_tag=${staging_release_tag}"
             echo "cp_url=${cp_url}"
-            echo "cp_runtime=${cp_runtime}"
             echo "should_run=${should_run}"
             echo "skip_reason=${skip_reason}"
           } >> "$GITHUB_OUTPUT"
@@ -393,7 +379,7 @@ jobs:
     secrets: inherit
     with:
       source_ref: ${{ needs.resolve.outputs.source_sha }}
-      control_plane_image: ${{ github.event.inputs.control_plane_image || (needs.resolve.outputs.cp_runtime == 'rust' && format('ghcr.io/{0}/control-plane-rust:{1}', github.repository, needs.resolve.outputs.source_sha)) || format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane-rust:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny
       # Keep staging warm spare footprint small.
       num_tiny_agents: '1'
@@ -423,109 +409,10 @@ jobs:
       ee_gcp_image_name: ''
       ee_gcp_image_family: easyenclave-agent-main
 
-  deploy-baremetal:
-    name: Builtin deploy examples (baremetal)
-    needs: [resolve, bootstrap]
-    if: needs.resolve.outputs.should_run == 'true' && needs.resolve.outputs.cp_runtime != 'rust'
-    uses: ./.github/workflows/deploy-examples.yml
-    secrets: inherit
-    with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
-      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
-      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
-      source_ref: ${{ needs.resolve.outputs.source_sha }}
-      easyenclave_env: staging
-
-  deploy-gcp:
-    name: Builtin deploy examples (gcp)
-    needs: [resolve, bootstrap, verify-staging-gcp-image]
-    if: needs.resolve.outputs.should_run == 'true' && needs.resolve.outputs.cp_runtime != 'rust'
-    uses: ./.github/workflows/deploy-examples-gcp.yml
-    secrets: inherit
-    with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
-      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
-      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
-      source_ref: ${{ needs.resolve.outputs.source_sha }}
-      easyenclave_env: staging
-
-  cleanup-legacy-gcp-agents:
-    name: Cleanup legacy staging GCP agent rows
-    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp]
-    if: needs.resolve.outputs.should_run == 'true' && needs.resolve.outputs.cp_runtime != 'rust'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Delete stale legacy vm_name agent rows (tdx-agent-*)
-        shell: bash
-        env:
-          CP_URL: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
-          CP_ADMIN_TOKEN: ${{ secrets.CP_ADMIN_TOKEN }}
-          CP_ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
-        run: |
-          set -euo pipefail
-          if [ -z "${CP_URL:-}" ]; then
-            echo "::error::Missing CP URL for cleanup."
-            exit 1
-          fi
-          token="$(echo "${CP_ADMIN_TOKEN:-}" | xargs)"
-          if [ -z "$token" ]; then
-            if [ -z "${CP_ADMIN_PASSWORD:-}" ]; then
-              echo "::error::Missing CP_ADMIN_PASSWORD (and CP_ADMIN_TOKEN empty); cannot authenticate cleanup."
-              exit 1
-            fi
-            payload_login="$(jq -cn --arg p "${CP_ADMIN_PASSWORD}" '{password: $p}')"
-            token="$(curl -sS -X POST "$CP_URL/admin/login" -H 'Content-Type: application/json' -d "$payload_login" | jq -r '.token // empty' 2>/dev/null || true)"
-          fi
-          if [ -z "$token" ]; then
-            echo "::error::Failed to mint admin token via $CP_URL/admin/login for cleanup."
-            exit 1
-          fi
-          echo "::add-mask::$token"
-          ADMIN_TOKEN="$token"
-
-          agents_json="$(curl -sSf -H "Authorization: Bearer ${ADMIN_TOKEN}" -H 'Accept: application/json' "$CP_URL/api/v1/agents")"
-          mapfile -t stale_ids < <(
-            echo "$agents_json" | jq -r '
-              [.agents[]?
-                | select((.datacenter // "" | ascii_downcase) | startswith("gcp:"))
-                | select((.vm_name // "") | startswith("tdx-agent-"))
-                | select((.status // "" | ascii_downcase) == "undeployed" or (.status // "" | ascii_downcase) == "unverified")
-                | select((.current_deployment_id // "") == "")
-                | .agent_id] | unique[]?'
-          )
-
-          if [ "${#stale_ids[@]}" -eq 0 ]; then
-            echo "No legacy staging gcp tdx-agent-* rows to clean up."
-            exit 0
-          fi
-
-          reason="staging-rollout:cleanup-legacy-gcp-vm-name"
-          payload="$(jq -cn --arg reason "$reason" '{dry_run:false, reason:$reason}')"
-          failed=0
-          echo "Cleaning ${#stale_ids[@]} legacy GCP agent row(s)..."
-          for agent_id in "${stale_ids[@]}"; do
-            code="$(curl -sS -o /tmp/cleanup-agent.json -w "%{http_code}" \
-              -X POST "$CP_URL/api/v1/admin/agents/${agent_id}/cleanup" \
-              -H "Authorization: Bearer ${ADMIN_TOKEN}" \
-              -H 'Content-Type: application/json' \
-              -d "$payload" || echo 000)"
-            if [ "$code" -ge 400 ]; then
-              echo "::error::Cleanup failed for agent=${agent_id} (HTTP $code): $(cat /tmp/cleanup-agent.json)"
-              failed=1
-            else
-              echo "Cleanup succeeded for agent=${agent_id} (HTTP $code)."
-            fi
-          done
-
-          if [ "$failed" -ne 0 ]; then
-            echo "::error::One or more legacy GCP agent cleanups failed."
-            exit 1
-          fi
-
   verify-rust-cp-agents:
     name: Verify rust CP + agent bootstrap
     needs: [resolve, bootstrap]
-    if: needs.resolve.outputs.should_run == 'true' && needs.resolve.outputs.cp_runtime == 'rust'
+    if: needs.resolve.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     env:
       CP_URL: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
@@ -596,7 +483,7 @@ jobs:
 
   assert-rollout-executed:
     name: Assert staging rollout executed
-    needs: [resolve, bootstrap, deploy-baremetal, deploy-gcp, cleanup-legacy-gcp-agents, verify-rust-cp-agents]
+    needs: [resolve, verify-staging-gcp-image, bootstrap, verify-rust-cp-agents]
     if: always() && needs.resolve.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -604,24 +491,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp_runtime="${{ needs.resolve.outputs.cp_runtime }}"
+          gcp_image="${{ needs['verify-staging-gcp-image'].result }}"
           bootstrap="${{ needs.bootstrap.result }}"
-          if [ "$cp_runtime" = "rust" ]; then
-            rust_verify="${{ needs['verify-rust-cp-agents'].result }}"
-            echo "cp_runtime=${cp_runtime} bootstrap=${bootstrap} rust_verify=${rust_verify}"
-            if [ "$bootstrap" != "success" ] || [ "$rust_verify" != "success" ]; then
-              echo "::error::Rust staging rollout did not fully execute: bootstrap=${bootstrap}, rust_verify=${rust_verify}"
-              exit 1
-            fi
-            echo "Rust staging rollout executed all required stages."
-          else
-            baremetal="${{ needs['deploy-baremetal'].result }}"
-            gcp="${{ needs['deploy-gcp'].result }}"
-            cleanup_legacy="${{ needs['cleanup-legacy-gcp-agents'].result }}"
-            echo "cp_runtime=${cp_runtime} bootstrap=${bootstrap} baremetal=${baremetal} gcp=${gcp} cleanup_legacy=${cleanup_legacy}"
-            if [ "$bootstrap" != "success" ] || [ "$baremetal" != "success" ] || [ "$gcp" != "success" ] || [ "$cleanup_legacy" != "success" ]; then
-              echo "::error::Staging rollout did not fully execute: bootstrap=${bootstrap}, baremetal=${baremetal}, gcp=${gcp}, cleanup_legacy=${cleanup_legacy}"
-              exit 1
-            fi
-            echo "Staging rollout executed all required stages."
+          rust_verify="${{ needs['verify-rust-cp-agents'].result }}"
+          echo "gcp_image=${gcp_image} bootstrap=${bootstrap} rust_verify=${rust_verify}"
+          if [ "$gcp_image" != "success" ] || [ "$bootstrap" != "success" ] || [ "$rust_verify" != "success" ]; then
+            echo "::error::Rust staging rollout did not fully execute: gcp_image=${gcp_image}, bootstrap=${bootstrap}, rust_verify=${rust_verify}"
+            exit 1
           fi
+          echo "Rust staging rollout executed all required stages."

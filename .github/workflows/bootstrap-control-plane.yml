@@ -163,7 +163,7 @@ on:
         required: false
         default: ""
       control_plane_image:
-        description: "Control plane image ref override (default: :latest)"
+        description: "Control plane image ref override (default: control-plane-rust:latest)"
         required: false
         default: ""
       cp_bootstrap_sizes:
@@ -311,8 +311,8 @@ jobs:
       NUM_STANDARD_AGENTS: ${{ inputs.num_standard_agents || github.event.inputs.num_standard_agents || '0' }}
       NUM_LLM_AGENTS: ${{ inputs.num_llm_agents || github.event.inputs.num_llm_agents || '0' }}
 
-      # Workflow_call rollouts pin image explicitly; manual default remains :latest.
-      CONTROL_PLANE_IMAGE: ${{ inputs.control_plane_image || github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane:latest', github.repository) }}
+      # Workflow_call rollouts pin image explicitly; manual default is rust control-plane latest.
+      CONTROL_PLANE_IMAGE: ${{ inputs.control_plane_image || github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane-rust:latest', github.repository) }}
 
       # Runtime policy profile.
       EASYENCLAVE_ENV: ${{ inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging' }}

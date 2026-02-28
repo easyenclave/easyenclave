@@ -14,6 +14,7 @@ name: Production Rollout
 on:
   release:
     types: [published]
+  workflow_dispatch: {}
 
 concurrency:
   group: easyenclave-production-rollout
@@ -146,7 +147,6 @@ jobs:
           required_workflows=(
             "Release Trust Bundle"
             "Release GCP Image"
-            "Release Example Images"
           )
 
           deadline=$(( $(date +%s) + 3600 ))
@@ -344,69 +344,6 @@ jobs:
             echo "image_family=$(jq -r '.image_family' "$out")"
           } >> "$GITHUB_OUTPUT"
 
-  example-images:
-    name: Resolve release example images
-    needs: [resolve, wait-release-builds]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      hello_tdx_image: ${{ steps.asset.outputs.hello_tdx_image }}
-      private_llm_ollama_image: ${{ steps.asset.outputs.private_llm_ollama_image }}
-      private_llm_model_loader_image: ${{ steps.asset.outputs.private_llm_model_loader_image }}
-    steps:
-      - name: Download example image descriptor from release assets
-        id: asset
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          asset_url=""
-          for attempt in $(seq 1 60); do
-            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
-            asset_url="$(echo "$release_json" | jq -r --arg n "example-images.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
-            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "example-images.json") | .url' | head -n1)"
-            fi
-            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
-              break
-            fi
-            if [ "$attempt" -lt 60 ]; then
-              echo "Example image descriptor not available yet; waiting (${attempt}/60)..."
-              sleep 15
-            fi
-          done
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            echo "::error::Release ${RELEASE_TAG} missing example image asset (expected example-images.${RELEASE_TAG}.json or example-images.json)."
-            echo "::error::Run .github/workflows/release-example-images.yml for this tag first."
-            exit 1
-          fi
-
-          out="/tmp/example-images.release.json"
-          curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/octet-stream" \
-            "$asset_url" > "$out"
-
-          jq -e '.hello_tdx_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
-          jq -e '.private_llm_ollama_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
-          jq -e '.private_llm_model_loader_image | type == "string" and test("^ghcr\\.io/.+@sha256:[0-9a-f]{64}$")' "$out" >/dev/null
-
-          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
-          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
-            echo "::error::Example image descriptor release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
-            exit 1
-          fi
-
-          {
-            echo "hello_tdx_image=$(jq -r '.hello_tdx_image' "$out")"
-            echo "private_llm_ollama_image=$(jq -r '.private_llm_ollama_image' "$out")"
-            echo "private_llm_model_loader_image=$(jq -r '.private_llm_model_loader_image' "$out")"
-          } >> "$GITHUB_OUTPUT"
-
   bootstrap:
     name: Bootstrap production control plane
     needs: [resolve, trust-bundle, gcp-image]
@@ -414,7 +351,7 @@ jobs:
     secrets: inherit
     with:
       source_ref: ${{ needs.resolve.outputs.source_ref }}
-      control_plane_image: ${{ format('ghcr.io/{0}/control-plane:{1}', github.repository, needs.resolve.outputs.source_sha) }}
+      control_plane_image: ${{ format('ghcr.io/{0}/control-plane-rust:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny,llm
       # Keep at least one warm tiny agent so production cannot come up with zero
       # deployable capacity when builtin example jobs are skipped.
@@ -460,28 +397,92 @@ jobs:
       ee_gcp_image_name: ${{ needs.gcp-image.outputs.image_name }}
       ee_gcp_image_family: ${{ needs.gcp-image.outputs.image_family }}
 
-  deploy-baremetal:
-    name: Builtin deploy examples (baremetal)
-    needs: [resolve, bootstrap, example-images]
-    uses: ./.github/workflows/deploy-examples.yml
-    secrets: inherit
-    with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
-      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
-      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
-      cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
-      easyenclave_env: production
+  verify-rust-cp-agents:
+    name: Verify rust CP + agent bootstrap
+    needs: [resolve, bootstrap]
+    runs-on: ubuntu-latest
+    env:
+      CP_URL: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
+      CP_EXPECTED_GIT_SHA: ${{ needs.resolve.outputs.cp_expected_git_sha }}
+      CP_EXPECTED_BOOT_ID: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
+      MIN_VERIFIED_AGENTS: "1"
+    steps:
+      - name: Wait for rust control plane health identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 900 ))
+          while :; do
+            body="$(curl -fsS "$CP_URL/health" 2>/dev/null || true)"
+            if [ -z "${body:-}" ]; then
+              now="$(date +%s)"
+              if [ "$now" -ge "$deadline" ]; then
+                echo "::error::Timed out waiting for rust control plane health."
+                exit 1
+              fi
+              sleep 5
+              continue
+            fi
+            sha="$(echo "$body" | jq -r '.git_sha // empty' 2>/dev/null || true)"
+            boot_id="$(echo "$body" | jq -r '.boot_id // empty' 2>/dev/null || true)"
+            ok="$(echo "$body" | jq -r '.ok // false' 2>/dev/null || echo false)"
+            if [ "$ok" != "true" ]; then
+              sleep 5
+              continue
+            fi
+            if [ -n "${CP_EXPECTED_GIT_SHA:-}" ] && [ "${sha:-}" != "${CP_EXPECTED_GIT_SHA}" ]; then
+              sleep 5
+              continue
+            fi
+            if [ -n "${CP_EXPECTED_BOOT_ID:-}" ] && [ "${boot_id:-}" != "${CP_EXPECTED_BOOT_ID}" ]; then
+              sleep 5
+              continue
+            fi
+            echo "Rust control plane ready: git_sha=${sha:-unknown} boot_id=${boot_id:-unknown}"
+            break
+          done
 
-  deploy-gcp:
-    name: Builtin deploy examples (gcp)
-    needs: [resolve, bootstrap, example-images]
-    uses: ./.github/workflows/deploy-examples-gcp.yml
-    secrets: inherit
-    with:
-      cp_url: ${{ needs.bootstrap.outputs.cp_public_url || needs.resolve.outputs.cp_url }}
-      cp_expected_git_sha: ${{ needs.resolve.outputs.cp_expected_git_sha }}
-      cp_expected_boot_id: ${{ format('bootstrap-{0}-{1}', github.run_id, github.run_attempt) }}
-      cp_admin_token: ${{ needs.bootstrap.outputs.cp_admin_token }}
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
-      easyenclave_env: production
+      - name: Wait for verified rust agents
+        shell: bash
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 900 ))
+          while :; do
+            body="$(curl -fsS "$CP_URL/api/v1/agents" 2>/dev/null || true)"
+            if [ -z "${body:-}" ]; then
+              sleep 5
+              continue
+            fi
+            verified="$(echo "$body" | jq -r '(if type == "array" then . else (.agents // []) end) | [ .[] | select(.verified == true) ] | length' 2>/dev/null || echo 0)"
+            total="$(echo "$body" | jq -r '(if type == "array" then . else (.agents // []) end) | length' 2>/dev/null || echo 0)"
+            echo "Rust agent bootstrap status: verified=${verified} total=${total}"
+            if [ "${verified:-0}" -ge "${MIN_VERIFIED_AGENTS}" ]; then
+              break
+            fi
+            now="$(date +%s)"
+            if [ "$now" -ge "$deadline" ]; then
+              echo "::error::Timed out waiting for verified rust agents. expected>=${MIN_VERIFIED_AGENTS} verified=${verified} total=${total}"
+              echo "$body" | jq -r '(if type == "array" then . else (.agents // []) end)' || true
+              exit 1
+            fi
+            sleep 5
+          done
+
+  assert-rollout-executed:
+    name: Assert production rollout executed
+    needs: [resolve, bootstrap, verify-rust-cp-agents]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any rollout stage was skipped/failed
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap="${{ needs.bootstrap.result }}"
+          rust_verify="${{ needs['verify-rust-cp-agents'].result }}"
+          echo "bootstrap=${bootstrap} rust_verify=${rust_verify}"
+          if [ "$bootstrap" != "success" ] || [ "$rust_verify" != "success" ]; then
+            echo "::error::Rust production rollout did not fully execute: bootstrap=${bootstrap}, rust_verify=${rust_verify}"
+            exit 1
+          fi
+          echo "Rust production rollout executed all required stages."

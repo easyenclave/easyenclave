@@ -2,7 +2,7 @@
 #
 # This workflow is intentionally non-network-mutating:
 # - lint + tests
-# - control-plane image build (+ push/sign on main)
+# - rust control-plane image build (+ push/sign on main)
 # - staging GCP boot image build on main (for rollout consumption)
 #
 # Network/bootstrap mutations live in dedicated rollout workflows.
@@ -101,19 +101,6 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@v3
 
-      - name: Build Docker image
-        run: |
-          docker build -t easyenclave:test .
-
-      - name: Test Docker image
-        run: |
-          docker run -d --name easyenclave-test -p 8080:8080 easyenclave:test
-          sleep 5
-          curl -f http://localhost:8080/health || exit 1
-          curl -f http://localhost:8080/api/v1/apps || exit 1
-          docker stop easyenclave-test
-          docker rm easyenclave-test
-
       - name: Build Rust control plane image
         run: |
           docker build -f Dockerfile.ee-cp -t easyenclave-rust-cp:test .
@@ -131,7 +118,7 @@ jobs:
           docker stop easyenclave-rust-cp-test
           docker rm easyenclave-rust-cp-test
 
-      - name: Build and push control plane image
+      - name: Build and push rust control plane image
         id: control_plane
         if: github.event_name != 'pull_request'
         run: |
@@ -153,30 +140,18 @@ jobs:
           }
 
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          IMAGE="ghcr.io/${{ github.repository }}/control-plane:${{ github.sha }}"
-          LATEST="ghcr.io/${{ github.repository }}/control-plane:latest"
           RUST_IMAGE="ghcr.io/${{ github.repository }}/control-plane-rust:${{ github.sha }}"
           RUST_LATEST="ghcr.io/${{ github.repository }}/control-plane-rust:latest"
-          docker build -t "$IMAGE" -t "$LATEST" .
           docker build -f Dockerfile.ee-cp -t "$RUST_IMAGE" -t "$RUST_LATEST" .
-          retry_push "$IMAGE"
-          retry_push "$LATEST"
           retry_push "$RUST_IMAGE"
           retry_push "$RUST_LATEST"
-          DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGE")
           RUST_DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$RUST_IMAGE")
-          cosign sign --yes "$DIGEST_REF"
           cosign sign --yes "$RUST_DIGEST_REF"
           {
-            echo "image=$IMAGE"
-            echo "digest=$DIGEST_REF"
-            echo "rust_image=$RUST_IMAGE"
-            echo "rust_digest=$RUST_DIGEST_REF"
+            echo "image=$RUST_IMAGE"
+            echo "digest=$RUST_DIGEST_REF"
           } >> "$GITHUB_OUTPUT"
 
-          PACKAGE_NAME="${{ github.event.repository.name }}%2Fcontrol-plane"
-          gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$PACKAGE_NAME" \
-            -f visibility=public || echo "::warning::Could not set package visibility to public"
           RUST_PACKAGE_NAME="${{ github.event.repository.name }}%2Fcontrol-plane-rust"
           gh api --method PATCH "/orgs/${{ github.repository_owner }}/packages/container/$RUST_PACKAGE_NAME" \
             -f visibility=public || echo "::warning::Could not set rust package visibility to public"
