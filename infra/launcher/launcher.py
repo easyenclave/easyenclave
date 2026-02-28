@@ -2844,15 +2844,12 @@ def run_agent_mode(config: dict):
     _admin_state["datacenter"] = datacenter_label
     is_gcp_agent = str(datacenter_label or "").lower().startswith("gcp")
 
-    # 1. Generate initial attestation (requires Intel TA - will crash if fails)
-    # Pass vm_name for nonce challenge (replay attack prevention)
-    attestation = generate_initial_attestation(config, vm_name=vm_name)
-    _cache_attestation(attestation, "startup_registration")
-
-    # 2. Register with control plane (with retry)
+    # 1. Register with control plane (with retry).
+    # Attestation is regenerated for each retry so nonce+quote stay fresh.
     agent_id = None
     cloudflared_proc = None
     tunnel_hostname = None
+    attestation: dict | None = None
 
     max_registration_attempts = _coerce_nonnegative_int(
         config.get("registration_max_attempts")
@@ -2895,6 +2892,9 @@ def run_agent_mode(config: dict):
     attempt = 0
     while True:
         try:
+            if attestation is None:
+                attestation = generate_initial_attestation(config, vm_name=vm_name)
+                _cache_attestation(attestation, "startup_registration")
             reg_response = register_with_control_plane(attestation, vm_name, config)
             agent_id = reg_response["agent_id"]
             tunnel_hostname = reg_response.get("hostname")
@@ -2960,6 +2960,8 @@ def run_agent_mode(config: dict):
             )
             logger.warning(f"Registration failed (attempt {attempt_label}): {e}")
 
+        # Force fresh nonce/quote/token on the next attempt.
+        attestation = None
         attempt += 1
         if max_registration_attempts > 0 and attempt >= max_registration_attempts:
             _commit_vm_death(
