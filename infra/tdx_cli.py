@@ -75,12 +75,18 @@ class GcpCli:
         self, args: list[str], *, capture: bool = True, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
         cmd = ["gcloud", *args]
-        return subprocess.run(
+        proc = subprocess.run(
             cmd,
             text=True,
             capture_output=capture,
-            check=check,
+            check=False,
         )
+        if check and proc.returncode != 0:
+            stderr = (proc.stderr or "").strip()
+            stdout = (proc.stdout or "").strip()
+            detail = stderr or stdout or f"exit_code={proc.returncode}"
+            raise RuntimeError(f"gcloud command failed: {' '.join(cmd)}\n{detail}")
+        return proc
 
     def _run_json(self, args: list[str]) -> Any:
         proc = self._run([*args, "--format=json"], capture=True, check=True)
