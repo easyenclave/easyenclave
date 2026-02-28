@@ -9,21 +9,15 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "app/**"
       - "crates/**"
       - "infra/**"
       - "scripts/**"
-      - "tests/**"
-      - "sdk/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "docs/**"
       - "www/**"
-      - ".github/actions/**"
       - ".github/workflows/**"
-      - "Dockerfile"
       - "Dockerfile.ee-cp"
-      - "docker-compose.yml"
       - "requirements.txt"
       - "pyproject.toml"
 
@@ -51,12 +45,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Deploy-example workflows are reusable/manual components only.
-          if rg -n "workflow_run:" .github/workflows/deploy-examples.yml .github/workflows/deploy-examples-gcp.yml -S; then
-            echo "::error::deploy-examples workflows must not have workflow_run triggers. Use staging-rollout.yml as orchestrator."
-            exit 1
-          fi
-
           # Production rollout must be release-gated + manual dispatch.
           if rg -n "pull_request:|push:" .github/workflows/production-rollout.yml -S; then
             echo "::error::production-rollout.yml must not trigger on pull_request/push."

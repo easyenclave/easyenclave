@@ -31,7 +31,9 @@ def _require_env(name: str) -> str:
     return v
 
 
-async def list_all_tunnels(client: httpx.AsyncClient, headers: dict, *, account_id: str) -> list[dict]:
+async def list_all_tunnels(
+    client: httpx.AsyncClient, headers: dict, *, account_id: str
+) -> list[dict]:
     """Fetch all non-deleted tunnels across all pages."""
     tunnels = []
     page = 1
@@ -53,7 +55,9 @@ async def list_all_tunnels(client: httpx.AsyncClient, headers: dict, *, account_
     return tunnels
 
 
-async def delete_tunnel(client: httpx.AsyncClient, headers: dict, tunnel: dict, *, account_id: str) -> bool:
+async def delete_tunnel(
+    client: httpx.AsyncClient, headers: dict, tunnel: dict, *, account_id: str
+) -> bool:
     """Delete a single tunnel (clean connections first)."""
     tunnel_id = tunnel["id"]
     name = tunnel["name"]
@@ -95,14 +99,12 @@ async def main():
 
     # Filter: only agent-* tunnels with no connections
     stale = [
-        t for t in tunnels
+        t
+        for t in tunnels
         if t["name"].startswith("agent-")
         and (not t.get("connections") or len(t["connections"]) == 0)
     ]
-    active = [
-        t for t in tunnels
-        if t.get("connections") and len(t["connections"]) > 0
-    ]
+    active = [t for t in tunnels if t.get("connections") and len(t["connections"]) > 0]
 
     print(f"\nTotal tunnels: {len(tunnels)}")
     print(f"Active (keeping): {len(active)}")
@@ -125,7 +127,7 @@ async def main():
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         for i in range(0, len(stale), BATCH_SIZE):
-            batch = stale[i:i + BATCH_SIZE]
+            batch = stale[i : i + BATCH_SIZE]
 
             # Run batch concurrently
             results = await asyncio.gather(

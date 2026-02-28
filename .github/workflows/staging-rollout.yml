@@ -16,19 +16,13 @@ on:
   push:
     branches: [main]
     paths:
-      - "app/**"
       - "crates/**"
       - "infra/**"
       - "scripts/**"
-      - "tests/**"
-      - "sdk/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/actions/**"
       - ".github/workflows/**"
-      - "Dockerfile"
       - "Dockerfile.ee-cp"
-      - "docker-compose.yml"
       - "requirements.txt"
       - "pyproject.toml"
   workflow_dispatch:

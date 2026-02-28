@@ -108,7 +108,9 @@ class ControlPlaneClient:
         try:
             return json.loads(raw)
         except Exception as exc:
-            raise RuntimeError(f"Control plane returned non-JSON for {method} {path}: {exc}") from exc
+            raise RuntimeError(
+                f"Control plane returned non-JSON for {method} {path}: {exc}"
+            ) from exc
 
     def claim_order(self, *, datacenter: str, node_size: str) -> dict[str, Any]:
         payload = {"datacenter": datacenter, "node_size": node_size}

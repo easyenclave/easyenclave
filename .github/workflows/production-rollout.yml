@@ -14,7 +14,12 @@ name: Production Rollout
 on:
   release:
     types: [published]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag (e.g. v0.1.13)"
+        required: true
+        default: ""
 
 concurrency:
   group: easyenclave-production-rollout
@@ -41,6 +46,7 @@ jobs:
         shell: bash
         env:
           EVENT_RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
           DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.PRODUCTION_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
@@ -66,9 +72,9 @@ jobs:
               | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
           }
 
-          release_tag="${EVENT_RELEASE_TAG:-}"
+          release_tag="${INPUT_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
           if [ -z "$release_tag" ]; then
-            echo "::error::release.tag_name is required for production rollout."
+            echo "::error::release_tag is required (event release tag or workflow_dispatch input)."
             exit 1
           fi
 

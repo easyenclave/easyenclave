@@ -13,37 +13,25 @@ on:
   push:
     branches: [main]
     paths:
-      - "app/**"
       - "crates/**"
       - "infra/**"
       - "scripts/**"
-      - "tests/**"
-      - "sdk/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/actions/**"
       - ".github/workflows/**"
-      - "Dockerfile"
       - "Dockerfile.ee-cp"
-      - "docker-compose.yml"
       - "requirements.txt"
       - "pyproject.toml"
   pull_request:
     branches: [main]
     paths:
-      - "app/**"
       - "crates/**"
       - "infra/**"
       - "scripts/**"
-      - "tests/**"
-      - "sdk/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - ".github/actions/**"
       - ".github/workflows/**"
-      - "Dockerfile"
       - "Dockerfile.ee-cp"
-      - "docker-compose.yml"
       - "requirements.txt"
       - "pyproject.toml"
   workflow_dispatch: {}
@@ -71,11 +59,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-httpx httpx
-
-      - name: Install SDK
-        run: |
-          pip install -e sdk/
 
       - name: Install linting tools
         run: |
@@ -86,10 +69,10 @@ jobs:
       - name: Run linting
         run: ./scripts/lint.sh
 
-      - name: Run tests
+      - name: Python smoke checks
         run: |
-          pytest tests/test_agent_registration_e2e.py -v
-          pytest tests/ -v --ignore=tests/test_agent_registration_e2e.py
+          python3 -m py_compile infra/tdx_cli.py infra/launcher/launcher.py
+          python3 -m py_compile scripts/capacity_launcher_worker.py
 
   docker:
     runs-on: ubuntu-latest

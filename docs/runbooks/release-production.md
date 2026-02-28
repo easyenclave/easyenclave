@@ -4,69 +4,50 @@ Primary directories: `.github/workflows/`, `infra/`
 
 ## Goal
 
-Generate release-pinned trust/image components and roll production using `release_tag`.
+Publish a release and roll production using release-pinned trust and image assets.
 
 ## Prerequisites
 
-- Published release tag (for example `v0.1.0`).
-- Self-hosted `[self-hosted, tdx]` runner available.
-- Required secrets configured (`INTEL_API_KEY`, `CP_ADMIN_PASSWORD`, `GCP_PROJECT_ID`, `GCP_SERVICE_ACCOUNT_KEY`, etc.).
+- A commit on `main` ready for release.
+- Self-hosted `[self-hosted, tdx]` runner available for trust-bundle build.
+- Production secrets configured (`PRODUCTION_GCP_PROJECT_ID`, `PRODUCTION_GCP_SERVICE_ACCOUNT_KEY`, `INTEL_API_KEY`, `CP_ADMIN_PASSWORD`, etc.).
 
 ## Steps
 
-1. Create release (if not already published):
+1. Create and publish release:
 
 ```bash
-gh release create v0.1.0 --target main --title v0.1.0 --notes "Release v0.1.0"
+gh release create v0.1.13 --target main --title v0.1.13 --notes "Production release v0.1.13"
 ```
 
-2. Generate release trust bundle:
+2. Monitor release workflows triggered by the published release:
 
 ```bash
-gh workflow run release-trust-bundle.yml -f release_tag=v0.1.0
+gh run list --workflow "Release Trust Bundle" --limit 5
+gh run list --workflow "Release GCP Image" --limit 5
+gh run list --workflow "Production Rollout" --limit 5
 ```
 
-3. Generate release GCP image descriptor:
+3. Verify required release assets:
 
 ```bash
-gh workflow run release-gcp-image.yml -f release_tag=v0.1.0
+gh release view v0.1.13 --json assets --jq '.assets[].name'
 ```
 
-4. Generate release example image descriptors (signed digest refs for builtin deploy examples):
-
-```bash
-gh workflow run release-example-images.yml -f release_tag=v0.1.0
-```
-
-5. Verify assets:
-
-```bash
-gh release view v0.1.0 --json assets --jq '.assets[].name'
-```
-
-Expected assets:
-
-- `trusted_values.v0.1.0.json`
+Expected assets include:
+- `trusted_values.v0.1.13.json`
 - `trusted_values.json`
-- `gcp-image.v0.1.0.json`
+- `gcp-image.v0.1.13.json`
 - `gcp-image.json`
-- `example-images.v0.1.0.json`
-- `example-images.json`
 
-6. Roll production:
+4. If needed, rerun production manually for the same release tag:
 
 ```bash
-gh workflow run production-rollout.yml -f release_tag=v0.1.0
+gh workflow run production-rollout.yml -f release_tag=v0.1.13
 ```
-
-Note:
-
-- `production-rollout` now dispatches `deploy-examples.yml` and `deploy-examples-gcp.yml` asynchronously after bootstrap.
-- This keeps production cutover fast; monitor those two workflows separately for post-cutover validation.
 
 ## Failure Modes
 
 - Missing trust asset: `production-rollout` fails in trust-bundle resolution.
 - Missing GCP image asset: `production-rollout` fails in gcp-image resolution.
-- Missing example image asset: rollout fails in example-images resolution.
 - Release tag mismatch in asset payload: rollout fails fast to avoid mixed artifacts.

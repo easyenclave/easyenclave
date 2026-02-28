@@ -1,79 +1,50 @@
 # EasyEnclave Architecture
 
-This document describes the current EasyEnclave architecture after the control-plane cutover:
-- Placement and deploy decisions are made in the control plane.
-- Warm-capacity reservations are managed in the control plane.
-- Agent launchers/workers provide capacity but do not make placement decisions.
+This document describes the current Rust-first EasyEnclave architecture.
 
 ## 1) System Overview
 
 ```mermaid
 flowchart TD
     Dev[Developer / CI Workflow]
-    CP[EasyEnclave Control Plane]
-    Catalog[App + Version Catalog]
-    Measure[Version Measurement Pipeline]
+    CP[EasyEnclave Rust Control Plane]
     Capacity[Capacity Targets + Reservations + Orders]
     Workers[Capacity Launcher Workers<br/>GCP / Baremetal]
     Agents[TDX Agents<br/>tiny / standard / llm]
     ITA[Intel Trust Authority]
     CF[Cloudflare Tunnel + DNS]
-    Client[Service Client / SDK]
 
-    Dev -->|register / publish / deploy| CP
-    CP --> Catalog
-    CP --> Measure
+    Dev -->|deploy / admin APIs| CP
     CP --> Capacity
     Capacity --> Workers
     Workers -->|launch + bootstrap| Agents
     Agents -->|register + heartbeat + attest| CP
     Agents --> ITA
     Agents --> CF
-    Client -->|proxy request| CP
-    CP -->|route traffic| Agents
 ```
 
 ## 2) Deploy Path (Control Plane Owned)
 
 ```mermaid
 sequenceDiagram
-    participant CI as CI / Deploy Action
+    participant CI as CI / GitHub Actions
     participant CP as Control Plane
     participant A as Selected Agent
 
-    CI->>CP: POST /deploy/preflight
-    CP->>CP: Evaluate policy, cloud/datacenter, node_size, health
-    CP-->>CI: Eligible + diagnostics (dry-run only)
-
-    CI->>CP: POST /deploy
-    CP->>CP: Select agent + version variant
-    CP->>CP: Create reservation on demand if warm target requires it
+    CI->>CP: POST /api/v1/deploy
+    CP->>CP: Select agent + verify ownership/auth + placement filters
     CP->>A: POST /api/deploy
     A-->>CP: 202 accepted
     CP-->>CI: deployment_id + agent_id
 ```
 
-## 3) Measurement Path
-
-```mermaid
-sequenceDiagram
-    participant CI as Publish Workflow
-    participant CP as Control Plane
-
-    CI->>CP: POST /apps/{app}/versions
-    CP->>CP: status=pending
-    CP->>CP: resolve image tags to immutable digests
-    CP->>CP: apply signature policy + attestation checks
-    CP->>CP: persist trusted values, status=attested/rejected
-```
-
-## 4) Responsibilities
+## 3) Responsibilities
 
 - Control Plane
-  - App/version registry
-  - Deploy preflight and placement
-  - Warm-pool target management and reservation lifecycle
-  - Measurement orchestration and trust policy
+  - Agent lifecycle and attestation checks
+  - Deployment preflight and placement
+  - Capacity target/reservation/order orchestration
+  - Admin auth (password + GitHub OAuth) and owner auth (API key + GitHub OIDC)
 - Capacity Workers
   - Claim launch orders from CP
   - Boot provider-specific capacity (GCP/baremetal)
@@ -83,18 +54,18 @@ sequenceDiagram
   - Deployment execution and service runtime
   - Optional Cloudflare tunnel registration
 
-## 5) Key Flows and References
+## 4) Canonical Workflow References
 
-- Deploy example workflows:
-  - `.github/workflows/staging-rollout.yml`
-  - `.github/workflows/production-rollout.yml`
-  - Reusable components:
-    - `.github/workflows/deploy-examples.yml`
-    - `.github/workflows/deploy-examples-gcp.yml`
-- Deploy action internals:
-  - `.github/actions/deploy/action.yml`
-  - `scripts/deploy_action.sh`
-- Capacity launcher docs:
-  - `docs/CAPACITY_LAUNCHER.md`
-- CI/CD network docs:
-  - `docs/CI_CD_NETWORKS.md`
+- `.github/workflows/test.yml`
+- `.github/workflows/pr-staging-checks.yml`
+- `.github/workflows/staging-rollout.yml`
+- `.github/workflows/release-trust-bundle.yml`
+- `.github/workflows/release-gcp-image.yml`
+- `.github/workflows/production-rollout.yml`
+- `.github/workflows/bootstrap-control-plane.yml`
+
+## 5) Related Docs
+
+- `docs/CAPACITY_LAUNCHER.md`
+- `docs/CI_CD_NETWORKS.md`
+- `docs/runbooks/release-production.md`

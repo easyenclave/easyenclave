@@ -5,10 +5,10 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 echo "==> Running ruff check..."
-ruff check app/ sdk/ tests/ infra/
+ruff check infra/ scripts/
 
 echo "==> Running ruff format check..."
-ruff format --check app/ sdk/ tests/ infra/
+ruff format --check infra/ scripts/
 
 echo "==> Running shellcheck..."
 find infra/ scripts/ -name "*.sh" -print0 | xargs -0 shellcheck --severity=warning

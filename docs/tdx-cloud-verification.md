@@ -1,49 +1,34 @@
-# Pure-TDX Cloud Verification
+# TDX Cloud Verification
 
-This runbook verifies agent readiness in pure-TDX mode across datacenter labels.
+Use this checklist to confirm a staging/production control plane is backed by real TDX-capable agent nodes.
 
-## Scope
-- Supported now: `baremetal`, `gcp`, `azure`
-- Not supported in pure-TDX mode: `aws` (skipped unless explicitly failed)
+## 1) Check control plane health
 
-## What gets verified
-1. At least one eligible agent exists per target datacenter:
-   - `verified=true`
-   - `health_status=healthy`
-   - `hostname` present
-   - `status in {undeployed,deployed,deploying}`
-   - optional `node_size` match
-2. Deploy preflight allow-policy:
-   - `allowed_datacenters=[<dc>]` returns `eligible=true`
-   - selected datacenter matches `<dc>`
-3. Deploy preflight deny-policy:
-   - `denied_datacenters=[<dc>]` returns `eligible=false`
-
-## Local execution
 ```bash
-CP_URL="https://app.easyenclave.com" \
-CLOUDS="baremetal,gcp,azure" \
-NODE_SIZE="llm" \
-VERIFY_APP_NAME="private-llm" \
-VERIFY_APP_VERSION="20260213-abcdef1" \
-DC_BAREMETAL="baremetal:github-runner" \
-DC_GCP="gcp:us-central1-a" \
-DC_AZURE="azure:eastus2-1" \
-./scripts/verify-tdx-clouds.sh
+curl -sS https://app-staging.easyenclave.com/health | jq
 ```
 
-## GitHub workflow
-Use `Verify TDX Clouds` (`.github/workflows/verify-tdx-clouds.yml`) via `workflow_dispatch`.
+## 2) Check registered agents
 
-For full staged smoke validation, use `Staging Rollout`
-(`.github/workflows/staging-rollout.yml`), which runs builtin deploy examples
-for baremetal and GCP in parallel. `Builtin Deploy Examples (GCP)`
-(`.github/workflows/deploy-examples-gcp.yml`) remains available as a reusable/manual component.
+```bash
+curl -sS https://app-staging.easyenclave.com/api/v1/agents | jq '.[] | {agent_id,vm_name,node_size,datacenter,verified,status}'
+```
 
-## Credential plan for cloud agent bring-up
-Required repository secrets for CP-driven bring-up workflows:
-1. `CP_ADMIN_TOKEN` (preferred) or `CP_ADMIN_PASSWORD`
-2. `AGENT_ADMIN_PASSWORD`
+Expected:
+- At least one `verified: true` agent
+- `datacenter` label present (for example `gcp:us-central1-f`)
 
-Cloud credentials are expected to be configured in the control plane
-provisioner integration, not in GitHub Actions.
+## 3) Check rollout workflow state
+
+```bash
+gh run list --workflow "Staging Rollout" --limit 5
+gh run list --workflow "Production Rollout" --limit 5
+```
+
+## 4) Spot-check deployment path
+
+```bash
+curl -sS https://app-staging.easyenclave.com/api/v1/deployments | jq '.[0] // empty'
+```
+
+A successful deployment record confirms end-to-end CP -> agent execution is functioning.

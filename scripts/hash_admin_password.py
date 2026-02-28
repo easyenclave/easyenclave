@@ -8,8 +8,8 @@ Then set the output as ADMIN_PASSWORD_HASH environment variable:
     export ADMIN_PASSWORD_HASH='$2b$12$...'
 """
 
-import sys
 import getpass
+import sys
 
 import bcrypt
 
