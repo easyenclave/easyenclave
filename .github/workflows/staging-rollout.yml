@@ -17,10 +17,13 @@ on:
     branches: [main]
     paths:
       - "app/**"
+      - "crates/**"
       - "infra/**"
       - "scripts/**"
       - "tests/**"
       - "sdk/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - ".github/actions/**"
       - ".github/workflows/**"
       - "Dockerfile"

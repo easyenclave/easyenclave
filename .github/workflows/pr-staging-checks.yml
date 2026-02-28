@@ -10,10 +10,13 @@ on:
     branches: [main]
     paths:
       - "app/**"
+      - "crates/**"
       - "infra/**"
       - "scripts/**"
       - "tests/**"
       - "sdk/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "docs/**"
       - "www/**"
       - ".github/actions/**"
