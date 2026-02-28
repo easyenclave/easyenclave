@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EasyEnclave Admin</title>
+  <style>
+    :root {
+      --bg: #0d1321;
+      --bg-soft: #15213a;
+      --card: #1b2742;
+      --text: #edf2ff;
+      --muted: #9fb2d9;
+      --accent: #4cc9f0;
+      --ok: #5dd39e;
+      --warn: #ffd166;
+      --danger: #ff6b6b;
+      --border: #2d3e63;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 700px at 80% -10%, #243b6b 0%, var(--bg) 60%);
+      color: var(--text);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      min-height: 100vh;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 28px 18px 48px;
+    }
+    .topbar {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 18px;
+    }
+    .title {
+      margin: 0;
+      font-size: 1.5rem;
+      letter-spacing: 0.2px;
+    }
+    .subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+    }
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+    .metric {
+      font-size: 1.2rem;
+      font-weight: 700;
+      margin: 0;
+      word-break: break-word;
+    }
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--ok);
+      margin-right: 8px;
+    }
+    button {
+      background: var(--accent);
+      color: #07222d;
+      border: none;
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    button.warn {
+      background: var(--warn);
+      color: #211400;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .auth-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-top: 10px;
+    }
+    input[type="password"] {
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 9px 10px;
+      min-width: 220px;
+    }
+    .panel-title {
+      margin: 0 0 8px;
+      font-size: 1rem;
+    }
+    .muted { color: var(--muted); }
+    .hidden { display: none !important; }
+    .error {
+      color: var(--danger);
+      margin-top: 8px;
+      min-height: 1.2em;
+      font-size: 0.95rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+    th, td {
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      padding: 8px 6px;
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    code {
+      color: #d2edff;
+      font-family: "JetBrains Mono", "SFMono-Regular", monospace;
+      font-size: 0.85rem;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <h1 class="title">EasyEnclave Admin</h1>
+        <p class="subtitle">Root dashboard with read-only defaults and GitHub-gated controls.</p>
+      </div>
+      <div class="actions">
+        <button class="secondary" id="refreshBtn">Refresh</button>
+      </div>
+    </div>
+
+    <div class="row">
+      <section class="card">
+        <h2>Status</h2>
+        <p class="metric"><span class="status-dot"></span><span id="healthStatus">checking...</span></p>
+      </section>
+      <section class="card">
+        <h2>Boot ID</h2>
+        <p class="metric"><code id="bootId">-</code></p>
+      </section>
+      <section class="card">
+        <h2>Git SHA</h2>
+        <p class="metric"><code id="gitSha">-</code></p>
+      </section>
+      <section class="card">
+        <h2>Agents</h2>
+        <p class="metric"><span id="agentCount">0</span> total / <span id="verifiedCount">0</span> verified</p>
+      </section>
+    </div>
+
+    <section class="card" style="margin-bottom:14px;">
+      <h2 class="panel-title">Authentication</h2>
+      <div id="sessionLine" class="muted">Not signed in.</div>
+      <div class="auth-wrap">
+        <button id="githubBtn" class="secondary hidden">Sign in with GitHub</button>
+        <form id="passwordForm" class="hidden">
+          <input id="passwordInput" type="password" placeholder="Admin password" autocomplete="current-password" />
+          <button type="submit">Sign in</button>
+        </form>
+        <button id="logoutBtn" class="warn hidden">Sign out</button>
+      </div>
+      <div id="authError" class="error"></div>
+      <p class="muted" style="margin-top:10px;">
+        Basic dashboard data is public on this page. GitHub-authenticated admins unlock extra panels below.
+      </p>
+    </section>
+
+    <div class="row">
+      <section class="card">
+        <h2 class="panel-title">Recent Deployments</h2>
+        <table>
+          <thead>
+            <tr><th>ID</th><th>Status</th><th>Agent</th></tr>
+          </thead>
+          <tbody id="deploymentsBody">
+            <tr><td colspan="3" class="muted">Loading...</td></tr>
+          </tbody>
+        </table>
+      </section>
+      <section class="card">
+        <h2 class="panel-title">Agents</h2>
+        <table>
+          <thead>
+            <tr><th>VM</th><th>Status</th><th>Datacenter</th></tr>
+          </thead>
+          <tbody id="agentsBody">
+            <tr><td colspan="3" class="muted">Loading...</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <section class="card hidden" id="githubAdminPanel" style="margin-top:14px;">
+      <h2 class="panel-title">GitHub Admin Panel</h2>
+      <p class="muted" id="githubIdentity"></p>
+      <div class="row" style="margin-bottom:8px;">
+        <div class="card" style="padding:10px;">
+          <h2>Accounts</h2>
+          <p class="metric"><span id="accountCount">0</span></p>
+        </div>
+        <div class="card" style="padding:10px;">
+          <h2>Deployments (all)</h2>
+          <p class="metric"><span id="deploymentCount">0</span></p>
+        </div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Account</th><th>Type</th><th>GitHub</th></tr>
+        </thead>
+        <tbody id="accountsBody">
+          <tr><td colspan="3" class="muted">Loading...</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    const TOKEN_KEY = "ee_admin_token";
+
+    const byId = (id) => document.getElementById(id);
+
+    function setAuthError(message) {
+      byId("authError").textContent = message || "";
+    }
+
+    async function fetchJSON(path, options = {}) {
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let body = null;
+      if (text) {
+        try { body = JSON.parse(text); } catch (_) { body = null; }
+      }
+      if (!response.ok) {
+        const detail = body?.message || body?.detail || `${response.status} ${response.statusText}`;
+        throw new Error(`${path}: ${detail}`);
+      }
+      return body;
+    }
+
+    function authHeaders() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      return token ? { Authorization: `Bearer ${token}` } : {};
+    }
+
+    function adoptTokenFromQuery() {
+      const url = new URL(window.location.href);
+      const token = url.searchParams.get("token");
+      if (!token) return;
+      localStorage.setItem(TOKEN_KEY, token);
+      url.searchParams.delete("token");
+      window.history.replaceState({}, "", url.toString());
+    }
+
+    function renderDeployments(rows) {
+      const body = byId("deploymentsBody");
+      if (!Array.isArray(rows) || rows.length === 0) {
+        body.innerHTML = '<tr><td colspan="3" class="muted">No deployments yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.slice(0, 12).map((item) => `
+        <tr>
+          <td><code>${item.deployment_id || "-"}</code></td>
+          <td>${item.status || "-"}</td>
+          <td><code>${item.agent_id || "-"}</code></td>
+        </tr>
+      `).join("");
+    }
+
+    function renderAgents(rows) {
+      const body = byId("agentsBody");
+      if (!Array.isArray(rows) || rows.length === 0) {
+        body.innerHTML = '<tr><td colspan="3" class="muted">No agents yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.slice(0, 12).map((item) => `
+        <tr>
+          <td><code>${item.vm_name || "-"}</code></td>
+          <td>${item.status || "-"}</td>
+          <td>${item.datacenter || "-"}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderAccounts(rows) {
+      const body = byId("accountsBody");
+      if (!Array.isArray(rows) || rows.length === 0) {
+        body.innerHTML = '<tr><td colspan="3" class="muted">No accounts found.</td></tr>';
+        byId("accountCount").textContent = "0";
+        return;
+      }
+      byId("accountCount").textContent = String(rows.length);
+      body.innerHTML = rows.slice(0, 25).map((item) => `
+        <tr>
+          <td><code>${item.name || item.account_id || "-"}</code></td>
+          <td>${item.account_type || "-"}</td>
+          <td>${item.github_login || item.github_org || "-"}</td>
+        </tr>
+      `).join("");
+    }
+
+    async function loadPublicData() {
+      const [health, agents, deployments] = await Promise.all([
+        fetchJSON("/health"),
+        fetchJSON("/api/v1/agents"),
+        fetchJSON("/api/v1/deployments"),
+      ]);
+
+      byId("healthStatus").textContent = health?.ok ? "healthy" : "unhealthy";
+      byId("bootId").textContent = health?.boot_id || "-";
+      byId("gitSha").textContent = health?.git_sha || "-";
+
+      const agentRows = Array.isArray(agents) ? agents : (agents?.agents || []);
+      const verified = agentRows.filter((a) => a?.verified === true).length;
+      byId("agentCount").textContent = String(agentRows.length);
+      byId("verifiedCount").textContent = String(verified);
+      byId("deploymentCount").textContent = Array.isArray(deployments) ? String(deployments.length) : "0";
+
+      renderAgents(agentRows);
+      renderDeployments(Array.isArray(deployments) ? deployments : []);
+    }
+
+    async function loadAuthMethods() {
+      const methods = await fetchJSON("/auth/methods");
+      const passwordEnabled = methods?.password === true || (methods?.methods || []).includes("password");
+      const githubEnabled = methods?.github === true || (methods?.methods || []).includes("github");
+      byId("passwordForm").classList.toggle("hidden", !passwordEnabled);
+      byId("githubBtn").classList.toggle("hidden", !githubEnabled);
+    }
+
+    async function loadSession() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      const adminPanel = byId("githubAdminPanel");
+      if (!token) {
+        byId("sessionLine").textContent = "Not signed in.";
+        byId("logoutBtn").classList.add("hidden");
+        adminPanel.classList.add("hidden");
+        return;
+      }
+
+      try {
+        const me = await fetchJSON("/auth/me", { headers: authHeaders() });
+        byId("sessionLine").textContent = `Signed in via ${me.auth_method}${me.github_login ? ` as @${me.github_login}` : ""}`;
+        byId("logoutBtn").classList.remove("hidden");
+
+        const isGithubAdmin = me.auth_method === "github_oauth" && Boolean(me.github_login);
+        if (!isGithubAdmin) {
+          adminPanel.classList.add("hidden");
+          return;
+        }
+
+        byId("githubIdentity").textContent = `Privileged view unlocked for @${me.github_login}`;
+        adminPanel.classList.remove("hidden");
+        const accounts = await fetchJSON("/api/v1/accounts", { headers: authHeaders() });
+        renderAccounts(accounts);
+      } catch (err) {
+        localStorage.removeItem(TOKEN_KEY);
+        byId("sessionLine").textContent = "Session expired. Please sign in again.";
+        byId("logoutBtn").classList.add("hidden");
+        adminPanel.classList.add("hidden");
+      }
+    }
+
+    async function handlePasswordLogin(event) {
+      event.preventDefault();
+      setAuthError("");
+      const password = byId("passwordInput").value;
+      if (!password) {
+        setAuthError("Enter your admin password.");
+        return;
+      }
+      try {
+        const result = await fetchJSON("/admin/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        localStorage.setItem(TOKEN_KEY, result.token);
+        byId("passwordInput").value = "";
+        await loadSession();
+      } catch (err) {
+        setAuthError(String(err.message || err));
+      }
+    }
+
+    async function handleGithubLogin() {
+      setAuthError("");
+      try {
+        const result = await fetchJSON("/auth/github");
+        if (!result?.auth_url) throw new Error("OAuth start failed: missing auth_url");
+        window.location.href = result.auth_url;
+      } catch (err) {
+        setAuthError(String(err.message || err));
+      }
+    }
+
+    async function handleLogout() {
+      setAuthError("");
+      const token = localStorage.getItem(TOKEN_KEY);
+      if (!token) return;
+      try {
+        await fetchJSON("/admin/logout", { method: "POST", headers: authHeaders() });
+      } catch (_) {
+      } finally {
+        localStorage.removeItem(TOKEN_KEY);
+        await loadSession();
+      }
+    }
+
+    async function refreshAll() {
+      try {
+        await loadPublicData();
+      } catch (err) {
+        byId("healthStatus").textContent = "unreachable";
+        setAuthError(String(err.message || err));
+      }
+      await loadAuthMethods().catch((err) => setAuthError(String(err.message || err)));
+      await loadSession();
+    }
+
+    byId("passwordForm").addEventListener("submit", handlePasswordLogin);
+    byId("githubBtn").addEventListener("click", handleGithubLogin);
+    byId("logoutBtn").addEventListener("click", handleLogout);
+    byId("refreshBtn").addEventListener("click", refreshAll);
+
+    adoptTokenFromQuery();
+    refreshAll();
+  </script>
+</body>
+</html>

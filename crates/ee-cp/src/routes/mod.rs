@@ -3,6 +3,7 @@ pub mod agents;
 pub mod auth;
 pub mod deploy;
 pub mod health;
+pub mod ui;
 
 use axum::Router;
 
@@ -10,6 +11,7 @@ use crate::state::AppState;
 
 pub fn build_router(state: AppState) -> Router {
     Router::new()
+        .route("/", axum::routing::get(ui::root))
         .route("/health", axum::routing::get(health::health))
         .route(
             "/api/v1/agents/challenge",
@@ -52,6 +54,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/login", axum::routing::post(auth::admin_login))
         .route("/admin/logout", axum::routing::post(auth::admin_logout))
         .route("/auth/methods", axum::routing::get(auth::auth_methods))
+        .route("/auth/github", axum::routing::get(auth::github_oauth_start))
+        .route(
+            "/auth/github/callback",
+            axum::routing::get(auth::github_oauth_callback),
+        )
         .route("/auth/me", axum::routing::get(auth::auth_me))
         .with_state(state)
 }

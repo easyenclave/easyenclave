@@ -49,6 +49,33 @@ impl SessionStore {
             .ok_or(AppError::NotFound)
     }
 
+    pub async fn create_github_session(
+        &self,
+        token_hash: &str,
+        token_prefix: &str,
+        github_login: &str,
+    ) -> AppResult<SessionRecord> {
+        let session_id = Uuid::new_v4();
+        let expires_at = (Utc::now() + Duration::hours(24)).to_rfc3339();
+
+        sqlx::query(
+            "INSERT INTO admin_sessions (session_id, token_hash, token_prefix, expires_at, auth_method, github_login) \
+             VALUES (?1, ?2, ?3, ?4, 'github_oauth', ?5)",
+        )
+        .bind(session_id.to_string())
+        .bind(token_hash)
+        .bind(token_prefix)
+        .bind(&expires_at)
+        .bind(github_login)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::External(format!("failed to create github session: {e}")))?;
+
+        self.lookup_by_prefix(token_prefix)
+            .await?
+            .ok_or(AppError::NotFound)
+    }
+
     pub async fn lookup_by_prefix(&self, prefix: &str) -> AppResult<Option<SessionRecord>> {
         let row = sqlx::query(
             "SELECT session_id, token_hash, token_prefix, expires_at, auth_method, github_login \
@@ -144,5 +171,27 @@ mod tests {
             .await
             .expect("lookup");
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_github_session_records_login() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+
+        let store = SessionStore::new(pool);
+        let created = store
+            .create_github_session("hash", "ees_gh1234567", "octocat")
+            .await
+            .expect("create");
+
+        assert_eq!(created.auth_method, "github_oauth");
+        assert_eq!(created.github_login.as_deref(), Some("octocat"));
     }
 }
