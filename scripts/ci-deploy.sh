@@ -31,8 +31,8 @@ NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-1}"
 NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-0}"
 NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-0}"
 AGENT_DATACENTER="${AGENT_DATACENTER:-}"
-AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-baremetal}"
-AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-github-runner}"
+AGENT_CLOUD_PROVIDER="${AGENT_CLOUD_PROVIDER:-gcp}"
+AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-us-central1-f}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
 CP_BOOTSTRAP_SIZES="${CP_BOOTSTRAP_SIZES:-tiny}"
 AGENT_VERIFY_WAIT_ATTEMPTS="${AGENT_VERIFY_WAIT_ATTEMPTS:-90}"
@@ -87,17 +87,9 @@ require_ci_measured_profile() {
 # App version measurement is handled directly by the control plane.
 
 # ===================================================================
-# 1. Deploy control plane
+# 1. Deploy control plane (GCP-only path)
 # ===================================================================
-if [ ! -d "infra/image/output" ]; then
-  echo "Verity artifacts missing at infra/image/output; building once..."
-  (
-    cd infra/image
-    nix develop --command make build
-  )
-fi
-
-echo "==> Deploying control plane..."
+echo "==> Deploying control plane on GCP..."
 CP_BOOT_JSON="$(
   python3 infra/tdx_cli.py control-plane new \
     --wait \

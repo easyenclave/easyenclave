@@ -5,7 +5,7 @@ This worker consumes queued launch orders from the control plane using a
 launcher API key, provisions capacity, and reports fulfillment status.
 
 Supported providers:
-- baremetal: launches local TDX VMs via infra/tdx_cli.py
+- gcp: launches real GCP TDX VMs via infra/tdx_cli.py
 """
 
 from __future__ import annotations
@@ -148,7 +148,7 @@ def _parse_datacenter(datacenter: str) -> tuple[str, str]:
     return provider, location
 
 
-def _launch_baremetal(config: WorkerConfig, *, order: dict[str, Any], location: str) -> str:
+def _launch_gcp(config: WorkerConfig, *, order: dict[str, Any], location: str) -> str:
     node_size = str(order.get("node_size") or "").strip().lower()
     if not node_size:
         raise RuntimeError("Order missing node_size")
@@ -161,7 +161,7 @@ def _launch_baremetal(config: WorkerConfig, *, order: dict[str, Any], location: 
         "--size",
         node_size,
         "--cloud-provider",
-        "baremetal",
+        "gcp",
         "--availability-zone",
         location,
         "--easyenclave-url",
@@ -175,14 +175,14 @@ def _launch_baremetal(config: WorkerConfig, *, order: dict[str, Any], location: 
         stderr = _truncate(result.stderr or "")
         stdout = _truncate(result.stdout or "")
         detail = stderr or stdout or f"exit={result.returncode}"
-        raise RuntimeError(f"baremetal launch failed: {detail}")
+        raise RuntimeError(f"gcp launch failed: {detail}")
 
     payload = _parse_json_output(result.stdout or "")
     if not isinstance(payload, dict):
-        raise RuntimeError("baremetal launch returned invalid JSON output")
+        raise RuntimeError("gcp launch returned invalid JSON output")
     vm_name = str(payload.get("name") or "").strip()
     if not vm_name:
-        raise RuntimeError("baremetal launch did not return vm name")
+        raise RuntimeError("gcp launch did not return vm name")
     return vm_name
 
 
@@ -193,12 +193,8 @@ def _launch_for_order(config: WorkerConfig, order: dict[str, Any]) -> str:
     if provider not in config.supported_providers:
         raise RuntimeError(f"Provider '{provider}' is not enabled on this launcher")
 
-    if provider == "baremetal":
-        return _launch_baremetal(config, order=order, location=location)
     if provider == "gcp":
-        raise RuntimeError(
-            "GCP launch orders must be fulfilled by the control plane native fulfiller"
-        )
+        return _launch_gcp(config, order=order, location=location)
     raise RuntimeError(f"Unsupported provider '{provider}'")
 
 
@@ -210,7 +206,7 @@ def _load_config(args: argparse.Namespace) -> WorkerConfig:
     claim_node_size = (args.node_size or "").strip().lower()
     providers = set(_split_csv(args.providers))
     if not providers:
-        providers = {"baremetal"}
+        providers = {"gcp"}
 
     if not cp_url:
         raise RuntimeError("--cp-url is required")
@@ -251,13 +247,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--providers",
-        default=os.environ.get("LAUNCHER_PROVIDERS", "baremetal"),
-        help="Comma-separated providers enabled on this worker (baremetal)",
+        default=os.environ.get("LAUNCHER_PROVIDERS", "gcp"),
+        help="Comma-separated providers enabled on this worker (gcp)",
     )
     parser.add_argument(
         "--datacenter",
         default=os.environ.get("LAUNCHER_DATACENTER", ""),
-        help="Optional claim filter (e.g., baremetal:github-runner)",
+        help="Optional claim filter (e.g., gcp:us-central1-f)",
     )
     parser.add_argument(
         "--node-size",
