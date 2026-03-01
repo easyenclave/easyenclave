@@ -85,18 +85,20 @@ impl AttestationService {
             ));
         }
 
+        // In non-production, allow_insecure is an explicit operator override that
+        // should bypass JWT verification entirely.
+        if self.allow_insecure && self.runtime_env != RuntimeEnv::Production {
+            return Ok(VerifiedAttestation {
+                mrtd: None,
+                tcb_status: None,
+            });
+        }
+
         if let Some(verifier) = &self.verifier {
             let claims = verifier.verify_attestation_token(token)?;
             return Ok(VerifiedAttestation {
                 mrtd: claims.tdx_mrtd,
                 tcb_status: claims.attester_tcb_status,
-            });
-        }
-
-        if self.allow_insecure {
-            return Ok(VerifiedAttestation {
-                mrtd: None,
-                tcb_status: None,
             });
         }
 
@@ -172,6 +174,35 @@ mod tests {
         let svc = AttestationService::from_env();
         svc.validate_runtime_requirements()
             .expect("staging should allow insecure mode");
+
+        restore("EASYENCLAVE_ENV", old_env);
+        restore("CP_ATTESTATION_ALLOW_INSECURE", old_allow);
+        restore("CP_ITA_JWKS_URL", old_jwks);
+        restore("CP_ITA_ISSUER", old_issuer);
+        restore("CP_ITA_AUDIENCE", old_audience);
+    }
+
+    #[test]
+    fn staging_insecure_mode_bypasses_configured_verifier() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        let old_env = env::var("EASYENCLAVE_ENV").ok();
+        let old_allow = env::var("CP_ATTESTATION_ALLOW_INSECURE").ok();
+        let old_jwks = env::var("CP_ITA_JWKS_URL").ok();
+        let old_issuer = env::var("CP_ITA_ISSUER").ok();
+        let old_audience = env::var("CP_ITA_AUDIENCE").ok();
+
+        env::set_var("EASYENCLAVE_ENV", "staging");
+        env::set_var("CP_ATTESTATION_ALLOW_INSECURE", "true");
+        env::set_var("CP_ITA_JWKS_URL", "https://example.invalid/jwks");
+        env::set_var("CP_ITA_ISSUER", "https://example.invalid");
+        env::set_var("CP_ITA_AUDIENCE", "aud");
+
+        let svc = AttestationService::from_env();
+        let verified = svc
+            .verify_registration_token("not-a-real-token")
+            .expect("insecure mode should bypass verifier");
+        assert!(verified.mrtd.is_none());
+        assert!(verified.tcb_status.is_none());
 
         restore("EASYENCLAVE_ENV", old_env);
         restore("CP_ATTESTATION_ALLOW_INSECURE", old_allow);
