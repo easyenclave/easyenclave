@@ -80,6 +80,7 @@ jobs:
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
         run: |
           set -euo pipefail
           make_network_name() {
@@ -116,7 +117,11 @@ jobs:
 
           source_ref="${INPUT_SOURCE_REF:-}"
           if [ -z "$source_ref" ]; then
-            source_ref="${GITHUB_SHA}"
+            if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -n "${PR_HEAD_SHA:-}" ]; then
+              source_ref="${PR_HEAD_SHA}"
+            else
+              source_ref="${GITHUB_SHA}"
+            fi
           fi
 
           source_sha="$(resolve_ref_sha "$source_ref" || true)"
