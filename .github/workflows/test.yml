@@ -195,7 +195,8 @@ jobs:
       SOURCE_IMAGE_NAME: ""
       SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
       SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-      BUILD_ZONE: ${{ vars.STAGING_GCP_IMAGE_BUILD_ZONE || 'us-central1-f' }}
+      BUILD_ZONE: ${{ vars.STAGING_GCP_IMAGE_BUILD_ZONE || vars.EE_GCP_PRIMARY_ZONE || 'us-central1-a' }}
+      BUILD_FALLBACK_ZONES: ${{ vars.STAGING_GCP_IMAGE_BUILD_FALLBACK_ZONES || vars.EE_GCP_FALLBACK_ZONES || 'us-central1-b,us-central1-c,us-central1-f' }}
       BUILD_MACHINE_TYPE: ${{ vars.STAGING_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
     steps:
       - name: Checkout repository
@@ -233,8 +234,7 @@ jobs:
           TARGET_IMAGE_FAMILY="easyenclave-agent-main"
           TARGET_IMAGE_DESCRIPTION="EasyEnclave staging commit ${SOURCE_SHA}"
           TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=staging,gitsha=${sha12},ee_git_sha=${sha12}"
-          BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
-          export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE
+          export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE BUILD_FALLBACK_ZONES
           cargo run -p ee-ops -- gcp-bake-image
 
   build-production-gcp-image:
@@ -250,7 +250,8 @@ jobs:
       SOURCE_IMAGE_NAME: ""
       SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
       SOURCE_SHA: ${{ github.sha }}
-      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || 'us-central1-f' }}
+      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || vars.EE_GCP_PRIMARY_ZONE || 'us-central1-a' }}
+      BUILD_FALLBACK_ZONES: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_FALLBACK_ZONES || vars.EE_GCP_FALLBACK_ZONES || 'us-central1-b,us-central1-c,us-central1-f' }}
       BUILD_MACHINE_TYPE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
     steps:
       - name: Checkout repository
@@ -286,6 +287,5 @@ jobs:
           TARGET_IMAGE_FAMILY="easyenclave-agent-main"
           TARGET_IMAGE_DESCRIPTION="EasyEnclave production commit ${SOURCE_SHA}"
           TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=production,gitsha=${sha12},ee_git_sha=${sha12}"
-          BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
-          export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE
+          export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE BUILD_FALLBACK_ZONES
           cargo run -p ee-ops -- gcp-bake-image

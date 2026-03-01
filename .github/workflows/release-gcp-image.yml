@@ -71,7 +71,8 @@ jobs:
       SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
       SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
       SOURCE_IMAGE_NAME: ""
-      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || 'us-central1-f' }}
+      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || vars.EE_GCP_PRIMARY_ZONE || 'us-central1-a' }}
+      BUILD_FALLBACK_ZONES: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_FALLBACK_ZONES || vars.EE_GCP_FALLBACK_ZONES || 'us-central1-b,us-central1-c,us-central1-f' }}
       BUILD_MACHINE_TYPE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
     steps:
       - name: Checkout release source
@@ -122,9 +123,8 @@ jobs:
           TARGET_IMAGE_FAMILY="${family_name}"
           TARGET_IMAGE_DESCRIPTION="EasyEnclave release ${RELEASE_TAG} (${SOURCE_SHA})"
           TARGET_IMAGE_LABELS="easyenclave=managed,ee_env=production,release=${safe_tag},ee_release=${safe_tag},gitsha=${sha12},ee_git_sha=${sha12}"
-          BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
           BAKE_METADATA_PATH="${metadata_path}"
-          export GCP_PROJECT_ID TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE BAKE_METADATA_PATH
+          export GCP_PROJECT_ID TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE BUILD_FALLBACK_ZONES BAKE_METADATA_PATH
           cargo run -p ee-ops -- gcp-bake-image
 
           source_image_name_used="$(jq -r '.source_image_name_resolved // ""' "${metadata_path}")"

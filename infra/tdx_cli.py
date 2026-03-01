@@ -127,6 +127,7 @@ class GcpApi:
 
     def zone_candidates(self, preferred_zone: str) -> list[str]:
         ordered: list[str] = []
+        deprioritized: list[str] = []
 
         def add_csv(raw: str) -> None:
             for item in raw.split(","):
@@ -134,14 +135,28 @@ class GcpApi:
                 if zone and zone not in ordered:
                     ordered.append(zone)
 
+        def add_deprioritized_csv(raw: str) -> None:
+            for item in raw.split(","):
+                zone = item.strip()
+                if zone and zone not in deprioritized:
+                    deprioritized.append(zone)
+
         add_csv(preferred_zone)
         add_csv(_env_first("GCP_FALLBACK_ZONES", "EE_GCP_FALLBACK_ZONES"))
+        add_deprioritized_csv(_env_first("GCP_DEPRIORITIZED_ZONES", "EE_GCP_DEPRIORITIZED_ZONES"))
 
         if preferred_zone.startswith("us-central1-"):
             add_csv("us-central1-a,us-central1-b,us-central1-c,us-central1-f")
+            if "us-central1-f" not in deprioritized:
+                deprioritized.append("us-central1-f")
 
         if not ordered:
             ordered = [preferred_zone]
+
+        if deprioritized:
+            leading = [z for z in ordered if z not in deprioritized]
+            trailing = [z for z in ordered if z in deprioritized]
+            ordered = leading + trailing
         return ordered
 
     def machine_type(self, size: str) -> str:

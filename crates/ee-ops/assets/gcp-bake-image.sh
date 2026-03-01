@@ -41,15 +41,52 @@ if [ -z "${SOURCE_IMAGE_NAME:-}" ] && [ -z "${SOURCE_IMAGE_FAMILY:-}" ]; then
   fail "Set SOURCE_IMAGE_NAME or SOURCE_IMAGE_FAMILY."
 fi
 
-if [ -n "${BUILD_ZONE:-}" ] && [[ "${BUILD_ZONE}" == *,* ]]; then
-  fail "BUILD_ZONE must be a single zone; got '${BUILD_ZONE}'."
-fi
-
 if [ -n "${BUILD_MACHINE_TYPE:-}" ] && [[ "${BUILD_MACHINE_TYPE}" == *,* ]]; then
   fail "BUILD_MACHINE_TYPE must be a single machine type; got '${BUILD_MACHINE_TYPE}'."
 fi
 
-BUILD_ZONE="$(trim "${BUILD_ZONE:-us-central1-f}")"
+build_zone_candidates() {
+  local -a ordered
+  declare -A seen
+
+  append_csv() {
+    local raw="$1"
+    local -a part
+    local zone
+    IFS=',' read -r -a part <<< "$raw"
+    for zone in "${part[@]}"; do
+      zone="$(trim "${zone:-}")"
+      [ -n "${zone}" ] || continue
+      if [ -z "${seen[$zone]:-}" ]; then
+        ordered+=("${zone}")
+        seen["$zone"]=1
+      fi
+    done
+  }
+
+  append_csv "${BUILD_ZONE:-}"
+  append_csv "${BUILD_FALLBACK_ZONES:-}"
+
+  if [ "${#ordered[@]}" -eq 0 ]; then
+    ordered=("us-central1-a")
+  fi
+
+  printf '%s\n' "${ordered[@]}"
+}
+
+is_retryable_create_error() {
+  local text
+  text="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${text}" == *"configuration_availability"* ]] && return 0
+  [[ "${text}" == *"does not have enough resources"* ]] && return 0
+  [[ "${text}" == *"resource_pool_exhausted"* ]] && return 0
+  [[ "${text}" == *"not supported in the"* ]] && return 0
+  [[ "${text}" == *"temporarily unavailable"* ]] && return 0
+  return 1
+}
+
+BUILD_ZONE="$(trim "${BUILD_ZONE:-us-central1-a}")"
+BUILD_FALLBACK_ZONES="$(trim "${BUILD_FALLBACK_ZONES:-us-central1-b,us-central1-c,us-central1-f}")"
 BUILD_MACHINE_TYPE="$(trim "${BUILD_MACHINE_TYPE:-e2-standard-4}")"
 BUILD_BOOT_DISK_GB="$(trim "${BUILD_BOOT_DISK_GB:-200}")"
 BUILD_TIMEOUT_SECONDS="$(trim "${BUILD_TIMEOUT_SECONDS:-900}")"
@@ -59,6 +96,10 @@ TARGET_IMAGE_LABELS="$(trim "${TARGET_IMAGE_LABELS:-}")"
 SOURCE_SHA="$(trim "${SOURCE_SHA:-}")"
 BAKE_METADATA_PATH="$(trim "${BAKE_METADATA_PATH:-}")"
 INSTANCE_CREATE_CALL_TIMEOUT_SECONDS="$(trim "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS:-300}")"
+mapfile -t BUILD_ZONE_CANDIDATES < <(build_zone_candidates)
+if [ "${#BUILD_ZONE_CANDIDATES[@]}" -eq 0 ]; then
+  fail "No usable BUILD_ZONE candidates were resolved."
+fi
 
 if [ ! -f "crates/ee-agent/src/main.rs" ]; then
   fail "Missing required file: crates/ee-agent/src/main.rs"
@@ -136,6 +177,7 @@ target_name_slug="$(sanitize_label_value "${TARGET_IMAGE_NAME}")"
 builder_name="ee-bake-${target_name_slug:0:32}-$(date +%s)"
 startup_script_file="$(mktemp -t ee-gcp-bake-startup-XXXXXX.sh)"
 cleanup_instance="false"
+ACTIVE_BUILD_ZONE=""
 
 cleanup() {
   set +e
@@ -143,7 +185,7 @@ cleanup() {
   if [ "${cleanup_instance}" = "true" ]; then
     gcloud compute instances delete "${builder_name}" \
       --project "${GCP_PROJECT_ID}" \
-      --zone "${BUILD_ZONE}" \
+      --zone "${ACTIVE_BUILD_ZONE:-${BUILD_ZONE}}" \
       --quiet >/dev/null 2>&1 || true
   fi
 }
@@ -277,8 +319,6 @@ shutdown -h now
 EOF
 chmod +x "${startup_script_file}"
 
-log "Creating builder VM: ${builder_name} (${BUILD_ZONE}, ${BUILD_MACHINE_TYPE})"
-
 source_args=(--image-project "${SOURCE_IMAGE_PROJECT}")
 if [ "${source_selector}" = "name" ]; then
   source_args+=(--image "${source_value}")
@@ -286,35 +326,56 @@ else
   source_args+=(--image-family "${source_value}")
 fi
 
-set +e
-create_output="$(
-  timeout "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS}" \
-    gcloud compute instances create "${builder_name}" \
-    --project "${GCP_PROJECT_ID}" \
-    --zone "${BUILD_ZONE}" \
-    --machine-type "${BUILD_MACHINE_TYPE}" \
-    --boot-disk-size "${BUILD_BOOT_DISK_GB}" \
-    --metadata "serial-port-enable=1" \
-    --metadata-from-file "startup-script=${startup_script_file}" \
-    "${source_args[@]}" 2>&1
-)"
-create_rc=$?
-set -e
+create_success="false"
+for zone in "${BUILD_ZONE_CANDIDATES[@]}"; do
+  log "Creating builder VM: ${builder_name} (${zone}, ${BUILD_MACHINE_TYPE})"
+  set +e
+  create_output="$(
+    timeout "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS}" \
+      gcloud compute instances create "${builder_name}" \
+      --project "${GCP_PROJECT_ID}" \
+      --zone "${zone}" \
+      --machine-type "${BUILD_MACHINE_TYPE}" \
+      --boot-disk-size "${BUILD_BOOT_DISK_GB}" \
+      --metadata "serial-port-enable=1" \
+      --metadata-from-file "startup-script=${startup_script_file}" \
+      "${source_args[@]}" 2>&1
+  )"
+  create_rc=$?
+  set -e
 
-if [ "${create_rc}" -eq 0 ]; then
-  [ -n "${create_output}" ] && echo "${create_output}"
-else
+  if [ "${create_rc}" -eq 0 ]; then
+    [ -n "${create_output}" ] && echo "${create_output}"
+    ACTIVE_BUILD_ZONE="${zone}"
+    create_success="true"
+    break
+  fi
+
   if [ "${create_rc}" -eq 124 ]; then
     create_output="${create_output}
 instance create timed out after ${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS}s"
   fi
   [ -n "${create_output}" ] && echo "${create_output}" >&2
-  if gcloud compute instances describe "${builder_name}" --project "${GCP_PROJECT_ID}" --zone "${BUILD_ZONE}" >/dev/null 2>&1; then
-    log "Create call returned non-zero but builder VM exists; continuing."
-  else
-    fail "Builder VM creation failed (single attempt)."
+  if gcloud compute instances describe "${builder_name}" --project "${GCP_PROJECT_ID}" --zone "${zone}" >/dev/null 2>&1; then
+    log "Create call returned non-zero but builder VM exists in ${zone}; continuing."
+    ACTIVE_BUILD_ZONE="${zone}"
+    create_success="true"
+    break
   fi
+
+  if [ "${create_rc}" -eq 124 ] || is_retryable_create_error "${create_output}"; then
+    log "Zone '${zone}' unavailable for machine_type=${BUILD_MACHINE_TYPE}; retrying next zone."
+    continue
+  fi
+
+  fail "Builder VM creation failed in zone '${zone}'."
+done
+
+if [ "${create_success}" != "true" ]; then
+  fail "Builder VM creation failed across zones: $(IFS=,; echo "${BUILD_ZONE_CANDIDATES[*]}")"
 fi
+
+BUILD_ZONE="${ACTIVE_BUILD_ZONE}"
 
 cleanup_instance="true"
 
