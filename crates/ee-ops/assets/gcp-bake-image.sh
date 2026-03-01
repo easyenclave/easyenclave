@@ -154,7 +154,6 @@ cargo build -p ee-agent --release
 if [ ! -x "target/release/ee-agent" ]; then
   fail "ee-agent binary not found after build: target/release/ee-agent"
 fi
-ee_agent_b64="$(base64 target/release/ee-agent)"
 
 cat > "${startup_script_file}" <<EOF
 #!/usr/bin/env bash
@@ -172,6 +171,20 @@ apt-get install -y --no-install-recommends \
   gnupg \
   lsb-release \
   jq
+
+echo "__EE_BAKE_WAITING_FOR_AGENT__"
+for _ in \$(seq 1 180); do
+  if [ -s /tmp/ee-agent ]; then
+    break
+  fi
+  sleep 2
+done
+if [ ! -s /tmp/ee-agent ]; then
+  echo "__EE_BAKE_FAIL__:missing /tmp/ee-agent upload"
+  exit 1
+fi
+install -m 0755 /tmp/ee-agent /usr/local/bin/ee-agent
+rm -f /tmp/ee-agent
 
 docker_codename="\$(. /etc/os-release && echo "\${VERSION_CODENAME:-}")"
 if [ -z "\${docker_codename}" ]; then
@@ -193,11 +206,6 @@ apt-get install -y --no-install-recommends \
   docker-ce-cli
 
 install -d -m 0755 /usr/local/bin /home/tdx /etc/easyenclave /etc/apt/keyrings
-
-cat <<'EE_AGENT_B64' | base64 -d > /usr/local/bin/ee-agent
-${ee_agent_b64}
-EE_AGENT_B64
-chmod +x /usr/local/bin/ee-agent
 
 cat > /etc/systemd/system/easyenclave-agent.service <<'SERVICEUNIT'
 [Unit]
@@ -309,6 +317,28 @@ instance create timed out after ${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS}s"
 fi
 
 cleanup_instance="true"
+
+log "Uploading ee-agent binary to builder VM..."
+scp_ok="false"
+for _ in $(seq 1 40); do
+  if gcloud compute scp \
+    --project "${GCP_PROJECT_ID}" \
+    --zone "${BUILD_ZONE}" \
+    --quiet \
+    --scp-flag=-oStrictHostKeyChecking=no \
+    target/release/ee-agent \
+    "ubuntu@${builder_name}:/tmp/ee-agent" >/tmp/ee-gcp-bake-scp.log 2>&1; then
+    scp_ok="true"
+    break
+  fi
+  sleep 5
+done
+if [ "${scp_ok}" != "true" ]; then
+  if [ -f /tmp/ee-gcp-bake-scp.log ]; then
+    cat /tmp/ee-gcp-bake-scp.log >&2 || true
+  fi
+  fail "Failed to upload ee-agent binary to builder VM."
+fi
 
 deadline=$(( $(date +%s) + BUILD_TIMEOUT_SECONDS ))
 saw_success="false"
