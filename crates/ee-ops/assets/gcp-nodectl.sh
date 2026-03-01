@@ -110,15 +110,15 @@ disk_gib_for_size() {
   case "$size" in
     tiny)
       per_size_key="EE_GCP_DISK_GIB_TINY"
-      default_gib="40"
+      default_gib="80"
       ;;
     standard)
       per_size_key="EE_GCP_DISK_GIB_STANDARD"
-      default_gib="60"
+      default_gib="100"
       ;;
     llm)
       per_size_key="EE_GCP_DISK_GIB_LLM"
-      default_gib="100"
+      default_gib="140"
       ;;
     *)
       fatal "Unsupported size '$size' (expected tiny|standard|llm)"
