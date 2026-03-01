@@ -473,7 +473,7 @@ jobs:
           TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE || steps.measure.outputs.mrtds_by_size }}'
           TRUSTED_AGENT_RTMRS: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS || steps.measure.outputs.rtmrs }}'
           TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE || steps.measure.outputs.rtmrs_by_size }}'
-          CI_DEPLOY_TIMEOUT_SECONDS: ${{ vars.CI_DEPLOY_TIMEOUT_SECONDS || '2400' }}
+          CI_DEPLOY_TIMEOUT_SECONDS: ${{ vars.CI_DEPLOY_TIMEOUT_SECONDS || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && '1200') || '2400' }}
           CP_BOOTSTRAP_TIMEOUT: ${{ vars.CP_BOOTSTRAP_TIMEOUT_SECONDS || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && '600') || '600' }}
           AGENT_VERIFY_WAIT_ATTEMPTS: ${{ vars.AGENT_VERIFY_WAIT_ATTEMPTS || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && '48') || '90' }}
           AGENT_VERIFY_WAIT_SECONDS: ${{ vars.AGENT_VERIFY_WAIT_SECONDS || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && '5') || '10' }}
