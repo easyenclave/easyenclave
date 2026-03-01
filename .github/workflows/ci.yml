@@ -57,6 +57,3 @@ jobs:
 
       - name: Rust test
         run: cargo test --workspace
-
-      - name: Python smoke
-        run: python3 -m py_compile infra/tdx_cli.py

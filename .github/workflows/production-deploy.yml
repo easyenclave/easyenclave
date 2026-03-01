@@ -58,7 +58,6 @@ jobs:
           cargo fmt --check
           cargo clippy --workspace --all-targets -- -D warnings
           cargo test --workspace
-          python3 -m py_compile infra/tdx_cli.py
 
       - name: Resolve rollout vars
         id: vars
