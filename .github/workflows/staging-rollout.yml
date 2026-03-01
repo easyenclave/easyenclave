@@ -306,10 +306,19 @@ jobs:
             [ -n "$name" ] || continue
             [ -n "$zone" ] || continue
             echo "Deleting stale staging agent instance: ${name} (${zone})"
-            gcloud compute instances delete "${name}" \
+            if gcloud compute instances delete "${name}" \
               --project "${GCP_PROJECT_ID}" \
               --zone "${zone}" \
-              --quiet
+              --quiet; then
+              continue
+            fi
+            if gcloud compute instances describe "${name}" \
+              --project "${GCP_PROJECT_ID}" \
+              --zone "${zone}" >/dev/null 2>&1; then
+              echo "::warning::Could not delete stale instance ${name} (${zone}); leaving it in place."
+            else
+              echo "Instance already absent: ${name} (${zone})"
+            fi
           done
 
       - name: Keep only latest 3 staging commit images
@@ -329,9 +338,16 @@ jobs:
           for old in "${images[@]:3}"; do
             [ -n "$old" ] || continue
             echo "Deleting stale staging image: ${old}"
-            gcloud compute images delete "${old}" \
+            if gcloud compute images delete "${old}" \
               --project "${GCP_PROJECT_ID}" \
-              --quiet
+              --quiet; then
+              continue
+            fi
+            if gcloud compute images describe "${old}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+              echo "::warning::Could not delete stale staging image: ${old}"
+            else
+              echo "Image already absent: ${old}"
+            fi
           done
 
   verify-staging-gcp-image:
