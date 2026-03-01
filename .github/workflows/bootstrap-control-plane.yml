@@ -469,6 +469,7 @@ jobs:
           TRUSTED_AGENT_MRTDS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_MRTDS_BY_SIZE || steps.measure.outputs.mrtds_by_size }}'
           TRUSTED_AGENT_RTMRS: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS || steps.measure.outputs.rtmrs }}'
           TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE || steps.measure.outputs.rtmrs_by_size }}'
+          CI_DEPLOY_TIMEOUT_SECONDS: ${{ vars.CI_DEPLOY_TIMEOUT_SECONDS || '2400' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -476,11 +477,17 @@ jobs:
           standard_required="${NUM_STANDARD_AGENTS:-0}"
           llm_required="${NUM_LLM_AGENTS:-0}"
           required_total=$((tiny_required + standard_required + llm_required))
+          deploy_timeout="${CI_DEPLOY_TIMEOUT_SECONDS:-2400}"
 
           set +e
-          cargo run -p ee-ops -- ci-deploy 2>&1 | tee /tmp/ci-deploy.log
+          timeout "${deploy_timeout}" cargo run -p ee-ops -- ci-deploy 2>&1 | tee /tmp/ci-deploy.log
           ci_rc=${PIPESTATUS[0]}
           set -e
+
+          if [ "$ci_rc" -eq 124 ]; then
+            echo "::error::ci-deploy timed out after ${deploy_timeout}s."
+            exit 124
+          fi
 
           if [ "$ci_rc" -ne 0 ]; then
             if grep -q "No agents available (bootstrap=0 and additional requested=0)" /tmp/ci-deploy.log; then
