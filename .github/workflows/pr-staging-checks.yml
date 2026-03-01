@@ -45,20 +45,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          contains() {
+            local pattern="$1"
+            local file="$2"
+            if command -v rg >/dev/null 2>&1; then
+              rg -n "$pattern" "$file" -S >/dev/null
+            else
+              grep -En "$pattern" "$file" >/dev/null
+            fi
+          }
           # PRs should stage; main pushes should production.
-          if ! rg -n "pull_request:" .github/workflows/staging-rollout.yml -S >/dev/null; then
+          if ! contains "pull_request:" .github/workflows/staging-rollout.yml; then
             echo "::error::staging-rollout.yml must include pull_request trigger."
             exit 1
           fi
-          if ! rg -n "push:" .github/workflows/production-rollout.yml -S >/dev/null; then
+          if ! contains "push:" .github/workflows/production-rollout.yml; then
             echo "::error::production-rollout.yml must include push trigger."
             exit 1
           fi
-          if ! rg -n "workflow_dispatch:" .github/workflows/production-rollout.yml -S >/dev/null; then
+          if ! contains "workflow_dispatch:" .github/workflows/production-rollout.yml; then
             echo "::error::production-rollout.yml must include workflow_dispatch trigger."
             exit 1
           fi
-          if rg -n "pull_request:" .github/workflows/production-rollout.yml -S >/dev/null; then
+          if contains "pull_request:" .github/workflows/production-rollout.yml; then
             echo "::error::production-rollout.yml must not include pull_request trigger."
             exit 1
           fi
