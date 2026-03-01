@@ -520,14 +520,31 @@ jobs:
             exit 1
           fi
 
+          skip_post_check=0
+          if echo "$cp_for_check" | grep -Eq '^http://(127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)'; then
+            if [ "$ci_rc" -eq 0 ]; then
+              echo "::warning::Skipping runner-side post-bootstrap API check for private control-plane URL ($cp_for_check); ci-deploy already verified agent capacity."
+              skip_post_check=1
+            else
+              echo "::error::ci-deploy returned non-zero and post-bootstrap API check cannot reach private control-plane URL: $cp_for_check"
+              exit "$ci_rc"
+            fi
+          fi
+
+          if [ "$skip_post_check" -eq 1 ]; then
+            exit 0
+          fi
+
+          CURL_CAPACITY_ARGS=(--connect-timeout 2 --max-time 5)
+
           fetch_agents_json() {
             local body
-            body="$(curl -fsS "$cp_for_check/api/agents" 2>/tmp/bootstrap_agents.err || true)"
+            body="$(curl -fsS "${CURL_CAPACITY_ARGS[@]}" "$cp_for_check/api/agents" 2>/tmp/bootstrap_agents.err || true)"
             if [ -n "${body:-}" ]; then
               echo "$body"
               return 0
             fi
-            body="$(curl -fsS "$cp_for_check/api/v1/agents" 2>/tmp/bootstrap_agents.err || true)"
+            body="$(curl -fsS "${CURL_CAPACITY_ARGS[@]}" "$cp_for_check/api/v1/agents" 2>/tmp/bootstrap_agents.err || true)"
             if [ -n "${body:-}" ]; then
               echo "$body"
               return 0
