@@ -316,6 +316,14 @@ build_control_plane_cfg_json() {
   add_cfg "cp_ita_audience" "$(env_first CP_ITA_AUDIENCE)"
   add_cfg "cp_ita_jwks_ttl_seconds" "$(env_first CP_ITA_JWKS_TTL_SECONDS)"
 
+  # Keep verifier defaults aligned with the previous launcher behavior.
+  if ! echo "$cfg" | jq -e '.cp_ita_jwks_url? // empty' >/dev/null; then
+    cfg="$(echo "$cfg" | jq '. + {"cp_ita_jwks_url":"https://portal.trustauthority.intel.com/certs"}')"
+  fi
+  if ! echo "$cfg" | jq -e '.cp_ita_issuer? // empty' >/dev/null; then
+    cfg="$(echo "$cfg" | jq '. + {"cp_ita_issuer":"https://portal.trustauthority.intel.com"}')"
+  fi
+
   echo "$cfg" | jq .
 }
 
