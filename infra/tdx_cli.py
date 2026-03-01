@@ -346,7 +346,7 @@ def _probe_http_health(url: str) -> bool:
 
 def _wait_http_health_or_local_ready(
     *,
-    gcp: "GcpApi",
+    gcp: GcpApi,
     instance_name: str,
     zone: str,
     candidates: list[str],
