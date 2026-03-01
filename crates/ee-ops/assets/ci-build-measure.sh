@@ -18,7 +18,6 @@ require_cmd() {
   fi
 }
 
-require_cmd python3
 require_cmd jq
 require_cmd sha256sum
 

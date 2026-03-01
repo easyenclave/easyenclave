@@ -56,20 +56,21 @@ project_id="$(env_first GCP_PROJECT_ID STAGING_GCP_PROJECT_ID PRODUCTION_GCP_PRO
 [ -n "$project_id" ] || fatal "Missing GCP_PROJECT_ID"
 
 ensure_project() {
-  gcloud config set project "$project_id" >/dev/null
+  # Avoid mutating gcloud config in CI and rely on explicit --project flags.
+  export CLOUDSDK_CORE_PROJECT="$project_id"
 }
 
 zone_candidates() {
-  local preferred="$1" fallback extra zone
+  local preferred="$1" fallback zone
   declare -A seen=()
-  local out=()
+  local zones=()
 
   add_zone() {
     local z="$1"
     [ -n "$z" ] || return 0
     if [ -z "${seen[$z]:-}" ]; then
       seen[$z]=1
-      out+=("$z")
+      zones+=("$z")
     fi
   }
 
@@ -90,7 +91,7 @@ zone_candidates() {
     add_csv "us-central1-a,us-central1-b,us-central1-c,us-central1-f"
   fi
 
-  for zone in "${out[@]}"; do
+  for zone in "${zones[@]}"; do
     echo "$zone"
   done
 }
@@ -105,10 +106,63 @@ machine_type_for_size() {
 }
 
 disk_gib_for_size() {
-  case "$1" in
-    tiny|standard|llm) echo "200" ;;
-    *) fatal "Unsupported size '$1' (expected tiny|standard|llm)" ;;
+  local size="$1" per_size_key default_gib override_gib
+  case "$size" in
+    tiny)
+      per_size_key="EE_GCP_DISK_GIB_TINY"
+      default_gib="40"
+      ;;
+    standard)
+      per_size_key="EE_GCP_DISK_GIB_STANDARD"
+      default_gib="60"
+      ;;
+    llm)
+      per_size_key="EE_GCP_DISK_GIB_LLM"
+      default_gib="100"
+      ;;
+    *)
+      fatal "Unsupported size '$size' (expected tiny|standard|llm)"
+      ;;
   esac
+
+  override_gib="$(env_first "$per_size_key" EE_GCP_DISK_GIB)"
+  [ -n "$override_gib" ] || override_gib="$default_gib"
+  printf '%s' "$override_gib"
+}
+
+disk_type_for_role() {
+  local role="$1" override default_type
+  case "$role" in
+    control-plane)
+      override="$(env_first EE_GCP_BOOT_DISK_TYPE_CP EE_GCP_BOOT_DISK_TYPE)"
+      default_type="pd-balanced"
+      ;;
+    agent)
+      override="$(env_first EE_GCP_BOOT_DISK_TYPE_AGENT EE_GCP_BOOT_DISK_TYPE)"
+      default_type="pd-balanced"
+      ;;
+    measure)
+      override="$(env_first EE_GCP_BOOT_DISK_TYPE_MEASURE EE_GCP_BOOT_DISK_TYPE)"
+      default_type="pd-standard"
+      ;;
+    *)
+      fatal "Unsupported disk role '$role' (expected control-plane|agent|measure)"
+      ;;
+  esac
+  [ -n "$override" ] || override="$default_type"
+  printf '%s' "$override"
+}
+
+is_retryable_create_error() {
+  local text
+  text="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "$text" == *"configuration_availability"* ]] && return 0
+  [[ "$text" == *"does not have enough resources"* ]] && return 0
+  [[ "$text" == *"resource_pool_exhausted"* ]] && return 0
+  [[ "$text" == *"not supported in the"* ]] && return 0
+  [[ "$text" == *"temporarily unavailable"* ]] && return 0
+  [[ "$text" == *"quota"* && "$text" == *"exceeded"* ]] && return 0
+  return 1
 }
 
 image_selector_args() {
@@ -134,11 +188,13 @@ create_instance_with_fallback() {
   local labels_csv="$4"
   local disk_gib="$5"
   local preferred_zone="$6"
+  local disk_type="$7"
 
   local source_args=()
   mapfile -t source_args < <(image_selector_args)
 
-  local zone output rc output_lc
+  local zone output rc output_lc last_error reason
+  last_error=""
   while IFS= read -r zone; do
     [ -n "$zone" ] || continue
     set +e
@@ -147,6 +203,7 @@ create_instance_with_fallback() {
       --zone "$zone" \
       --machine-type "$machine_type" \
       --boot-disk-size "${disk_gib}GB" \
+      --boot-disk-type "$disk_type" \
       --maintenance-policy TERMINATE \
       --provisioning-model STANDARD \
       --confidential-compute-type TDX \
@@ -163,18 +220,21 @@ create_instance_with_fallback() {
     fi
 
     output_lc="$(printf '%s' "$output" | tr '[:upper:]' '[:lower:]')"
-    if [[ "$output_lc" == *"configuration_availability"* ]] \
-      || [[ "$output_lc" == *"does not have enough resources"* ]] \
-      || [[ "$output_lc" == *"not supported in the"* ]]; then
-      warn "Zone '$zone' unavailable for machine_type=${machine_type}; retrying"
+    if is_retryable_create_error "$output_lc"; then
+      reason="$(printf '%s' "$output" | head -n1 | tr -d '\r')"
+      warn "Zone '$zone' create failed for machine_type=${machine_type} disk=${disk_gib}GB/${disk_type}; retrying (${reason})"
       continue
     fi
 
-    echo "$output" >&2
-    fatal "Failed creating instance '$name' in zone '$zone'"
+    last_error="$output"
+    break
   done < <(zone_candidates "$preferred_zone")
 
-  fatal "Unable to create instance '$name' in any candidate zone"
+  if [ -n "$last_error" ]; then
+    echo "$last_error" >&2
+    fatal "Failed creating instance '$name'"
+  fi
+  fatal "Unable to create instance '$name' in any candidate zone (machine_type=${machine_type}, disk=${disk_gib}GB/${disk_type})"
 }
 
 wait_instance_running() {
@@ -222,8 +282,8 @@ control_plane_alias_host() {
 }
 
 write_control_plane_startup_script() {
-  local cfg_json="$1" port="$2" out="$3"
-  cat > "$out" <<SCRIPT
+  local cfg_json="$1" port="$2" script_path="$3"
+  cat > "$script_path" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
 exec > >(tee -a /var/log/easyenclave-control-plane-bootstrap.log /dev/ttyS0) 2>&1
@@ -248,7 +308,7 @@ if ! curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
   echo "__EE_CP_LOCAL_HEALTH_TIMEOUT__"
 fi
 SCRIPT
-  chmod +x "$out"
+  chmod +x "$script_path"
 }
 
 build_control_plane_cfg_json() {
@@ -368,11 +428,12 @@ cmd_control_plane_new() {
     cp_url_for_agents="https://${network_host}"
   fi
 
-  local seed name machine_type disk_gib zone_pref startup_script cfg_json labels
+  local seed name machine_type disk_gib disk_type zone_pref startup_script cfg_json labels
   seed="${network_name:-$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-8)}"
   name="$(normalize_name "ee-cp-${env_name}-${seed}-$(date +%s)" 63)"
   machine_type="$(machine_type_for_size "$cp_size")"
   disk_gib="$(disk_gib_for_size "$cp_size")"
+  disk_type="$(disk_type_for_role control-plane)"
   zone_pref="$(env_first GCP_ZONE AGENT_DATACENTER_AZ)"
   [ -n "$zone_pref" ] || zone_pref="us-central1-a"
 
@@ -383,7 +444,7 @@ cmd_control_plane_new() {
   labels="easyenclave=managed,ee_role=control-plane,ee_env=$(normalize_name "$env_name" 63),ee_network=$(normalize_name "${network_name:-default}" 63)"
 
   local zone inst_json internal_ip external_ip public_alias_url selected_url
-  zone="$(create_instance_with_fallback "$name" "$machine_type" "$startup_script" "$labels" "$disk_gib" "$zone_pref")"
+  zone="$(create_instance_with_fallback "$name" "$machine_type" "$startup_script" "$labels" "$disk_gib" "$zone_pref" "$disk_type")"
   rm -f "$startup_script" || true
 
   wait_instance_running "$name" "$zone" 300
@@ -451,8 +512,8 @@ cmd_control_plane_new() {
 }
 
 write_agent_startup_script() {
-  local cfg_json="$1" out="$2"
-  cat > "$out" <<SCRIPT
+  local cfg_json="$1" script_path="$2"
+  cat > "$script_path" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p /etc/easyenclave
@@ -465,7 +526,7 @@ systemctl disable --now easyenclave-control-plane.service || true
 systemctl enable easyenclave-agent.service || true
 systemctl restart easyenclave-agent.service || true
 SCRIPT
-  chmod +x "$out"
+  chmod +x "$script_path"
 }
 
 cmd_vm_new() {
@@ -492,9 +553,10 @@ cmd_vm_new() {
   ensure_project
 
   size="$(printf '%s' "$size" | tr '[:upper:]' '[:lower:]')"
-  local machine_type disk_gib
+  local machine_type disk_gib disk_type
   machine_type="$(machine_type_for_size "$size")"
   disk_gib="$(disk_gib_for_size "$size")"
+  disk_type="$(disk_type_for_role agent)"
 
   [ -n "$zone" ] || zone="$(env_first GCP_ZONE AGENT_DATACENTER_AZ)"
   [ -n "$zone" ] || zone="us-central1-a"
@@ -536,7 +598,7 @@ cmd_vm_new() {
   write_agent_startup_script "$cfg_json" "$startup_script"
 
   labels="easyenclave=managed,ee_role=agent,ee_env=$(normalize_name "$env_name" 63),ee_network=$(normalize_name "${network_name:-default}" 63),ee_node_size=$(normalize_name "$size" 63)"
-  resolved_zone="$(create_instance_with_fallback "$vm_name" "$machine_type" "$startup_script" "$labels" "$disk_gib" "$zone")"
+  resolved_zone="$(create_instance_with_fallback "$vm_name" "$machine_type" "$startup_script" "$labels" "$disk_gib" "$zone" "$disk_type")"
   rm -f "$startup_script" || true
 
   if [ "$wait_flag" = "true" ]; then
@@ -567,8 +629,8 @@ cmd_vm_new() {
 }
 
 write_measure_startup_script() {
-  local size="$1" out="$2"
-  cat > "$out" <<SCRIPT
+  local size="$1" script_path="$2"
+  cat > "$script_path" <<SCRIPT
 #!/usr/bin/env bash
 set -euo pipefail
 exec > >(tee -a /var/log/easyenclave-measure.log /dev/ttyS0) 2>&1
@@ -586,7 +648,32 @@ EE_AGENT_MODE=measure EASYENCLAVE_CONFIG=/etc/easyenclave/measure.json timeout 3
 sleep 2
 systemctl poweroff || true
 SCRIPT
-  chmod +x "$out"
+  chmod +x "$script_path"
+}
+
+cleanup_terminated_measure_vms() {
+  local env_name="$1"
+  local env_label filter rows row vm zone
+  env_label="$(normalize_name "$env_name" 63)"
+  filter="labels.easyenclave=managed AND labels.ee_role=measure AND status=TERMINATED"
+  if [ -n "$env_label" ]; then
+    filter="${filter} AND labels.ee_env=${env_label}"
+  fi
+
+  mapfile -t rows < <(gcloud compute instances list \
+    --project "$project_id" \
+    --filter "$filter" \
+    --format "value(name,zone.basename())" 2>/dev/null || true)
+
+  for row in "${rows[@]}"; do
+    [ -n "${row:-}" ] || continue
+    vm="$(echo "$row" | awk '{print $1}')"
+    zone="$(echo "$row" | awk '{print $2}')"
+    [ -n "${vm:-}" ] || continue
+    [ -n "${zone:-}" ] || continue
+    warn "Deleting stale terminated measure VM '$vm' in zone '$zone'"
+    gcloud compute instances delete "$vm" --project "$project_id" --zone "$zone" --quiet >/dev/null 2>&1 || true
+  done
 }
 
 cmd_vm_measure() {
@@ -603,21 +690,23 @@ cmd_vm_measure() {
   ensure_project
 
   size="$(printf '%s' "$size" | tr '[:upper:]' '[:lower:]')"
-  local machine_type disk_gib zone vm_name labels startup_script resolved_zone env_name
+  local machine_type disk_gib disk_type zone vm_name labels startup_script resolved_zone env_name
   machine_type="$(machine_type_for_size "$size")"
   disk_gib="$(disk_gib_for_size "$size")"
+  disk_type="$(disk_type_for_role measure)"
   zone="$(env_first GCP_ZONE AGENT_DATACENTER_AZ)"
   [ -n "$zone" ] || zone="us-central1-a"
 
   vm_name="$(normalize_name "ee-measure-${size}-$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-8)" 63)"
   env_name="$(env_first EASYENCLAVE_ENV)"
   [ -n "$env_name" ] || env_name="staging"
+  cleanup_terminated_measure_vms "$env_name"
   labels="easyenclave=managed,ee_role=measure,ee_env=$(normalize_name "$env_name" 63)"
 
   startup_script="$(mktemp -t ee-measure-startup.XXXXXX.sh)"
   write_measure_startup_script "$size" "$startup_script"
 
-  resolved_zone="$(create_instance_with_fallback "$vm_name" "$machine_type" "$startup_script" "$labels" "$disk_gib" "$zone")"
+  resolved_zone="$(create_instance_with_fallback "$vm_name" "$machine_type" "$startup_script" "$labels" "$disk_gib" "$zone" "$disk_type")"
   rm -f "$startup_script" || true
 
   local measurements="" deadline serial line err

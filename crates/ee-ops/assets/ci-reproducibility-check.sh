@@ -33,7 +33,6 @@ require_cmd() {
 }
 
 require_cmd jq
-require_cmd python3
 
 parse_output_value() {
   local file="$1"

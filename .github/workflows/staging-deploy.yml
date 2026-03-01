@@ -9,8 +9,6 @@ on:
       - "infra/**"
       - "Cargo.toml"
       - "Cargo.lock"
-      - "requirements.txt"
-      - "pyproject.toml"
       - ".github/workflows/**"
       - "Dockerfile.ee-cp"
   workflow_dispatch:
@@ -43,6 +41,7 @@ jobs:
       BUILD_ZONE: ${{ vars.STAGING_GCP_IMAGE_BUILD_ZONE || 'us-central1-a' }}
       BUILD_FALLBACK_ZONES: ${{ vars.STAGING_GCP_IMAGE_BUILD_FALLBACK_ZONES || 'us-central1-b,us-central1-c,us-central1-f' }}
       BUILD_MACHINE_TYPE: ${{ vars.STAGING_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
+      BUILD_BOOT_DISK_GB: ${{ vars.STAGING_GCP_IMAGE_BUILD_BOOT_DISK_GB || '80' }}
       EASYENCLAVE_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
       STAGING_CP_URL: ${{ vars.STAGING_CP_URL || format('https://app-staging.{0}', vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com') }}
     steps:
@@ -58,11 +57,6 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: Lint + test
         run: |
@@ -91,6 +85,24 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Cleanup previous staging managed VMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud compute instances list --project "${GCP_PROJECT_ID}" \
+            --filter "labels.easyenclave=managed AND labels.ee_env=staging" \
+            --format "value(name,zone.basename())" > /tmp/staging-gc.txt || true
+          if [ ! -s /tmp/staging-gc.txt ]; then
+            echo "No existing staging managed VMs found."
+            exit 0
+          fi
+          while read -r name zone; do
+            [ -n "${name:-}" ] || continue
+            [ -n "${zone:-}" ] || continue
+            echo "Deleting ${name} (${zone})"
+            gcloud compute instances delete "${name}" --project "${GCP_PROJECT_ID}" --zone "${zone}" --quiet || true
+          done < /tmp/staging-gc.txt
 
       - name: Build and push control plane image
         id: cp_image
