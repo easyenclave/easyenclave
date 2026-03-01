@@ -40,6 +40,7 @@ impl AgentStore {
         Self { pool }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create(
         &self,
         vm_name: &str,
