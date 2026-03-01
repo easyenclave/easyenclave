@@ -384,8 +384,10 @@ systemctl restart easyenclave-agent.service || true
 
 
 def _write_control_plane_startup_script(config: dict[str, Any]) -> str:
+    local_port = int(config.get("port") or 8080)
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
+exec > >(tee -a /var/log/easyenclave-control-plane-bootstrap.log /dev/ttyS0) 2>&1
 mkdir -p /etc/easyenclave
 cat > /etc/easyenclave/control-plane.json <<'EOF_CONFIG'
 {json.dumps(config, indent=2, sort_keys=True)}
@@ -395,6 +397,17 @@ systemctl daemon-reload || true
 systemctl disable --now easyenclave-agent.service || true
 systemctl enable easyenclave-control-plane.service || true
 systemctl restart easyenclave-control-plane.service || true
+echo "__EE_CP_LOCAL_HEALTH_WAIT__ port={local_port}"
+for _ in $(seq 1 150); do
+  if curl -fsS "http://127.0.0.1:{local_port}/health" >/dev/null 2>&1; then
+    echo "__EE_CP_LOCAL_HEALTH_OK__"
+    break
+  fi
+  sleep 2
+done
+if ! curl -fsS "http://127.0.0.1:{local_port}/health" >/dev/null 2>&1; then
+  echo "__EE_CP_LOCAL_HEALTH_TIMEOUT__"
+fi
 """
     with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as tf:
         tf.write(script)
@@ -569,6 +582,23 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
             if serial_tail:
                 _warn("Control-plane serial-port tail follows:")
                 print(serial_tail, file=sys.stderr)
+                if "__EE_CP_LOCAL_HEALTH_OK__" in serial_tail:
+                    _warn(
+                        "Control plane reported local /health OK but remained externally "
+                        "unreachable during bootstrap timeout; proceeding with hostname URL."
+                    )
+                    selected_url = network_url or public_alias_url or ip_fallback_url
+                    return {
+                        "name": name,
+                        "zone": zone,
+                        "ip": external_ip or internal_ip,
+                        "internal_ip": internal_ip,
+                        "external_ip": external_ip,
+                        "control_plane_url": selected_url,
+                        "control_plane_hostname": alias_host,
+                        "control_plane_network_hostname": network_host,
+                        "bootstrap_agents": [],
+                    }
             _fatal(
                 "Control plane did not become healthy. "
                 f"Tried: {', '.join(candidates) if candidates else 'no candidates'}"
