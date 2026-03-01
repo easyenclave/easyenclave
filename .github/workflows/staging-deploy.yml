@@ -86,15 +86,15 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Cleanup previous staging managed VMs
+      - name: Cleanup previous managed staging-project VMs
         shell: bash
         run: |
           set -euo pipefail
           gcloud compute instances list --project "${GCP_PROJECT_ID}" \
-            --filter "labels.easyenclave=managed AND labels.ee_env=staging" \
+            --filter "labels.easyenclave=managed" \
             --format "value(name,zone.basename())" > /tmp/staging-gc.txt || true
           if [ ! -s /tmp/staging-gc.txt ]; then
-            echo "No existing staging managed VMs found."
+            echo "No existing managed VMs found."
             exit 0
           fi
           while read -r name zone; do
@@ -223,7 +223,7 @@ jobs:
         run: |
           set -euo pipefail
           gcloud compute instances list --project "${GCP_PROJECT_ID}" \
-            --filter "labels.easyenclave=managed AND labels.ee_env=staging" \
+            --filter "labels.easyenclave=managed" \
             --format "value(name,zone)" > /tmp/staging_instances.txt || true
           while read -r name zone; do
             [ -n "${name:-}" ] || continue

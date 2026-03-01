@@ -143,7 +143,7 @@ disk_type_for_role() {
       ;;
     measure)
       override="$(env_first EE_GCP_BOOT_DISK_TYPE_MEASURE EE_GCP_BOOT_DISK_TYPE)"
-      default_type="pd-standard"
+      default_type="pd-balanced"
       ;;
     *)
       fatal "Unsupported disk role '$role' (expected control-plane|agent|measure)"
@@ -652,13 +652,8 @@ SCRIPT
 }
 
 cleanup_terminated_measure_vms() {
-  local env_name="$1"
-  local env_label filter rows row vm zone
-  env_label="$(normalize_name "$env_name" 63)"
+  local filter rows row vm zone
   filter="labels.easyenclave=managed AND labels.ee_role=measure AND status=TERMINATED"
-  if [ -n "$env_label" ]; then
-    filter="${filter} AND labels.ee_env=${env_label}"
-  fi
 
   mapfile -t rows < <(gcloud compute instances list \
     --project "$project_id" \
@@ -700,7 +695,7 @@ cmd_vm_measure() {
   vm_name="$(normalize_name "ee-measure-${size}-$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-8)" 63)"
   env_name="$(env_first EASYENCLAVE_ENV)"
   [ -n "$env_name" ] || env_name="staging"
-  cleanup_terminated_measure_vms "$env_name"
+  cleanup_terminated_measure_vms
   labels="easyenclave=managed,ee_role=measure,ee_env=$(normalize_name "$env_name" 63)"
 
   startup_script="$(mktemp -t ee-measure-startup.XXXXXX.sh)"
