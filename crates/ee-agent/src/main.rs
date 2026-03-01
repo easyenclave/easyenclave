@@ -536,6 +536,7 @@ fn mint_ita_token(cfg: &AgentRuntimeConfig, client: &Client, quote_b64: &str) ->
     let resp = client
         .post(url)
         .header("x-api-key", api_key)
+        .header("accept", "application/json")
         .json(&json!({ "quote": quote_b64 }))
         .send()
         .map_err(|e| AppError::External(format!("ITA attest request failed: {e}")))?;
