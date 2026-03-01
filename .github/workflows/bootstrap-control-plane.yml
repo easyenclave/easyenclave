@@ -281,6 +281,9 @@ jobs:
       # Strict environment isolation: no shared fallback secrets.
       GCP_PROJECT_ID: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_PROJECT_ID) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && (secrets.STAGING_GCP_PROJECT_ID || 'eestaging')) }}
       GCP_SERVICE_ACCOUNT_KEY: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'production' && secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY) || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') != 'production' && secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY) }}
+      GCP_ZONE: ${{ vars.EE_GCP_PRIMARY_ZONE || vars.GCP_ZONE || 'us-central1-a' }}
+      AGENT_DATACENTER_AZ: ${{ vars.EE_GCP_AGENT_AZ || vars.EE_GCP_PRIMARY_ZONE || vars.GCP_ZONE || 'us-central1-a' }}
+      EE_GCP_FALLBACK_ZONES: ${{ vars.EE_GCP_FALLBACK_ZONES || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f' }}
 
       # Shared Cloudflare credentials; network separation is done by domain/hostname.
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

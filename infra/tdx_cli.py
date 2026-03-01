@@ -283,7 +283,7 @@ def _resolve_config(zone_override: str | None = None) -> GcpConfig:
     zone = (
         (zone_override or "").strip()
         or _env_first("GCP_ZONE", "AGENT_DATACENTER_AZ")
-        or "us-central1-f"
+        or "us-central1-a"
     )
 
     image_project = _env_first("EE_GCP_IMAGE_PROJECT") or project_id
