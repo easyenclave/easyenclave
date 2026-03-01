@@ -571,9 +571,9 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
         f"http://{external_ip or internal_ip}:8080" if (external_ip or internal_ip) else ""
     )
 
-    selected_url = network_url or public_alias_url
+    selected_url = public_alias_url or network_url
     if wait:
-        candidates = [u for u in [ip_fallback_url, network_url, public_alias_url] if u]
+        candidates = [u for u in [ip_fallback_url, public_alias_url, network_url] if u]
         healthy_url = _wait_http_health_any(candidates, timeout_seconds)
         if healthy_url:
             selected_url = healthy_url
@@ -587,7 +587,7 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
                         "Control plane reported local /health OK but remained externally "
                         "unreachable during bootstrap timeout; proceeding with hostname URL."
                     )
-                    selected_url = network_url or public_alias_url or ip_fallback_url
+                    selected_url = public_alias_url or network_url or ip_fallback_url
                     return {
                         "name": name,
                         "zone": zone,
