@@ -160,7 +160,7 @@ require_ci_measured_profile() {
 # ===================================================================
 echo "==> Deploying control plane on GCP..."
 CP_BOOT_JSON="$(
-  python3 infra/tdx_cli.py control-plane new \
+  bash crates/ee-ops/assets/gcp-nodectl.sh control-plane new \
     --wait \
     --port 8080 \
     --timeout "$CP_BOOTSTRAP_TIMEOUT"
@@ -318,7 +318,7 @@ fi
 AGENT_LAUNCH_PIDS=()
 if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
   for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
-    python3 infra/tdx_cli.py vm new --size tiny \
+    bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size tiny \
       "${AGENT_LOCATION_ARGS[@]}" \
       --cp-url "$CP_AGENT_URL" \
       --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
@@ -326,7 +326,7 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
     AGENT_LAUNCH_PIDS+=("$!")
   done
   for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
-    python3 infra/tdx_cli.py vm new --size standard \
+    bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size standard \
       "${AGENT_LOCATION_ARGS[@]}" \
       --cp-url "$CP_AGENT_URL" \
       --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
@@ -334,7 +334,7 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
     AGENT_LAUNCH_PIDS+=("$!")
   done
   for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
-    python3 infra/tdx_cli.py vm new --size llm \
+    bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size llm \
       "${AGENT_LOCATION_ARGS[@]}" \
       --cp-url "$CP_AGENT_URL" \
       --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \

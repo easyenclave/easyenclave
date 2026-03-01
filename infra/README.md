@@ -10,7 +10,7 @@ This directory is the runtime infra surface for EasyEnclave.
 
 ## Files
 
-- `infra/tdx_cli.py`: CLI used by CI/workflows to create, list, delete, and measure GCP TDX VMs.
+- `crates/ee-ops/assets/gcp-nodectl.sh`: CLI used by CI/workflows to create, list, delete, and measure GCP TDX VMs.
 - `crates/ee-agent`: Rust in-VM runtime used for agent/control-plane/measure modes.
 
 ## Required environment
@@ -24,14 +24,14 @@ This directory is the runtime infra surface for EasyEnclave.
 Optional:
 
 - `EE_GCP_IMAGE_PROJECT` (defaults to `GCP_PROJECT_ID`)
-- `GCP_ZONE` or `AGENT_DATACENTER_AZ` (defaults to `us-central1-f`)
+- `GCP_ZONE` or `AGENT_DATACENTER_AZ` (defaults to `us-central1-a`)
 
 ## Common commands
 
 ```bash
-python3 infra/tdx_cli.py control-plane new --wait --port 8080
-python3 infra/tdx_cli.py vm new --size tiny --cp-url https://app-staging.easyenclave.com --ita-api-key "$ITA_API_KEY" --wait
-python3 infra/tdx_cli.py vm measure --size tiny --json
-python3 infra/tdx_cli.py vm list
-python3 infra/tdx_cli.py vm delete <vm-name>
+bash crates/ee-ops/assets/gcp-nodectl.sh control-plane new --wait --port 8080
+bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size tiny --cp-url https://app-staging.easyenclave.com --ita-api-key "$ITA_API_KEY" --wait
+bash crates/ee-ops/assets/gcp-nodectl.sh vm measure --size tiny --json
+bash crates/ee-ops/assets/gcp-nodectl.sh vm list
+bash crates/ee-ops/assets/gcp-nodectl.sh vm delete <vm-name>
 ```

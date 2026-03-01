@@ -540,7 +540,7 @@ cp .env.example .env  # Add your control plane URL</code></pre>
                         <div class="setup-content">
                             <h4>Launch Your Agent</h4>
                             <pre><code># Build and launch a TDX agent VM
-python3 infra/tdx_cli.py vm new --size tiny
+bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size tiny --cp-url "$CP_URL" --ita-api-key "$ITA_API_KEY" --wait
 
 # Your agent will register automatically with the control plane</code></pre>
                         </div>

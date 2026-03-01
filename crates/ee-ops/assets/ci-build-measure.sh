@@ -56,7 +56,7 @@ for SIZE in "${SIZES[@]}"; do
     echo "Measurement attempt ${attempt}/${MEASURE_ATTEMPTS} for node_size=$SIZE"
     set +e
     MEASURES="$(
-      python3 infra/tdx_cli.py vm measure \
+      bash crates/ee-ops/assets/gcp-nodectl.sh vm measure \
         --json \
         --timeout "$MEASURE_TIMEOUT_SECONDS" \
         --size "$SIZE" \

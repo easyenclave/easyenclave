@@ -32,11 +32,11 @@ Add CP-native provisioning support for a new cloud with deterministic placement 
 - Keep datacenter format normalized as `<cloud>:<zone-or-region>`.
 
 3. Agent config pass-through:
-- Add provider config fields in `infra/tdx_cli.py`.
+- Add provider config fields in `crates/ee-ops/assets/gcp-nodectl.sh` (or its replacement).
 - Export provider env vars in `crates/ee-agent`.
 
 4. CI/CD workflow coverage:
-- Extend `test.yml` and `staging-rollout.yml` checks if provider-specific behavior is required.
+- Extend `ci.yml` and `staging-deploy.yml` checks if provider-specific behavior is required.
 
 5. Documentation and runbooks:
 - Add operator runbook under `docs/runbooks/`.

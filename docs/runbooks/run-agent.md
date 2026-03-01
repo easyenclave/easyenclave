@@ -44,11 +44,11 @@ export EE_GCP_IMAGE_PROJECT="$GCP_PROJECT_ID"
 export EE_GCP_IMAGE_FAMILY="easyenclave-agent-main"
 ```
 
-3. Boot an agent VM using `tdx_cli.py`.
+3. Boot an agent VM using `gcp-nodectl.sh`.
 
 ```bash
 export ITA_API_KEY="<intel-ta-api-key>"
-python3 infra/tdx_cli.py vm new \
+bash crates/ee-ops/assets/gcp-nodectl.sh vm new \
   --size tiny \
   --cp-url "https://app.easyenclave.com" \
   --ita-api-key "$ITA_API_KEY" \
@@ -59,7 +59,7 @@ python3 infra/tdx_cli.py vm new \
 4. Verify registration.
 
 ```bash
-python3 infra/tdx_cli.py vm list
+bash crates/ee-ops/assets/gcp-nodectl.sh vm list
 curl -s https://app.easyenclave.com/api/agents | jq '.[] | {agent_id,vm_name,node_size,datacenter,status,verified}'
 ```
 
