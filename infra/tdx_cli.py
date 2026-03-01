@@ -478,10 +478,7 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
     if not cp_size:
         cp_size = "tiny" if env_name == "staging" else "standard"
     if cp_size not in NODE_SIZES:
-        _warn(
-            f"Unsupported CONTROL_PLANE_NODE_SIZE='{cp_size}', "
-            "falling back to 'standard'."
-        )
+        _warn(f"Unsupported CONTROL_PLANE_NODE_SIZE='{cp_size}', falling back to 'standard'.")
         cp_size = "standard"
     network_name = _env_first("EASYENCLAVE_NETWORK_NAME")
     domain = _env_first("EASYENCLAVE_DOMAIN") or "easyenclave.com"
