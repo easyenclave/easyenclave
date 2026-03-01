@@ -342,6 +342,29 @@ def _wait_http_health_any(candidates: list[str], timeout_seconds: int) -> str | 
     return None
 
 
+def _instance_serial_port_tail(gcp: GcpApi, *, name: str, zone: str, lines: int = 120) -> str:
+    proc = gcp.run(
+        [
+            "compute",
+            "instances",
+            "get-serial-port-output",
+            name,
+            "--project",
+            gcp.cfg.project_id,
+            "--zone",
+            zone,
+            "--port",
+            "1",
+        ],
+        check=False,
+    )
+    text = (proc.stdout or "").strip()
+    if not text:
+        return ""
+    tail = text.splitlines()[-max(1, int(lines)) :]
+    return "\n".join(tail)
+
+
 def _write_agent_startup_script(config: dict[str, Any]) -> str:
     script = f"""#!/usr/bin/env bash
 set -euo pipefail
@@ -542,6 +565,10 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
         if healthy_url:
             selected_url = healthy_url
         else:
+            serial_tail = _instance_serial_port_tail(gcp, name=name, zone=zone, lines=120)
+            if serial_tail:
+                _warn("Control-plane serial-port tail follows:")
+                print(serial_tail, file=sys.stderr)
             _fatal(
                 "Control plane did not become healthy. "
                 f"Tried: {', '.join(candidates) if candidates else 'no candidates'}"
