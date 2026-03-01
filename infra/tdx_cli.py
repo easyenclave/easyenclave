@@ -474,6 +474,15 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
     gcp.activate_auth()
 
     env_name = (_env_first("EASYENCLAVE_ENV") or "staging").lower()
+    cp_size = (_env_first("CONTROL_PLANE_NODE_SIZE") or "").strip().lower()
+    if not cp_size:
+        cp_size = "tiny" if env_name == "staging" else "standard"
+    if cp_size not in NODE_SIZES:
+        _warn(
+            f"Unsupported CONTROL_PLANE_NODE_SIZE='{cp_size}', "
+            "falling back to 'standard'."
+        )
+        cp_size = "standard"
     network_name = _env_first("EASYENCLAVE_NETWORK_NAME")
     domain = _env_first("EASYENCLAVE_DOMAIN") or "easyenclave.com"
 
@@ -491,7 +500,7 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
     try:
         _, zone = gcp.create_instance(
             name=name,
-            machine_type=gcp.machine_type("standard"),
+            machine_type=gcp.machine_type(cp_size),
             startup_script_path=startup_script,
             labels={
                 "easyenclave": "managed",

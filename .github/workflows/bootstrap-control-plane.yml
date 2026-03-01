@@ -307,6 +307,7 @@ jobs:
 
       # Deployer settings.
       CP_BOOTSTRAP_SIZES: ${{ inputs.cp_bootstrap_sizes || github.event.inputs.cp_bootstrap_sizes || 'tiny' }}
+      CONTROL_PLANE_NODE_SIZE: ${{ ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && 'tiny') || 'standard' }}
       NUM_TINY_AGENTS: ${{ inputs.num_tiny_agents || github.event.inputs.num_tiny_agents || '2' }}
       NUM_STANDARD_AGENTS: ${{ inputs.num_standard_agents || github.event.inputs.num_standard_agents || '0' }}
       NUM_LLM_AGENTS: ${{ inputs.num_llm_agents || github.event.inputs.num_llm_agents || '0' }}
