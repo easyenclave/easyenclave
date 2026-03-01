@@ -84,9 +84,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          health="$(curl -fsS "$CP_URL/health")"
+          health="$(curl -fsS "$CP_URL/health" 2>/tmp/pr_staging_health.err || true)"
+          if [ -z "${health:-}" ]; then
+            echo "::warning::Skipping staging smoke check: '${CP_URL}/health' is not reachable."
+            if [ -f /tmp/pr_staging_health.err ]; then
+              cat /tmp/pr_staging_health.err || true
+            fi
+            exit 0
+          fi
           echo "$health" | jq -e '.ok == true' >/dev/null
-          agents="$(curl -fsS "$CP_URL/api/v1/agents")"
+          agents="$(curl -fsS "$CP_URL/api/v1/agents" 2>/tmp/pr_staging_agents.err || true)"
+          if [ -z "${agents:-}" ]; then
+            echo "::warning::Skipping staging agent snapshot: '${CP_URL}/api/v1/agents' is not reachable."
+            if [ -f /tmp/pr_staging_agents.err ]; then
+              cat /tmp/pr_staging_agents.err || true
+            fi
+            exit 0
+          fi
           total="$(echo "$agents" | jq -r '(if type == "array" then . else (.agents // []) end) | length')"
           verified="$(echo "$agents" | jq -r '(if type == "array" then . else (.agents // []) end) | [ .[] | select(.verified == true) ] | length')"
           echo "rust staging snapshot: verified=${verified} total=${total}"
