@@ -297,7 +297,7 @@ systemctl disable --now easyenclave-agent.service || true
 systemctl enable easyenclave-control-plane.service || true
 systemctl restart easyenclave-control-plane.service || true
 echo "__EE_CP_LOCAL_HEALTH_WAIT__ port=${port}"
-for _ in $(seq 1 150); do
+for _ in \$(seq 1 150); do
   if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
     echo "__EE_CP_LOCAL_HEALTH_OK__"
     break
