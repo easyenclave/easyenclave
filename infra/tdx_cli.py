@@ -344,17 +344,35 @@ def _probe_http_health(url: str) -> bool:
     return proc.returncode == 0
 
 
-def _wait_http_health_any(candidates: list[str], timeout_seconds: int) -> str | None:
+def _wait_http_health_or_local_ready(
+    *,
+    gcp: "GcpApi",
+    instance_name: str,
+    zone: str,
+    candidates: list[str],
+    timeout_seconds: int,
+) -> tuple[str | None, bool, str]:
     urls = [u for u in candidates if str(u).strip()]
-    if not urls:
-        return None
     deadline = time.time() + max(5, timeout_seconds)
+    last_serial_check = 0.0
+    serial_tail = ""
+
     while time.time() < deadline:
         for candidate in urls:
             if _probe_http_health(candidate):
-                return candidate
+                return candidate, False, serial_tail
+
+        now = time.time()
+        if now - last_serial_check >= 10:
+            serial_tail = _instance_serial_port_tail(gcp, name=instance_name, zone=zone, lines=120)
+            if "__EE_CP_LOCAL_HEALTH_OK__" in serial_tail:
+                return None, True, serial_tail
+            last_serial_check = now
+
         time.sleep(3)
-    return None
+
+    serial_tail = _instance_serial_port_tail(gcp, name=instance_name, zone=zone, lines=120)
+    return None, "__EE_CP_LOCAL_HEALTH_OK__" in serial_tail, serial_tail
 
 
 def _instance_serial_port_tail(gcp: GcpApi, *, name: str, zone: str, lines: int = 120) -> str:
@@ -589,31 +607,25 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
     selected_url = public_alias_url or network_url
     if wait:
         candidates = [u for u in [ip_fallback_url, public_alias_url, network_url] if u]
-        healthy_url = _wait_http_health_any(candidates, timeout_seconds)
+        healthy_url, local_ready, serial_tail = _wait_http_health_or_local_ready(
+            gcp=gcp,
+            instance_name=name,
+            zone=zone,
+            candidates=candidates,
+            timeout_seconds=timeout_seconds,
+        )
         if healthy_url:
             selected_url = healthy_url
+        elif local_ready:
+            _warn(
+                "Control plane reported local /health OK before external endpoints became "
+                "reachable; proceeding with hostname URL."
+            )
+            selected_url = public_alias_url or network_url or ip_fallback_url
         else:
-            serial_tail = _instance_serial_port_tail(gcp, name=name, zone=zone, lines=120)
             if serial_tail:
                 _warn("Control-plane serial-port tail follows:")
                 print(serial_tail, file=sys.stderr)
-                if "__EE_CP_LOCAL_HEALTH_OK__" in serial_tail:
-                    _warn(
-                        "Control plane reported local /health OK but remained externally "
-                        "unreachable during bootstrap timeout; proceeding with hostname URL."
-                    )
-                    selected_url = public_alias_url or network_url or ip_fallback_url
-                    return {
-                        "name": name,
-                        "zone": zone,
-                        "ip": external_ip or internal_ip,
-                        "internal_ip": internal_ip,
-                        "external_ip": external_ip,
-                        "control_plane_url": selected_url,
-                        "control_plane_hostname": alias_host,
-                        "control_plane_network_hostname": network_host,
-                        "bootstrap_agents": [],
-                    }
             _fatal(
                 "Control plane did not become healthy. "
                 f"Tried: {', '.join(candidates) if candidates else 'no candidates'}"
