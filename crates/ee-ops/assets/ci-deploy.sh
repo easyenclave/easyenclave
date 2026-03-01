@@ -37,10 +37,79 @@ AGENT_VERIFY_WAIT_ATTEMPTS="${AGENT_VERIFY_WAIT_ATTEMPTS:-90}"
 AGENT_VERIFY_WAIT_SECONDS="${AGENT_VERIFY_WAIT_SECONDS:-10}"
 CURL_HEALTH_ARGS=(--connect-timeout 3 --max-time 5)
 CURL_API_ARGS=(--connect-timeout 3 --max-time 10)
+CP_TUNNEL_PORT="${CP_TUNNEL_PORT:-18080}"
+CP_TUNNEL_PID=""
+CP_TUNNEL_LOG=""
 
 # ===================================================================
 # Helpers
 # ===================================================================
+
+cleanup_cp_tunnel() {
+  if [ -n "${CP_TUNNEL_PID:-}" ] && kill -0 "$CP_TUNNEL_PID" 2>/dev/null; then
+    kill "$CP_TUNNEL_PID" 2>/dev/null || true
+    wait "$CP_TUNNEL_PID" 2>/dev/null || true
+  fi
+  if [ -n "${CP_TUNNEL_LOG:-}" ] && [ -f "$CP_TUNNEL_LOG" ]; then
+    rm -f "$CP_TUNNEL_LOG" || true
+  fi
+}
+
+trap cleanup_cp_tunnel EXIT
+
+start_cp_local_tunnel() {
+  local cp_name="$1"
+  local cp_zone="$2"
+  local local_port="$3"
+  local project_args=()
+  local health_url="http://127.0.0.1:${local_port}/health"
+
+  if [ -z "$cp_name" ] || [ -z "$cp_zone" ]; then
+    return 1
+  fi
+  if ! command -v gcloud >/dev/null 2>&1; then
+    return 1
+  fi
+
+  if [ -n "${GCP_PROJECT_ID:-}" ]; then
+    project_args=(--project "$GCP_PROJECT_ID")
+  fi
+
+  CP_TUNNEL_LOG="$(mktemp -t ee-cp-tunnel.XXXXXX.log)"
+  gcloud compute ssh "$cp_name" \
+    "${project_args[@]}" \
+    --zone "$cp_zone" \
+    --quiet \
+    --ssh-flag="-N" \
+    --ssh-flag="-L" \
+    --ssh-flag="127.0.0.1:${local_port}:127.0.0.1:8080" \
+    --ssh-flag="-o" \
+    --ssh-flag="ExitOnForwardFailure=yes" \
+    --ssh-flag="-o" \
+    --ssh-flag="ServerAliveInterval=30" \
+    --ssh-flag="-o" \
+    --ssh-flag="ServerAliveCountMax=3" \
+    >"$CP_TUNNEL_LOG" 2>&1 &
+  CP_TUNNEL_PID=$!
+
+  for _i in {1..30}; do
+    if curl -sfS "${CURL_HEALTH_ARGS[@]}" "$health_url" >/dev/null 2>&1; then
+      echo "Established control-plane SSH tunnel on localhost:${local_port}"
+      return 0
+    fi
+    if ! kill -0 "$CP_TUNNEL_PID" 2>/dev/null; then
+      echo "::warning::Control-plane SSH tunnel failed to start"
+      tail -n 50 "$CP_TUNNEL_LOG" || true
+      CP_TUNNEL_PID=""
+      return 1
+    fi
+    sleep 1
+  done
+
+  echo "::warning::Timed out waiting for control-plane SSH tunnel on localhost:${local_port}"
+  tail -n 50 "$CP_TUNNEL_LOG" || true
+  return 1
+}
 
 load_json_map() {
   local env_name="$1"
@@ -101,6 +170,8 @@ CP_BOOTSTRAP_URL="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_url // ""')"
 CP_PUBLIC_HOSTNAME="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_hostname // ""')"
 CP_EXTERNAL_IP="$(echo "$CP_BOOT_JSON" | jq -r '.external_ip // ""')"
 CP_INTERNAL_IP="$(echo "$CP_BOOT_JSON" | jq -r '.internal_ip // ""')"
+CP_NAME="$(echo "$CP_BOOT_JSON" | jq -r '.name // ""')"
+CP_ZONE="$(echo "$CP_BOOT_JSON" | jq -r '.zone // ""')"
 BOOTSTRAP_AGENT_COUNT="$(echo "$CP_BOOT_JSON" | jq -r '(.bootstrap_agents // []) | length' 2>/dev/null || echo 0)"
 
 if [ -z "$CP_BOOTSTRAP_URL" ] || [ "$CP_BOOTSTRAP_URL" = "null" ]; then
@@ -124,19 +195,45 @@ else
   CP_URL_CANDIDATE=""
 fi
 
-# Keep bootstrap traffic on direct VM URL for determinism.
-# Public hostname can briefly route to a previous control plane during DNS/tunnel cutover.
-if [ -n "${CP_IP_URL:-}" ]; then
-  CP_INTERNAL_URL="$CP_IP_URL"
-  echo "Using direct control-plane IP URL for bootstrap: $CP_INTERNAL_URL"
+# Agents run inside the same GCP network, so prefer internal VM IP for deterministic registration.
+if [ -n "${CP_INTERNAL_IP:-}" ] && [ "$CP_INTERNAL_IP" != "null" ]; then
+  CP_AGENT_URL="http://$CP_INTERNAL_IP:8080"
+elif [ -n "${CP_EXTERNAL_IP:-}" ] && [ "$CP_EXTERNAL_IP" != "null" ]; then
+  CP_AGENT_URL="http://$CP_EXTERNAL_IP:8080"
+elif [ -n "${CP_URL_CANDIDATE:-}" ]; then
+  CP_AGENT_URL="$CP_URL_CANDIDATE"
 else
-  CP_INTERNAL_URL="$CP_BOOTSTRAP_URL"
-  echo "::warning::No control-plane VM IP available; falling back to $CP_INTERNAL_URL"
+  CP_AGENT_URL="$CP_BOOTSTRAP_URL"
 fi
+
+# Runner/API traffic should use a local tunnel when direct VM ingress is not reachable.
+CP_INTERNAL_URL=""
+if [ -n "${CP_IP_URL:-}" ]; then
+  if curl -sfS "${CURL_HEALTH_ARGS[@]}" "$CP_IP_URL/health" > /dev/null 2>&1; then
+    CP_INTERNAL_URL="$CP_IP_URL"
+    echo "Using direct control-plane IP URL for bootstrap: $CP_INTERNAL_URL"
+  else
+    echo "::warning::Direct control-plane IP URL not reachable from runner: $CP_IP_URL"
+  fi
+fi
+
+if [ -z "$CP_INTERNAL_URL" ] && start_cp_local_tunnel "$CP_NAME" "$CP_ZONE" "$CP_TUNNEL_PORT"; then
+  CP_INTERNAL_URL="http://127.0.0.1:${CP_TUNNEL_PORT}"
+fi
+
+if [ -z "$CP_INTERNAL_URL" ] && [ -n "${CP_URL_CANDIDATE:-}" ]; then
+  CP_INTERNAL_URL="$CP_URL_CANDIDATE"
+fi
+
+if [ -z "$CP_INTERNAL_URL" ]; then
+  CP_INTERNAL_URL="$CP_BOOTSTRAP_URL"
+  echo "::warning::Falling back to control-plane bootstrap URL: $CP_INTERNAL_URL"
+fi
+
 CP_URL="$CP_INTERNAL_URL"
 export CP_URL
 CP_PUBLIC_URL=""
-CP_AGENT_URL="$CP_URL"
+echo "Agent registration URL: $CP_AGENT_URL"
 
 # ===================================================================
 # 3. Wait for control plane to answer health (internal URL)
@@ -161,7 +258,6 @@ if [ -n "${CP_URL_CANDIDATE:-}" ]; then
     if curl -sfS "${CURL_HEALTH_ARGS[@]}" "$CP_URL_CANDIDATE/health" > /dev/null 2>&1; then
       echo "Public URL is up: $CP_URL_CANDIDATE"
       CP_PUBLIC_URL="$CP_URL_CANDIDATE"
-      CP_AGENT_URL="$CP_URL_CANDIDATE"
       export CP_PUBLIC_URL
       break
     fi
@@ -181,8 +277,6 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     fi
   } >> "$GITHUB_OUTPUT"
 fi
-
-echo "Agent registration URL: $CP_AGENT_URL"
 
 # Get admin password (from env or auto-generated by control plane)
 # (No admin login required for CI: app version measurement is performed by the control plane itself.)
