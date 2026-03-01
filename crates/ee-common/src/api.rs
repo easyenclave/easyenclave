@@ -52,6 +52,74 @@ pub struct DeployResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecentAppStatsResponse {
+    pub window_hours: u32,
+    pub window_start_unix: i64,
+    pub window_end_unix: i64,
+    pub total_apps: u64,
+    pub apps: Vec<RecentAppStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecentAgentStatsResponse {
+    pub window_hours: u32,
+    pub window_start_unix: i64,
+    pub window_end_unix: i64,
+    pub total_agents: u64,
+    pub agents: Vec<RecentAgentStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecentAppStat {
+    pub app_name: String,
+    pub checks_total: u64,
+    pub failed_checks: u64,
+    pub exempt_failures: u64,
+    pub imperfect_now: u64,
+    pub perfect_now: bool,
+    pub last_imperfect_unix: Option<i64>,
+    pub seconds_since_last_imperfect: Option<u64>,
+    pub downtime_seconds_estimate: u64,
+    pub uptime_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecentAgentStat {
+    pub agent_id: Uuid,
+    pub vm_name: Option<String>,
+    pub hostname: Option<String>,
+    pub app_name: Option<String>,
+    pub checks_total: u64,
+    pub failed_checks: u64,
+    pub exempt_failures: u64,
+    pub imperfect_now: bool,
+    pub perfect_now: bool,
+    pub last_imperfect_unix: Option<i64>,
+    pub seconds_since_last_imperfect: Option<u64>,
+    pub downtime_seconds_estimate: u64,
+    pub uptime_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentCheckIngestRequest {
+    pub app_name: Option<String>,
+    pub health_ok: bool,
+    pub attestation_ok: bool,
+    pub failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AgentCheckIngestResponse {
+    pub app_name: String,
+    pub check_ok: bool,
+    pub deployment_exempt: bool,
+    pub counted_down: bool,
+    pub imperfect_now: bool,
+    pub consecutive_failures: u32,
+    pub consecutive_successes: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CreateAccountRequest {
     pub name: String,
     pub account_type: String,
@@ -81,18 +149,6 @@ pub struct AuthMeResponse {
     pub auth_method: String,
     pub github_login: Option<String>,
     pub expires_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PaymentIntentRequest {
-    pub amount_cents: i64,
-    pub currency: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PaymentIntentResponse {
-    pub client_secret: String,
-    pub payment_intent_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

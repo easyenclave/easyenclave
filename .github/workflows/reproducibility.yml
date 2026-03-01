@@ -18,7 +18,7 @@ jobs:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Reproducibility and trusted measurements (strict)
-        run: ./scripts/ci-reproducibility-check.sh
+        run: cargo run -p ee-ops -- ci-reproducibility-check
 
       - name: Publish reproducibility summary
         if: always()

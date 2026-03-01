@@ -7,7 +7,7 @@ EasyEnclave uses a one-time nonce challenge to prevent replay during agent regis
 1. Agent requests a challenge:
 
 ```http
-GET /api/v1/agents/challenge
+GET /api/agents/challenge
 ```
 
 2. Control plane returns:
@@ -22,7 +22,7 @@ GET /api/v1/agents/challenge
 3. Agent includes nonce in attestation flow and calls:
 
 ```http
-POST /api/v1/agents/register
+POST /api/agents/register
 ```
 
 4. Control plane verifies nonce is present, unexpired, and unused.

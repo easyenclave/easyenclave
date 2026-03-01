@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""EasyEnclave GCP CLI.
+"""EasyEnclave GCP infrastructure CLI.
 
-GCP-only orchestration for control-plane and agent lifecycle.
-Legacy local/libvirt VM paths are intentionally removed.
+This is a GCP-only orchestrator for:
+- control-plane VM bootstrap
+- agent VM lifecycle
+- one-shot measurement VMs for trusted values
 """
 
 from __future__ import annotations
@@ -17,28 +19,22 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
-NODE_SIZES: dict[str, tuple[int, int, int, str]] = {
-    # memory_gib, vcpus, disk_gib, gcp machine type
-    "tiny": (8, 4, 200, "c3-standard-4"),
-    "standard": (16, 8, 200, "c3-standard-8"),
-    "llm": (44, 22, 200, "c3-standard-22"),
+NODE_SIZES: dict[str, dict[str, Any]] = {
+    "tiny": {"machine_type": "c3-standard-4", "disk_gib": 200},
+    "standard": {"machine_type": "c3-standard-8", "disk_gib": 200},
+    "llm": {"machine_type": "c3-standard-22", "disk_gib": 200},
 }
 
-CONTROL_PLANE_MODE = "control-plane"
-AGENT_MODE = "agent"
-MEASURE_MODE = "measure"
+
+def _fatal(message: str, code: int = 1) -> None:
+    print(f"Error: {message}", file=sys.stderr)
+    raise SystemExit(code)
 
 
-def _log(msg: str) -> None:
-    print(msg, file=sys.stderr)
-
-
-def _fatal(msg: str, code: int = 1) -> None:
-    print(f"Error: {msg}", file=sys.stderr)
-    sys.exit(code)
+def _warn(message: str) -> None:
+    print(f"Warning: {message}", file=sys.stderr)
 
 
 def _normalize_name(value: str, *, max_len: int = 63) -> str:
@@ -46,15 +42,32 @@ def _normalize_name(value: str, *, max_len: int = 63) -> str:
     cleaned = re.sub(r"-+", "-", cleaned).strip("-")
     if not cleaned:
         cleaned = "easyenclave"
-    return cleaned[:max_len].rstrip("-") or "easyenclave"
+    cleaned = cleaned[:max_len].rstrip("-")
+    return cleaned or "easyenclave"
 
 
 def _network_slug(value: str) -> str:
     return _normalize_name(value, max_len=48)
 
 
-def _json_dump(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+def _env_first(*keys: str) -> str:
+    for key in keys:
+        val = (os.environ.get(key) or "").strip()
+        if val:
+            return val
+    return ""
+
+
+def _coerce_disk_gib(default_gib: int) -> int:
+    raw = _env_first("EE_GCP_BOOT_DISK_GB", "GCP_BOOT_DISK_GB")
+    if not raw:
+        return default_gib
+    try:
+        parsed = int(raw)
+    except ValueError:
+        _warn(f"Ignoring invalid disk size override: {raw!r}")
+        return default_gib
+    return max(default_gib, parsed)
 
 
 @dataclass
@@ -67,213 +80,130 @@ class GcpConfig:
     service_account_key_json: str | None
 
 
-class GcpCli:
-    def __init__(self, workspace: Path):
-        self.workspace = workspace
+class GcpApi:
+    def __init__(self, cfg: GcpConfig):
+        self.cfg = cfg
 
-    def _run(
-        self, args: list[str], *, capture: bool = True, check: bool = True
-    ) -> subprocess.CompletedProcess[str]:
+    def run(self, args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         cmd = ["gcloud", *args]
-        proc = subprocess.run(
-            cmd,
-            text=True,
-            capture_output=capture,
-            check=False,
-        )
+        proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
         if check and proc.returncode != 0:
-            stderr = (proc.stderr or "").strip()
-            stdout = (proc.stdout or "").strip()
-            detail = stderr or stdout or f"exit_code={proc.returncode}"
-            raise RuntimeError(f"gcloud command failed: {' '.join(cmd)}\n{detail}")
+            detail = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+            if not detail:
+                detail = f"exit_code={proc.returncode}"
+            raise RuntimeError(f"gcloud failed: {' '.join(cmd)}\n{detail}")
         return proc
 
-    def _run_json(self, args: list[str]) -> Any:
-        proc = self._run([*args, "--format=json"], capture=True, check=True)
-        text = (proc.stdout or "").strip()
-        if not text:
+    def run_json(self, args: list[str]) -> Any:
+        proc = self.run([*args, "--format=json"], check=True)
+        raw = (proc.stdout or "").strip()
+        if not raw:
             return {}
-        return json.loads(text)
+        return json.loads(raw)
 
-    def _activate_service_account_if_needed(self, cfg: GcpConfig) -> None:
-        if cfg.service_account_key_json:
-            with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as tf:
-                tf.write(cfg.service_account_key_json)
+    def activate_auth(self) -> None:
+        if self.cfg.service_account_key_json:
+            with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+                tf.write(self.cfg.service_account_key_json)
                 key_path = tf.name
             try:
-                self._run(
-                    ["auth", "activate-service-account", "--key-file", key_path],
-                    capture=True,
-                    check=True,
-                )
+                self.run(["auth", "activate-service-account", "--key-file", key_path])
             finally:
                 try:
                     os.unlink(key_path)
                 except OSError:
                     pass
-        self._run(["config", "set", "project", cfg.project_id], capture=True, check=True)
+        self.run(["config", "set", "project", self.cfg.project_id])
 
-    def _resolve_config(self, *, zone_override: str | None = None) -> GcpConfig:
-        project_id = (
-            os.environ.get("GCP_PROJECT_ID")
-            or os.environ.get("STAGING_GCP_PROJECT_ID")
-            or os.environ.get("PRODUCTION_GCP_PROJECT_ID")
-            or ""
-        ).strip()
-        if not project_id:
-            _fatal("Missing GCP_PROJECT_ID")
+    def image_args(self) -> list[str]:
+        args = ["--image-project", self.cfg.image_project]
+        if self.cfg.image_name:
+            args.extend(["--image", self.cfg.image_name])
+            return args
+        if self.cfg.image_family:
+            args.extend(["--image-family", self.cfg.image_family])
+            return args
+        _fatal("Missing image source: set EE_GCP_IMAGE_NAME or EE_GCP_IMAGE_FAMILY")
 
-        zone = (
-            zone_override
-            or os.environ.get("GCP_ZONE")
-            or os.environ.get("AGENT_DATACENTER_AZ")
-            or "us-central1-f"
-        ).strip()
-        if not zone:
-            zone = "us-central1-f"
+    def zone_candidates(self, preferred_zone: str) -> list[str]:
+        ordered: list[str] = []
 
-        image_project = (os.environ.get("EE_GCP_IMAGE_PROJECT") or project_id).strip()
-        image_name = (os.environ.get("EE_GCP_IMAGE_NAME") or "").strip() or None
-        image_family = (
-            os.environ.get("EE_GCP_IMAGE_FAMILY") or "easyenclave-agent-main"
-        ).strip() or None
-        if not image_name and not image_family:
-            _fatal("Missing EE_GCP_IMAGE_NAME/EE_GCP_IMAGE_FAMILY")
-
-        sa_key = (
-            os.environ.get("GCP_SERVICE_ACCOUNT_KEY")
-            or os.environ.get("STAGING_GCP_SERVICE_ACCOUNT_KEY")
-            or os.environ.get("PRODUCTION_GCP_SERVICE_ACCOUNT_KEY")
-            or ""
-        ).strip() or None
-
-        return GcpConfig(
-            project_id=project_id,
-            zone=zone,
-            image_project=image_project,
-            image_name=image_name,
-            image_family=image_family,
-            service_account_key_json=sa_key,
-        )
-
-    def _image_args(self, cfg: GcpConfig) -> list[str]:
-        args = ["--image-project", cfg.image_project]
-        if cfg.image_name:
-            args.extend(["--image", cfg.image_name])
-        elif cfg.image_family:
-            args.extend(["--image-family", cfg.image_family])
-        else:
-            _fatal("Image source is not configured")
-        return args
-
-    def _machine_type_for_size(self, size: str) -> str:
-        normalized = (size or "").strip().lower()
-        if normalized not in NODE_SIZES:
-            _fatal(f"Unsupported size '{size}'. Allowed: {', '.join(NODE_SIZES.keys())}")
-        return NODE_SIZES[normalized][3]
-
-    def _zone_candidates(self, primary_zone: str) -> list[str]:
-        zones: list[str] = []
-
-        def _extend(raw: str | None) -> None:
-            if not raw:
-                return
+        def add_csv(raw: str) -> None:
             for item in raw.split(","):
                 zone = item.strip()
-                if zone:
-                    zones.append(zone)
+                if zone and zone not in ordered:
+                    ordered.append(zone)
 
-        _extend(primary_zone)
-        _extend(os.environ.get("GCP_FALLBACK_ZONES"))
-        _extend(os.environ.get("EE_GCP_FALLBACK_ZONES"))
+        add_csv(preferred_zone)
+        add_csv(_env_first("GCP_FALLBACK_ZONES", "EE_GCP_FALLBACK_ZONES"))
 
-        # Keep retries inside us-central1 by default for low-latency staging/prod paths.
-        if primary_zone.startswith("us-central1-"):
-            _extend("us-central1-a,us-central1-b,us-central1-c,us-central1-f")
+        if preferred_zone.startswith("us-central1-"):
+            add_csv("us-central1-a,us-central1-b,us-central1-c,us-central1-f")
 
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for zone in zones:
-            if zone not in seen:
-                seen.add(zone)
-                deduped.append(zone)
-        return deduped or [primary_zone]
+        if not ordered:
+            ordered = [preferred_zone]
+        return ordered
 
-    def _boot_disk_gib(self, default_gib: int) -> int:
-        raw = (
-            os.environ.get("EE_GCP_BOOT_DISK_GB") or os.environ.get("GCP_BOOT_DISK_GB") or ""
-        ).strip()
-        if not raw:
-            return default_gib
-        try:
-            parsed = int(raw)
-        except ValueError:
-            _log(f"Ignoring invalid EE_GCP_BOOT_DISK_GB value: {raw!r}")
-            return default_gib
-        return max(default_gib, parsed)
+    def machine_type(self, size: str) -> str:
+        key = size.strip().lower()
+        if key not in NODE_SIZES:
+            _fatal(f"Unsupported size '{size}'. Allowed: {', '.join(sorted(NODE_SIZES))}")
+        return str(NODE_SIZES[key]["machine_type"])
 
-    def _write_startup_script(self, config: dict[str, Any]) -> str:
-        script = f"""#!/usr/bin/env bash
-set -euo pipefail
-mkdir -p /etc/easyenclave
-cat > /etc/easyenclave/config.json <<'EOF_CONFIG'
-{json.dumps(config, indent=2, sort_keys=True)}
-EOF_CONFIG
-chmod 0600 /etc/easyenclave/config.json
-systemctl daemon-reload || true
-systemctl restart tdx-launcher.service || true
-"""
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tf:
-            tf.write(script)
-            return tf.name
+    def list_instances(self) -> list[dict[str, Any]]:
+        data = self.run_json(
+            [
+                "compute",
+                "instances",
+                "list",
+                "--project",
+                self.cfg.project_id,
+                "--filter",
+                "labels.easyenclave=managed",
+            ]
+        )
+        return data if isinstance(data, list) else []
 
-    def _write_measure_startup_script(self, size: str) -> str:
-        config = {"mode": MEASURE_MODE, "node_size": size}
-        script = f"""#!/usr/bin/env bash
-set -euo pipefail
-exec > >(tee -a /var/log/easyenclave-measure.log /dev/ttyS0) 2>&1
-mkdir -p /etc/easyenclave
-cat > /etc/easyenclave/config.json <<'EOF_CONFIG'
-{json.dumps(config, indent=2, sort_keys=True)}
-EOF_CONFIG
-chmod 0600 /etc/easyenclave/config.json
+    def describe_instance(self, name: str, zone: str | None = None) -> dict[str, Any]:
+        return self.run_json(
+            [
+                "compute",
+                "instances",
+                "describe",
+                name,
+                "--project",
+                self.cfg.project_id,
+                "--zone",
+                zone or self.cfg.zone,
+            ]
+        )
 
-if [ ! -f /opt/launcher/launcher.py ]; then
-  echo "EASYENCLAVE_MEASURE_ERROR=missing_launcher_binary"
-  systemctl poweroff || true
-  exit 0
-fi
-
-# Avoid relying exclusively on service orchestration for measurement mode.
-timeout 300 /usr/bin/python3 /opt/launcher/launcher.py || true
-sleep 2
-systemctl poweroff || true
-"""
-        with tempfile.NamedTemporaryFile("w", delete=False, suffix=".sh") as tf:
-            tf.write(script)
-            return tf.name
-
-    def _create_instance(
+    def create_instance(
         self,
         *,
-        cfg: GcpConfig,
         name: str,
         machine_type: str,
         startup_script_path: str,
         labels: dict[str, str],
         disk_gib: int,
-    ) -> dict[str, Any]:
-        labels_arg = ",".join(f"{k}={_normalize_name(v, max_len=63)}" for k, v in labels.items())
-        last_error: Exception | None = None
+        preferred_zone: str,
+    ) -> tuple[dict[str, Any], str]:
+        label_parts: list[str] = []
+        for key, value in labels.items():
+            norm_key = _normalize_name(key, max_len=63)
+            norm_value = _normalize_name(str(value), max_len=63)
+            label_parts.append(f"{norm_key}={norm_value}")
+        labels_arg = ",".join(label_parts)
 
-        for zone in self._zone_candidates(cfg.zone):
+        last_error: Exception | None = None
+        for zone in self.zone_candidates(preferred_zone):
             cmd = [
                 "compute",
                 "instances",
                 "create",
                 name,
                 "--project",
-                cfg.project_id,
+                self.cfg.project_id,
                 "--zone",
                 zone,
                 "--machine-type",
@@ -286,18 +216,20 @@ systemctl poweroff || true
                 "STANDARD",
                 "--confidential-compute-type",
                 "TDX",
-                "--scopes",
-                "https://www.googleapis.com/auth/cloud-platform",
                 "--labels",
                 labels_arg,
+                "--metadata",
+                "serial-port-enable=1",
                 "--metadata-from-file",
                 f"startup-script={startup_script_path}",
-                *self._image_args(cfg),
+                "--scopes",
+                "https://www.googleapis.com/auth/cloud-platform",
+                *self.image_args(),
             ]
             try:
-                self._run(cmd, capture=True, check=True)
-                cfg.zone = zone
-                return self.describe_instance(cfg=cfg, name=name)
+                self.run(cmd, check=True)
+                self.cfg.zone = zone
+                return self.describe_instance(name=name, zone=zone), zone
             except Exception as exc:
                 last_error = exc
                 msg = str(exc).lower()
@@ -307,545 +239,591 @@ systemctl poweroff || true
                     or "not supported in the" in msg
                 )
                 if retryable:
-                    _log(f"Zone '{zone}' unavailable for {machine_type}; trying next zone")
+                    _warn(f"Zone '{zone}' unavailable for machine_type={machine_type}; retrying")
                     continue
                 raise
 
-        if last_error is not None:
+        if last_error:
             raise last_error
-        _fatal("Instance creation failed without an error")
+        _fatal("create_instance failed")
 
-    def describe_instance(self, *, cfg: GcpConfig, name: str) -> dict[str, Any]:
-        return self._run_json(
-            [
-                "compute",
-                "instances",
-                "describe",
-                name,
-                "--project",
-                cfg.project_id,
-                "--zone",
-                cfg.zone,
-            ]
-        )
-
-    def _instance_ips(self, instance: dict[str, Any]) -> tuple[str | None, str | None]:
-        internal_ip = None
-        external_ip = None
-        nics = instance.get("networkInterfaces") or []
-        if nics:
-            internal_ip = nics[0].get("networkIP")
-            access_cfgs = nics[0].get("accessConfigs") or []
-            if access_cfgs:
-                external_ip = access_cfgs[0].get("natIP")
-        return internal_ip, external_ip
-
-    def _wait_http_health(self, url: str, timeout_seconds: int) -> bool:
-        deadline = time.time() + max(1, timeout_seconds)
-        while time.time() < deadline:
-            proc = subprocess.run(
-                ["curl", "-fsS", f"{url.rstrip('/')}/health"],
-                text=True,
-                capture_output=True,
-            )
-            if proc.returncode == 0:
-                return True
-            time.sleep(5)
-        return False
-
-    def _wait_instance_running(
-        self, *, cfg: GcpConfig, name: str, timeout_seconds: int
+    def wait_instance_running(
+        self, *, name: str, zone: str, timeout_seconds: int
     ) -> dict[str, Any]:
-        deadline = time.time() + max(1, timeout_seconds)
+        deadline = time.time() + max(5, timeout_seconds)
         while time.time() < deadline:
-            inst = self.describe_instance(cfg=cfg, name=name)
-            status = str(inst.get("status") or "").upper()
-            if status == "RUNNING":
+            inst = self.describe_instance(name=name, zone=zone)
+            if str(inst.get("status") or "").upper() == "RUNNING":
                 return inst
             time.sleep(3)
-        _fatal(f"Timed out waiting for instance '{name}' to reach RUNNING")
+        _fatal(f"Timed out waiting for VM '{name}' to reach RUNNING")
 
-    def _control_plane_hosts(
-        self, domain: str, env_name: str, network_name: str
-    ) -> tuple[str, str | None]:
-        alias = f"app-staging.{domain}" if env_name == "staging" else f"app.{domain}"
-        slug = _network_slug(network_name)
-        if slug:
-            return alias, f"{slug}.{domain}"
-        return alias, None
-
-    def _build_cp_config(self, *, port: int, cp_url_for_agents: str) -> dict[str, Any]:
-        cfg: dict[str, Any] = {
-            "mode": CONTROL_PLANE_MODE,
-            "port": int(port),
-            "control_plane_image": os.environ.get("CONTROL_PLANE_IMAGE")
-            or f"ghcr.io/{os.environ.get('GITHUB_REPOSITORY', 'easyenclave/easyenclave')}/control-plane-rust:latest",
-            "easyenclave_domain": os.environ.get("EASYENCLAVE_DOMAIN", "easyenclave.com"),
-            "easyenclave_env": os.environ.get("EASYENCLAVE_ENV", "staging"),
-            "easyenclave_network_name": os.environ.get("EASYENCLAVE_NETWORK_NAME", ""),
-            "easyenclave_boot_id": os.environ.get("EASYENCLAVE_BOOT_ID", ""),
-            "easyenclave_git_sha": os.environ.get("EASYENCLAVE_GIT_SHA", ""),
-            "easyenclave_release_tag": os.environ.get("EASYENCLAVE_RELEASE_TAG", ""),
-            "easyenclave_cp_url": cp_url_for_agents,
-            "cloudflare_api_token": os.environ.get("CLOUDFLARE_API_TOKEN", ""),
-            "cloudflare_account_id": os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""),
-            "cloudflare_zone_id": os.environ.get("CLOUDFLARE_ZONE_ID", ""),
-            "admin_password": os.environ.get("ADMIN_PASSWORD", ""),
-            "admin_github_logins": os.environ.get("ADMIN_GITHUB_LOGINS", ""),
-            "admin_password_hash": os.environ.get("ADMIN_PASSWORD_HASH", ""),
-            "ee_agent_ita_api_key": os.environ.get("EE_AGENT_ITA_API_KEY")
-            or os.environ.get("ITA_API_KEY")
-            or os.environ.get("INTEL_API_KEY")
-            or "",
-            "gcp_project_id": os.environ.get("GCP_PROJECT_ID", ""),
-            "gcp_service_account_key": os.environ.get("GCP_SERVICE_ACCOUNT_KEY", ""),
-            "ee_gcp_image_project": os.environ.get("EE_GCP_IMAGE_PROJECT", ""),
-            "ee_gcp_image_family": os.environ.get("EE_GCP_IMAGE_FAMILY", ""),
-            "ee_gcp_image_name": os.environ.get("EE_GCP_IMAGE_NAME", ""),
-            "github_oauth_client_id": os.environ.get("GITHUB_OAUTH_CLIENT_ID", ""),
-            "github_oauth_client_secret": os.environ.get("GITHUB_OAUTH_CLIENT_SECRET", ""),
-            "github_oauth_redirect_uri": os.environ.get("GITHUB_OAUTH_REDIRECT_URI", ""),
-            "stripe_secret_key": os.environ.get("STRIPE_SECRET_KEY", ""),
-            "stripe_webhook_secret": os.environ.get("STRIPE_WEBHOOK_SECRET", ""),
-            "trusted_agent_mrtds": os.environ.get("TRUSTED_AGENT_MRTDS", ""),
-            "trusted_proxy_mrtds": os.environ.get("TRUSTED_PROXY_MRTDS", ""),
-            "trusted_agent_rtmrs": os.environ.get("TRUSTED_AGENT_RTMRS", ""),
-            "trusted_proxy_rtmrs": os.environ.get("TRUSTED_PROXY_RTMRS", ""),
-            "trusted_agent_rtmrs_by_size": os.environ.get("TRUSTED_AGENT_RTMRS_BY_SIZE", ""),
-            "trusted_proxy_rtmrs_by_size": os.environ.get("TRUSTED_PROXY_RTMRS_BY_SIZE", ""),
-            "tcb_enforcement_mode": os.environ.get("TCB_ENFORCEMENT_MODE", ""),
-            "allowed_tcb_statuses": os.environ.get("ALLOWED_TCB_STATUSES", ""),
-            "nonce_enforcement_mode": os.environ.get("NONCE_ENFORCEMENT_MODE", ""),
-            "nonce_ttl_seconds": os.environ.get("NONCE_TTL_SECONDS", ""),
-            "rtmr_enforcement_mode": os.environ.get("RTMR_ENFORCEMENT_MODE", ""),
-            "signature_verification_mode": os.environ.get("SIGNATURE_VERIFICATION_MODE", ""),
-            "cp_to_agent_attestation_mode": os.environ.get("CP_TO_AGENT_ATTESTATION_MODE", ""),
-            "auth_require_github_oauth_in_production": os.environ.get(
-                "AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION", ""
-            ),
-            "password_login_enabled": os.environ.get("PASSWORD_LOGIN_ENABLED", ""),
-            "auth_allow_password_login_in_production": os.environ.get(
-                "AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION", ""
-            ),
-            "billing_enabled": os.environ.get("BILLING_ENABLED", ""),
-            "billing_capacity_request_dev_simulation": os.environ.get(
-                "BILLING_CAPACITY_REQUEST_DEV_SIMULATION", ""
-            ),
-            "billing_platform_account_id": os.environ.get("BILLING_PLATFORM_ACCOUNT_ID", ""),
-            "billing_contributor_pool_bps": os.environ.get("BILLING_CONTRIBUTOR_POOL_BPS", ""),
-            "default_gcp_tiny_capacity_enabled": os.environ.get(
-                "DEFAULT_GCP_TINY_CAPACITY_ENABLED", ""
-            ),
-            "default_gcp_tiny_capacity_count": os.environ.get(
-                "DEFAULT_GCP_TINY_CAPACITY_COUNT", ""
-            ),
-            "default_gcp_tiny_capacity_dispatch": os.environ.get(
-                "DEFAULT_GCP_TINY_CAPACITY_DISPATCH", ""
-            ),
-            "cp_attestation_allow_insecure": os.environ.get("CP_ATTESTATION_ALLOW_INSECURE", ""),
-            "cp_ita_jwks_url": os.environ.get("CP_ITA_JWKS_URL")
-            or "https://portal.trustauthority.intel.com/certs",
-            "cp_ita_issuer": os.environ.get("CP_ITA_ISSUER")
-            or "https://portal.trustauthority.intel.com",
-            "cp_ita_audience": os.environ.get("CP_ITA_AUDIENCE", ""),
-            "cp_ita_jwks_ttl_seconds": os.environ.get("CP_ITA_JWKS_TTL_SECONDS", ""),
-        }
-        return {k: v for k, v in cfg.items() if v not in (None, "")}
-
-    def control_plane_new(
-        self,
-        *,
-        port: int,
-        wait: bool,
-        wait_timeout_seconds: int,
-    ) -> dict[str, Any]:
-        cfg = self._resolve_config()
-        self._activate_service_account_if_needed(cfg)
-
-        env_name = (os.environ.get("EASYENCLAVE_ENV") or "staging").strip().lower()
-        network_name = (os.environ.get("EASYENCLAVE_NETWORK_NAME") or "").strip()
-        domain = (os.environ.get("EASYENCLAVE_DOMAIN") or "easyenclave.com").strip()
-        alias_hostname, network_hostname = self._control_plane_hosts(domain, env_name, network_name)
-        cp_url_for_agents = f"https://{network_hostname or alias_hostname}"
-
-        cp_name = _normalize_name(
-            f"ee-cp-{env_name}-{network_name or uuid.uuid4().hex[:8]}-{int(time.time())}",
-            max_len=63,
-        )
-        startup_script = self._write_startup_script(
-            self._build_cp_config(port=port, cp_url_for_agents=cp_url_for_agents)
-        )
-        try:
-            instance = self._create_instance(
-                cfg=cfg,
-                name=cp_name,
-                machine_type=self._machine_type_for_size("standard"),
-                startup_script_path=startup_script,
-                labels={
-                    "easyenclave": "managed",
-                    "ee_role": "control-plane",
-                    "ee_env": env_name,
-                    "ee_network": network_name or "default",
-                },
-                disk_gib=200,
-            )
-        finally:
-            try:
-                os.unlink(startup_script)
-            except OSError:
-                pass
-
-        instance = self._wait_instance_running(cfg=cfg, name=cp_name, timeout_seconds=300)
-        internal_ip, external_ip = self._instance_ips(instance)
-
-        preferred_url = (
-            f"https://{network_hostname}" if network_hostname else f"https://{alias_hostname}"
-        )
-        fallback_url = f"https://{alias_hostname}"
-
-        if wait:
-            if not self._wait_http_health(preferred_url, wait_timeout_seconds):
-                if preferred_url != fallback_url and self._wait_http_health(
-                    fallback_url, wait_timeout_seconds
-                ):
-                    preferred_url = fallback_url
-                else:
-                    _fatal(
-                        f"Control plane did not become healthy at {preferred_url} (fallback {fallback_url})"
-                    )
-
-        result = {
-            "name": cp_name,
-            "zone": cfg.zone,
-            "ip": external_ip or internal_ip,
-            "internal_ip": internal_ip,
-            "external_ip": external_ip,
-            "control_plane_url": preferred_url,
-            "control_plane_hostname": alias_hostname,
-            "control_plane_network_hostname": network_hostname,
-        }
-        return result
-
-    def vm_new(
-        self,
-        *,
-        node_size: str,
-        control_plane_url: str,
-        intel_api_key: str,
-        cloud_provider: str,
-        availability_zone: str,
-        region: str,
-        datacenter: str,
-        wait: bool,
-        wait_timeout_seconds: int,
-    ) -> dict[str, Any]:
-        provider = (cloud_provider or "gcp").strip().lower()
-        if provider not in {"gcp", "google"}:
-            _fatal(f"GCP-only mode: unsupported cloud provider '{provider}'")
-
-        zone = (availability_zone or os.environ.get("GCP_ZONE") or "us-central1-f").strip()
-        cfg = self._resolve_config(zone_override=zone)
-        self._activate_service_account_if_needed(cfg)
-
-        vm_name = _normalize_name(f"tdx-agent-{uuid.uuid4().hex[:10]}")
-        datacenter_label = (datacenter or f"gcp:{zone}").strip().lower()
-
-        config = {
-            "mode": AGENT_MODE,
-            "control_plane_url": control_plane_url,
-            "cloud_provider": "gcp",
-            "availability_zone": zone,
-            "region": region,
-            "datacenter": datacenter_label,
-            "node_size": node_size,
-            "intel_api_key": intel_api_key,
-            "ita_api_key": intel_api_key,
-            "easyenclave_env": os.environ.get("EASYENCLAVE_ENV", "staging"),
-            "easyenclave_network_name": os.environ.get("EASYENCLAVE_NETWORK_NAME", ""),
-        }
-
-        startup_script = self._write_startup_script(config)
-        try:
-            instance = self._create_instance(
-                cfg=cfg,
-                name=vm_name,
-                machine_type=self._machine_type_for_size(node_size),
-                startup_script_path=startup_script,
-                labels={
-                    "easyenclave": "managed",
-                    "ee_role": "agent",
-                    "ee_env": os.environ.get("EASYENCLAVE_ENV", "staging"),
-                    "ee_network": os.environ.get("EASYENCLAVE_NETWORK_NAME", "default"),
-                    "ee_node_size": node_size,
-                },
-                disk_gib=self._boot_disk_gib(NODE_SIZES[node_size][2]),
-            )
-        finally:
-            try:
-                os.unlink(startup_script)
-            except OSError:
-                pass
-
-        if wait:
-            instance = self._wait_instance_running(
-                cfg=cfg,
-                name=vm_name,
-                timeout_seconds=wait_timeout_seconds,
-            )
-
-        if not datacenter:
-            datacenter_label = f"gcp:{cfg.zone}"
-
-        internal_ip, external_ip = self._instance_ips(instance)
-        return {
-            "name": vm_name,
-            "zone": cfg.zone,
-            "internal_ip": internal_ip,
-            "external_ip": external_ip,
-            "cloud_provider": "gcp",
-            "datacenter": datacenter_label,
-            "node_size": node_size,
-        }
-
-    def vm_list(self) -> list[str]:
-        cfg = self._resolve_config()
-        self._activate_service_account_if_needed(cfg)
-        data = self._run_json(
-            [
-                "compute",
-                "instances",
-                "list",
-                "--project",
-                cfg.project_id,
-                "--filter",
-                "labels.easyenclave=managed",
-            ]
-        )
-        names = []
-        for item in data or []:
-            name = str(item.get("name") or "").strip()
-            if name:
-                names.append(name)
-        return sorted(names)
-
-    def vm_delete(self, name: str) -> None:
-        cfg = self._resolve_config()
-        self._activate_service_account_if_needed(cfg)
-
-        if name == "all":
-            for vm_name in self.vm_list():
-                self._run(
-                    [
-                        "compute",
-                        "instances",
-                        "delete",
-                        vm_name,
-                        "--project",
-                        cfg.project_id,
-                        "--zone",
-                        cfg.zone,
-                        "--quiet",
-                    ],
-                    capture=True,
-                    check=False,
-                )
-            return
-
-        self._run(
+    def delete_instance(self, name: str, zone: str, *, check: bool = False) -> None:
+        self.run(
             [
                 "compute",
                 "instances",
                 "delete",
                 name,
                 "--project",
-                cfg.project_id,
+                self.cfg.project_id,
                 "--zone",
-                cfg.zone,
+                zone,
                 "--quiet",
             ],
-            capture=True,
-            check=True,
+            check=check,
         )
 
-    def vm_measure(self, *, size: str, timeout_seconds: int) -> dict[str, Any]:
-        cfg = self._resolve_config()
-        self._activate_service_account_if_needed(cfg)
 
-        name = _normalize_name(f"ee-measure-{size}-{uuid.uuid4().hex[:8]}")
-        startup_script = self._write_measure_startup_script(size)
+def _resolve_config(zone_override: str | None = None) -> GcpConfig:
+    project_id = _env_first("GCP_PROJECT_ID", "STAGING_GCP_PROJECT_ID", "PRODUCTION_GCP_PROJECT_ID")
+    if not project_id:
+        _fatal("Missing GCP_PROJECT_ID")
 
+    zone = (
+        (zone_override or "").strip()
+        or _env_first("GCP_ZONE", "AGENT_DATACENTER_AZ")
+        or "us-central1-f"
+    )
+
+    image_project = _env_first("EE_GCP_IMAGE_PROJECT") or project_id
+    image_name = _env_first("EE_GCP_IMAGE_NAME") or None
+    image_family = _env_first("EE_GCP_IMAGE_FAMILY") or "easyenclave-agent-main"
+
+    service_key = _env_first(
+        "GCP_SERVICE_ACCOUNT_KEY",
+        "STAGING_GCP_SERVICE_ACCOUNT_KEY",
+        "PRODUCTION_GCP_SERVICE_ACCOUNT_KEY",
+    )
+
+    return GcpConfig(
+        project_id=project_id,
+        zone=zone,
+        image_project=image_project,
+        image_name=image_name,
+        image_family=image_family,
+        service_account_key_json=service_key or None,
+    )
+
+
+def _instance_ips(instance: dict[str, Any]) -> tuple[str | None, str | None]:
+    internal_ip: str | None = None
+    external_ip: str | None = None
+    nics = instance.get("networkInterfaces") or []
+    if nics:
+        nic0 = nics[0] or {}
+        internal_ip = nic0.get("networkIP")
+        access_cfgs = nic0.get("accessConfigs") or []
+        if access_cfgs:
+            external_ip = access_cfgs[0].get("natIP")
+    return internal_ip, external_ip
+
+
+def _wait_http_health(url: str, timeout_seconds: int) -> bool:
+    deadline = time.time() + max(5, timeout_seconds)
+    health_url = f"{url.rstrip('/')}/health"
+    while time.time() < deadline:
+        proc = subprocess.run(["curl", "-fsS", health_url], capture_output=True, text=True)
+        if proc.returncode == 0:
+            return True
+        time.sleep(5)
+    return False
+
+
+def _write_agent_startup_script(config: dict[str, Any]) -> str:
+    script = f"""#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p /etc/easyenclave
+cat > /etc/easyenclave/agent.json <<'EOF_CONFIG'
+{json.dumps(config, indent=2, sort_keys=True)}
+EOF_CONFIG
+chmod 0600 /etc/easyenclave/agent.json
+systemctl daemon-reload || true
+systemctl disable --now easyenclave-control-plane.service || true
+systemctl enable easyenclave-agent.service || true
+systemctl restart easyenclave-agent.service || true
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as tf:
+        tf.write(script)
+        return tf.name
+
+
+def _write_control_plane_startup_script(config: dict[str, Any]) -> str:
+    script = f"""#!/usr/bin/env bash
+set -euo pipefail
+mkdir -p /etc/easyenclave
+cat > /etc/easyenclave/control-plane.json <<'EOF_CONFIG'
+{json.dumps(config, indent=2, sort_keys=True)}
+EOF_CONFIG
+chmod 0600 /etc/easyenclave/control-plane.json
+systemctl daemon-reload || true
+systemctl disable --now easyenclave-agent.service || true
+systemctl enable easyenclave-control-plane.service || true
+systemctl restart easyenclave-control-plane.service || true
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as tf:
+        tf.write(script)
+        return tf.name
+
+
+def _write_measure_startup_script(node_size: str) -> str:
+    cfg = {"node_size": node_size}
+    script = f"""#!/usr/bin/env bash
+set -euo pipefail
+exec > >(tee -a /var/log/easyenclave-measure.log /dev/ttyS0) 2>&1
+mkdir -p /etc/easyenclave
+cat > /etc/easyenclave/measure.json <<'EOF_CONFIG'
+{json.dumps(cfg, indent=2, sort_keys=True)}
+EOF_CONFIG
+chmod 0600 /etc/easyenclave/measure.json
+if [ ! -x /usr/local/bin/ee-agent ]; then
+  echo "EASYENCLAVE_MEASURE_ERROR=missing_agent_binary"
+  systemctl poweroff || true
+  exit 0
+fi
+EE_AGENT_MODE=measure EASYENCLAVE_CONFIG=/etc/easyenclave/measure.json timeout 300 /usr/local/bin/ee-agent || true
+sleep 2
+systemctl poweroff || true
+"""
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as tf:
+        tf.write(script)
+        return tf.name
+
+
+def _control_plane_hostnames(
+    domain: str, env_name: str, network_name: str
+) -> tuple[str, str | None]:
+    alias = f"app-staging.{domain}" if env_name == "staging" else f"app.{domain}"
+    slug = _network_slug(network_name)
+    if slug:
+        return alias, f"{slug}.{domain}"
+    return alias, None
+
+
+def _build_control_plane_config(port: int, cp_url_for_agents: str) -> dict[str, Any]:
+    cfg: dict[str, Any] = {
+        "port": int(port),
+        "control_plane_image": _env_first("CONTROL_PLANE_IMAGE")
+        or f"ghcr.io/{_env_first('GITHUB_REPOSITORY') or 'easyenclave/easyenclave'}/control-plane-rust:latest",
+        "easyenclave_domain": _env_first("EASYENCLAVE_DOMAIN") or "easyenclave.com",
+        "easyenclave_env": _env_first("EASYENCLAVE_ENV") or "staging",
+        "easyenclave_network_name": _env_first("EASYENCLAVE_NETWORK_NAME"),
+        "easyenclave_boot_id": _env_first("EASYENCLAVE_BOOT_ID"),
+        "easyenclave_git_sha": _env_first("EASYENCLAVE_GIT_SHA"),
+        "easyenclave_release_tag": _env_first("EASYENCLAVE_RELEASE_TAG"),
+        "easyenclave_cp_url": cp_url_for_agents,
+        "cloudflare_api_token": _env_first("CLOUDFLARE_API_TOKEN"),
+        "cloudflare_account_id": _env_first("CLOUDFLARE_ACCOUNT_ID"),
+        "cloudflare_zone_id": _env_first("CLOUDFLARE_ZONE_ID"),
+        "admin_password": _env_first("CP_ADMIN_PASSWORD", "ADMIN_PASSWORD"),
+        "admin_github_logins": _env_first("ADMIN_GITHUB_LOGINS"),
+        "admin_password_hash": _env_first("ADMIN_PASSWORD_HASH"),
+        "ee_agent_ita_api_key": _env_first("EE_AGENT_ITA_API_KEY", "ITA_API_KEY", "INTEL_API_KEY"),
+        "gcp_project_id": _env_first("GCP_PROJECT_ID"),
+        "gcp_service_account_key": _env_first("GCP_SERVICE_ACCOUNT_KEY"),
+        "ee_gcp_image_project": _env_first("EE_GCP_IMAGE_PROJECT"),
+        "ee_gcp_image_family": _env_first("EE_GCP_IMAGE_FAMILY"),
+        "ee_gcp_image_name": _env_first("EE_GCP_IMAGE_NAME"),
+        "github_oauth_client_id": _env_first("GITHUB_OAUTH_CLIENT_ID"),
+        "github_oauth_client_secret": _env_first("GITHUB_OAUTH_CLIENT_SECRET"),
+        "github_oauth_redirect_uri": _env_first("GITHUB_OAUTH_REDIRECT_URI"),
+        "stripe_secret_key": _env_first("STRIPE_SECRET_KEY"),
+        "stripe_webhook_secret": _env_first("STRIPE_WEBHOOK_SECRET"),
+        "trusted_agent_mrtds": _env_first("TRUSTED_AGENT_MRTDS"),
+        "trusted_proxy_mrtds": _env_first("TRUSTED_PROXY_MRTDS"),
+        "trusted_agent_rtmrs": _env_first("TRUSTED_AGENT_RTMRS"),
+        "trusted_proxy_rtmrs": _env_first("TRUSTED_PROXY_RTMRS"),
+        "trusted_agent_rtmrs_by_size": _env_first("TRUSTED_AGENT_RTMRS_BY_SIZE"),
+        "trusted_proxy_rtmrs_by_size": _env_first("TRUSTED_PROXY_RTMRS_BY_SIZE"),
+        "tcb_enforcement_mode": _env_first("TCB_ENFORCEMENT_MODE"),
+        "allowed_tcb_statuses": _env_first("ALLOWED_TCB_STATUSES"),
+        "nonce_enforcement_mode": _env_first("NONCE_ENFORCEMENT_MODE"),
+        "nonce_ttl_seconds": _env_first("NONCE_TTL_SECONDS"),
+        "rtmr_enforcement_mode": _env_first("RTMR_ENFORCEMENT_MODE"),
+        "signature_verification_mode": _env_first("SIGNATURE_VERIFICATION_MODE"),
+        "cp_to_agent_attestation_mode": _env_first("CP_TO_AGENT_ATTESTATION_MODE"),
+        "auth_require_github_oauth_in_production": _env_first(
+            "AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION"
+        ),
+        "password_login_enabled": _env_first("PASSWORD_LOGIN_ENABLED"),
+        "auth_allow_password_login_in_production": _env_first(
+            "AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION"
+        ),
+        "billing_enabled": _env_first("BILLING_ENABLED"),
+        "billing_capacity_request_dev_simulation": _env_first(
+            "BILLING_CAPACITY_REQUEST_DEV_SIMULATION"
+        ),
+        "billing_platform_account_id": _env_first("BILLING_PLATFORM_ACCOUNT_ID"),
+        "billing_contributor_pool_bps": _env_first("BILLING_CONTRIBUTOR_POOL_BPS"),
+        "default_gcp_tiny_capacity_enabled": _env_first("DEFAULT_GCP_TINY_CAPACITY_ENABLED"),
+        "default_gcp_tiny_capacity_count": _env_first("DEFAULT_GCP_TINY_CAPACITY_COUNT"),
+        "default_gcp_tiny_capacity_dispatch": _env_first("DEFAULT_GCP_TINY_CAPACITY_DISPATCH"),
+        "cp_attestation_allow_insecure": _env_first("CP_ATTESTATION_ALLOW_INSECURE"),
+        "cp_ita_jwks_url": _env_first("CP_ITA_JWKS_URL")
+        or "https://portal.trustauthority.intel.com/certs",
+        "cp_ita_issuer": _env_first("CP_ITA_ISSUER") or "https://portal.trustauthority.intel.com",
+        "cp_ita_audience": _env_first("CP_ITA_AUDIENCE"),
+        "cp_ita_jwks_ttl_seconds": _env_first("CP_ITA_JWKS_TTL_SECONDS"),
+    }
+    return {k: v for k, v in cfg.items() if v not in ("", None)}
+
+
+def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[str, Any]:
+    cfg = _resolve_config()
+    gcp = GcpApi(cfg)
+    gcp.activate_auth()
+
+    env_name = (_env_first("EASYENCLAVE_ENV") or "staging").lower()
+    network_name = _env_first("EASYENCLAVE_NETWORK_NAME")
+    domain = _env_first("EASYENCLAVE_DOMAIN") or "easyenclave.com"
+
+    alias_host, network_host = _control_plane_hostnames(domain, env_name, network_name)
+    cp_url_for_agents = f"https://{network_host or alias_host}"
+
+    name = _normalize_name(
+        f"ee-cp-{env_name}-{network_name or uuid.uuid4().hex[:8]}-{int(time.time())}",
+        max_len=63,
+    )
+
+    startup_script = _write_control_plane_startup_script(
+        _build_control_plane_config(port, cp_url_for_agents)
+    )
+    try:
+        _, zone = gcp.create_instance(
+            name=name,
+            machine_type=gcp.machine_type("standard"),
+            startup_script_path=startup_script,
+            labels={
+                "easyenclave": "managed",
+                "ee_role": "control-plane",
+                "ee_env": env_name,
+                "ee_network": network_name or "default",
+            },
+            disk_gib=_coerce_disk_gib(200),
+            preferred_zone=cfg.zone,
+        )
+    finally:
         try:
-            self._create_instance(
-                cfg=cfg,
-                name=name,
-                machine_type=self._machine_type_for_size(size),
-                startup_script_path=startup_script,
-                labels={
-                    "easyenclave": "managed",
-                    "ee_role": "measure",
-                    "ee_env": os.environ.get("EASYENCLAVE_ENV", "staging"),
-                },
-                disk_gib=self._boot_disk_gib(NODE_SIZES[size][2]),
+            os.unlink(startup_script)
+        except OSError:
+            pass
+
+    inst = gcp.wait_instance_running(name=name, zone=zone, timeout_seconds=300)
+    internal_ip, external_ip = _instance_ips(inst)
+
+    public_alias_url = f"https://{alias_host}"
+    network_url = f"https://{network_host}" if network_host else ""
+    ip_fallback_url = (
+        f"http://{external_ip or internal_ip}:8080" if (external_ip or internal_ip) else ""
+    )
+
+    selected_url = network_url or public_alias_url
+    if wait:
+        candidates = [u for u in [network_url, public_alias_url, ip_fallback_url] if u]
+        for candidate in candidates:
+            if _wait_http_health(candidate, timeout_seconds):
+                selected_url = candidate
+                break
+        else:
+            _fatal(
+                "Control plane did not become healthy. "
+                f"Tried: {', '.join(candidates) if candidates else 'no candidates'}"
             )
 
-            deadline = time.time() + max(30, timeout_seconds)
-            measurements: dict[str, Any] | None = None
-            while time.time() < deadline:
-                serial = self._run(
-                    [
-                        "compute",
-                        "instances",
-                        "get-serial-port-output",
-                        name,
-                        "--project",
-                        cfg.project_id,
-                        "--zone",
-                        cfg.zone,
-                        "--port",
-                        "1",
-                    ],
-                    capture=True,
-                    check=False,
-                )
-                text = serial.stdout or ""
-                for line in text.splitlines():
-                    line = line.strip()
-                    if line.startswith("EASYENCLAVE_MEASUREMENTS="):
-                        payload = line.split("=", 1)[1]
-                        measurements = json.loads(payload)
-                        break
-                    if line.startswith("EASYENCLAVE_MEASURE_ERROR="):
-                        _fatal(f"Measure VM error: {line.split('=', 1)[1]}")
-                if measurements is not None:
-                    break
-                time.sleep(5)
+    return {
+        "name": name,
+        "zone": zone,
+        "ip": external_ip or internal_ip,
+        "internal_ip": internal_ip,
+        "external_ip": external_ip,
+        "control_plane_url": selected_url,
+        "control_plane_hostname": alias_host,
+        "control_plane_network_hostname": network_host,
+        "bootstrap_agents": [],
+    }
 
-            if measurements is None:
-                _fatal("Timed out waiting for measure output from GCP VM")
-            return measurements
-        finally:
-            try:
-                os.unlink(startup_script)
-            except OSError:
-                pass
-            self._run(
+
+def vm_new(
+    *,
+    size: str,
+    cp_url: str,
+    ita_api_key: str,
+    zone: str,
+    region: str,
+    datacenter: str,
+    wait: bool,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    cfg = _resolve_config(zone_override=zone)
+    gcp = GcpApi(cfg)
+    gcp.activate_auth()
+
+    node_size = size.strip().lower()
+    if node_size not in NODE_SIZES:
+        _fatal(f"Unsupported size '{size}'. Allowed: {', '.join(sorted(NODE_SIZES))}")
+
+    vm_name = _normalize_name(f"tdx-agent-{uuid.uuid4().hex[:10]}")
+    datacenter_label = (datacenter or f"gcp:{cfg.zone}").strip().lower()
+
+    config = {
+        "control_plane_url": cp_url,
+        "cloud_provider": "gcp",
+        "availability_zone": cfg.zone,
+        "region": region.strip(),
+        "datacenter": datacenter_label,
+        "node_size": node_size,
+        "intel_api_key": ita_api_key,
+        "ita_api_key": ita_api_key,
+        "easyenclave_env": _env_first("EASYENCLAVE_ENV") or "staging",
+        "easyenclave_network_name": _env_first("EASYENCLAVE_NETWORK_NAME"),
+    }
+
+    startup_script = _write_agent_startup_script(config)
+    try:
+        inst, resolved_zone = gcp.create_instance(
+            name=vm_name,
+            machine_type=gcp.machine_type(node_size),
+            startup_script_path=startup_script,
+            labels={
+                "easyenclave": "managed",
+                "ee_role": "agent",
+                "ee_env": _env_first("EASYENCLAVE_ENV") or "staging",
+                "ee_network": _env_first("EASYENCLAVE_NETWORK_NAME") or "default",
+                "ee_node_size": node_size,
+            },
+            disk_gib=_coerce_disk_gib(int(NODE_SIZES[node_size]["disk_gib"])),
+            preferred_zone=cfg.zone,
+        )
+    finally:
+        try:
+            os.unlink(startup_script)
+        except OSError:
+            pass
+
+    if wait:
+        inst = gcp.wait_instance_running(
+            name=vm_name, zone=resolved_zone, timeout_seconds=timeout_seconds
+        )
+
+    internal_ip, external_ip = _instance_ips(inst)
+    return {
+        "name": vm_name,
+        "zone": resolved_zone,
+        "internal_ip": internal_ip,
+        "external_ip": external_ip,
+        "cloud_provider": "gcp",
+        "datacenter": datacenter_label or f"gcp:{resolved_zone}",
+        "node_size": node_size,
+    }
+
+
+def vm_list(*, as_json: bool) -> None:
+    cfg = _resolve_config()
+    gcp = GcpApi(cfg)
+    gcp.activate_auth()
+    items = gcp.list_instances()
+    if as_json:
+        payload = []
+        for item in items:
+            zone = str(item.get("zone") or "").rsplit("/", 1)[-1]
+            payload.append(
+                {
+                    "name": item.get("name"),
+                    "zone": zone,
+                    "status": item.get("status"),
+                    "labels": item.get("labels") or {},
+                }
+            )
+        print(json.dumps(payload, indent=2))
+        return
+
+    names = sorted([str(i.get("name") or "").strip() for i in items if i.get("name")])
+    for name in names:
+        print(name)
+
+
+def vm_delete(name: str) -> None:
+    cfg = _resolve_config()
+    gcp = GcpApi(cfg)
+    gcp.activate_auth()
+
+    instances = gcp.list_instances()
+    by_name: dict[str, str] = {}
+    for item in instances:
+        vm_name = str(item.get("name") or "").strip()
+        zone = str(item.get("zone") or "").strip().rsplit("/", 1)[-1]
+        if vm_name and zone:
+            by_name[vm_name] = zone
+
+    if name == "all":
+        for vm_name, zone in sorted(by_name.items()):
+            gcp.delete_instance(vm_name, zone, check=False)
+        return
+
+    zone = by_name.get(name) or cfg.zone
+    gcp.delete_instance(name, zone, check=True)
+
+
+def vm_measure(*, size: str, timeout_seconds: int) -> dict[str, Any]:
+    node_size = size.strip().lower()
+    if node_size not in NODE_SIZES:
+        _fatal(f"Unsupported size '{size}'. Allowed: {', '.join(sorted(NODE_SIZES))}")
+
+    cfg = _resolve_config()
+    gcp = GcpApi(cfg)
+    gcp.activate_auth()
+
+    vm_name = _normalize_name(f"ee-measure-{node_size}-{uuid.uuid4().hex[:8]}")
+    startup_script = _write_measure_startup_script(node_size)
+
+    resolved_zone = cfg.zone
+    try:
+        _, resolved_zone = gcp.create_instance(
+            name=vm_name,
+            machine_type=gcp.machine_type(node_size),
+            startup_script_path=startup_script,
+            labels={
+                "easyenclave": "managed",
+                "ee_role": "measure",
+                "ee_env": _env_first("EASYENCLAVE_ENV") or "staging",
+            },
+            disk_gib=_coerce_disk_gib(int(NODE_SIZES[node_size]["disk_gib"])),
+            preferred_zone=cfg.zone,
+        )
+
+        deadline = time.time() + max(30, timeout_seconds)
+        measurements: dict[str, Any] | None = None
+
+        while time.time() < deadline:
+            serial = gcp.run(
                 [
                     "compute",
                     "instances",
-                    "delete",
-                    name,
+                    "get-serial-port-output",
+                    vm_name,
                     "--project",
                     cfg.project_id,
                     "--zone",
-                    cfg.zone,
-                    "--quiet",
+                    resolved_zone,
+                    "--port",
+                    "1",
                 ],
-                capture=True,
                 check=False,
             )
+            text = serial.stdout or ""
+            for line in text.splitlines():
+                line = line.strip()
+                if line.startswith("EASYENCLAVE_MEASUREMENTS="):
+                    measurements = json.loads(line.split("=", 1)[1])
+                    break
+                if line.startswith("EASYENCLAVE_MEASURE_ERROR="):
+                    _fatal(f"Measure VM error: {line.split('=', 1)[1]}")
+            if measurements is not None:
+                break
+            time.sleep(5)
+
+        if measurements is None:
+            _fatal("Timed out waiting for measurement output")
+        return measurements
+    finally:
+        try:
+            os.unlink(startup_script)
+        except OSError:
+            pass
+        gcp.delete_instance(vm_name, resolved_zone, check=False)
 
 
-def _add_size_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--size", choices=sorted(NODE_SIZES.keys()), default="standard")
-    parser.add_argument("--memory-gib", type=int, default=None)
-    parser.add_argument("--vcpu-count", type=int, default=None)
-    parser.add_argument("--disk-gib", type=int, default=None)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="EasyEnclave GCP infrastructure CLI")
+    sub = parser.add_subparsers(dest="command", required=True)
 
+    cp = sub.add_parser("control-plane", help="Control-plane operations")
+    cp_sub = cp.add_subparsers(dest="cp_command", required=True)
 
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="EasyEnclave GCP CLI")
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    cp_parser = subparsers.add_parser("control-plane", help="Control-plane operations")
-    cp_sub = cp_parser.add_subparsers(dest="cp_command", required=True)
-    cp_new = cp_sub.add_parser("new", help="Create GCP control-plane VM")
-    cp_new.add_argument("-i", "--image", default="", help="Ignored in GCP mode")
+    cp_new = cp_sub.add_parser("new", help="Create control-plane VM")
     cp_new.add_argument("--port", type=int, default=8080)
     cp_new.add_argument("--wait", action="store_true")
-    cp_new.add_argument("--bootstrap-timeout", type=int, default=600)
-    cp_new.add_argument("--debug", action="store_true")
-    cp_new.add_argument("--bootstrap-measurers", action="store_true")
-    cp_new.add_argument("--no-bootstrap-measurers", action="store_true")
-    cp_new.add_argument("--bootstrap-sizes", default="tiny")
-    _add_size_args(cp_new)
+    cp_new.add_argument("--timeout", type=int, default=600)
 
-    vm_parser = subparsers.add_parser("vm", help="VM lifecycle")
-    vm_sub = vm_parser.add_subparsers(dest="vm_command", required=True)
+    vm = sub.add_parser("vm", help="Agent/measure VM operations")
+    vm_sub = vm.add_subparsers(dest="vm_command", required=True)
 
-    vm_new = vm_sub.add_parser("new", help="Create GCP agent VM")
-    vm_new.add_argument("-i", "--image", default="", help="Ignored in GCP mode")
-    vm_new.add_argument("--easyenclave-url", default="https://app.easyenclave.com")
-    vm_new.add_argument(
-        "--intel-api-key",
-        default=os.environ.get("ITA_API_KEY") or os.environ.get("INTEL_API_KEY", ""),
+    vm_new_cmd = vm_sub.add_parser("new", help="Create agent VM")
+    vm_new_cmd.add_argument("--size", choices=sorted(NODE_SIZES), default="standard")
+    vm_new_cmd.add_argument(
+        "--cp-url",
+        default=_env_first("CP_URL") or "https://app.easyenclave.com",
+        help="Control plane URL for agent registration",
     )
-    vm_new.add_argument("--wait", action="store_true")
-    vm_new.add_argument("--debug", action="store_true")
-    vm_new.add_argument("--cloud-provider", default="gcp")
-    vm_new.add_argument("--availability-zone", default="")
-    vm_new.add_argument("--region", default="")
-    vm_new.add_argument("--datacenter", default="")
-    _add_size_args(vm_new)
+    vm_new_cmd.add_argument(
+        "--ita-api-key",
+        default=_env_first("ITA_API_KEY", "INTEL_API_KEY"),
+        help="Intel Trust Authority API key",
+    )
+    vm_new_cmd.add_argument("--zone", default=_env_first("GCP_ZONE", "AGENT_DATACENTER_AZ") or "")
+    vm_new_cmd.add_argument("--region", default=_env_first("AGENT_DATACENTER_REGION") or "")
+    vm_new_cmd.add_argument("--datacenter", default=_env_first("AGENT_DATACENTER") or "")
+    vm_new_cmd.add_argument("--wait", action="store_true")
+    vm_new_cmd.add_argument("--timeout", type=int, default=600)
 
-    vm_sub.add_parser("list", help="List managed GCP VMs")
+    vm_list_cmd = vm_sub.add_parser("list", help="List managed EasyEnclave instances")
+    vm_list_cmd.add_argument("--json", action="store_true")
 
-    vm_delete = vm_sub.add_parser("delete", help="Delete managed GCP VM(s)")
-    vm_delete.add_argument("name")
-    vm_delete.add_argument("--easyenclave-url", default="", help="Ignored")
-    vm_delete.add_argument("--admin-token", default="", help="Ignored")
+    vm_delete_cmd = vm_sub.add_parser("delete", help="Delete one managed instance or 'all'")
+    vm_delete_cmd.add_argument("name")
 
-    vm_measure = vm_sub.add_parser("measure", help="Measure a temporary GCP TDX VM")
-    vm_measure.add_argument("-i", "--image", default="", help="Ignored in GCP mode")
-    vm_measure.add_argument("--timeout", type=int, default=600)
-    vm_measure.add_argument("--json", action="store_true")
-    _add_size_args(vm_measure)
+    vm_measure_cmd = vm_sub.add_parser("measure", help="Run one-shot measurement VM")
+    vm_measure_cmd.add_argument("--size", choices=sorted(NODE_SIZES), default="standard")
+    vm_measure_cmd.add_argument("--timeout", type=int, default=600)
+    vm_measure_cmd.add_argument("--json", action="store_true")
 
     return parser
 
 
 def main() -> None:
-    args = _build_parser().parse_args()
-    mgr = GcpCli(Path(os.environ.get("GITHUB_WORKSPACE", ".")))
+    args = build_parser().parse_args()
 
     if args.command == "control-plane" and args.cp_command == "new":
-        result = mgr.control_plane_new(
+        result = control_plane_new(
             port=int(args.port),
             wait=bool(args.wait),
-            wait_timeout_seconds=int(args.bootstrap_timeout),
+            timeout_seconds=int(args.timeout),
         )
         print(json.dumps(result, indent=2))
         return
 
     if args.command == "vm" and args.vm_command == "new":
-        result = mgr.vm_new(
-            node_size=str(args.size),
-            control_plane_url=str(args.easyenclave_url),
-            intel_api_key=str(args.intel_api_key),
-            cloud_provider=str(args.cloud_provider),
-            availability_zone=str(args.availability_zone),
+        if not str(args.cp_url).strip():
+            _fatal("--cp-url is required")
+        if not str(args.ita_api_key).strip():
+            _fatal("--ita-api-key is required")
+        result = vm_new(
+            size=str(args.size),
+            cp_url=str(args.cp_url),
+            ita_api_key=str(args.ita_api_key),
+            zone=str(args.zone),
             region=str(args.region),
             datacenter=str(args.datacenter),
             wait=bool(args.wait),
-            wait_timeout_seconds=600,
+            timeout_seconds=int(args.timeout),
         )
         print(json.dumps(result, indent=2))
         return
 
     if args.command == "vm" and args.vm_command == "list":
-        for name in mgr.vm_list():
-            print(name)
+        vm_list(as_json=bool(args.json))
         return
 
     if args.command == "vm" and args.vm_command == "delete":
-        mgr.vm_delete(str(args.name))
+        vm_delete(str(args.name))
         return
 
     if args.command == "vm" and args.vm_command == "measure":
-        result = mgr.vm_measure(size=str(args.size), timeout_seconds=int(args.timeout))
-        if args.json:
+        result = vm_measure(size=str(args.size), timeout_seconds=int(args.timeout))
+        if bool(args.json):
             print(json.dumps(result, indent=2))
         else:
-            print(result.get("mrtd") or "")
+            print(str(result.get("mrtd") or ""))
         return
 
     _fatal("Unsupported command")

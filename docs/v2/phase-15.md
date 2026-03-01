@@ -14,7 +14,7 @@ Finalize image build, end-to-end integration testing, and release/staging workfl
 
 ## Test Gates
 
-- Launcher -> CP bootstrap -> agent registration -> deploy flow passes
+- CP bootstrap -> agent registration -> deploy flow passes
 - Workload reachable through tunnel path in test topology
 - Build artifacts are reproducible and publishable
 

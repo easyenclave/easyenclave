@@ -27,19 +27,19 @@ impl AttestationService {
         let audience = env::var("CP_ITA_AUDIENCE").ok();
 
         let verifier = if let (Some(jwks_url), Some(issuer)) = (jwks_url, issuer) {
-                let ttl_seconds = env::var("CP_ITA_JWKS_TTL_SECONDS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(300);
-                Some(Arc::new(ItaVerifier::new(
-                    jwks_url,
-                    issuer,
-                    audience,
-                    Duration::from_secs(ttl_seconds),
-                )))
-            } else {
-                None
-            };
+            let ttl_seconds = env::var("CP_ITA_JWKS_TTL_SECONDS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(300);
+            Some(Arc::new(ItaVerifier::new(
+                jwks_url,
+                issuer,
+                audience,
+                Duration::from_secs(ttl_seconds),
+            )))
+        } else {
+            None
+        };
 
         Self {
             verifier,

@@ -338,8 +338,8 @@
     async function loadPublicData() {
       const [health, agents, deployments] = await Promise.all([
         fetchJSON("/health"),
-        fetchJSON("/api/v1/agents"),
-        fetchJSON("/api/v1/deployments"),
+        fetchJSON("/api/agents"),
+        fetchJSON("/api/deployments"),
       ]);
 
       byId("healthStatus").textContent = health?.ok ? "healthy" : "unhealthy";
@@ -387,7 +387,7 @@
 
         byId("githubIdentity").textContent = `Privileged view unlocked for @${me.github_login}`;
         adminPanel.classList.remove("hidden");
-        const accounts = await fetchJSON("/api/v1/accounts", { headers: authHeaders() });
+        const accounts = await fetchJSON("/api/accounts", { headers: authHeaders() });
         renderAccounts(accounts);
       } catch (err) {
         localStorage.removeItem(TOKEN_KEY);

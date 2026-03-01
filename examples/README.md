@@ -17,14 +17,14 @@ The workflow also verifies that deploying an **unregistered** app is rejected â€
 
 All examples are deployed automatically by the [Deploy Examples](../.github/workflows/deploy-examples.yml) workflow after CI passes on `main`:
 
-1. App is registered in the catalog (`POST /api/v1/apps`)
+1. App is registered in the catalog (`POST /api/apps`)
 2. The `docker-compose.yml` is published as a new version
 3. The [measuring enclave](../apps/measuring-enclave/) resolves image digests and attests the version
 4. An available TDX agent is selected and the version is deployed
 5. The agent pulls images, runs `docker compose up`, and reports health
 6. The service becomes reachable through a Cloudflare tunnel at `https://agent-{id}.easyenclave.com`
 
-Each deploy sets `github_owner: ${{ github.repository_owner }}` so the deploying GitHub org owns the agents. Org members can log in via GitHub OAuth and manage their agents at `/api/v1/me/agents` without needing full admin access.
+Each deploy sets `github_owner: ${{ github.repository_owner }}` so the deploying GitHub org owns the agents. Org members can log in via GitHub OAuth and manage their agents at `/api/me/agents` without needing full admin access.
 
 ## Adding a new example
 

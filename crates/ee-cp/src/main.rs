@@ -6,6 +6,7 @@ use ee_cp::db::connect_and_migrate;
 use ee_cp::routes::build_router;
 use ee_cp::services::attestation::AttestationService;
 use ee_cp::services::github_oidc::GithubOidcService;
+use ee_cp::services::health_monitor;
 use ee_cp::services::nonce::NonceService;
 use ee_cp::services::tunnel::TunnelService;
 use ee_cp::state::AppState;
@@ -41,6 +42,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         github_oidc,
         tunnel,
     );
+
+    let monitor_state = state.clone();
+    tokio::spawn(async move {
+        health_monitor::run(monitor_state).await;
+    });
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;

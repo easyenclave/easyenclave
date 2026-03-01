@@ -11,8 +11,7 @@ This directory is the runtime infra surface for EasyEnclave.
 ## Files
 
 - `infra/tdx_cli.py`: CLI used by CI/workflows to create, list, delete, and measure GCP TDX VMs.
-- `infra/launcher/launcher.py`: in-VM launcher service entrypoint baked into agent image.
-- `infra/launcher/admin.html`: admin UI served by launcher.
+- `crates/ee-agent`: Rust in-VM runtime used for agent/control-plane/measure modes.
 
 ## Required environment
 
@@ -31,7 +30,7 @@ Optional:
 
 ```bash
 python3 infra/tdx_cli.py control-plane new --wait --port 8080
-python3 infra/tdx_cli.py vm new --size tiny --easyenclave-url https://app-staging.easyenclave.com --wait
+python3 infra/tdx_cli.py vm new --size tiny --cp-url https://app-staging.easyenclave.com --ita-api-key "$ITA_API_KEY" --wait
 python3 infra/tdx_cli.py vm measure --size tiny --json
 python3 infra/tdx_cli.py vm list
 python3 infra/tdx_cli.py vm delete <vm-name>

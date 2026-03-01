@@ -56,6 +56,7 @@ pub async fn deploy(
                 .as_deref()
                 .map(|name| a.vm_name == name)
                 .unwrap_or(true)
+                && github_owner_visible(a.github_owner.as_deref(), deployer.github_owner.as_deref())
                 && (a.account_id.is_none() || a.account_id == Some(deployer.account_id))
                 && payload
                     .node_size
@@ -97,6 +98,8 @@ pub async fn deploy(
     let deployment = deployment_store
         .create(NewDeployment {
             compose: payload.compose.clone(),
+            app_name: payload.app_name.clone(),
+            app_version: payload.app_version.clone(),
             agent_id: selected.agent_id,
             account_id: deployer.account_id,
             auth_method: deployer.auth_method.to_string(),
@@ -172,6 +175,7 @@ async fn authenticate_deployer_account(
         return Ok(AuthenticatedDeployer {
             account_id,
             auth_method: "github_oidc",
+            github_owner: Some(identity.owner),
         });
     }
 
@@ -216,12 +220,14 @@ async fn authenticate_deployer_account(
     Ok(AuthenticatedDeployer {
         account_id,
         auth_method: "api_key",
+        github_owner: None,
     })
 }
 
 struct AuthenticatedDeployer {
     account_id: Uuid,
     auth_method: &'static str,
+    github_owner: Option<String>,
 }
 
 pub async fn list_deployments(
@@ -277,6 +283,16 @@ fn token_is_jwt(token: &str) -> bool {
     token.split('.').count() == 3
 }
 
+fn github_owner_visible(agent_owner: Option<&str>, requester_owner: Option<&str>) -> bool {
+    match (agent_owner, requester_owner) {
+        (Some(agent_owner), Some(requester_owner)) => {
+            agent_owner.eq_ignore_ascii_case(requester_owner)
+        }
+        (Some(_), None) => false,
+        (None, _) => true,
+    }
+}
+
 fn status_to_string(status: DeploymentStatus) -> String {
     match status {
         DeploymentStatus::Pending => "pending",
@@ -284,7 +300,6 @@ fn status_to_string(status: DeploymentStatus) -> String {
         DeploymentStatus::Running => "running",
         DeploymentStatus::Failed => "failed",
         DeploymentStatus::Stopped => "stopped",
-        DeploymentStatus::InsufficientFunds => "insufficient_funds",
     }
     .to_string()
 }
@@ -296,7 +311,6 @@ fn status_from_string(raw: &str) -> Option<DeploymentStatus> {
         "running" => Some(DeploymentStatus::Running),
         "failed" => Some(DeploymentStatus::Failed),
         "stopped" => Some(DeploymentStatus::Stopped),
-        "insufficient_funds" => Some(DeploymentStatus::InsufficientFunds),
         _ => None,
     }
 }
@@ -321,7 +335,10 @@ mod tests {
     use crate::stores::setting::SettingsStore;
     use ee_common::types::AgentStatus;
 
-    async fn test_app_with_oidc(github_oidc: GithubOidcService) -> axum::Router {
+    async fn test_app_with_oidc(
+        github_oidc: GithubOidcService,
+        agent_owner: Option<&str>,
+    ) -> axum::Router {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -340,6 +357,7 @@ mod tests {
                 true,
                 Some("standard"),
                 Some("gcp:us-central1-a"),
+                agent_owner,
                 None,
             )
             .await
@@ -364,7 +382,7 @@ mod tests {
     }
 
     async fn test_app() -> axum::Router {
-        test_app_with_oidc(GithubOidcService::disabled_for_tests()).await
+        test_app_with_oidc(GithubOidcService::disabled_for_tests(), None).await
     }
 
     #[tokio::test]
@@ -376,7 +394,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({"name": "deployer-1", "account_type": "deployer"}).to_string(),
@@ -404,7 +422,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/deploy")
+                    .uri("/api/deploy")
                     .header("authorization", format!("Bearer {api_key}"))
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
@@ -423,7 +441,7 @@ mod tests {
         let get_response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/deployments/{deployment_id}"))
+                    .uri(format!("/api/deployments/{deployment_id}"))
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -442,7 +460,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({"name": "deployer-2", "account_type": "deployer"}).to_string(),
@@ -470,7 +488,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/deploy")
+                    .uri("/api/deploy")
                     .header("authorization", format!("Bearer {api_key}"))
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
@@ -491,7 +509,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({"name": "deployer-a", "account_type": "deployer"}).to_string(),
@@ -518,7 +536,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/deploy")
+                    .uri("/api/deploy")
                     .header("authorization", format!("Bearer {api_key_1}"))
                     .header("content-type", "application/json")
                     .body(Body::from(dry_run_payload.to_string()))
@@ -533,7 +551,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({"name": "deployer-b", "account_type": "deployer"}).to_string(),
@@ -553,7 +571,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/deploy")
+                    .uri("/api/deploy")
                     .header("authorization", format!("Bearer {api_key_2}"))
                     .header("content-type", "application/json")
                     .body(Body::from(dry_run_payload.to_string()))
@@ -565,10 +583,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deploy_accepts_oidc_owner_token_via_route() {
-        let app = test_app_with_oidc(GithubOidcService::with_forced_owner_for_tests(
-            "example-org",
-        ))
+    async fn deploy_accepts_oidc_owner_tagged_agent_via_route() {
+        let app = test_app_with_oidc(
+            GithubOidcService::with_forced_owner_for_tests("example-org"),
+            Some("example-org"),
+        )
         .await;
 
         let account_response = app
@@ -576,7 +595,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
@@ -602,7 +621,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/deploy")
+                    .uri("/api/deploy")
                     .header("authorization", "Bearer aaa.bbb.ccc")
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
@@ -611,5 +630,105 @@ mod tests {
             .await
             .expect("deploy response");
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn deploy_accepts_oidc_on_open_pool_agent_when_owner_unset() {
+        let app = test_app_with_oidc(
+            GithubOidcService::with_forced_owner_for_tests("example-org"),
+            None,
+        )
+        .await;
+
+        let account_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "deployer-open-pool",
+                            "account_type": "deployer",
+                            "github_org": "example-org"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("account response");
+        assert_eq!(account_response.status(), StatusCode::OK);
+
+        let payload = json!({
+            "compose": "services: {}",
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "dry_run": false
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", "Bearer aaa.bbb.ccc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy response");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn deploy_rejects_oidc_when_agent_owned_by_other_org() {
+        let app = test_app_with_oidc(
+            GithubOidcService::with_forced_owner_for_tests("example-org"),
+            Some("different-org"),
+        )
+        .await;
+
+        let account_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "deployer-other-org",
+                            "account_type": "deployer",
+                            "github_org": "example-org"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("account response");
+        assert_eq!(account_response.status(), StatusCode::OK);
+
+        let payload = json!({
+            "compose": "services: {}",
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "dry_run": false
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", "Bearer aaa.bbb.ccc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy response");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 }

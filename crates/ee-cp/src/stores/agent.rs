@@ -1,5 +1,6 @@
 use ee_common::error::{AppError, AppResult};
 use ee_common::types::AgentStatus;
+use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -12,6 +13,7 @@ pub struct AgentRecord {
     pub verified: bool,
     pub node_size: Option<String>,
     pub datacenter: Option<String>,
+    pub github_owner: Option<String>,
     pub account_id: Option<Uuid>,
 }
 
@@ -19,6 +21,13 @@ pub struct AgentRecord {
 pub struct AgentTunnelInfo {
     pub tunnel_id: String,
     pub hostname: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentHealthState {
+    pub consecutive_failures: u32,
+    pub consecutive_successes: u32,
+    pub imperfect_now: bool,
 }
 
 #[derive(Clone)]
@@ -38,14 +47,15 @@ impl AgentStore {
         verified: bool,
         node_size: Option<&str>,
         datacenter: Option<&str>,
+        github_owner: Option<&str>,
         account_id: Option<Uuid>,
     ) -> AppResult<AgentRecord> {
         let agent_id = Uuid::new_v4();
         let status_text = status_to_db(status);
 
         sqlx::query(
-            "INSERT INTO agents (agent_id, vm_name, status, verified, node_size, datacenter, account_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO agents (agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .bind(agent_id.to_string())
         .bind(vm_name)
@@ -53,6 +63,7 @@ impl AgentStore {
         .bind(if verified { 1_i64 } else { 0_i64 })
         .bind(node_size)
         .bind(datacenter)
+        .bind(github_owner)
         .bind(account_id.map(|v| v.to_string()))
         .execute(&self.pool)
         .await
@@ -63,7 +74,7 @@ impl AgentStore {
 
     pub async fn get(&self, agent_id: Uuid) -> AppResult<Option<AgentRecord>> {
         let row = sqlx::query(
-            "SELECT agent_id, vm_name, status, verified, node_size, datacenter, account_id \
+            "SELECT agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id \
              FROM agents WHERE agent_id = ?1",
         )
         .bind(agent_id.to_string())
@@ -77,7 +88,7 @@ impl AgentStore {
     pub async fn list(&self, status: Option<AgentStatus>) -> AppResult<Vec<AgentRecord>> {
         let rows = if let Some(status) = status {
             sqlx::query(
-                "SELECT agent_id, vm_name, status, verified, node_size, datacenter, account_id \
+                "SELECT agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id \
                  FROM agents WHERE status = ?1 ORDER BY created_at DESC",
             )
             .bind(status_to_db(status))
@@ -86,7 +97,7 @@ impl AgentStore {
             .map_err(|e| AppError::External(format!("failed to list agents: {e}")))?
         } else {
             sqlx::query(
-                "SELECT agent_id, vm_name, status, verified, node_size, datacenter, account_id \
+                "SELECT agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id \
                  FROM agents ORDER BY created_at DESC",
             )
             .fetch_all(&self.pool)
@@ -187,6 +198,104 @@ impl AgentStore {
             .map_err(|e| AppError::External(format!("failed to delete agent: {e}")))?;
         Ok(())
     }
+
+    pub async fn record_check_result(
+        &self,
+        agent_id: Uuid,
+        check_ok: bool,
+        attestation_ok: bool,
+        count_failure: bool,
+        down_after_failures: u32,
+        recover_after_successes: u32,
+    ) -> AppResult<AgentHealthState> {
+        let row = sqlx::query(
+            "SELECT consecutive_failures, consecutive_successes, imperfect_since
+             FROM agents WHERE agent_id = ?1",
+        )
+        .bind(agent_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::External(format!("failed to read agent health state: {e}")))?;
+
+        let row = row.ok_or(AppError::NotFound)?;
+        let old_failures: i64 = row
+            .try_get("consecutive_failures")
+            .map_err(|e| AppError::External(format!("read consecutive_failures failed: {e}")))?;
+        let old_successes: i64 = row
+            .try_get("consecutive_successes")
+            .map_err(|e| AppError::External(format!("read consecutive_successes failed: {e}")))?;
+        let old_imperfect_since: Option<String> = row
+            .try_get("imperfect_since")
+            .map_err(|e| AppError::External(format!("read imperfect_since failed: {e}")))?;
+
+        let mut failures = old_failures.max(0) as u32;
+        let mut successes = old_successes.max(0) as u32;
+        let mut imperfect_now = old_imperfect_since.is_some();
+
+        if check_ok {
+            failures = 0;
+            successes = successes.saturating_add(1);
+            if imperfect_now && successes >= recover_after_successes {
+                imperfect_now = false;
+            }
+        } else if count_failure {
+            failures = failures.saturating_add(1);
+            successes = 0;
+            if !imperfect_now && failures >= down_after_failures {
+                imperfect_now = true;
+            }
+        }
+
+        let imperfect_since_sql: Option<&str> = if imperfect_now {
+            if old_imperfect_since.is_some() {
+                None
+            } else {
+                Some("CURRENT_TIMESTAMP")
+            }
+        } else {
+            Some("NULL")
+        };
+
+        let base_sql = if attestation_ok {
+            "UPDATE agents
+             SET last_heartbeat_at = CURRENT_TIMESTAMP,
+                 last_attestation_ok_at = CURRENT_TIMESTAMP,
+                 consecutive_failures = ?1,
+                 consecutive_successes = ?2,
+                 last_imperfect_at = CASE WHEN ?3 = 1 THEN CURRENT_TIMESTAMP ELSE last_imperfect_at END,
+                 updated_at = CURRENT_TIMESTAMP"
+        } else {
+            "UPDATE agents
+             SET last_heartbeat_at = CURRENT_TIMESTAMP,
+                 consecutive_failures = ?1,
+                 consecutive_successes = ?2,
+                 last_imperfect_at = CASE WHEN ?3 = 1 THEN CURRENT_TIMESTAMP ELSE last_imperfect_at END,
+                 updated_at = CURRENT_TIMESTAMP"
+        };
+
+        let sql = match imperfect_since_sql {
+            Some("CURRENT_TIMESTAMP") => format!(
+                "{base_sql}, imperfect_since = COALESCE(imperfect_since, CURRENT_TIMESTAMP) WHERE agent_id = ?4"
+            ),
+            Some("NULL") => format!("{base_sql}, imperfect_since = NULL WHERE agent_id = ?4"),
+            _ => format!("{base_sql} WHERE agent_id = ?4"),
+        };
+
+        sqlx::query(&sql)
+            .bind(failures as i64)
+            .bind(successes as i64)
+            .bind(if count_failure { 1_i64 } else { 0_i64 })
+            .bind(agent_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AppError::External(format!("failed to update agent health state: {e}")))?;
+
+        Ok(AgentHealthState {
+            consecutive_failures: failures,
+            consecutive_successes: successes,
+            imperfect_now,
+        })
+    }
 }
 
 fn row_to_agent(row: sqlx::sqlite::SqliteRow) -> AppResult<AgentRecord> {
@@ -208,6 +317,9 @@ fn row_to_agent(row: sqlx::sqlite::SqliteRow) -> AppResult<AgentRecord> {
     let datacenter: Option<String> = row
         .try_get("datacenter")
         .map_err(|e| AppError::External(format!("read datacenter failed: {e}")))?;
+    let github_owner: Option<String> = row
+        .try_get("github_owner")
+        .map_err(|e| AppError::External(format!("read github_owner failed: {e}")))?;
     let account_id_text: Option<String> = row
         .try_get("account_id")
         .map_err(|e| AppError::External(format!("read account_id failed: {e}")))?;
@@ -226,6 +338,7 @@ fn row_to_agent(row: sqlx::sqlite::SqliteRow) -> AppResult<AgentRecord> {
         verified: verified != 0,
         node_size,
         datacenter,
+        github_owner,
         account_id,
     })
 }
@@ -276,6 +389,7 @@ mod tests {
                 false,
                 Some("standard"),
                 Some("gcp:us-central1-a"),
+                None,
                 None,
             )
             .await

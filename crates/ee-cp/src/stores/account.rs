@@ -78,19 +78,6 @@ impl AccountStore {
         rows.into_iter().map(row_to_account).collect()
     }
 
-    pub async fn balance_cents(&self, account_id: Uuid) -> AppResult<i64> {
-        let row = sqlx::query(
-            "SELECT COALESCE(SUM(amount_cents), 0) AS balance_cents FROM transactions WHERE account_id = ?1",
-        )
-        .bind(account_id.to_string())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| AppError::External(format!("failed to compute account balance: {e}")))?;
-
-        row.try_get::<i64, _>("balance_cents")
-            .map_err(|e| AppError::External(format!("failed to read balance_cents: {e}")))
-    }
-
     pub async fn lookup_api_hash_by_prefix(&self, key_prefix: &str) -> AppResult<Option<String>> {
         let row = sqlx::query("SELECT api_key_hash FROM accounts WHERE api_key_prefix = ?1")
             .bind(key_prefix)
@@ -208,7 +195,6 @@ fn account_type_to_db(account_type: AccountType) -> &'static str {
         AccountType::Deployer => "deployer",
         AccountType::Agent => "agent",
         AccountType::Contributor => "contributor",
-        AccountType::Launcher => "launcher",
         AccountType::Platform => "platform",
     }
 }
@@ -218,7 +204,6 @@ fn account_type_from_db(raw: &str) -> AppResult<AccountType> {
         "deployer" => Ok(AccountType::Deployer),
         "agent" => Ok(AccountType::Agent),
         "contributor" => Ok(AccountType::Contributor),
-        "launcher" => Ok(AccountType::Launcher),
         "platform" => Ok(AccountType::Platform),
         _ => Err(AppError::External(format!("invalid account type: {raw}"))),
     }
@@ -230,57 +215,6 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
 
     use super::AccountStore;
-
-    #[tokio::test]
-    async fn account_balance_from_transactions() {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("pool");
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .expect("migrate");
-
-        let store = AccountStore::new(pool.clone());
-        let account = store
-            .create("alice", AccountType::Deployer)
-            .await
-            .expect("create");
-
-        sqlx::query(
-            "INSERT INTO transactions (transaction_id, account_id, amount_cents, balance_after_cents, tx_type) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(account.account_id.to_string())
-        .bind(10_000_i64)
-        .bind(10_000_i64)
-        .bind("deposit")
-        .execute(&pool)
-        .await
-        .expect("insert deposit");
-
-        sqlx::query(
-            "INSERT INTO transactions (transaction_id, account_id, amount_cents, balance_after_cents, tx_type) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )
-        .bind(uuid::Uuid::new_v4().to_string())
-        .bind(account.account_id.to_string())
-        .bind(-2_500_i64)
-        .bind(7_500_i64)
-        .bind("charge")
-        .execute(&pool)
-        .await
-        .expect("insert charge");
-
-        let balance = store
-            .balance_cents(account.account_id)
-            .await
-            .expect("balance");
-        assert_eq!(balance, 7_500);
-    }
 
     #[tokio::test]
     async fn create_with_api_key_stores_hash_prefix() {

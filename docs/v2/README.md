@@ -21,11 +21,11 @@ This folder breaks the v2 rewrite plan into phase-by-phase implementation docs w
 - [Phase 07 - Cloudflare Integration](phase-07.md)
 - [Phase 08 - Authentication Layer](phase-08.md)
 - [Phase 09 - Deploy + Apps + Proxy + Owner Routes](phase-09.md)
-- [Phase 10 - Billing + Stripe](phase-10.md)
-- [Phase 11 - Capacity + GCP + Admin](phase-11.md)
+- [Phase 10 - External Billing App Integration](phase-10.md)
+- [Phase 11 - GCP + Admin](phase-11.md)
 - [Phase 12 - OCI Measurement Pipeline](phase-12.md)
 - [Phase 13 - ee-agent](phase-13.md)
-- [Phase 14 - ee-launcher](phase-14.md)
+- [Phase 14 - ee-ops](phase-14.md)
 - [Phase 15 - Image + E2E + Release Pipelines](phase-15.md)
 
 ## Tracking

@@ -25,9 +25,8 @@
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes
 - [ ] `cargo test --workspace` passes
 - [ ] Registration to heartbeat smoke test passes
-- [ ] Deploy + billing charge cycle test passes
-- [ ] Capacity reconciliation + fulfillment test passes
-- [ ] Full end-to-end launcher -> cp -> agent -> deploy flow passes
+- [ ] Deploy flow without CP-owned billing/capacity passes
+- [ ] Full end-to-end cp -> agent -> deploy flow passes
 - [ ] Staging smoke test passes on real GCP TDX node
 - [ ] Production preflight enforces real GCP TDX node availability
 

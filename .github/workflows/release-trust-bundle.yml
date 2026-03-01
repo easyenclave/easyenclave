@@ -120,7 +120,7 @@ jobs:
           exit 1
 
       - name: Run strict reproducibility check
-        run: ./scripts/ci-reproducibility-check.sh
+        run: cargo run -p ee-ops -- ci-reproducibility-check
 
       - name: Build release trust bundle payload
         id: bundle

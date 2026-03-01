@@ -53,7 +53,7 @@ jobs:
             --arg agent_name "${agent_name}" \
             '{compose: $compose, app_name: $app_name, agent_name: $agent_name, dry_run: true}')"
 
-          response="$(curl -sS -X POST "${CP_URL}/api/v1/deploy" \
+          response="$(curl -sS -X POST "${CP_URL}/api/deploy" \
             -H "Authorization: Bearer ${OIDC_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "${payload}")"

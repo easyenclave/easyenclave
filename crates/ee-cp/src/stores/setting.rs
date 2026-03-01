@@ -125,8 +125,6 @@ fn env_key_for(key: &str) -> Option<&'static str> {
         "tcb_enforcement_mode" => Some("CP_TCB_ENFORCEMENT_MODE"),
         "rtmr_enforcement_mode" => Some("CP_RTMR_ENFORCEMENT_MODE"),
         "nonce_enforcement_mode" => Some("CP_NONCE_ENFORCEMENT_MODE"),
-        "billing.enabled" => Some("CP_BILLING_ENABLED"),
-        "billing.contributor_pool_bps" => Some("CP_BILLING_CONTRIBUTOR_POOL_BPS"),
         "agent_stale_hours" => Some("CP_AGENT_STALE_HOURS"),
         _ => None,
     }
@@ -137,8 +135,6 @@ fn default_value_for(key: &str) -> Option<Value> {
         "tcb_enforcement_mode" => Some(Value::String("strict".to_string())),
         "rtmr_enforcement_mode" => Some(Value::String("strict".to_string())),
         "nonce_enforcement_mode" => Some(Value::String("required".to_string())),
-        "billing.enabled" => Some(Value::Bool(true)),
-        "billing.contributor_pool_bps" => Some(Value::Number(5000.into())),
         "agent_stale_hours" => Some(Value::Number(24.into())),
         _ => None,
     }
@@ -164,14 +160,14 @@ mod tests {
     #[tokio::test]
     async fn resolves_env_when_db_missing() {
         let db_values = HashMap::new();
-        let resolved = resolve_value("billing.enabled", &db_values, &|k| {
-            if k == "CP_BILLING_ENABLED" {
-                Some("false".to_string())
+        let resolved = resolve_value("agent_stale_hours", &db_values, &|k| {
+            if k == "CP_AGENT_STALE_HOURS" {
+                Some("48".to_string())
             } else {
                 None
             }
         });
-        assert_eq!(resolved, Some(Value::Bool(false)));
+        assert_eq!(resolved, Some(Value::Number(48.into())));
     }
 
     #[tokio::test]

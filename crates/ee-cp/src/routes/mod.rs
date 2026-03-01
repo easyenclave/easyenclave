@@ -3,6 +3,7 @@ pub mod agents;
 pub mod auth;
 pub mod deploy;
 pub mod health;
+pub mod stats;
 pub mod ui;
 
 use axum::Router;
@@ -14,41 +15,50 @@ pub fn build_router(state: AppState) -> Router {
         .route("/", axum::routing::get(ui::root))
         .route("/health", axum::routing::get(health::health))
         .route(
-            "/api/v1/agents/challenge",
+            "/api/agents/challenge",
             axum::routing::get(agents::challenge),
         )
         .route(
-            "/api/v1/agents/register",
+            "/api/agents/register",
             axum::routing::post(agents::register),
         )
-        .route("/api/v1/agents", axum::routing::get(agents::list))
+        .route("/api/agents", axum::routing::get(agents::list))
         .route(
-            "/api/v1/agents/{agent_id}",
+            "/api/agents/{agent_id}",
             axum::routing::get(agents::get).delete(agents::delete),
         )
         .route(
-            "/api/v1/agents/{agent_id}/reset",
+            "/api/agents/{agent_id}/reset",
             axum::routing::post(agents::reset),
         )
-        .route("/api/v1/deploy", axum::routing::post(deploy::deploy))
         .route(
-            "/api/v1/deployments",
+            "/api/agents/{agent_id}/checks",
+            axum::routing::post(agents::ingest_check),
+        )
+        .route("/api/deploy", axum::routing::post(deploy::deploy))
+        .route(
+            "/api/deployments",
             axum::routing::get(deploy::list_deployments),
         )
         .route(
-            "/api/v1/deployments/{deployment_id}",
+            "/api/deployments/{deployment_id}",
             axum::routing::get(deploy::get_deployment),
         )
         .route(
-            "/api/v1/accounts",
+            "/api/stats/apps/recent",
+            axum::routing::get(stats::recent_app_stats),
+        )
+        .route(
+            "/api/stats/agents/recent",
+            axum::routing::get(stats::recent_agent_stats),
+        )
+        .route(
+            "/api/accounts",
             axum::routing::post(accounts::create_account),
         )
+        .route("/api/accounts", axum::routing::get(accounts::list_accounts))
         .route(
-            "/api/v1/accounts",
-            axum::routing::get(accounts::list_accounts),
-        )
-        .route(
-            "/api/v1/accounts/{account_id}",
+            "/api/accounts/{account_id}",
             axum::routing::get(accounts::get_account),
         )
         .route("/admin/login", axum::routing::post(auth::admin_login))

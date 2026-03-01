@@ -11,7 +11,7 @@ curl -sS https://app-staging.easyenclave.com/health | jq
 ## 2) Check registered agents
 
 ```bash
-curl -sS https://app-staging.easyenclave.com/api/v1/agents | jq '.[] | {agent_id,vm_name,node_size,datacenter,verified,status}'
+curl -sS https://app-staging.easyenclave.com/api/agents | jq '.[] | {agent_id,vm_name,node_size,datacenter,verified,status}'
 ```
 
 Expected:
@@ -28,7 +28,7 @@ gh run list --workflow "Production Rollout" --limit 5
 ## 4) Spot-check deployment path
 
 ```bash
-curl -sS https://app-staging.easyenclave.com/api/v1/deployments | jq '.[0] // empty'
+curl -sS https://app-staging.easyenclave.com/api/deployments | jq '.[0] // empty'
 ```
 
 A successful deployment record confirms end-to-end CP -> agent execution is functioning.

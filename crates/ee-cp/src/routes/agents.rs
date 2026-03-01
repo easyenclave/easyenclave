@@ -4,7 +4,8 @@ use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::Json;
 use ee_common::api::{
-    AgentChallengeResponse, AgentRegisterRequest, AgentRegisterResponse, ApiErrorResponse,
+    AgentChallengeResponse, AgentCheckIngestRequest, AgentCheckIngestResponse,
+    AgentRegisterRequest, AgentRegisterResponse, ApiErrorResponse,
 };
 use ee_common::types::AgentStatus;
 
@@ -12,6 +13,8 @@ use crate::services::nonce::ConsumeResult;
 use crate::state::AppState;
 use crate::stores::account::AccountStore;
 use crate::stores::agent::AgentStore;
+use crate::stores::deployment::DeploymentStore;
+use crate::stores::health::HealthStore;
 use crate::{auth::api_key::key_prefix_from_raw, auth::api_key::verify_api_key};
 use uuid::Uuid;
 
@@ -65,6 +68,7 @@ pub async fn register(
             true,
             payload.node_size.as_deref(),
             payload.datacenter.as_deref(),
+            payload.github_owner.as_deref(),
             None,
         )
         .await
@@ -267,6 +271,151 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+pub async fn ingest_check(
+    Path(agent_id): Path<String>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<AgentCheckIngestRequest>,
+) -> Result<Json<AgentCheckIngestResponse>, (StatusCode, Json<ApiErrorResponse>)> {
+    authenticate_check_ingest(&headers, &state)?;
+
+    let agent_id = Uuid::parse_str(&agent_id).map_err(|_| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_agent_id",
+            "invalid agent id",
+        )
+    })?;
+    let agent_store = AgentStore::new(state.db_pool.clone());
+    let deployment_store = DeploymentStore::new(state.db_pool.clone());
+    let health_store = HealthStore::new(state.db_pool.clone());
+
+    let agent = agent_store.get(agent_id).await.map_err(|_| {
+        error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "store_error",
+            "failed to read agent",
+        )
+    })?;
+    if agent.is_none() {
+        return Err(error_response(
+            StatusCode::NOT_FOUND,
+            "agent_not_found",
+            "agent not found",
+        ));
+    }
+
+    let app_name = if let Some(app_name) = payload
+        .app_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        app_name.to_string()
+    } else {
+        deployment_store
+            .latest_app_name_for_agent(agent_id)
+            .await
+            .map_err(|_| {
+                error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "store_error",
+                    "failed to resolve app name",
+                )
+            })?
+            .unwrap_or_else(|| "unknown".to_string())
+    };
+
+    let mut deployment_exempt = deployment_store
+        .agent_has_deploying(agent_id)
+        .await
+        .map_err(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_error",
+                "failed to read deployment phase",
+            )
+        })?;
+
+    let check_ok = payload.health_ok && payload.attestation_ok;
+    if check_ok && deployment_exempt {
+        let _ = deployment_store
+            .promote_deploying_to_running_for_agent(agent_id)
+            .await;
+        let _ = agent_store
+            .update_status(agent_id, AgentStatus::Deployed)
+            .await;
+        deployment_exempt = false;
+    }
+
+    let counted_down = !check_ok && !deployment_exempt;
+    let health_state = agent_store
+        .record_check_result(
+            agent_id,
+            check_ok,
+            payload.attestation_ok,
+            counted_down,
+            state.down_after_failures,
+            state.recover_after_successes,
+        )
+        .await
+        .map_err(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_error",
+                "failed to update health state",
+            )
+        })?;
+
+    health_store
+        .insert_check(
+            agent_id,
+            &app_name,
+            check_ok,
+            deployment_exempt,
+            payload.failure_reason.as_deref(),
+        )
+        .await
+        .map_err(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_error",
+                "failed to persist check record",
+            )
+        })?;
+
+    if !payload.attestation_ok
+        && !deployment_exempt
+        && is_hard_attestation_failure(payload.failure_reason.as_deref())
+    {
+        if let Some(tunnel) = agent_store.tunnel_info(agent_id).await.map_err(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "store_error",
+                "failed to read agent tunnel info",
+            )
+        })? {
+            let _ = state
+                .tunnel
+                .delete_tunnel_for_agent(&tunnel.tunnel_id, &tunnel.hostname)
+                .await;
+        }
+        let _ = agent_store
+            .update_status(agent_id, AgentStatus::Undeployed)
+            .await;
+    }
+
+    Ok(Json(AgentCheckIngestResponse {
+        app_name,
+        check_ok,
+        deployment_exempt,
+        counted_down,
+        imperfect_now: health_state.imperfect_now,
+        consecutive_failures: health_state.consecutive_failures,
+        consecutive_successes: health_state.consecutive_successes,
+    }))
+}
+
 #[derive(Debug, Clone)]
 struct AuthenticatedOwner {
     account_id: Uuid,
@@ -365,6 +514,42 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     value.strip_prefix("Bearer ")
 }
 
+fn authenticate_check_ingest(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> Result<(), (StatusCode, Json<ApiErrorResponse>)> {
+    let expected = state.check_ingest_token.as_deref().ok_or_else(|| {
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "check_ingest_disabled",
+            "agent check ingestion is disabled",
+        )
+    })?;
+    let token = bearer_token(headers).ok_or_else(|| {
+        error_response(
+            StatusCode::UNAUTHORIZED,
+            "missing_auth",
+            "bearer token is required",
+        )
+    })?;
+    if token != expected {
+        return Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "invalid_token",
+            "invalid check ingestion token",
+        ));
+    }
+    Ok(())
+}
+
+fn is_hard_attestation_failure(reason: Option<&str>) -> bool {
+    match reason {
+        Some("attestation_unhealthy") => true,
+        Some(text) => text.starts_with("attestation_hard_"),
+        None => false,
+    }
+}
+
 fn error_response(
     status: StatusCode,
     code: &str,
@@ -398,7 +583,7 @@ mod tests {
     use crate::state::AppState;
     use crate::stores::setting::SettingsStore;
 
-    async fn test_app() -> axum::Router {
+    async fn test_app_with_check_token(token: Option<&str>) -> axum::Router {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -414,7 +599,7 @@ mod tests {
         let attestation = AttestationService::insecure_for_tests();
         let github_oidc = GithubOidcService::disabled_for_tests();
         let tunnel = TunnelService::disabled_for_tests();
-        let state = AppState::new(
+        let mut state = AppState::new(
             "boot-test".to_string(),
             None,
             None,
@@ -425,7 +610,12 @@ mod tests {
             github_oidc,
             tunnel,
         );
+        state.check_ingest_token = token.map(ToString::to_string);
         build_router(state)
+    }
+
+    async fn test_app() -> axum::Router {
+        test_app_with_check_token(None).await
     }
 
     async fn create_account(app: &axum::Router, name: &str) -> String {
@@ -434,7 +624,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({"name": name, "account_type": "deployer"}).to_string(),
@@ -456,7 +646,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/agents/challenge")
+                    .uri("/api/agents/challenge")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -480,7 +670,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/agents/register")
+                    .uri("/api/agents/register")
                     .header("content-type", "application/json")
                     .body(Body::from(register_payload.to_string()))
                     .expect("request"),
@@ -495,6 +685,38 @@ mod tests {
         payload["agent_id"].as_str().expect("agent id").to_string()
     }
 
+    async fn ingest_check(
+        app: &axum::Router,
+        agent_id: &str,
+        token: &str,
+        health_ok: bool,
+        attestation_ok: bool,
+    ) -> (StatusCode, Value) {
+        let payload = json!({
+            "health_ok": health_ok,
+            "attestation_ok": attestation_ok
+        });
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/{agent_id}/checks"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("check response");
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: Value = serde_json::from_slice(&body).unwrap_or_else(|_| json!({}));
+        (status, json)
+    }
+
     #[tokio::test]
     async fn challenge_returns_nonce() {
         let app = test_app().await;
@@ -502,7 +724,7 @@ mod tests {
         let response = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/agents/challenge")
+                    .uri("/api/agents/challenge")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -529,7 +751,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/agents/challenge")
+                    .uri("/api/agents/challenge")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -559,7 +781,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/agents/register")
+                    .uri("/api/agents/register")
                     .header("content-type", "application/json")
                     .body(Body::from(register_payload.to_string()))
                     .expect("request"),
@@ -573,7 +795,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/agents/register")
+                    .uri("/api/agents/register")
                     .header("content-type", "application/json")
                     .body(Body::from(register_payload.to_string()))
                     .expect("request"),
@@ -592,7 +814,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/agents/challenge")
+                    .uri("/api/agents/challenge")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -621,7 +843,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/agents/register")
+                    .uri("/api/agents/register")
                     .header("content-type", "application/json")
                     .body(Body::from(register_payload.to_string()))
                     .expect("request"),
@@ -639,7 +861,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/agents")
+                    .uri("/api/agents")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -650,7 +872,7 @@ mod tests {
         let get_response = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/agents/{agent_id}"))
+                    .uri(format!("/api/agents/{agent_id}"))
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -676,7 +898,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/deploy")
+                    .uri("/api/deploy")
                     .header("authorization", format!("Bearer {owner_key}"))
                     .header("content-type", "application/json")
                     .body(Body::from(deploy_payload.to_string()))
@@ -691,7 +913,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/v1/agents/{agent_id}/reset"))
+                    .uri(format!("/api/agents/{agent_id}/reset"))
                     .header("authorization", format!("Bearer {other_key}"))
                     .body(Body::empty())
                     .expect("request"),
@@ -704,7 +926,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/v1/agents/{agent_id}/reset"))
+                    .uri(format!("/api/agents/{agent_id}/reset"))
                     .header("authorization", format!("Bearer {owner_key}"))
                     .body(Body::empty())
                     .expect("request"),
@@ -730,7 +952,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/deploy")
+                    .uri("/api/deploy")
                     .header("authorization", format!("Bearer {owner_key}"))
                     .header("content-type", "application/json")
                     .body(Body::from(deploy_payload.to_string()))
@@ -745,7 +967,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("DELETE")
-                    .uri(format!("/api/v1/agents/{agent_id}"))
+                    .uri(format!("/api/agents/{agent_id}"))
                     .header("authorization", format!("Bearer {owner_key}"))
                     .body(Body::empty())
                     .expect("request"),
@@ -757,12 +979,151 @@ mod tests {
         let get_after_delete = app
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/agents/{agent_id}"))
+                    .uri(format!("/api/agents/{agent_id}"))
                     .body(Body::empty())
                     .expect("request"),
             )
             .await
             .expect("get");
         assert_eq!(get_after_delete.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn check_ingest_requires_token() {
+        let app = test_app().await;
+        let agent_id = register_agent(&app, "tdx-agent-check-token").await;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/{agent_id}/checks"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"health_ok": true, "attestation_ok": true}).to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn failed_check_is_exempt_during_deploying() {
+        let app = test_app_with_check_token(Some("check-secret")).await;
+        let owner_key = create_account(&app, "owner-acct-checks").await;
+        let agent_name = "tdx-agent-deploying-exempt";
+        let agent_id = register_agent(&app, agent_name).await;
+
+        let deploy_payload = json!({
+            "compose": "services: {}",
+            "agent_name": agent_name,
+            "app_name": "demo-app",
+            "app_version": "v1",
+            "dry_run": false
+        });
+        let deploy_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", format!("Bearer {owner_key}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(deploy_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy");
+        assert_eq!(deploy_response.status(), StatusCode::OK);
+
+        let (status, check_json) = ingest_check(&app, &agent_id, "check-secret", false, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(check_json["deployment_exempt"], true);
+        assert_eq!(check_json["counted_down"], false);
+    }
+
+    #[tokio::test]
+    async fn successful_check_promotes_deploying_and_updates_recent_stats() {
+        let app = test_app_with_check_token(Some("check-secret")).await;
+        let owner_key = create_account(&app, "owner-acct-checks-2").await;
+        let agent_name = "tdx-agent-promote-running";
+        let agent_id = register_agent(&app, agent_name).await;
+
+        let deploy_payload = json!({
+            "compose": "services: {}",
+            "agent_name": agent_name,
+            "app_name": "demo-app-2",
+            "app_version": "v1",
+            "dry_run": false
+        });
+        let deploy_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", format!("Bearer {owner_key}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(deploy_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy");
+        assert_eq!(deploy_response.status(), StatusCode::OK);
+
+        let (status, check_json) = ingest_check(&app, &agent_id, "check-secret", true, true).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(check_json["deployment_exempt"], false);
+        assert_eq!(check_json["check_ok"], true);
+
+        let stats_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/apps/recent?window_hours=24")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("stats");
+        assert_eq!(stats_response.status(), StatusCode::OK);
+        let stats_body = axum::body::to_bytes(stats_response.into_body(), usize::MAX)
+            .await
+            .expect("stats body");
+        let stats_json: Value = serde_json::from_slice(&stats_body).expect("stats json");
+        let apps = stats_json["apps"].as_array().expect("apps array");
+        assert!(apps
+            .iter()
+            .any(|item| item["app_name"] == "demo-app-2" && item["perfect_now"] == true));
+
+        let agent_stats_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/stats/agents/recent?window_hours=24")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("agent stats");
+        assert_eq!(agent_stats_response.status(), StatusCode::OK);
+        let agent_stats_body = axum::body::to_bytes(agent_stats_response.into_body(), usize::MAX)
+            .await
+            .expect("agent stats body");
+        let agent_stats_json: Value =
+            serde_json::from_slice(&agent_stats_body).expect("agent stats json");
+        let agents = agent_stats_json["agents"].as_array().expect("agents array");
+        assert!(!agents.is_empty(), "agent stats empty: {agent_stats_json}");
+        let matched = agents
+            .iter()
+            .find(|item| item["agent_id"].as_str() == Some(agent_id.as_str()))
+            .unwrap_or_else(|| panic!("agent row not found in stats: {agent_stats_json}"));
+        assert_eq!(
+            matched["perfect_now"],
+            Value::Bool(true),
+            "unexpected agent stats row: {matched}"
+        );
     }
 }

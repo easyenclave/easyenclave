@@ -23,7 +23,7 @@ pub async fn create_account(
         error_response(
             StatusCode::BAD_REQUEST,
             "invalid_account_type",
-            "account_type must be deployer|agent|contributor|launcher|platform",
+            "account_type must be deployer|agent|contributor|platform",
         )
     })?;
 
@@ -142,7 +142,6 @@ fn parse_account_type(raw: &str) -> Option<AccountType> {
         "deployer" => Some(AccountType::Deployer),
         "agent" => Some(AccountType::Agent),
         "contributor" => Some(AccountType::Contributor),
-        "launcher" => Some(AccountType::Launcher),
         "platform" => Some(AccountType::Platform),
         _ => None,
     }
@@ -221,7 +220,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(payload.to_string()))
                     .expect("request"),
@@ -242,7 +241,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/accounts/{account_id}"))
+                    .uri(format!("/api/accounts/{account_id}"))
                     .header("authorization", format!("Bearer {api_key}"))
                     .body(Body::empty())
                     .expect("request"),
@@ -256,7 +255,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri(format!("/api/v1/accounts/{account_id}"))
+                    .uri(format!("/api/accounts/{account_id}"))
                     .header("authorization", "Bearer ee_live_badbadbadbad")
                     .body(Body::empty())
                     .expect("request"),
@@ -270,7 +269,7 @@ mod tests {
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .body(Body::empty())
                     .expect("request"),
             )
@@ -300,7 +299,7 @@ mod tests {
         let list_authorized = app
             .oneshot(
                 Request::builder()
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("authorization", format!("Bearer {admin_token}"))
                     .body(Body::empty())
                     .expect("request"),
@@ -319,7 +318,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
@@ -339,7 +338,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/v1/accounts")
+                    .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({

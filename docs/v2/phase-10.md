@@ -1,36 +1,34 @@
-# Phase 10 - Billing + Stripe
+# Phase 10 - External Billing App Integration
 
 Status: Not started
 
 ## Goal
 
-Implement charging, revenue split, ledger writes, and Stripe deposit ingestion.
+Define and implement the CP contract for an external billing app (CP is not the billing engine).
 
 ## Deliverables
 
-- Billing service with hourly charge computation
-- Revenue split logic (agent/operator/platform/contributor paths)
-- Stripe client + webhook verification
-- Billing routes
-- Charging and insufficient-funds background jobs
+- CP -> billing app contract (events or API payloads)
+- Contract docs for required deployment/account fields
+- Removal of CP-owned billing routes and background jobs
+- Integration test stubs against a billing app mock
+- Billing owner policy via `BILLING_UNLIMITED_OWNERS` (default: `posix4e,easyenclave`)
 
 ## Test Gates
 
-- Charge calculation correctness
-- 70/30 split correctness
-- Contributor pool distribution correctness
-- Stripe webhook signature verification
-- Insufficient-funds termination behavior
+- Contract payload validation
+- Retry and idempotency behavior for contract delivery
+- Deploy flow works without CP-owned billing internals
+- CI validates unlimited-owner policy with env unset and env override
 
 ## Definition Of Done
 
-- [ ] Ledger operations are balanced and auditable
+- [ ] CP has no billing-specific business logic
+- [ ] External billing contract is stable and documented
 - [ ] Retry behavior is idempotent
-- [ ] Billing jobs are safe under partial failures
 
 ## PR Checklist
 
-- [ ] Billing service implemented
-- [ ] Stripe webhook handler implemented
-- [ ] Ledger invariants tested
-- [ ] Background jobs tested
+- [ ] Contract adapter implemented
+- [ ] CP billing routes/jobs removed
+- [ ] Contract tests added

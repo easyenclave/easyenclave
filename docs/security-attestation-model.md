@@ -10,7 +10,7 @@ The contract is normative for implementation and tests.
 ## Scope
 
 In scope:
-- CP-side verification for `GET /api/v1/agents/challenge` and `POST /api/v1/agents/register`
+- CP-side verification for `GET /api/agents/challenge` and `POST /api/agents/register`
 - Nonce issuance, binding, replay protection, and expiry handling
 - Intel Trust Authority (ITA) JWT verification
 - `MRTD`, `RTMR`, and `TCB` policy enforcement

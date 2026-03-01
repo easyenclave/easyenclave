@@ -9,7 +9,7 @@ Bcrypt hash of the control plane admin password.
 
 **To generate:**
 ```bash
-python3 scripts/hash_admin_password.py
+cargo run -p ee-ops -- hash-admin-password
 ```
 
 Then add the output to GitHub Secrets:

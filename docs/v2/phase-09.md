@@ -13,7 +13,7 @@ Implement deployment workflow, app catalog APIs, proxying, diagnostics, and owne
 - Revenue-share routes
 - Measurement callback route
 - Proxy and logs routes
-- `/api/v1/me/*` owner routes
+- `/api/me/*` owner routes
 
 ## Test Gates
 

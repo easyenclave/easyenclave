@@ -9,8 +9,6 @@ easyenclave v2 is a full Rust rewrite of the current Python/FastAPI system.
 The control plane manages Intel TDX-based agent VMs that run user workloads in attested environments. It includes:
 - Agent lifecycle and attestation
 - Deployment orchestration
-- Billing and ledgering
-- Capacity management and launch ordering
 - App catalog and image measurement
 - Admin operations and cloud cleanup
 
@@ -45,33 +43,26 @@ Required invariants:
 - Agent lifecycle: challenge/register/heartbeat/status/reset/delete
 - Deployments: API key + GitHub OIDC initiated deployments
 - Attestation: CP quote endpoint + agent quote verification
-- Billing: hourly charging, revenue splitting, Stripe deposit flow
-- Capacity: warm pool targets, reservations, launch orders, launcher claim/update
+- External apps: billing and capacity provisioning run outside CP
 - App catalog: apps, versions, measurement pipeline, revenue shares
 - Admin: settings, trusted MRTDs, cloudflare resources, cleanup
 - Proxy/logs: request forwarding and diagnostics export
 
-### 4.2 Data Model (15 Tables)
+### 4.2 Data Model (10 Tables)
 - `agents`
 - `agent_control_credentials`
 - `deployments`
 - `services`
 - `apps`
 - `app_versions`
-- `app_revenue_shares`
 - `accounts`
-- `transactions`
 - `settings`
 - `admin_sessions`
 - `trusted_mrtds`
-- `capacity_pool_targets`
-- `capacity_reservations`
-- `capacity_launch_orders`
 
 ### 4.3 Authentication Modes
 - Admin session token (password and GitHub OAuth)
 - Account API key (`ee_live_*`)
-- Launcher key (account type: launcher)
 - Agent control credential (per-agent secret)
 - GitHub Actions OIDC JWT for deployment auth
 
@@ -80,6 +71,16 @@ GitHub Actions OIDC deploy auth runtime knobs:
 - `CP_GITHUB_OIDC_ISSUER` (default: `https://token.actions.githubusercontent.com`)
 - `CP_GITHUB_OIDC_JWKS_URL` (default: `https://token.actions.githubusercontent.com/.well-known/jwks`)
 - `CP_GITHUB_OIDC_JWKS_TTL_SECONDS` (default: `300`)
+
+Health/uptime ingest runtime knobs:
+- `CP_AGENT_CHECK_TOKEN` (required to enable `POST /api/agents/{agent_id}/checks`)
+- `CP_HEARTBEAT_INTERVAL_SECONDS` (default: `30`; used for downtime estimate)
+- `CP_CHECK_TIMEOUT_SECONDS` (default: `5`)
+- `CP_DOWN_AFTER_CONSECUTIVE_FAILURES` (default: `3`)
+- `CP_RECOVER_AFTER_CONSECUTIVE_SUCCESSES` (default: `2`)
+- `CP_ATTESTATION_RECHECK_SECONDS` (default: `300`)
+- `CP_AGENT_HEALTH_PATH` (default: `/health`)
+- `CP_AGENT_ATTESTATION_PATH` (optional, empty by default)
 
 ## 5. Architecture
 
@@ -93,14 +94,13 @@ easyenclave/
     ├── ee-attestation/
     ├── ee-cp/
     ├── ee-agent/
-    └── ee-launcher/
+    └── ee-ops/
 ```
 
 Dependency graph:
 ```text
 ee-common  -> ee-attestation -> ee-cp
                             -> ee-agent
-ee-common  -> ee-launcher
 ```
 
 ### 5.2 Crate Responsibilities
@@ -108,10 +108,10 @@ ee-common  -> ee-launcher
 - `ee-attestation`: TDX quote parsing, Intel TA JWT verification, OCI measurement
 - `ee-cp`: HTTP API, stores, settings, business logic, background jobs, external integrations
 - `ee-agent`: in-VM binary (agent mode + cp-bootstrap mode)
-- `ee-launcher`: host CLI for launching/stopping/listing TDX VMs
+- `ee-ops`: Cargo entrypoint for CI/deploy/reproducibility/infra automation
 
 ### 5.3 Key Design Decisions
-1. Keep billing, GCP, and capacity orchestration in `ee-cp` (no premature crate split).
+1. Keep CP focused on attestation, deploy orchestration, and auth; move billing/capacity orchestration to external apps.
 2. Use Argon2 for key/session secret hashing.
 3. Implement settings as DB > env > default with TTL cache.
 4. Keep both deploy auth paths: API key and GitHub OIDC.
@@ -121,7 +121,6 @@ ee-common  -> ee-launcher
 - Cloudflare tunnels and DNS
 - GCP Compute + service account OAuth (staging + prod on real TDX-capable nodes)
 - Intel Trust Authority JWKS and token verification
-- Stripe payment intents and webhook processing
 - GitHub OAuth (admin auth)
 - GitHub OIDC JWKS (deploy auth)
 - Cosign verification (subprocess)
@@ -132,10 +131,6 @@ ee-common  -> ee-launcher
 - Agent health checks and optional attestation refresh
 - Control-plane attestation refresh
 - Version measurement queue processing
-- Hourly charging
-- Insufficient-funds terminator
-- Capacity pool reconciliation
-- Capacity fulfiller (GCP only)
 - Stale agent cleanup
 
 ## 8. Implementation Plan
@@ -201,7 +196,7 @@ Tests:
 
 ## Phase 5: Stores
 Deliverables:
-- stores for agents, deployments, accounts, apps, transactions, capacity, sessions, services
+- stores for agents, deployments, accounts, apps, sessions, services
 
 Tests:
 - CRUD coverage
@@ -260,31 +255,26 @@ Tests:
 - proxy forwarding
 - OIDC deploy ownership checks
 
-## Phase 10: Billing + Stripe
+## Phase 10: External Billing App Integration
 Deliverables:
-- billing service and rate card logic
-- Stripe client and webhook handling
-- billing routes
-- charging + insufficient funds background jobs
+- define CP-to-billing app contract (events/API)
+- remove CP-owned billing routes and background jobs
+- document reference billing app integration
+- define `BILLING_UNLIMITED_OWNERS` policy (default: `posix4e,easyenclave`)
 
 Tests:
-- charge calculation
-- 70/30 split
-- contributor pool distribution
-- webhook verification
-- insufficient-funds termination behavior
+- contract payload compatibility
+- deploy flow without CP billing coupling
+- unlimited-owner policy checks for unset + explicit override modes
 
-## Phase 11: Capacity + GCP + Admin
+## Phase 11: GCP + Admin
 Deliverables:
-- capacity and admin route families
+- admin route families
 - GCP provisioning client for staging and prod real TDX nodes
 - remaining background jobs
 
 Tests:
-- capacity target/reservation/order lifecycle
-- launcher claim/update flow
 - GCP OAuth and instance create/delete (mock + real-node smoke in staging)
-- reconciliation behavior
 
 ## Phase 12: OCI Measurement Pipeline
 Deliverables:
@@ -310,21 +300,21 @@ Tests:
 - deploy/undeploy flow (mock docker)
 - log buffering
 
-## Phase 14: ee-launcher CLI
+## Phase 14: ee-ops Cargo Automation
 Deliverables:
-- launch/stop/list/logs commands
-- qemu and OCI helpers
-- preflight checks
+- cargo entrypoint for lint/repro/deploy/image-bake
+- remove top-level shell/python script entrypoints
+- keep automation scriptable via `cargo run -p ee-ops -- ...`
 
 Tests:
-- arg validation
-- node size parsing
-- config injection round-trip
+- command dispatch validation
+- CI workflow parity after script path removal
+- reproducibility and deploy command pass-through
 
 ## Phase 15: Image + E2E + Release Pipelines
 Deliverables:
 - VM image build assets
-- integration suite for launcher -> cp -> agent -> deploy
+- integration suite for cp bootstrap -> agent register -> deploy
 - staging/release GitHub workflows
 
 Tests:
@@ -358,33 +348,38 @@ Per-phase required checks:
 
 System-level gates:
 1. After Phase 7: registration-to-heartbeat smoke test.
-2. After Phase 10: deploy + billing charge cycle correctness test.
-3. After Phase 11: capacity reconciliation and fulfillment integration test.
+2. After Phase 10: deploy flow correctness without CP billing coupling.
+3. After Phase 11: external capacity app integration test.
 4. After Phase 15: full E2E workflow.
 
 ## 11. API Surface (Group Inventory)
 
 Health and attestation:
 - `/health`
-- `/api/v1/attestation`
-- `/api/v1/trusted-mrtds`
+- `/api/attestation`
+- `/api/trusted-mrtds`
 
 Agent lifecycle:
 - challenge/register/heartbeat/status/deployed/list/get/attestation/logs/stats/delete/reset/undeploy/owner/console-access
+- `/api/agents/{agent_id}/checks` (ingest health + attestation check result; deployment failures exempted)
 
 Owner-scoped:
-- `/api/v1/me/agents*`
-- `/api/v1/me/deployments`
+- `/api/me/agents*`
+- `/api/me/deployments`
 
 Deployments:
-- `/api/v1/deploy`
-- `/api/v1/deployments*`
+- `/api/deploy`
+- `/api/deployments*`
+
+Public reliability stats:
+- `/api/stats/apps/recent?window_hours=24`
+- `/api/stats/agents/recent?window_hours=24`
 
 App catalog and shares:
-- `/api/v1/apps*`
-- `/api/v1/apps/{name}/versions*`
-- `/api/v1/apps/{name}/revenue-shares*`
-- `/api/v1/internal/measurement-callback`
+- `/api/apps*`
+- `/api/apps/{name}/versions*`
+- `/api/apps/{name}/revenue-shares*`
+- `/api/internal/measurement-callback`
 
 Auth:
 - `/admin/login`
@@ -394,21 +389,14 @@ Auth:
 - `/auth/github/callback`
 - `/auth/me`
 
-Accounts and billing:
-- `/api/v1/accounts*`
-- `/api/v1/billing/rates`
-- `/api/v1/webhooks/stripe`
-
-Capacity and launcher:
-- admin target/reservation/order/reconcile routes
-- account capacity request/list routes
-- launcher claim/update routes
+Accounts:
+- `/api/accounts*`
 
 Admin and cloud operations:
 - admin settings/trusted MRTDs/cloudflare/stripe/cleanup routes
 
 Proxy and logs:
-- `/api/v1/proxy`
+- `/api/proxy`
 - `/proxy/{service}/{path}`
 - control-plane/container/export log routes
 

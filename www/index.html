@@ -655,7 +655,7 @@ response = my_service.post("/api/data", json={"input": "secret"})</code></pre>
     <section id="oidc-deploy" class="getting-started">
         <div class="container">
             <h2>GitHub OIDC Deploy (No API Key Secret)</h2>
-            <p class="section-subtitle">Use GitHub's built-in OIDC token to call <code>/api/v1/deploy</code> directly.</p>
+            <p class="section-subtitle">Use GitHub's built-in OIDC token to call <code>/api/deploy</code> directly.</p>
 
             <div class="step">
                 <div class="step-number">1</div>
@@ -676,7 +676,7 @@ steps:
 
   - name: Deploy
     run: |
-      curl -sS -X POST https://app.easyenclave.com/api/v1/deploy \
+      curl -sS -X POST https://app.easyenclave.com/api/deploy \
         -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" \
         -H "Content-Type: application/json" \
         -d '{"compose":"services: {}","app_name":"hello-tdx","agent_name":"my-app-123","dry_run":true}'</code></pre>
@@ -696,7 +696,7 @@ steps:
                     <div class="step-content">
                         <h3>Register Your App</h3>
                         <p>Create an entry in the app catalog. This is a one-time setup.</p>
-                        <pre><code>curl -X POST https://app.easyenclave.com/api/v1/apps \
+                        <pre><code>curl -X POST https://app.easyenclave.com/api/apps \
   -H "Content-Type: application/json" \
   -d '{"name": "my-app", "source_repo": "myorg/myrepo"}'</code></pre>
                     </div>

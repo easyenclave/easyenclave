@@ -1,33 +1,38 @@
-# Phase 14 - ee-launcher
+# Phase 14 - ee-ops
 
-Status: Not started
+Status: In progress
 
 ## Goal
 
-Build host-side CLI for launching and managing TDX VMs.
+Consolidate repo automation under Cargo and remove top-level script entrypoints.
 
 ## Deliverables
 
-- CLI commands: launch, stop, list, logs
-- QEMU helpers
-- OCI extraction helpers
-- Preflight checks
-- Config injection via kernel cmdline
+- `crates/ee-ops` command dispatcher
+- Cargo command parity for:
+  - lint
+  - reproducibility gate
+  - trusted-value measurement
+  - CI deploy bootstrap
+  - GCP image bake
+  - admin password hash helper
+- CI workflow migration from `./scripts/*` to `cargo run -p ee-ops -- ...`
+- Deletion of legacy top-level `scripts/` directory
 
 ## Test Gates
 
-- CLI argument validation
-- Node-size parsing
-- Config injection round-trip
+- command argument/dispatch validation
+- CI workflow smoke checks pass with Cargo entrypoint
+- repro/deploy/image-bake commands execute through `ee-ops`
 
 ## Definition Of Done
 
-- [ ] Launcher can boot a VM with expected config
-- [ ] Preflight checks fail clearly when infra is missing
-- [ ] CLI UX is stable and scriptable
+- [ ] All former `scripts/*` commands are available via `ee-ops`
+- [ ] CI workflows use Cargo commands only
+- [ ] No top-level `scripts/` directory remains
 
 ## PR Checklist
 
 - [ ] Command handlers implemented
-- [ ] QEMU/OCI modules implemented
-- [ ] CLI tests added
+- [ ] Workflows/docs migrated
+- [ ] Script entrypoints removed

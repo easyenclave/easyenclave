@@ -22,7 +22,7 @@ Registration flow:
 1. Agent requests nonce challenge from CP.
 2. Agent generates TDX quote.
 3. Agent calls Intel Trust Authority and gets a signed token.
-4. Agent sends token to CP at `/api/v1/agents/register`.
+4. Agent sends token to CP at `/api/agents/register`.
 5. CP verifies Intel signature + nonce + trust policy.
 
 ## Steps
@@ -50,10 +50,9 @@ export EE_GCP_IMAGE_FAMILY="easyenclave-agent-main"
 export ITA_API_KEY="<intel-ta-api-key>"
 python3 infra/tdx_cli.py vm new \
   --size tiny \
-  --easyenclave-url "https://app.easyenclave.com" \
-  --intel-api-key "$ITA_API_KEY" \
-  --cloud-provider gcp \
-  --availability-zone us-central1-f \
+  --cp-url "https://app.easyenclave.com" \
+  --ita-api-key "$ITA_API_KEY" \
+  --zone us-central1-f \
   --wait
 ```
 
@@ -61,7 +60,7 @@ python3 infra/tdx_cli.py vm new \
 
 ```bash
 python3 infra/tdx_cli.py vm list
-curl -s https://app.easyenclave.com/api/v1/agents | jq '.[] | {agent_id,vm_name,node_size,datacenter,status,verified}'
+curl -s https://app.easyenclave.com/api/agents | jq '.[] | {agent_id,vm_name,node_size,datacenter,status,verified}'
 ```
 
 ## Common Failures

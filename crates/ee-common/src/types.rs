@@ -19,7 +19,6 @@ pub enum DeploymentStatus {
     Running,
     Failed,
     Stopped,
-    InsufficientFunds,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,37 +27,7 @@ pub enum AccountType {
     Deployer,
     Agent,
     Contributor,
-    Launcher,
     Platform,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TransactionType {
-    Deposit,
-    Charge,
-    Earning,
-    ContributorCredit,
-    PlatformRevenue,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum LaunchOrderStatus {
-    Open,
-    Claimed,
-    Provisioning,
-    Fulfilled,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CapacityReservationStatus {
-    Open,
-    Consumed,
-    Released,
-    Expired,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -102,14 +71,10 @@ pub struct Deployment {
     pub status: DeploymentStatus,
     pub app_name: Option<String>,
     pub app_version: Option<String>,
-    pub sla_class: Option<String>,
-    pub machine_size: Option<String>,
     pub cpu_vcpus: i32,
     pub memory_gb: f64,
     pub gpu_count: i32,
     pub account_id: Uuid,
-    pub last_charge_time: Option<DateTime<Utc>>,
-    pub total_charged_cents: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -154,16 +119,6 @@ pub struct AppVersion {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AppRevenueShare {
-    pub share_id: Uuid,
-    pub app_name: String,
-    pub account_id: Uuid,
-    pub share_bps: i32,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Account {
     pub account_id: Uuid,
     pub name: String,
@@ -175,17 +130,6 @@ pub struct Account {
     pub github_org: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Transaction {
-    pub transaction_id: Uuid,
-    pub account_id: Uuid,
-    pub amount_cents: i64,
-    pub balance_after_cents: i64,
-    pub tx_type: TransactionType,
-    pub reference_id: Option<String>,
-    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -213,47 +157,6 @@ pub struct TrustedMrtd {
     pub mrtd: String,
     pub mrtd_type: String,
     pub note: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CapacityPoolTarget {
-    pub target_id: Uuid,
-    pub datacenter: String,
-    pub node_size: String,
-    pub min_warm_count: i32,
-    pub enabled: bool,
-    pub require_verified: bool,
-    pub require_healthy: bool,
-    pub require_hostname: bool,
-    pub dispatch: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CapacityReservation {
-    pub reservation_id: Uuid,
-    pub agent_id: Uuid,
-    pub datacenter: String,
-    pub node_size: String,
-    pub status: CapacityReservationStatus,
-    pub deployment_id: Option<Uuid>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CapacityLaunchOrder {
-    pub order_id: Uuid,
-    pub datacenter: String,
-    pub node_size: String,
-    pub status: LaunchOrderStatus,
-    pub account_id: Option<Uuid>,
-    pub claimed_by_account_id: Option<Uuid>,
-    pub bootstrap_token_hash: Option<String>,
-    pub vm_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

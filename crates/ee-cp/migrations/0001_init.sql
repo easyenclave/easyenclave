@@ -36,14 +36,11 @@ CREATE TABLE IF NOT EXISTS deployments (
     status TEXT NOT NULL,
     app_name TEXT,
     app_version TEXT,
-    sla_class TEXT,
-    machine_size TEXT,
     cpu_vcpus INTEGER NOT NULL,
     memory_gb REAL NOT NULL,
     gpu_count INTEGER NOT NULL DEFAULT 0,
+    auth_method TEXT NOT NULL DEFAULT 'api_key',
     account_id TEXT NOT NULL,
-    last_charge_time TEXT,
-    total_charged_cents INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -85,15 +82,6 @@ CREATE TABLE IF NOT EXISTS app_versions (
     UNIQUE(app_name, version)
 );
 
-CREATE TABLE IF NOT EXISTS app_revenue_shares (
-    share_id TEXT PRIMARY KEY,
-    app_name TEXT NOT NULL,
-    account_id TEXT NOT NULL,
-    share_bps INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS accounts (
     account_id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -105,16 +93,6 @@ CREATE TABLE IF NOT EXISTS accounts (
     github_org TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-    transaction_id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    amount_cents INTEGER NOT NULL,
-    balance_after_cents INTEGER NOT NULL,
-    tx_type TEXT NOT NULL,
-    reference_id TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -143,41 +121,10 @@ CREATE TABLE IF NOT EXISTS trusted_mrtds (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS capacity_pool_targets (
-    target_id TEXT PRIMARY KEY,
-    datacenter TEXT NOT NULL,
-    node_size TEXT NOT NULL,
-    min_warm_count INTEGER NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    require_verified INTEGER NOT NULL DEFAULT 1,
-    require_healthy INTEGER NOT NULL DEFAULT 1,
-    require_hostname INTEGER NOT NULL DEFAULT 1,
-    dispatch TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(datacenter, node_size)
-);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_github_login_unique
+ON accounts(github_login COLLATE NOCASE)
+WHERE github_login IS NOT NULL AND github_login <> '';
 
-CREATE TABLE IF NOT EXISTS capacity_reservations (
-    reservation_id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL,
-    datacenter TEXT NOT NULL,
-    node_size TEXT NOT NULL,
-    status TEXT NOT NULL,
-    deployment_id TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS capacity_launch_orders (
-    order_id TEXT PRIMARY KEY,
-    datacenter TEXT NOT NULL,
-    node_size TEXT NOT NULL,
-    status TEXT NOT NULL,
-    account_id TEXT,
-    claimed_by_account_id TEXT,
-    bootstrap_token_hash TEXT,
-    vm_name TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_github_org_unique
+ON accounts(github_org COLLATE NOCASE)
+WHERE github_org IS NOT NULL AND github_org <> '';

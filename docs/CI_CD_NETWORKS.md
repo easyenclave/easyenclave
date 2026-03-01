@@ -29,6 +29,7 @@ flowchart TD
 - Trigger: `Staging Rollout` on `main` pushes (or manual dispatch).
 - CI gate: rollout waits for `CI` success on the target SHA.
 - Billing policy: disabled/simulated.
+- Unlimited-credit owners default to `posix4e,easyenclave` when billing app allowlist is unset.
 - Purpose: integration confidence on latest `main` with low risk.
 
 ### Production
@@ -39,6 +40,7 @@ flowchart TD
   - `Release GCP Image` publishes `gcp-image.<tag>.json` or `gcp-image.json`.
 - Attestation policy: strict and release-pinned.
 - Billing policy: enabled.
+- Billing app allowlist controlled via `BILLING_UNLIMITED_OWNERS` (explicit override of defaults).
 - Purpose: deterministic release deployment.
 
 ## Canonical Workflows

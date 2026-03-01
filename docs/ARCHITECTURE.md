@@ -8,16 +8,14 @@ This document describes the current Rust-first EasyEnclave architecture.
 flowchart TD
     Dev[Developer / CI Workflow]
     CP[EasyEnclave Rust Control Plane]
-    Capacity[Capacity Targets + Reservations + Orders]
-    Workers[Capacity Launcher Workers<br/>GCP / Baremetal]
+    InfraApp[External Infra App / Runner]
     Agents[TDX Agents<br/>tiny / standard / llm]
     ITA[Intel Trust Authority]
     CF[Cloudflare Tunnel + DNS]
 
     Dev -->|deploy / admin APIs| CP
-    CP --> Capacity
-    Capacity --> Workers
-    Workers -->|launch + bootstrap| Agents
+    Dev -->|launch / bootstrap infra| InfraApp
+    InfraApp -->|launch + bootstrap| Agents
     Agents -->|register + heartbeat + attest| CP
     Agents --> ITA
     Agents --> CF
@@ -31,7 +29,7 @@ sequenceDiagram
     participant CP as Control Plane
     participant A as Selected Agent
 
-    CI->>CP: POST /api/v1/deploy
+    CI->>CP: POST /api/deploy
     CP->>CP: Select agent + verify ownership/auth + placement filters
     CP->>A: POST /api/deploy
     A-->>CP: 202 accepted
@@ -43,10 +41,8 @@ sequenceDiagram
 - Control Plane
   - Agent lifecycle and attestation checks
   - Deployment preflight and placement
-  - Capacity target/reservation/order orchestration
   - Admin auth (password + GitHub OAuth) and owner auth (API key + GitHub OIDC)
-- Capacity Workers
-  - Claim launch orders from CP
+- External Infra App / Runner
   - Boot provider-specific capacity (GCP/baremetal)
   - Bootstrap agents so they register back to CP
 - Agents
@@ -66,6 +62,5 @@ sequenceDiagram
 
 ## 5) Related Docs
 
-- `docs/CAPACITY_LAUNCHER.md`
 - `docs/CI_CD_NETWORKS.md`
 - `docs/runbooks/release-production.md`

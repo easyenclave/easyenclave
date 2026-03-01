@@ -25,7 +25,7 @@ curl -f http://localhost:8080/
 ## 2) Create a deployer account (one-time)
 
 ```bash
-curl -sS -X POST https://app.easyenclave.com/api/v1/accounts \
+curl -sS -X POST https://app.easyenclave.com/api/accounts \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-org-deployer",
@@ -39,7 +39,7 @@ Save the returned `api_key`.
 ## 3) Deploy with API key
 
 ```bash
-curl -sS -X POST https://app.easyenclave.com/api/v1/deploy \
+curl -sS -X POST https://app.easyenclave.com/api/deploy \
   -H "Authorization: Bearer $EE_API_KEY" \
   -H "Content-Type: application/json" \
   -d "$(jq -n --rawfile compose docker-compose.yml '{compose:$compose,node_size:"tiny"}')" | jq
@@ -73,7 +73,7 @@ jobs:
         run: |
           set -euo pipefail
           payload="$(jq -n --rawfile compose examples/hello-tdx/docker-compose.yml '{compose:$compose,node_size:"tiny"}')"
-          curl -sS -X POST "$CP_URL/api/v1/deploy" \
+          curl -sS -X POST "$CP_URL/api/deploy" \
             -H "Authorization: Bearer $OIDC_TOKEN" \
             -H "Content-Type: application/json" \
             -d "$payload" | jq
@@ -82,6 +82,6 @@ jobs:
 ## 5) Verify rollout
 
 ```bash
-curl -sS https://app.easyenclave.com/api/v1/deployments | jq
-curl -sS https://app.easyenclave.com/api/v1/agents | jq '.[] | {agent_id,vm_name,node_size,status,verified}'
+curl -sS https://app.easyenclave.com/api/deployments | jq
+curl -sS https://app.easyenclave.com/api/agents | jq '.[] | {agent_id,vm_name,node_size,status,verified}'
 ```

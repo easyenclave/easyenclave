@@ -125,7 +125,7 @@ jobs:
           BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
           BAKE_METADATA_PATH="${metadata_path}"
           export GCP_PROJECT_ID TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE BAKE_METADATA_PATH
-          ./scripts/gcp_bake_image.sh
+          cargo run -p ee-ops -- gcp-bake-image
 
           source_image_name_used="$(jq -r '.source_image_name_resolved // ""' "${metadata_path}")"
           source_image_family_used="$(jq -r '.source_image_family_resolved // ""' "${metadata_path}")"

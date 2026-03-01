@@ -30,7 +30,7 @@ rm -f easyenclave.db
 
 ### 3. Set Admin Password
 ```bash
-python3 scripts/hash_admin_password.py
+cargo run -p ee-ops -- hash-admin-password
 # Copy output and set:
 export ADMIN_PASSWORD_HASH='$2b$12$...'
 ```
@@ -46,7 +46,7 @@ Done! The new schema will be created automatically.
 
 ### Create Your First Account
 ```bash
-curl -X POST http://localhost:8000/api/v1/accounts \
+curl -X POST http://localhost:8000/api/accounts \
   -H "Content-Type: application/json" \
   -d '{"name":"main-deployer","account_type":"deployer"}'
 ```
@@ -54,14 +54,14 @@ curl -X POST http://localhost:8000/api/v1/accounts \
 
 ### Add Test Funds
 ```bash
-curl -X POST http://localhost:8000/api/v1/accounts/{id}/deposit \
+curl -X POST http://localhost:8000/api/accounts/{id}/deposit \
   -H "Authorization: Bearer ee_live_xxx" \
   -d '{"amount":10.0}'
 ```
 
 ### Deploy with Billing
 ```bash
-curl -X POST http://localhost:8000/api/v1/apps/hello-tdx/versions/v1/deploy \
+curl -X POST http://localhost:8000/api/apps/hello-tdx/versions/v1/deploy \
   -d '{
     "agent_id":"agent-uuid",
     "account_id":"account-uuid",
@@ -96,7 +96,7 @@ export STRIPE_WEBHOOK_SECRET=whsec_xxx
 ```
 
 Configure webhook in Stripe Dashboard:
-- URL: `https://your-domain/api/v1/webhooks/stripe`
+- URL: `https://your-domain/api/webhooks/stripe`
 - Event: `payment_intent.succeeded`
 
 ## 📈 Pricing Reference
@@ -115,7 +115,7 @@ Configure webhook in Stripe Dashboard:
 - **`SETUP_FRESH.md`** - Detailed fresh start guide
 - **`AUTH_AND_BILLING.md`** - Complete feature documentation
 - **`migrations/001_add_auth_and_billing.py`** - Migration script (if needed later)
-- **`scripts/hash_admin_password.py`** - Admin password generator
+- **`cargo run -p ee-ops -- hash-admin-password`** - Admin password generator
 
 ## 🧪 Testing
 
@@ -137,7 +137,7 @@ Expected output: `ee_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 ## 🐛 Troubleshooting
 
 **"Admin password not configured"**
-→ Run `scripts/hash_admin_password.py` and set `ADMIN_PASSWORD_HASH`
+→ Run `cargo run -p ee-ops -- hash-admin-password` and set `ADMIN_PASSWORD_HASH`
 
 **"Invalid API key"**
 → Check format: `Authorization: Bearer ee_live_xxx`
@@ -166,12 +166,12 @@ Expected output: `ee_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
 **Endpoints:**
 - `POST /admin/login` - Admin authentication
-- `POST /api/v1/accounts` - Create account (returns API key once!)
-- `GET /api/v1/accounts/{id}` - View account (auth required)
-- `POST /api/v1/accounts/{id}/deposit` - Add funds (auth required)
-- `POST /api/v1/accounts/{id}/payment-intent` - Stripe payment (auth required)
-- `POST /api/v1/webhooks/stripe` - Stripe webhook
-- `POST /api/v1/apps/{name}/versions/{version}/deploy` - Deploy with billing
+- `POST /api/accounts` - Create account (returns API key once!)
+- `GET /api/accounts/{id}` - View account (auth required)
+- `POST /api/accounts/{id}/deposit` - Add funds (auth required)
+- `POST /api/accounts/{id}/payment-intent` - Stripe payment (auth required)
+- `POST /api/webhooks/stripe` - Stripe webhook
+- `POST /api/apps/{name}/versions/{version}/deploy` - Deploy with billing
 
 ## 🎯 Ready to Deploy!
 

@@ -28,12 +28,12 @@ Add CP-native provisioning support for a new cloud with deterministic placement 
 - Follow existing GCP patterns for auth, create, delete, and list.
 
 2. Control-plane orchestration:
-- Wire provider into capacity fulfillment and order claiming in `crates/ee-cp/src/` route/service modules.
+- Keep provider integration outside CP orchestration; CP should only consume already-registered agents.
 - Keep datacenter format normalized as `<cloud>:<zone-or-region>`.
 
-3. Launcher config pass-through:
+3. Agent config pass-through:
 - Add provider config fields in `infra/tdx_cli.py`.
-- Export provider env vars in `infra/launcher/launcher.py`.
+- Export provider env vars in `crates/ee-agent`.
 
 4. CI/CD workflow coverage:
 - Extend `test.yml` and `staging-rollout.yml` checks if provider-specific behavior is required.

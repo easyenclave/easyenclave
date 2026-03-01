@@ -22,13 +22,6 @@ pub struct AgentConfig {
     pub owner: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LauncherConfig {
-    pub cp_url: String,
-    pub default_node_size: String,
-    pub default_datacenter: String,
-}
-
 impl CpConfig {
     pub fn from_env() -> AppResult<Self> {
         Self::from_map(&env_map())
@@ -63,21 +56,6 @@ impl AgentConfig {
     }
 }
 
-impl LauncherConfig {
-    pub fn from_env() -> AppResult<Self> {
-        Self::from_map(&env_map())
-    }
-
-    pub fn from_map(vars: &HashMap<String, String>) -> AppResult<Self> {
-        let cp_url = required(vars, "LAUNCHER_CP_URL")?;
-        Ok(Self {
-            cp_url,
-            default_node_size: get(vars, "LAUNCHER_DEFAULT_NODE_SIZE", "standard"),
-            default_datacenter: get(vars, "LAUNCHER_DEFAULT_DATACENTER", "local:qemu"),
-        })
-    }
-}
-
 fn env_map() -> HashMap<String, String> {
     env::vars().collect()
 }
@@ -104,7 +82,7 @@ fn optional(vars: &HashMap<String, String>, key: &str) -> Option<String> {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{AgentConfig, CpConfig, LauncherConfig};
+    use super::{AgentConfig, CpConfig};
 
     #[test]
     fn cp_config_defaults_apply() {
@@ -123,15 +101,5 @@ mod tests {
         let vars = HashMap::new();
         let err = AgentConfig::from_map(&vars).expect_err("should fail");
         assert!(err.to_string().contains("AGENT_CP_URL"));
-    }
-
-    #[test]
-    fn launcher_config_parses_required_url() {
-        let mut vars = HashMap::new();
-        vars.insert("LAUNCHER_CP_URL".into(), "http://127.0.0.1:8080".into());
-
-        let cfg = LauncherConfig::from_map(&vars).expect("launcher config");
-        assert_eq!(cfg.cp_url, "http://127.0.0.1:8080");
-        assert_eq!(cfg.default_node_size, "standard");
     }
 }

@@ -353,14 +353,14 @@ docker push ghcr.io/you/myapp:v1.0.0
 
 **Step 3: Create a deployer account (one-time)**
 ```bash
-curl -X POST https://app.easyenclave.com/api/v1/accounts \
+curl -X POST https://app.easyenclave.com/api/accounts \
   -H "Content-Type: application/json" \
   -d '{"name":"my-org-deployer","account_type":"deployer","github_org":"my-org"}'
 ```
 
 **Step 4: Deploy to verified TDX capacity**
 ```bash
-curl -X POST https://app.easyenclave.com/api/v1/deploy \
+curl -X POST https://app.easyenclave.com/api/deploy \
   -H "Authorization: Bearer $EE_API_KEY" \
   -H "Content-Type: application/json" \
   -d "$(jq -n --rawfile compose docker-compose.yml '{compose:$compose,node_size:\"tiny\",datacenter:\"gcp:us-central1-f\"}')"

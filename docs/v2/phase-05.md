@@ -8,8 +8,7 @@ Implement all primary data-access stores for the control plane.
 
 ## Deliverables
 
-- Store modules for agents, deployments, accounts, apps, transactions, capacity, sessions, and services
-- Transaction-safe balance and ledger operations
+- Store modules for agents, deployments, accounts, apps, sessions, and services
 - Common query patterns for listing/filtering
 
 ## Test Gates
@@ -17,7 +16,6 @@ Implement all primary data-access stores for the control plane.
 - CRUD round-trip coverage per store
 - Deployment status transition checks
 - Session expiry behavior
-- Capacity order claim/fulfill lifecycle
 
 ## Definition Of Done
 
