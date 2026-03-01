@@ -437,6 +437,12 @@ if [ "${saw_success}" != "true" ]; then
 fi
 
 term_deadline=$(( $(date +%s) + 300 ))
+log "Requesting builder VM stop before snapshot..."
+gcloud compute instances stop "${builder_name}" \
+  --project "${GCP_PROJECT_ID}" \
+  --zone "${BUILD_ZONE}" \
+  --quiet >/dev/null 2>&1 || true
+
 while :; do
   status="$(gcloud compute instances describe "${builder_name}" --project "${GCP_PROJECT_ID}" --zone "${BUILD_ZONE}" --format='value(status)')"
   if [ "${status}" = "TERMINATED" ]; then
