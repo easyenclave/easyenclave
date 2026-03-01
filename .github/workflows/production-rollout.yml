@@ -386,9 +386,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          fetch_agents() {
+            local body
+            body="$(curl -fsS "$CP_URL/api/agents" 2>/dev/null || true)"
+            if [ -n "${body:-}" ]; then
+              echo "$body"
+              return 0
+            fi
+            body="$(curl -fsS "$CP_URL/api/v1/agents" 2>/dev/null || true)"
+            if [ -n "${body:-}" ]; then
+              echo "$body"
+              return 0
+            fi
+            return 1
+          }
           deadline=$(( $(date +%s) + 900 ))
           while :; do
-            body="$(curl -fsS "$CP_URL/api/v1/agents" 2>/dev/null || true)"
+            body="$(fetch_agents || true)"
             if [ -z "${body:-}" ]; then
               sleep 5
               continue

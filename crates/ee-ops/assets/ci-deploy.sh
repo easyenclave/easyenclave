@@ -237,9 +237,24 @@ agents_to_array() {
   jq -c 'if type == "array" then . else (.agents // []) end'
 }
 
+fetch_agents_raw() {
+  local body
+  body="$(curl -sf "$CP_URL/api/agents" 2>/dev/null || true)"
+  if [ -n "${body:-}" ]; then
+    echo "$body"
+    return 0
+  fi
+  body="$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || true)"
+  if [ -n "${body:-}" ]; then
+    echo "$body"
+    return 0
+  fi
+  return 1
+}
+
 echo "==> Waiting for $TOTAL_AGENTS agents to register and be verified..."
 for i in $(seq 1 "$AGENT_VERIFY_WAIT_ATTEMPTS"); do
-  AGENTS_RAW=$(curl -sf "$CP_URL/api/agents" 2>/dev/null || echo '{"agents":[]}')
+  AGENTS_RAW="$(fetch_agents_raw || echo '{"agents":[]}')"
   AGENTS="$(echo "$AGENTS_RAW" | agents_to_array)"
   VERIFIED=$(echo "$AGENTS" | jq '[.[] | select(.verified == true)] | length')
   TOTAL_SEEN=$(echo "$AGENTS" | jq 'length')
@@ -267,13 +282,13 @@ for i in $(seq 1 "$AGENT_VERIFY_WAIT_ATTEMPTS"); do
   sleep "$AGENT_VERIFY_WAIT_SECONDS"
 done
 
-VERIFIED="$(curl -sf "$CP_URL/api/agents" 2>/dev/null | agents_to_array | jq '[.[] | select(.verified == true)] | length')"
+VERIFIED="$(fetch_agents_raw | agents_to_array | jq '[.[] | select(.verified == true)] | length' 2>/dev/null || echo 0)"
 if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
   waited_seconds=$((AGENT_VERIFY_WAIT_ATTEMPTS * AGENT_VERIFY_WAIT_SECONDS))
   echo "::error::Not all agents verified after ${waited_seconds}s ($VERIFIED/$TOTAL_AGENTS)"
   echo "::error::Dumping unverified agents (to surface root cause without VM logs)..."
   {
-    curl -sf "$CP_URL/api/agents" 2>/dev/null \
+    fetch_agents_raw \
       | agents_to_array \
       | jq -r '
         .[]

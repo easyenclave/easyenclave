@@ -471,6 +471,9 @@ jobs:
           TRUSTED_AGENT_RTMRS: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS || steps.measure.outputs.rtmrs }}'
           TRUSTED_AGENT_RTMRS_BY_SIZE: '${{ env.PRECOMPUTED_TRUSTED_AGENT_RTMRS_BY_SIZE || steps.measure.outputs.rtmrs_by_size }}'
           CI_DEPLOY_TIMEOUT_SECONDS: ${{ vars.CI_DEPLOY_TIMEOUT_SECONDS || '2400' }}
+          CP_BOOTSTRAP_TIMEOUT: ${{ vars.CP_BOOTSTRAP_TIMEOUT_SECONDS || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && '300') || '600' }}
+          AGENT_VERIFY_WAIT_ATTEMPTS: ${{ vars.AGENT_VERIFY_WAIT_ATTEMPTS || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && '48') || '90' }}
+          AGENT_VERIFY_WAIT_SECONDS: ${{ vars.AGENT_VERIFY_WAIT_SECONDS || ((inputs.easyenclave_env || github.event.inputs.easyenclave_env || 'staging') == 'staging' && '5') || '10' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -514,6 +517,21 @@ jobs:
             exit 1
           fi
 
+          fetch_agents_json() {
+            local body
+            body="$(curl -fsS "$cp_for_check/api/agents" 2>/tmp/bootstrap_agents.err || true)"
+            if [ -n "${body:-}" ]; then
+              echo "$body"
+              return 0
+            fi
+            body="$(curl -fsS "$cp_for_check/api/v1/agents" 2>/tmp/bootstrap_agents.err || true)"
+            if [ -n "${body:-}" ]; then
+              echo "$body"
+              return 0
+            fi
+            return 1
+          }
+
           verify_counts() {
             local agents_json="$1"
             local size="$2"
@@ -533,14 +551,14 @@ jobs:
           llm_verified=0
 
           for attempt in $(seq 1 "$max_checks"); do
-            agents_json="$(curl -fsS "$cp_for_check/api/v1/agents" 2>/tmp/bootstrap_agents.err || true)"
+            agents_json="$(fetch_agents_json || true)"
             if [ -z "${agents_json:-}" ]; then
               if [ "$attempt" -lt "$max_checks" ]; then
                 echo "Post-bootstrap capacity check: agents API not reachable yet ($attempt/$max_checks), retrying..."
                 sleep 5
                 continue
               fi
-              echo "::error::Failed to query agents from $cp_for_check after retries."
+              echo "::error::Failed to query agents from $cp_for_check after retries (tried /api/agents and /api/v1/agents)."
               if [ -f /tmp/bootstrap_agents.err ]; then
                 cat /tmp/bootstrap_agents.err || true
               fi

@@ -319,15 +319,27 @@ def _instance_ips(instance: dict[str, Any]) -> tuple[str | None, str | None]:
     return internal_ip, external_ip
 
 
-def _wait_http_health(url: str, timeout_seconds: int) -> bool:
-    deadline = time.time() + max(5, timeout_seconds)
+def _probe_http_health(url: str) -> bool:
     health_url = f"{url.rstrip('/')}/health"
+    proc = subprocess.run(
+        ["curl", "-fsS", "--max-time", "3", health_url],
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+def _wait_http_health_any(candidates: list[str], timeout_seconds: int) -> str | None:
+    urls = [u for u in candidates if str(u).strip()]
+    if not urls:
+        return None
+    deadline = time.time() + max(5, timeout_seconds)
     while time.time() < deadline:
-        proc = subprocess.run(["curl", "-fsS", health_url], capture_output=True, text=True)
-        if proc.returncode == 0:
-            return True
-        time.sleep(5)
-    return False
+        for candidate in urls:
+            if _probe_http_health(candidate):
+                return candidate
+        time.sleep(3)
+    return None
 
 
 def _write_agent_startup_script(config: dict[str, Any]) -> str:
@@ -525,11 +537,10 @@ def control_plane_new(*, port: int, wait: bool, timeout_seconds: int) -> dict[st
 
     selected_url = network_url or public_alias_url
     if wait:
-        candidates = [u for u in [network_url, public_alias_url, ip_fallback_url] if u]
-        for candidate in candidates:
-            if _wait_http_health(candidate, timeout_seconds):
-                selected_url = candidate
-                break
+        candidates = [u for u in [ip_fallback_url, network_url, public_alias_url] if u]
+        healthy_url = _wait_http_health_any(candidates, timeout_seconds)
+        if healthy_url:
+            selected_url = healthy_url
         else:
             _fatal(
                 "Control plane did not become healthy. "

@@ -84,6 +84,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          fetch_agents() {
+            local body
+            body="$(curl -fsS "$CP_URL/api/agents" 2>/tmp/pr_staging_agents.err || true)"
+            if [ -n "${body:-}" ]; then
+              echo "$body"
+              return 0
+            fi
+            body="$(curl -fsS "$CP_URL/api/v1/agents" 2>/tmp/pr_staging_agents.err || true)"
+            if [ -n "${body:-}" ]; then
+              echo "$body"
+              return 0
+            fi
+            return 1
+          }
           health="$(curl -fsS "$CP_URL/health" 2>/tmp/pr_staging_health.err || true)"
           if [ -z "${health:-}" ]; then
             echo "::warning::Skipping staging smoke check: '${CP_URL}/health' is not reachable."
@@ -93,9 +107,9 @@ jobs:
             exit 0
           fi
           echo "$health" | jq -e '.ok == true' >/dev/null
-          agents="$(curl -fsS "$CP_URL/api/v1/agents" 2>/tmp/pr_staging_agents.err || true)"
+          agents="$(fetch_agents || true)"
           if [ -z "${agents:-}" ]; then
-            echo "::warning::Skipping staging agent snapshot: '${CP_URL}/api/v1/agents' is not reachable."
+            echo "::warning::Skipping staging agent snapshot: '${CP_URL}/api/agents' is not reachable (also tried /api/v1/agents)."
             if [ -f /tmp/pr_staging_agents.err ]; then
               cat /tmp/pr_staging_agents.err || true
             fi
