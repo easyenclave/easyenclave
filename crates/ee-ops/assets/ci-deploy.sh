@@ -95,14 +95,23 @@ CP_BOOT_JSON="$(
     --timeout "$CP_BOOTSTRAP_TIMEOUT"
 )"
 
-CP_INTERNAL_URL="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_url // ""')"
+CP_BOOTSTRAP_URL="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_url // ""')"
 CP_PUBLIC_HOSTNAME="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_hostname // ""')"
+CP_EXTERNAL_IP="$(echo "$CP_BOOT_JSON" | jq -r '.external_ip // ""')"
+CP_INTERNAL_IP="$(echo "$CP_BOOT_JSON" | jq -r '.internal_ip // ""')"
 BOOTSTRAP_AGENT_COUNT="$(echo "$CP_BOOT_JSON" | jq -r '(.bootstrap_agents // []) | length' 2>/dev/null || echo 0)"
 
-if [ -z "$CP_INTERNAL_URL" ] || [ "$CP_INTERNAL_URL" = "null" ]; then
+if [ -z "$CP_BOOTSTRAP_URL" ] || [ "$CP_BOOTSTRAP_URL" = "null" ]; then
   echo "::error::control-plane new did not return control_plane_url"
   echo "$CP_BOOT_JSON" | head -c 5000 || true
   exit 1
+fi
+
+CP_IP_URL=""
+if [ -n "${CP_EXTERNAL_IP:-}" ] && [ "$CP_EXTERNAL_IP" != "null" ]; then
+  CP_IP_URL="http://$CP_EXTERNAL_IP:8080"
+elif [ -n "${CP_INTERNAL_IP:-}" ] && [ "$CP_INTERNAL_IP" != "null" ]; then
+  CP_IP_URL="http://$CP_INTERNAL_IP:8080"
 fi
 
 if [ -n "$CP_PUBLIC_HOSTNAME" ] && [ "$CP_PUBLIC_HOSTNAME" != "null" ]; then
@@ -113,8 +122,15 @@ else
   CP_URL_CANDIDATE=""
 fi
 
-# Keep bootstrap traffic on the internal URL for determinism.
+# Keep bootstrap traffic on direct VM URL for determinism.
 # Public hostname can briefly route to a previous control plane during DNS/tunnel cutover.
+if [ -n "${CP_IP_URL:-}" ]; then
+  CP_INTERNAL_URL="$CP_IP_URL"
+  echo "Using direct control-plane IP URL for bootstrap: $CP_INTERNAL_URL"
+else
+  CP_INTERNAL_URL="$CP_BOOTSTRAP_URL"
+  echo "::warning::No control-plane VM IP available; falling back to $CP_INTERNAL_URL"
+fi
 CP_URL="$CP_INTERNAL_URL"
 export CP_URL
 CP_PUBLIC_URL=""
