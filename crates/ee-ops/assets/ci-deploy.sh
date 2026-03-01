@@ -35,6 +35,8 @@ AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
 CP_BOOTSTRAP_TIMEOUT="${CP_BOOTSTRAP_TIMEOUT:-600}"
 AGENT_VERIFY_WAIT_ATTEMPTS="${AGENT_VERIFY_WAIT_ATTEMPTS:-90}"
 AGENT_VERIFY_WAIT_SECONDS="${AGENT_VERIFY_WAIT_SECONDS:-10}"
+CURL_HEALTH_ARGS=(--connect-timeout 3 --max-time 5)
+CURL_API_ARGS=(--connect-timeout 3 --max-time 10)
 
 # ===================================================================
 # Helpers
@@ -141,13 +143,13 @@ CP_AGENT_URL="$CP_URL"
 # ===================================================================
 echo "==> Waiting for control plane health at $CP_URL ..."
 for _i in {1..30}; do
-  if curl -sf "$CP_URL/health" > /dev/null 2>&1; then
+  if curl -sfS "${CURL_HEALTH_ARGS[@]}" "$CP_URL/health" > /dev/null 2>&1; then
     echo "Control plane is up"
     break
   fi
   sleep 10
 done
-if ! curl -sf "$CP_URL/health" > /dev/null 2>&1; then
+if ! curl -sfS "${CURL_HEALTH_ARGS[@]}" "$CP_URL/health" > /dev/null 2>&1; then
   echo "::error::Control plane not ready after 5 minutes"
   exit 1
 fi
@@ -156,7 +158,7 @@ fi
 if [ -n "${CP_URL_CANDIDATE:-}" ]; then
   echo "==> Waiting briefly for public URL $CP_URL_CANDIDATE ..."
   for _i in {1..30}; do
-    if curl -sf "$CP_URL_CANDIDATE/health" > /dev/null 2>&1; then
+    if curl -sfS "${CURL_HEALTH_ARGS[@]}" "$CP_URL_CANDIDATE/health" > /dev/null 2>&1; then
       echo "Public URL is up: $CP_URL_CANDIDATE"
       CP_PUBLIC_URL="$CP_URL_CANDIDATE"
       CP_AGENT_URL="$CP_URL_CANDIDATE"
@@ -255,12 +257,12 @@ agents_to_array() {
 
 fetch_agents_raw() {
   local body
-  body="$(curl -sf "$CP_URL/api/agents" 2>/dev/null || true)"
+  body="$(curl -sfS "${CURL_API_ARGS[@]}" "$CP_URL/api/agents" 2>/dev/null || true)"
   if [ -n "${body:-}" ]; then
     echo "$body"
     return 0
   fi
-  body="$(curl -sf "$CP_URL/api/v1/agents" 2>/dev/null || true)"
+  body="$(curl -sfS "${CURL_API_ARGS[@]}" "$CP_URL/api/v1/agents" 2>/dev/null || true)"
   if [ -n "${body:-}" ]; then
     echo "$body"
     return 0
@@ -339,7 +341,7 @@ if [ "$VERIFIED" -lt "$TOTAL_AGENTS" ]; then
     done
   fi
   echo "=== Control plane container logs ==="
-  curl -sf "$CP_URL/api/logs/control-plane?limit=50" 2>/dev/null | jq -r '.logs[]?.message' || true
+  curl -sfS "${CURL_API_ARGS[@]}" "$CP_URL/api/logs/control-plane?limit=50" 2>/dev/null | jq -r '.logs[]?.message' || true
   exit 1
 fi
 
