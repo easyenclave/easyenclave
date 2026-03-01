@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "infra/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/**"
+      - "Dockerfile.ee-cp"
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "infra/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "requirements.txt"
+      - "pyproject.toml"
+      - ".github/workflows/**"
+      - "Dockerfile.ee-cp"
+  workflow_dispatch:
+
+concurrency:
+  group: easyenclave-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Rust fmt
+        run: cargo fmt --check
+
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Rust test
+        run: cargo test --workspace
+
+      - name: Python smoke
+        run: python3 -m py_compile infra/tdx_cli.py
