@@ -315,6 +315,7 @@ else
   echo "Using agent placement metadata: az=$AGENT_DATACENTER_AZ region=${AGENT_DATACENTER_REGION:-none}"
 fi
 
+AGENT_LAUNCH_PIDS=()
 if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
   for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
     python3 infra/tdx_cli.py vm new --size tiny \
@@ -322,6 +323,7 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
       --cp-url "$CP_AGENT_URL" \
       --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
       --wait &
+    AGENT_LAUNCH_PIDS+=("$!")
   done
   for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
     python3 infra/tdx_cli.py vm new --size standard \
@@ -329,6 +331,7 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
       --cp-url "$CP_AGENT_URL" \
       --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
       --wait &
+    AGENT_LAUNCH_PIDS+=("$!")
   done
   for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
     python3 infra/tdx_cli.py vm new --size llm \
@@ -336,10 +339,13 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
       --cp-url "$CP_AGENT_URL" \
       --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
       --wait &
+    AGENT_LAUNCH_PIDS+=("$!")
   done
 fi
 
-wait
+for pid in "${AGENT_LAUNCH_PIDS[@]}"; do
+  wait "$pid"
+done
 echo "Additional agent launches complete; expected verified total: $TOTAL_AGENTS"
 
 # ===================================================================
