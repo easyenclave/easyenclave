@@ -11,7 +11,7 @@ on:
     paths:
       - "crates/**"
       - "infra/**"
-      - "scripts/**"
+      - "crates/ee-ops/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - "docs/**"
@@ -45,25 +45,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Production rollout must be release-gated + manual dispatch.
-          if rg -n "pull_request:|push:" .github/workflows/production-rollout.yml -S; then
-            echo "::error::production-rollout.yml must not trigger on pull_request/push."
+          # PRs should stage; main pushes should production.
+          if ! rg -n "pull_request:" .github/workflows/staging-rollout.yml -S >/dev/null; then
+            echo "::error::staging-rollout.yml must include pull_request trigger."
             exit 1
           fi
-          if rg -n "workflow_run:" .github/workflows/production-rollout.yml -S >/dev/null; then
-            echo "::error::production-rollout.yml must not include workflow_run trigger."
+          if ! rg -n "push:" .github/workflows/production-rollout.yml -S >/dev/null; then
+            echo "::error::production-rollout.yml must include push trigger."
             exit 1
           fi
           if ! rg -n "workflow_dispatch:" .github/workflows/production-rollout.yml -S >/dev/null; then
             echo "::error::production-rollout.yml must include workflow_dispatch trigger."
             exit 1
           fi
-          if ! rg -n "release:" .github/workflows/release-trust-bundle.yml -S >/dev/null; then
-            echo "::error::release-trust-bundle.yml must include release trigger."
-            exit 1
-          fi
-          if ! rg -n "release:" .github/workflows/release-gcp-image.yml -S >/dev/null; then
-            echo "::error::release-gcp-image.yml must include release trigger."
+          if rg -n "pull_request:" .github/workflows/production-rollout.yml -S >/dev/null; then
+            echo "::error::production-rollout.yml must not include pull_request trigger."
             exit 1
           fi
 

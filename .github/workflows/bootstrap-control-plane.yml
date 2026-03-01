@@ -460,7 +460,7 @@ jobs:
         id: measure
         env:
           MEASURE_SIZES: ${{ env.CP_BOOTSTRAP_SIZES }}
-        run: ./scripts/ci-build-measure.sh
+        run: cargo run -p ee-ops -- ci-build-measure
 
       - name: Deploy control plane + bootstrap agents/apps
         id: deploy
@@ -478,20 +478,20 @@ jobs:
           required_total=$((tiny_required + standard_required + llm_required))
 
           set +e
-          ./scripts/ci-deploy.sh 2>&1 | tee /tmp/ci-deploy.log
+          cargo run -p ee-ops -- ci-deploy 2>&1 | tee /tmp/ci-deploy.log
           ci_rc=${PIPESTATUS[0]}
           set -e
 
           if [ "$ci_rc" -ne 0 ]; then
             if grep -q "No agents available (bootstrap=0 and additional requested=0)" /tmp/ci-deploy.log; then
               if [ "${required_total:-0}" -gt 0 ]; then
-                echo "::error::ci-deploy.sh skipped agent bootstrap capacity, but rollout requires tiny=${tiny_required} standard=${standard_required} llm=${llm_required}."
+                echo "::error::ci-deploy skipped agent bootstrap capacity, but rollout requires tiny=${tiny_required} standard=${standard_required} llm=${llm_required}."
                 exit "$ci_rc"
               fi
-              echo "::warning::ci-deploy.sh skipped agent bootstrap capacity (no startup agents requested)."
+              echo "::warning::ci-deploy skipped agent bootstrap capacity (no startup agents requested)."
             elif grep -q "Not all agents verified after" /tmp/ci-deploy.log \
               && grep -Eq "All [0-9]+ agents verified" /tmp/ci-deploy.log; then
-              echo "::warning::Ignoring transient post-loop verification regression from ci-deploy.sh; validating agent capacity directly."
+              echo "::warning::Ignoring transient post-loop verification regression from ci-deploy; validating agent capacity directly."
             else
               exit "$ci_rc"
             fi

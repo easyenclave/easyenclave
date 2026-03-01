@@ -1,24 +1,48 @@
 # Production Rollout
 #
-# Release-gated strict rollout pipeline.
+# Canonical production network pipeline:
+# 1) Trigger on push to main (merge/direct).
+# 2) Wait for CI success on the same commit SHA.
+# 3) Require a CI-built production GCP image for that commit.
+# 4) Bootstrap production rust control plane and verify agent bootstrap.
 #
 # Production profile:
 # - strict attestation policy
-# - billing enabled (no simulation)
-# - pinned, versioned trusted measurements from release trust bundle
-# - pinned, versioned GCP boot image from release assets
-# - strict image signature policy pinned to release tag identities
+# - billing enabled (simulation enabled for deterministic CI rollouts)
+# - commit-pinned control-plane image + commit-pinned GCP boot image
 
 name: Production Rollout
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "infra/**"
+      - "crates/ee-ops/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/**"
+      - "Dockerfile.ee-cp"
+      - "requirements.txt"
+      - "pyproject.toml"
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: "Release tag (e.g. v0.1.13)"
-        required: true
+      cp_url:
+        description: "Production control plane URL"
+        required: false
+        default: ""
+      cp_expected_git_sha:
+        description: "Expected git SHA in /health (optional; empty defaults to source SHA)"
+        required: false
+        default: ""
+      source_ref:
+        description: "Git ref to checkout for deploy examples"
+        required: false
+        default: ""
+      control_plane_image:
+        description: "Control plane image override"
+        required: false
         default: ""
 
 concurrency:
@@ -33,20 +57,21 @@ jobs:
       contents: read
     outputs:
       cp_url: ${{ steps.resolve.outputs.cp_url }}
-      cp_expected_git_sha: ${{ steps.sha.outputs.cp_expected_git_sha }}
+      cp_expected_git_sha: ${{ steps.resolve.outputs.cp_expected_git_sha }}
       source_ref: ${{ steps.resolve.outputs.source_ref }}
-      source_sha: ${{ steps.sha.outputs.source_sha }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
       production_domain: ${{ steps.resolve.outputs.production_domain }}
       production_network_name: ${{ steps.resolve.outputs.production_network_name }}
-      release_tag: ${{ steps.resolve.outputs.release_tag }}
-      release_tag_regex: ${{ steps.resolve.outputs.release_tag_regex }}
+      production_rollout_id: ${{ steps.resolve.outputs.production_rollout_id }}
     steps:
-      - name: Resolve URLs and release tag
+      - name: Resolve URLs and refs
         id: resolve
         shell: bash
         env:
-          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
-          INPUT_RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
+          INPUT_CP_URL: ${{ github.event.inputs.cp_url || '' }}
+          INPUT_EXPECTED_SHA: ${{ github.event.inputs.cp_expected_git_sha || '' }}
+          INPUT_SOURCE_REF: ${{ github.event.inputs.source_ref || '' }}
+          GH_TOKEN: ${{ github.token }}
           DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           DEFAULT_NETWORK_NAME: ${{ vars.PRODUCTION_NETWORK_NAME || '' }}
           DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
@@ -72,19 +97,55 @@ jobs:
               | sed -E 's/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g'
           }
 
-          release_tag="${INPUT_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
-          if [ -z "$release_tag" ]; then
-            echo "::error::release_tag is required (event release tag or workflow_dispatch input)."
+          resolve_ref_sha() {
+            local ref="$1"
+            local sha=""
+            if echo "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+              printf '%s' "$ref"
+              return 0
+            fi
+            sha="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${ref}" --jq '.sha' 2>/dev/null || true)"
+            if ! echo "${sha:-}" | grep -Eq '^[0-9a-f]{40}$'; then
+              return 1
+            fi
+            printf '%s' "$sha"
+          }
+
+          source_ref="${INPUT_SOURCE_REF:-}"
+          if [ -z "$source_ref" ]; then
+            source_ref="${GITHUB_SHA}"
+          fi
+
+          source_sha="$(resolve_ref_sha "$source_ref" || true)"
+          if [ -z "${source_sha:-}" ]; then
+            echo "::error::Could not resolve source ref '${source_ref}' to a commit SHA."
+            exit 1
+          fi
+          source_ref="$source_sha"
+
+          expected_sha="${INPUT_EXPECTED_SHA:-}"
+          if [ -n "$expected_sha" ] && ! echo "$expected_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            expected_sha="$(resolve_ref_sha "$expected_sha" || true)"
+          fi
+          if [ -z "$expected_sha" ]; then
+            expected_sha="$source_sha"
+          fi
+          if ! echo "$expected_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Could not resolve expected git SHA."
             exit 1
           fi
 
-          source_ref="refs/tags/${release_tag}"
-          release_tag_regex="$(printf '%s' "$release_tag" | sed -e 's/[][(){}.^$*+?|\\]/\\&/g')"
+          rollout_seed="${expected_sha:-$source_ref}"
+          rollout_seed="$(normalize_network_name "${rollout_seed}")"
+          if [ -z "$rollout_seed" ]; then
+            rollout_seed="${GITHUB_RUN_ID}"
+          fi
+          production_rollout_id="main-${rollout_seed:0:20}"
 
           domain="${DEFAULT_DOMAIN:-easyenclave.com}"
           network_name="$(normalize_network_name "${DEFAULT_NETWORK_NAME:-}")"
           if [ -z "$network_name" ]; then
-            network_name="$(make_network_name "production:${release_tag}:${source_ref}")"
+            network_name="$(make_network_name "production:${source_ref}:${expected_sha}")"
           fi
           network_name="$(normalize_network_name "$network_name")"
           if [ -z "$network_name" ]; then
@@ -92,7 +153,11 @@ jobs:
             exit 1
           fi
           network_name="${network_name:0:48}"
-          cp_url="${DEFAULT_CP_URL:-}"
+
+          cp_url="${INPUT_CP_URL:-}"
+          if [ -z "$cp_url" ]; then
+            cp_url="${DEFAULT_CP_URL:-}"
+          fi
           if [ -z "$cp_url" ]; then
             cp_url="https://app.${domain}"
           fi
@@ -110,254 +175,127 @@ jobs:
           echo "::notice::Resolved production network name: ${network_name}"
 
           {
-            echo "release_tag=${release_tag}"
-            echo "release_tag_regex=${release_tag_regex}"
             echo "source_ref=${source_ref}"
+            echo "source_sha=${source_sha}"
+            echo "cp_expected_git_sha=${expected_sha}"
             echo "production_domain=${domain}"
             echo "production_network_name=${network_name}"
+            echo "production_rollout_id=${production_rollout_id}"
             echo "cp_url=${cp_url}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Checkout release tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.resolve.outputs.source_ref }}
-
-      - name: Resolve release commit sha
-        id: sha
-        shell: bash
-        run: |
-          set -euo pipefail
-          source_sha="$(git rev-parse HEAD)"
-          expected_sha="${source_sha}"
-          {
-            echo "source_sha=${source_sha}"
-            echo "cp_expected_git_sha=${expected_sha}"
-          } >> "$GITHUB_OUTPUT"
-
-  wait-release-builds:
-    name: Wait for release build workflows
+  wait-ci:
+    name: Wait for CI on target SHA
     needs: [resolve]
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
     steps:
-      - name: Wait for release workflows to complete successfully
+      - name: Require CI success for rollout SHA
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
+          TARGET_SHA: ${{ needs.resolve.outputs.cp_expected_git_sha }}
         run: |
           set -euo pipefail
-          required_workflows=(
-            "Release Trust Bundle"
-            "Release GCP Image"
-          )
+          if [ -z "${TARGET_SHA:-}" ]; then
+            echo "::error::Missing target SHA for CI gate."
+            exit 1
+          fi
 
           deadline=$(( $(date +%s) + 3600 ))
           while :; do
-            runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=release&per_page=100")"
-            all_done=true
-            for wf in "${required_workflows[@]}"; do
-              status="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
-                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
-                | sort_by(.created_at)
-                | last
-                | .status // "missing"
-              ')"
-              conclusion="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
-                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
-                | sort_by(.created_at)
-                | last
-                | .conclusion // ""
-              ')"
-              html_url="$(echo "$runs" | jq -r --arg tag "$RELEASE_TAG" --arg wf "$wf" '
-                [.workflow_runs[] | select(.display_title == $tag and .name == $wf)]
-                | sort_by(.created_at)
-                | last
-                | .html_url // ""
-              ')"
-              echo "workflow='${wf}' status='${status}' conclusion='${conclusion}'"
-              if [ -n "$html_url" ]; then
-                echo "  ${html_url}"
-              fi
+            runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=100")"
+            status="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .status // "missing"')"
+            conclusion="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .conclusion // ""')"
+            url="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .html_url // ""')"
+            echo "CI gate: sha=${TARGET_SHA} status=${status} conclusion=${conclusion}"
+            if [ -n "$url" ]; then
+              echo "  ${url}"
+            fi
 
-              if [ "$status" = "completed" ]; then
-                if [ "$conclusion" != "success" ]; then
-                  echo "::error::Release workflow '${wf}' completed with conclusion='${conclusion}' for tag '${RELEASE_TAG}'."
-                  exit 1
-                fi
-                continue
+            if [ "$status" = "completed" ]; then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI passed for ${TARGET_SHA}."
+                break
               fi
-
-              if [ "$status" = "missing" ]; then
-                echo "Release workflow '${wf}' not visible yet for tag '${RELEASE_TAG}'."
-              fi
-              all_done=false
-            done
-
-            if [ "$all_done" = "true" ]; then
-              echo "All release workflows completed successfully for tag '${RELEASE_TAG}'."
-              break
+              echo "::error::CI for ${TARGET_SHA} completed with conclusion='${conclusion}'."
+              exit 1
             fi
 
             now=$(date +%s)
             if [ "$now" -ge "$deadline" ]; then
-              echo "::error::Timed out waiting for release workflows for tag '${RELEASE_TAG}'."
+              echo "::error::Timed out waiting for CI success for ${TARGET_SHA}."
               exit 1
             fi
             sleep 15
           done
 
-  trust-bundle:
-    name: Resolve release trust bundle
-    needs: [resolve, wait-release-builds]
+  verify-production-gcp-image:
+    name: Verify CI-built production GCP image exists
+    needs: [resolve, wait-ci]
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      trusted_agent_mrtds: ${{ steps.bundle.outputs.trusted_agent_mrtds }}
-      trusted_agent_mrtds_by_size: ${{ steps.bundle.outputs.trusted_agent_mrtds_by_size }}
-      trusted_agent_rtmrs: ${{ steps.bundle.outputs.trusted_agent_rtmrs }}
-      trusted_agent_rtmrs_by_size: ${{ steps.bundle.outputs.trusted_agent_rtmrs_by_size }}
-      trusted_digest: ${{ steps.bundle.outputs.trusted_digest }}
+      image_project: ${{ steps.image.outputs.image_project }}
+      image_name: ${{ steps.image.outputs.image_name }}
+      image_family: ${{ steps.image.outputs.image_family }}
+    env:
+      GCP_PROJECT_ID: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
+      SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
     steps:
-      - name: Download trust bundle from release assets
-        id: bundle
+      - name: Validate production GCP config
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           set -euo pipefail
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          asset_url=""
-          for attempt in $(seq 1 60); do
-            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
-            asset_url="$(echo "$release_json" | jq -r --arg n "trusted_values.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
-            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.json") | .url' | head -n1)"
-            fi
-            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-              # Backward compatibility for earlier release workflow naming.
-              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "trusted_values.release.json") | .url' | head -n1)"
-            fi
-            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
-              break
-            fi
-            if [ "$attempt" -lt 60 ]; then
-              echo "Trust bundle asset not available yet; waiting (${attempt}/60)..."
-              sleep 15
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_SHA; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required value: $v"
+              exit 1
             fi
           done
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            echo "::error::Release ${RELEASE_TAG} missing trust bundle asset (expected trusted_values.${RELEASE_TAG}.json or trusted_values.json)."
-            echo "::error::Run .github/workflows/release-trust-bundle.yml for this tag first."
-            exit 1
-          fi
 
-          out="/tmp/trusted_values.release.json"
-          curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/octet-stream" \
-            "$asset_url" > "$out"
+      - name: Authenticate to GCP (production)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
 
-          jq -e '.digest | type == "string" and test("^[0-9a-f]{64}$")' "$out" >/dev/null
-          jq -e '.mrtds | type == "string" and length > 0' "$out" >/dev/null
-          jq -e '.mrtds_by_size | type == "object"' "$out" >/dev/null
-          jq -e '.rtmrs | type == "object"' "$out" >/dev/null
-          jq -e '.rtmrs_by_size | type == "object"' "$out" >/dev/null
+      - name: Set up gcloud (production)
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
 
-          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
-          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
-            echo "::error::Trust bundle release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
-            exit 1
-          fi
-
-          {
-            echo "trusted_digest=$(jq -r '.digest' "$out")"
-            echo "trusted_agent_mrtds=$(jq -r '.mrtds' "$out")"
-            echo "trusted_agent_mrtds_by_size=$(jq -c '.mrtds_by_size' "$out")"
-            echo "trusted_agent_rtmrs=$(jq -c '.rtmrs' "$out")"
-            echo "trusted_agent_rtmrs_by_size=$(jq -c '.rtmrs_by_size' "$out")"
-          } >> "$GITHUB_OUTPUT"
-
-  gcp-image:
-    name: Resolve release GCP image
-    needs: [resolve, wait-release-builds]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      image_project: ${{ steps.asset.outputs.image_project }}
-      image_name: ${{ steps.asset.outputs.image_name }}
-      image_family: ${{ steps.asset.outputs.image_family }}
-    steps:
-      - name: Download GCP image descriptor from release assets
-        id: asset
+      - name: Require CI-built production image for rollout commit
+        id: image
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           set -euo pipefail
-          api="https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
-          asset_url=""
-          for attempt in $(seq 1 60); do
-            release_json="$(curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$api")"
-            asset_url="$(echo "$release_json" | jq -r --arg n "gcp-image.${RELEASE_TAG}.json" '.assets[]? | select(.name == $n) | .url' | head -n1)"
-            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.json") | .url' | head -n1)"
-            fi
-            if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-              # Backward compatibility for earlier release workflow naming.
-              asset_url="$(echo "$release_json" | jq -r '.assets[]? | select(.name == "gcp-image.release.json") | .url' | head -n1)"
-            fi
-            if [ -n "${asset_url:-}" ] && [ "$asset_url" != "null" ]; then
-              break
-            fi
-            if [ "$attempt" -lt 60 ]; then
-              echo "GCP image descriptor not available yet; waiting (${attempt}/60)..."
-              sleep 15
-            fi
-          done
-          if [ -z "${asset_url:-}" ] || [ "$asset_url" = "null" ]; then
-            echo "::error::Release ${RELEASE_TAG} missing GCP image asset (expected gcp-image.${RELEASE_TAG}.json or gcp-image.json)."
-            echo "::error::Run .github/workflows/release-gcp-image.yml for this tag first."
+          sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
+          image_name="easyenclave-agent-main-${sha12}"
+          image_family="easyenclave-agent-main"
+          if ! gcloud compute images describe "${image_name}" --project "${GCP_PROJECT_ID}" >/dev/null 2>&1; then
+            echo "::error::Missing CI-built production image '${GCP_PROJECT_ID}/${image_name}'."
+            echo "::error::CI must create this image before production rollout can run."
             exit 1
           fi
-
-          out="/tmp/gcp-image.release.json"
-          curl -fsSL \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/octet-stream" \
-            "$asset_url" > "$out"
-
-          jq -e '.image_project | type == "string" and length > 0' "$out" >/dev/null
-          jq -e '.image_name | type == "string" and length > 0' "$out" >/dev/null
-          jq -e '.image_family | type == "string" and length > 0' "$out" >/dev/null
-
-          bundle_tag="$(jq -r '.release_tag // empty' "$out")"
-          if [ -n "$bundle_tag" ] && [ "$bundle_tag" != "$RELEASE_TAG" ]; then
-            echo "::error::GCP image release_tag mismatch: expected '${RELEASE_TAG}', got '${bundle_tag}'"
-            exit 1
-          fi
-
+          echo "Found CI-built production image: ${GCP_PROJECT_ID}/${image_name}"
           {
-            echo "image_project=$(jq -r '.image_project' "$out")"
-            echo "image_name=$(jq -r '.image_name' "$out")"
-            echo "image_family=$(jq -r '.image_family' "$out")"
+            echo "image_project=${GCP_PROJECT_ID}"
+            echo "image_name=${image_name}"
+            echo "image_family=${image_family}"
           } >> "$GITHUB_OUTPUT"
 
   bootstrap:
     name: Bootstrap production control plane
-    needs: [resolve, trust-bundle, gcp-image]
+    needs: [resolve, wait-ci, verify-production-gcp-image]
     uses: ./.github/workflows/bootstrap-control-plane.yml
     secrets: inherit
     with:
-      source_ref: ${{ needs.resolve.outputs.source_ref }}
-      control_plane_image: ${{ format('ghcr.io/{0}/control-plane-rust:{1}', github.repository, needs.resolve.outputs.source_sha) }}
+      source_ref: ${{ needs.resolve.outputs.source_sha }}
+      control_plane_image: ${{ github.event.inputs.control_plane_image || format('ghcr.io/{0}/control-plane-rust:{1}', github.repository, needs.resolve.outputs.source_sha) }}
       cp_bootstrap_sizes: tiny,llm
       # Keep at least one warm tiny agent so production cannot come up with zero
       # deployable capacity when builtin example jobs are skipped.
@@ -367,17 +305,17 @@ jobs:
       easyenclave_domain: ${{ needs.resolve.outputs.production_domain }}
       easyenclave_network_name: ${{ needs.resolve.outputs.production_network_name }}
       easyenclave_env: production
-      easyenclave_release_tag: ${{ needs.resolve.outputs.release_tag }}
+      easyenclave_release_tag: ${{ needs.resolve.outputs.production_rollout_id }}
       tcb_enforcement_mode: strict
       # GCP TDX hosts can temporarily report OutOfDate while still providing valid quotes.
       # Keep strict enforcement but include both statuses for deterministic production GCP bring-up.
       allowed_tcb_statuses: UpToDate,OutOfDate
-      # v0.1.0 launcher retries can miss nonce state and fail closed on registration.
+      # Launcher retries can miss nonce state and fail closed on registration.
       # Keep rollout functional until nonce retry semantics are unified end-to-end.
       nonce_enforcement_mode: optional
       nonce_ttl_seconds: '300'
-      # Release-tag trust bundles currently drift on runtime RTMR values during bootstrap.
-      # Keep production online with strict MRTD/TCB/nonce/signature + required CP<->agent attestation.
+      # Runtime RTMR values can drift during bootstrap; keep rollout deterministic
+      # while strict MRTD/TCB/nonce/signature checks are enforced.
       rtmr_enforcement_mode: warn
       signature_verification_mode: strict
       # CI control-plane hosts currently cannot always mint CP quote envelopes.
@@ -392,16 +330,12 @@ jobs:
       billing_capacity_request_dev_simulation: ${{ 'true' }}
       billing_platform_account_id: ${{ vars.BILLING_PLATFORM_ACCOUNT_ID || '' }}
       billing_contributor_pool_bps: ${{ vars.BILLING_CONTRIBUTOR_POOL_BPS || '5000' }}
-      use_precomputed_trusted_values: ${{ 'true' }}
-      trusted_agent_mrtds: ${{ needs.trust-bundle.outputs.trusted_agent_mrtds }}
-      trusted_agent_mrtds_by_size: ${{ needs.trust-bundle.outputs.trusted_agent_mrtds_by_size }}
-      trusted_agent_rtmrs: ${{ needs.trust-bundle.outputs.trusted_agent_rtmrs }}
-      trusted_agent_rtmrs_by_size: ${{ needs.trust-bundle.outputs.trusted_agent_rtmrs_by_size }}
+      use_precomputed_trusted_values: ${{ 'false' }}
       cosign_certificate_oidc_issuer: https://token.actions.githubusercontent.com
-      cosign_certificate_identity_regexp: ${{ format('^https://github.com/{0}/.github/workflows/.+@refs/tags/{1}$', github.repository, needs.resolve.outputs.release_tag_regex) }}
-      ee_gcp_image_project: ${{ needs.gcp-image.outputs.image_project }}
-      ee_gcp_image_name: ${{ needs.gcp-image.outputs.image_name }}
-      ee_gcp_image_family: ${{ needs.gcp-image.outputs.image_family }}
+      cosign_certificate_identity_regexp: ${{ format('^https://github.com/{0}/.github/workflows/.+@refs/heads/main$', github.repository) }}
+      ee_gcp_image_project: ${{ needs.verify-production-gcp-image.outputs.image_project }}
+      ee_gcp_image_name: ${{ needs.verify-production-gcp-image.outputs.image_name }}
+      ee_gcp_image_family: ${{ needs.verify-production-gcp-image.outputs.image_family }}
 
   verify-rust-cp-agents:
     name: Verify rust CP + agent bootstrap
@@ -476,7 +410,7 @@ jobs:
 
   assert-rollout-executed:
     name: Assert production rollout executed
-    needs: [resolve, bootstrap, verify-rust-cp-agents]
+    needs: [resolve, verify-production-gcp-image, bootstrap, verify-rust-cp-agents]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -484,11 +418,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          gcp_image="${{ needs['verify-production-gcp-image'].result }}"
           bootstrap="${{ needs.bootstrap.result }}"
           rust_verify="${{ needs['verify-rust-cp-agents'].result }}"
-          echo "bootstrap=${bootstrap} rust_verify=${rust_verify}"
-          if [ "$bootstrap" != "success" ] || [ "$rust_verify" != "success" ]; then
-            echo "::error::Rust production rollout did not fully execute: bootstrap=${bootstrap}, rust_verify=${rust_verify}"
+          echo "gcp_image=${gcp_image} bootstrap=${bootstrap} rust_verify=${rust_verify}"
+          if [ "$gcp_image" != "success" ] || [ "$bootstrap" != "success" ] || [ "$rust_verify" != "success" ]; then
+            echo "::error::Rust production rollout did not fully execute: gcp_image=${gcp_image}, bootstrap=${bootstrap}, rust_verify=${rust_verify}"
             exit 1
           fi
           echo "Rust production rollout executed all required stages."

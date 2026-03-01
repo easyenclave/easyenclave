@@ -2,8 +2,9 @@
 #
 # This workflow is intentionally non-network-mutating:
 # - lint + tests
-# - rust control-plane image build (+ push/sign on main)
-# - staging GCP boot image build on main (for rollout consumption)
+# - rust control-plane image build (+ push/sign on main and same-repo PRs)
+# - staging GCP boot image build for rollout commits (main and same-repo PRs)
+# - production GCP boot image build on main (for production rollout consumption)
 #
 # Network/bootstrap mutations live in dedicated rollout workflows.
 
@@ -15,7 +16,7 @@ on:
     paths:
       - "crates/**"
       - "infra/**"
-      - "scripts/**"
+      - "crates/ee-ops/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
@@ -27,7 +28,7 @@ on:
     paths:
       - "crates/**"
       - "infra/**"
-      - "scripts/**"
+      - "crates/ee-ops/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
@@ -67,12 +68,36 @@ jobs:
           sudo mv actionlint /usr/local/bin/
 
       - name: Run linting
-        run: ./scripts/lint.sh
+        run: cargo run -p ee-ops -- lint
 
       - name: Python smoke checks
         run: |
-          python3 -m py_compile infra/tdx_cli.py infra/launcher/launcher.py
-          python3 -m py_compile scripts/capacity_launcher_worker.py
+          python3 -m py_compile infra/tdx_cli.py
+
+      - name: Billing policy tests (unset and default allowlist)
+        run: |
+          unset BILLING_UNLIMITED_OWNERS
+          cargo test -p ee-common default_unlimited_owners_include_posix4e_and_easyenclave
+          cargo test -p ee-common billing_policy_env_reflects_runtime_allowlist
+
+      - name: Billing policy tests (explicit allowlist override)
+        env:
+          BILLING_UNLIMITED_OWNERS: posix4e,easyenclave,ci-e2e-owner
+        run: |
+          cargo test -p ee-common billing_policy_env_reflects_runtime_allowlist
+
+      - name: Owner-mode deploy tests (owner set + owner unset)
+        run: |
+          cargo test -p ee-cp deploy_accepts_oidc_owner_tagged_agent_via_route
+          cargo test -p ee-cp deploy_accepts_oidc_on_open_pool_agent_when_owner_unset
+          cargo test -p ee-cp deploy_rejects_oidc_when_agent_owned_by_other_org
+
+      - name: Agent health stats tests (deployment exemption + rollups)
+        run: |
+          cargo test -p ee-cp failed_check_is_exempt_during_deploying
+          cargo test -p ee-cp successful_check_promotes_deploying_and_updates_recent_stats
+          cargo test -p ee-cp run_once_marks_stale_running_target_as_failed_check
+          cargo test -p ee-cp run_once_uses_http_health_probe_when_hostname_present
 
   docker:
     runs-on: ubuntu-latest
@@ -87,7 +112,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install cosign
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: sigstore/cosign-installer@v3
 
       - name: Build Rust control plane image
@@ -109,7 +134,7 @@ jobs:
 
       - name: Build and push rust control plane image
         id: control_plane
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         run: |
           retry_push() {
             local image_ref="$1"
@@ -131,9 +156,15 @@ jobs:
           echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           RUST_IMAGE="ghcr.io/${{ github.repository }}/control-plane-rust:${{ github.sha }}"
           RUST_LATEST="ghcr.io/${{ github.repository }}/control-plane-rust:latest"
-          docker build -f Dockerfile.ee-cp -t "$RUST_IMAGE" -t "$RUST_LATEST" .
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            docker build -f Dockerfile.ee-cp -t "$RUST_IMAGE" -t "$RUST_LATEST" .
+          else
+            docker build -f Dockerfile.ee-cp -t "$RUST_IMAGE" .
+          fi
           retry_push "$RUST_IMAGE"
-          retry_push "$RUST_LATEST"
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            retry_push "$RUST_LATEST"
+          fi
           RUST_DIGEST_REF=$(docker inspect --format='{{index .RepoDigests 0}}' "$RUST_IMAGE")
           cosign sign --yes "$RUST_DIGEST_REF"
           {
@@ -149,7 +180,7 @@ jobs:
 
   build-staging-gcp-image:
     name: Build staging GCP image for commit
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -198,4 +229,57 @@ jobs:
           TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=staging,gitsha=${sha12},ee_git_sha=${sha12}"
           BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
           export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE
-          ./scripts/gcp_bake_image.sh
+          cargo run -p ee-ops -- gcp-bake-image
+
+  build-production-gcp-image:
+    name: Build production GCP image for main commit
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      GCP_PROJECT_ID: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
+      SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
+      SOURCE_IMAGE_NAME: ""
+      SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
+      SOURCE_SHA: ${{ github.sha }}
+      BUILD_ZONE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_ZONE || 'us-central1-f' }}
+      BUILD_MACHINE_TYPE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate production GCP image config
+        shell: bash
+        run: |
+          set -euo pipefail
+          for v in GCP_PROJECT_ID GCP_SERVICE_ACCOUNT_KEY SOURCE_IMAGE_PROJECT SOURCE_SHA; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing required value: $v"
+              exit 1
+            fi
+          done
+
+      - name: Authenticate to GCP (production)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud (production)
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Bake production commit image from configured base
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
+          TARGET_IMAGE_NAME="easyenclave-agent-main-${sha12}"
+          TARGET_IMAGE_FAMILY="easyenclave-agent-main"
+          TARGET_IMAGE_DESCRIPTION="EasyEnclave production commit ${SOURCE_SHA}"
+          TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=production,gitsha=${sha12},ee_git_sha=${sha12}"
+          BUILD_ZONE="$(echo "${BUILD_ZONE}" | tr ',' '\n' | head -n1 | xargs)"
+          export TARGET_IMAGE_NAME TARGET_IMAGE_FAMILY TARGET_IMAGE_DESCRIPTION TARGET_IMAGE_LABELS BUILD_ZONE
+          cargo run -p ee-ops -- gcp-bake-image

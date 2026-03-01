@@ -1,7 +1,7 @@
 # Staging Rollout
 #
 # Canonical staging network pipeline:
-# 1) Trigger on push to main (in parallel with CI).
+# 1) Trigger on PRs targeting main (in parallel with CI).
 # 2) Wait for CI success on the same commit SHA.
 # 3) CI builds/pins a staging GCP image for that exact commit.
 # 4) Bootstrap staging rust control plane and verify agent bootstrap.
@@ -13,12 +13,13 @@
 name: Staging Rollout
 
 on:
-  push:
+  pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "crates/**"
       - "infra/**"
-      - "scripts/**"
+      - "crates/ee-ops/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
@@ -78,6 +79,7 @@ jobs:
           DEFAULT_CP_URL: ${{ vars.STAGING_CP_URL || '' }}
           PROD_DEFAULT_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
           PROD_DEFAULT_CP_URL: ${{ vars.PRODUCTION_CP_URL || '' }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
         run: |
           set -euo pipefail
           make_network_name() {
@@ -176,6 +178,11 @@ jobs:
 
           should_run="true"
           skip_reason=""
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ] && [ -n "${PR_HEAD_REPO:-}" ] && [ "${PR_HEAD_REPO}" != "${GITHUB_REPOSITORY}" ]; then
+            should_run="false"
+            skip_reason="fork_pr_no_secrets"
+            echo "::notice::Skipping staging rollout for fork PR '${PR_HEAD_REPO}' (secrets unavailable)."
+          fi
 
           {
             echo "source_ref=${source_ref}"
@@ -212,7 +219,7 @@ jobs:
 
           deadline=$(( $(date +%s) + 3600 ))
           while :; do
-            runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?event=push&head_sha=${TARGET_SHA}&per_page=100")"
+            runs="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TARGET_SHA}&per_page=100")"
             status="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .status // "missing"')"
             conclusion="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .conclusion // ""')"
             url="$(echo "$runs" | jq -r '[.workflow_runs[] | select(.name == "CI")] | sort_by(.created_at) | last | .html_url // ""')"
