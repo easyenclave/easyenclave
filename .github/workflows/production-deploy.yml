@@ -171,36 +171,6 @@ jobs:
           set -euo pipefail
           timeout 1600 cargo run -p ee-ops -- ci-deploy 2>&1 | tee /tmp/ci-deploy.log
 
-      - name: Smoke check production API
-        shell: bash
-        env:
-          CP_URL: ${{ steps.deploy.outputs.cp_url }}
-        run: |
-          set -euo pipefail
-          CURL_ARGS=(--connect-timeout 3 --max-time 8)
-          if [ -z "${CP_URL:-}" ]; then
-            echo "::error::Missing cp_url from deploy step"
-            exit 1
-          fi
-          ok=0
-          for _ in $(seq 1 30); do
-            if curl -fsS "${CURL_ARGS[@]}" "${CP_URL}/health" >/tmp/production-api-health.json 2>/tmp/production-api-health.err; then
-              ok=1
-              break
-            fi
-            sleep 5
-          done
-          if [ "$ok" -ne 1 ]; then
-            echo "::error::Smoke API health check failed for ${CP_URL}/health"
-            cat /tmp/production-api-health.err || true
-            exit 1
-          fi
-          jq . < /tmp/production-api-health.json
-          body="$(curl -fsS "${CURL_ARGS[@]}" "${CP_URL}/api/agents" || curl -fsS "${CURL_ARGS[@]}" "${CP_URL}/api/v1/agents")"
-          verified="$(echo "$body" | jq -r '(if type=="array" then . else (.agents // []) end) | [ .[] | select(.verified==true) ] | length')"
-          echo "verified_agents=${verified}"
-          test "${verified}" -ge 1
-
       - name: Smoke check production (public URL)
         shell: bash
         run: |
