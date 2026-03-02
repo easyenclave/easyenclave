@@ -31,19 +31,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     run_server(
         config,
-        pool,
-        settings,
-        nonce,
-        attestation,
-        github_oidc,
-        tunnel,
-        ingress_plan,
+        ServerDeps {
+            pool,
+            settings,
+            nonce,
+            attestation,
+            github_oidc,
+            tunnel,
+            ingress_plan,
+        },
     )
     .await
 }
 
-async fn run_server(
-    config: ee_common::config::CpConfig,
+struct ServerDeps {
     pool: sqlx::SqlitePool,
     settings: SettingsStore,
     nonce: NonceService,
@@ -51,9 +52,14 @@ async fn run_server(
     github_oidc: GithubOidcService,
     tunnel: TunnelService,
     ingress_plan: Option<IngressPlan>,
+}
+
+async fn run_server(
+    config: ee_common::config::CpConfig,
+    deps: ServerDeps,
 ) -> Result<(), Box<dyn Error>> {
     let bind_addr = config.bind_addr.clone();
-    let ingress_tunnel = tunnel.clone();
+    let ingress_tunnel = deps.tunnel.clone();
 
     let git_sha = std::env::var("GIT_SHA")
         .ok()
@@ -66,12 +72,12 @@ async fn run_server(
         boot_id,
         git_sha,
         config.admin_password.clone(),
-        pool,
-        settings,
-        nonce,
-        attestation,
-        github_oidc,
-        tunnel,
+        deps.pool,
+        deps.settings,
+        deps.nonce,
+        deps.attestation,
+        deps.github_oidc,
+        deps.tunnel,
     );
 
     let monitor_state = state.clone();
@@ -82,7 +88,7 @@ async fn run_server(
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
 
-    if let Some(plan) = ingress_plan {
+    if let Some(plan) = deps.ingress_plan {
         tokio::spawn(async move {
             provision_public_ingress_when_ready(ingress_tunnel, bind_addr, plan).await;
         });
