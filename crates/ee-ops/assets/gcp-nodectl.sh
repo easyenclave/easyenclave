@@ -221,7 +221,14 @@ create_instance_with_fallback() {
 
     output_lc="$(printf '%s' "$output" | tr '[:upper:]' '[:lower:]')"
     if is_retryable_create_error "$output_lc"; then
-      reason="$(printf '%s' "$output" | head -n1 | tr -d '\r')"
+      reason="$(
+        printf '%s' "$output" |
+          tr -d '\r' |
+          sed '/^[[:space:]]*$/d' |
+          head -n 4 |
+          paste -sd ' | ' -
+      )"
+      [ -n "$reason" ] || reason="retryable instance create failure"
       warn "Zone '$zone' create failed for machine_type=${machine_type} disk=${disk_gib}GB/${disk_type}; retrying (${reason})"
       continue
     fi
