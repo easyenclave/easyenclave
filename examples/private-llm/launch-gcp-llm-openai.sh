@@ -39,7 +39,6 @@ else
   : "${APP_NAME:=private-llm-demo}"
 fi
 
-[ -n "${CP_DEPLOYER_API_KEY:-}" ] || fatal "CP_DEPLOYER_API_KEY is required"
 [ -n "${ITA_API_KEY:-}" ] || fatal "ITA_API_KEY is required"
 [ -n "${GCP_PROJECT_ID:-}" ] || fatal "GCP_PROJECT_ID is required"
 
@@ -51,6 +50,22 @@ esac
 export EASYENCLAVE_ENV="${EASYENCLAVE_ENV:-production}"
 export EASYENCLAVE_NETWORK_NAME="${EASYENCLAVE_NETWORK_NAME:-production}"
 export EE_GCP_IMAGE_FAMILY="${EE_GCP_IMAGE_FAMILY:-easyenclave-agent-main}"
+
+DEPLOY_BEARER_TOKEN="${DEPLOY_BEARER_TOKEN:-${CP_DEPLOYER_API_KEY:-}}"
+if [ -z "${DEPLOY_BEARER_TOKEN}" ]; then
+  log "No deploy bearer token provided; creating one-time deployer account"
+  account_suffix="$(date +%s)-$RANDOM"
+  create_resp="$(
+    jq -n \
+      --arg name "gha-private-llm-${account_suffix}" \
+      '{name: $name, account_type: "deployer"}' | \
+    curl -fsS -X POST "${CP_URL}/api/accounts" \
+      -H "Content-Type: application/json" \
+      -d @-
+  )"
+  DEPLOY_BEARER_TOKEN="$(echo "$create_resp" | jq -r '.api_key // ""')"
+  [ -n "$DEPLOY_BEARER_TOKEN" ] || fatal "failed to create deployer api key"
+fi
 
 VM_NAME=""
 VM_ZONE=""
@@ -140,7 +155,7 @@ deploy_payload="$(
 log "Deploying app_name=${APP_NAME} to agent=${VM_NAME}"
 deploy_response="$(
   curl -fsS -X POST "${CP_URL}/api/deploy" \
-    -H "Authorization: Bearer ${CP_DEPLOYER_API_KEY}" \
+    -H "Authorization: Bearer ${DEPLOY_BEARER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "$deploy_payload"
 )"
