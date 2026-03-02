@@ -274,11 +274,11 @@ serial_tail() {
 
 control_plane_alias_host() {
   local env_name="$1" domain="$2"
-  case "$env_name" in
-    staging) printf 'stage.app.%s' "$domain" ;;
-    production|prod) printf 'prod.app.%s' "$domain" ;;
-    *) printf 'app.%s' "$domain" ;;
-  esac
+  if [ "$env_name" = "staging" ]; then
+    printf 'app-staging.%s' "$domain"
+  else
+    printf 'app.%s' "$domain"
+  fi
 }
 
 write_control_plane_startup_script() {

@@ -11,7 +11,7 @@
 # so we do not deploy or pin "measuring-enclave-*" capacity in CI.
 #
 # Optional env vars:
-#   CP_URL      - control plane URL (default: https://prod.app.easyenclave.com)
+#   CP_URL      - control plane URL (default: https://app.easyenclave.com)
 #   NUM_TINY_AGENTS    - number of additional tiny agents to launch (default: 1)
 #   NUM_STANDARD_AGENTS - number of additional standard agents to launch (default: 0)
 #   NUM_LLM_AGENTS     - number of additional LLM-sized agents to launch (default: 0)
@@ -25,7 +25,7 @@ set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-CP_URL="${CP_URL:-https://prod.app.easyenclave.com}"
+CP_URL="${CP_URL:-https://app.easyenclave.com}"
 NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-1}"
 NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-0}"
 NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-0}"

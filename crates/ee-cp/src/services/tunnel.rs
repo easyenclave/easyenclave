@@ -472,8 +472,7 @@ fn first_env(keys: &[&str]) -> Option<String> {
 
 fn default_domain(env_name: RuntimeEnv) -> Option<String> {
     match env_name {
-        RuntimeEnv::Staging => Some("stage.app.easyenclave.com".to_string()),
-        RuntimeEnv::Production => Some("prod.app.easyenclave.com".to_string()),
+        RuntimeEnv::Staging | RuntimeEnv::Production => Some("easyenclave.com".to_string()),
         RuntimeEnv::Local => None,
     }
 }
