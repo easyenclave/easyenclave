@@ -34,7 +34,7 @@ jobs:
       BUILD_MACHINE_TYPE: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
       BUILD_BOOT_DISK_GB: ${{ vars.PRODUCTION_GCP_IMAGE_BUILD_BOOT_DISK_GB || '80' }}
       EASYENCLAVE_DOMAIN: ${{ vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
-      PRODUCTION_CP_URL: ${{ vars.PRODUCTION_CP_URL || format('https://app.{0}', vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com') }}
+      PRODUCTION_CP_URL: ${{ vars.PRODUCTION_CP_URL || format('https://prod.app.{0}', vars.PRODUCTION_EASYENCLAVE_DOMAIN || 'easyenclave.com') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -161,7 +161,7 @@ jobs:
           BILLING_CAPACITY_REQUEST_DEV_SIMULATION: "false"
           GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_ID }}
           GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EE_GITHUB_OAUTH_CLIENT_SECRET }}
-          GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI || format('https://app.{0}/auth/github/callback', env.EASYENCLAVE_DOMAIN) }}
+          GITHUB_OAUTH_REDIRECT_URI: ${{ secrets.EE_GITHUB_OAUTH_REDIRECT_URI || format('https://prod.app.{0}/auth/github/callback', env.EASYENCLAVE_DOMAIN) }}
           EE_GCP_IMAGE_FAMILY: easyenclave-agent-main
           CI_DEPLOY_TIMEOUT_SECONDS: "1500"
           CP_BOOTSTRAP_TIMEOUT: "600"
