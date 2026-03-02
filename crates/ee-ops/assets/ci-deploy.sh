@@ -272,10 +272,10 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
   CP_RUNNER_URL=""
   if [ -n "${CP_PUBLIC_URL:-}" ]; then
     CP_RUNNER_URL="$CP_PUBLIC_URL"
-  elif [ -n "${CP_URL_CANDIDATE:-}" ]; then
-    CP_RUNNER_URL="$CP_URL_CANDIDATE"
   elif [ -n "${CP_IP_URL:-}" ]; then
     CP_RUNNER_URL="$CP_IP_URL"
+  elif [ -n "${CP_URL_CANDIDATE:-}" ]; then
+    CP_RUNNER_URL="$CP_URL_CANDIDATE"
   else
     CP_RUNNER_URL="$CP_BOOTSTRAP_URL"
   fi
