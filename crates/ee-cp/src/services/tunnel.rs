@@ -272,7 +272,9 @@ impl TunnelService {
             }))
             .send()
             .await
-            .map_err(|e| AppError::External(format!("cloudflare set tunnel ingress failed: {e}")))?;
+            .map_err(|e| {
+                AppError::External(format!("cloudflare set tunnel ingress failed: {e}"))
+            })?;
 
         let _ = parse_success_json(res).await?;
         Ok(())
