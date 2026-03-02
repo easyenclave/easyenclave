@@ -500,7 +500,9 @@ name = "ee-ops"
 version = "0.1.0"
 dependencies = [
  "bcrypt",
+ "regex",
  "rpassword",
+ "uuid",
 ]
 
 [[package]]

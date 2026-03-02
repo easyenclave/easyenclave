@@ -5,4 +5,6 @@ edition = "2021"
 
 [dependencies]
 bcrypt = "0.15"
+regex = "1"
 rpassword = "7"
+uuid = { version = "1", features = ["v4"] }

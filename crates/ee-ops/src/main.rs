@@ -1,3 +1,4 @@
+mod ops;
 mod password_hash;
 
 use std::env;
@@ -14,7 +15,7 @@ enum Op {
 
 fn usage() {
     eprintln!(
-        "Usage: cargo run -p ee-ops -- <command> [args...]\n\nCommands:\n  lint\n  ci-build-measure\n  ci-reproducibility-check\n  ci-deploy\n  gcp-bake-image\n  gcp-nodectl\n  hash-admin-password"
+        "Usage: cargo run -p ee-ops -- <command> [args...]\n\nCommands:\n  lint\n  ci-build-measure\n  ci-reproducibility-check\n  ci-deploy\n  gcp-bake-image\n  gcp-nodectl\n  ops\n  hash-admin-password"
     );
 }
 
@@ -44,6 +45,7 @@ fn resolve_op(name: &str) -> Option<Op> {
             program: "bash",
             script_rel: "crates/ee-ops/assets/gcp-nodectl.sh",
         }),
+        "ops" => Some(Op::Native(ops::run)),
         "hash-admin-password" | "hash_admin_password" => Some(Op::Native(password_hash::run)),
         _ => None,
     }
