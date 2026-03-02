@@ -15,10 +15,12 @@
                 <a href="#app-store">App Store</a>
                 <a href="#market">Capacity</a>
                 <a href="#architecture">Architecture</a>
+                <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/ARCHITECTURE.md" target="_blank">Arch Docs</a>
                 <a href="#tee">TEE</a>
                 <a href="#security">Security</a>
                 <a href="#attestation">Attestation</a>
                 <a href="#run-agent">Run an Agent</a>
+                <a href="#oidc-deploy">OIDC Deploy</a>
                 <a href="#getting-started">Get Started</a>
                 <a href="https://app.easyenclave.com/docs" target="_blank">API Docs</a>
                 <a href="https://app.easyenclave.com" class="btn btn-primary">Open App Store</a>
@@ -39,6 +41,23 @@
             </div>
         </div>
     </header>
+
+    <section class="network-trust-note">
+        <div class="container">
+            <div class="network-trust-card">
+                <h2>Network Trust Policy</h2>
+                <p><strong>Staging network is untrusted.</strong> It exists for CI and integration testing only. Do not use staging for secrets, private production data, or trust-sensitive workloads.</p>
+                <p><strong>Why use staging anyway?</strong> It runs the newest features from <code>main</code> first, and gives developers low-cost access to strong CPU/GPU capacity for build validation, load testing, and model/app experimentation before production.</p>
+                <p><strong>Production network is trusted.</strong> Production rollout is release-gated: strict attestation/auth policy plus pinned trusted measurements, signatures, and GCP image descriptor for an explicit release tag.</p>
+                <div class="network-links">
+                    <a href="https://app.easyenclave.com" class="network-link network-link-prod" target="_blank">Production App (Trusted)</a>
+                    <a href="https://github.com/easyenclave/easyenclave/actions/workflows/staging-rollout.yml" class="network-link network-link-staging" target="_blank">Staging Rollout / Status (Untrusted)</a>
+                </div>
+                <p class="network-link-note">Staging endpoint URL is deployment-specific and configured via <code>STAGING_CP_URL</code> in CI/CD.</p>
+                <p class="network-trust-link">See details: <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/CI_CD_NETWORKS.md" target="_blank">CI/CD Networks</a></p>
+            </div>
+        </div>
+    </section>
 
     <section id="app-store" class="app-store">
         <div class="container">
@@ -78,7 +97,7 @@
                         </svg>
                     </div>
                     <h3>Automated Measurement</h3>
-                    <p>The control plane routes each version to an attested measurer app (<code>measuring-enclave</code> or a size variant). It resolves tags to immutable SHA256 digests and records per-size trusted values before deploy.</p>
+                    <p>The control plane resolves each version to immutable SHA256 digests, applies signature policy, and records per-size trusted values before deploy.</p>
                 </div>
                 <div class="flow-arrow">&#8594;</div>
                 <div class="flow-step">
@@ -103,7 +122,7 @@
                 </div>
                 <div class="benefit">
                     <h4>No Direct Deploys</h4>
-                    <p>All deployments go through the catalog. No way to deploy untracked code — <a href="https://github.com/easyenclave/easyenclave/blob/main/.github/workflows/deploy-examples.yml" target="_blank">tested on every push</a>.</p>
+                    <p>All deployments go through the catalog. No way to deploy untracked code — <a href="https://github.com/easyenclave/easyenclave/blob/main/.github/workflows/staging-rollout.yml" target="_blank">validated on every main rollout</a>.</p>
                 </div>
             </div>
         </div>
@@ -521,7 +540,7 @@ cp .env.example .env  # Add your control plane URL</code></pre>
                         <div class="setup-content">
                             <h4>Launch Your Agent</h4>
                             <pre><code># Build and launch a TDX agent VM
-python3 infra/tdx_cli.py vm new --size tiny
+bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size tiny --cp-url "$CP_URL" --ita-api-key "$ITA_API_KEY" --wait
 
 # Your agent will register automatically with the control plane</code></pre>
                         </div>
@@ -633,6 +652,41 @@ response = my_service.post("/api/data", json={"input": "secret"})</code></pre>
         </div>
     </section>
 
+    <section id="oidc-deploy" class="getting-started">
+        <div class="container">
+            <h2>GitHub OIDC Deploy (No API Key Secret)</h2>
+            <p class="section-subtitle">Use GitHub's built-in OIDC token to call <code>/api/deploy</code> directly.</p>
+
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <h3>Minimal Workflow</h3>
+                    <p>This deploy path prefers GitHub Actions OIDC and falls back to API keys only when needed.</p>
+                    <pre><code>permissions:
+  id-token: write
+  contents: read
+
+steps:
+  - uses: actions/checkout@v4
+  - name: Mint OIDC token
+    run: |
+      TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=easyenclave" | jq -r '.value')
+      echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+  - name: Deploy
+    run: |
+      curl -sS -X POST https://app.easyenclave.com/api/deploy \
+        -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" \
+        -H "Content-Type: application/json" \
+        -d '{"compose":"services: {}","app_name":"hello-tdx","agent_name":"my-app-123","dry_run":true}'</code></pre>
+                    <p class="level-note">Full copy/paste workflow: <a href="https://github.com/easyenclave/easyenclave/blob/main/examples/deploy-with-github-oidc.yml" target="_blank">examples/deploy-with-github-oidc.yml</a></p>
+                    <p class="level-note">Your EasyEnclave account must be linked with <code>github_org</code> or <code>github_login</code> matching <code>github.repository_owner</code>.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <section id="getting-started" class="getting-started">
         <div class="container">
             <h2>Quick Start</h2>
@@ -642,7 +696,7 @@ response = my_service.post("/api/data", json={"input": "secret"})</code></pre>
                     <div class="step-content">
                         <h3>Register Your App</h3>
                         <p>Create an entry in the app catalog. This is a one-time setup.</p>
-                        <pre><code>curl -X POST https://app.easyenclave.com/api/v1/apps \
+                        <pre><code>curl -X POST https://app.easyenclave.com/api/apps \
   -H "Content-Type: application/json" \
   -d '{"name": "my-app", "source_repo": "myorg/myrepo"}'</code></pre>
                     </div>
@@ -679,6 +733,8 @@ print(response.json())</code></pre>
                 <div class="cta-buttons">
                     <a href="https://app.easyenclave.com" class="btn btn-primary btn-large">Open App Store</a>
                     <a href="https://app.easyenclave.com/docs" class="btn btn-secondary btn-large">API Documentation</a>
+                    <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/ARCHITECTURE.md" class="btn btn-secondary btn-large" target="_blank">Architecture Docs</a>
+                    <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/CI_CD_NETWORKS.md" class="btn btn-secondary btn-large" target="_blank">CI/CD Network Docs</a>
                     <a href="https://github.com/easyenclave/easyenclave/tree/main/examples" class="btn btn-secondary btn-large">View Examples</a>
                 </div>
             </div>
@@ -701,6 +757,8 @@ print(response.json())</code></pre>
                     <div class="footer-column">
                         <h4>Resources</h4>
                         <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
+                        <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/ARCHITECTURE.md">Architecture</a>
+                        <a href="https://github.com/easyenclave/easyenclave/blob/main/docs/CI_CD_NETWORKS.md">CI/CD Networks</a>
                         <a href="https://github.com/easyenclave/easyenclave/tree/main/examples">Examples</a>
                     </div>
                 </div>

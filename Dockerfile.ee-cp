@@ -1,0 +1,31 @@
+FROM rust:bookworm AS builder
+
+WORKDIR /workspace
+
+COPY . .
+RUN cargo build --release -p ee-cp
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    chmod 0755 /etc/apt/keyrings && \
+    . /etc/os-release && \
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /etc/apt/keyrings/cloudflare-main.gpg && \
+    chmod 0644 /etc/apt/keyrings/cloudflare-main.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/cloudflared.list && \
+    apt-get update && apt-get install -y --no-install-recommends cloudflared && \
+    apt-get purge -y --auto-remove gnupg && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /workspace/target/release/ee-cp /usr/local/bin/ee-cp
+
+EXPOSE 8080
+ENV CP_BIND_ADDR=0.0.0.0:8080
+ENV CP_DATABASE_URL=sqlite://easyenclave.db?mode=rwc
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:8080/health || exit 1
+
+CMD ["ee-cp"]

@@ -46,15 +46,15 @@ The system provides:
 
 #### Account API Key Authentication
 All billing endpoints now require `Authorization: Bearer ee_live_xxx` header:
-- `GET /api/v1/accounts/{id}` - View account (owner only)
-- `DELETE /api/v1/accounts/{id}` - Delete account (owner only)
-- `POST /api/v1/accounts/{id}/deposit` - Deposit funds (owner only)
-- `GET /api/v1/accounts/{id}/transactions` - View transactions (owner only)
-- `POST /api/v1/accounts/{id}/payment-intent` - Create Stripe payment (owner only)
+- `GET /api/accounts/{id}` - View account (owner only)
+- `DELETE /api/accounts/{id}` - Delete account (owner only)
+- `POST /api/accounts/{id}/deposit` - Deposit funds (owner only)
+- `GET /api/accounts/{id}/transactions` - View transactions (owner only)
+- `POST /api/accounts/{id}/payment-intent` - Create Stripe payment (owner only)
 
 #### Admin Authentication
 Admin endpoints require `Authorization: Bearer <session_token>`:
-- `GET /api/v1/accounts` - List all accounts (admin only)
+- `GET /api/accounts` - List all accounts (admin only)
 
 #### New Endpoints
 
@@ -74,7 +74,7 @@ Response:
 
 **Create Account** (returns API key once!)
 ```bash
-POST /api/v1/accounts
+POST /api/accounts
 {
   "name": "my-account",
   "account_type": "deployer",
@@ -95,7 +95,7 @@ Response:
 
 **Create Payment Intent**
 ```bash
-POST /api/v1/accounts/{id}/payment-intent
+POST /api/accounts/{id}/payment-intent
 Authorization: Bearer ee_live_xxx
 {
   "amount": 100.00
@@ -111,7 +111,7 @@ Response:
 
 **Stripe Webhook**
 ```bash
-POST /api/v1/webhooks/stripe
+POST /api/webhooks/stripe
 Stripe-Signature: xxx
 
 # Automatically processes payment_intent.succeeded events
@@ -122,7 +122,7 @@ Stripe-Signature: xxx
 
 **Deploy with Billing**
 ```bash
-POST /api/v1/apps/{name}/versions/{version}/deploy
+POST /api/apps/{name}/versions/{version}/deploy
 {
   "agent_id": "uuid",
   "config": {},
@@ -202,7 +202,7 @@ Example: $1.00/hour deployment
 ## Environment Variables
 
 Required:
-- `ADMIN_PASSWORD_HASH`: bcrypt hash of admin password (generate with `scripts/hash_admin_password.py`)
+- `ADMIN_PASSWORD_HASH`: bcrypt hash of admin password (generate with `cargo run -p ee-ops -- hash-admin-password`)
 
 Optional (for Stripe):
 - `STRIPE_SECRET_KEY`: Stripe API secret key (sk_live_xxx or sk_test_xxx)
@@ -240,20 +240,20 @@ Example end-to-end test:
 
 ```bash
 # 1. Create account
-curl -X POST http://localhost:8080/api/v1/accounts \
+curl -X POST http://localhost:8080/api/accounts \
   -H "Content-Type: application/json" \
   -d '{"name":"test-account","account_type":"deployer"}'
 # Save the api_key from response
 
 # 2. Create payment intent
-curl -X POST http://localhost:8080/api/v1/accounts/{id}/payment-intent \
+curl -X POST http://localhost:8080/api/accounts/{id}/payment-intent \
   -H "Authorization: Bearer ee_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{"amount":100.0}'
 # Complete payment with Stripe.js on frontend
 
 # 3. Deploy with billing
-curl -X POST http://localhost:8080/api/v1/apps/hello-tdx/versions/v1/deploy \
+curl -X POST http://localhost:8080/api/apps/hello-tdx/versions/v1/deploy \
   -H "Authorization: Bearer ee_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -267,7 +267,7 @@ curl -X POST http://localhost:8080/api/v1/apps/hello-tdx/versions/v1/deploy \
   }'
 
 # 4. Check transactions after 1 hour
-curl http://localhost:8080/api/v1/accounts/{id}/transactions \
+curl http://localhost:8080/api/accounts/{id}/transactions \
   -H "Authorization: Bearer ee_live_xxx"
 # Should show charge transaction
 ```
@@ -288,7 +288,7 @@ curl http://localhost:8080/api/v1/accounts/{id}/transactions \
    docker compose up -d --build
    ```
 4. Configure webhook endpoint in Stripe Dashboard:
-   - URL: `https://your-cp-domain/api/v1/webhooks/stripe`
+   - URL: `https://your-cp-domain/api/webhooks/stripe`
    - Events: `payment_intent.succeeded`
 5. Use Stripe.js on frontend to collect payment and confirm PaymentIntent
 
@@ -296,7 +296,7 @@ curl http://localhost:8080/api/v1/accounts/{id}/transactions \
 
 ```bash
 # Generate password hash
-python3 scripts/hash_admin_password.py
+cargo run -p ee-ops -- hash-admin-password
 # Enter your password when prompted
 
 # Add to environment
@@ -312,7 +312,7 @@ echo "ADMIN_PASSWORD_HASH=\$2b\$12\$..." >> .env
 - `app/auth.py` - Authentication utilities (API key & session management)
 - `app/billing.py` - Automated charging & Stripe integration
 - `app/pricing.py` - Tiered pricing calculations
-- `scripts/hash_admin_password.py` - Password hash generator
+- `ee-ops hash-admin-password` - Password hash generator (`cargo run -p ee-ops -- hash-admin-password`)
 - `migrations/001_add_auth_and_billing.py` - Database migration script
 
 ### Modified Files
@@ -325,7 +325,7 @@ echo "ADMIN_PASSWORD_HASH=\$2b\$12\$..." >> .env
 ## Next Steps
 
 1. Run migration: `python3 migrations/001_add_auth_and_billing.py`
-2. Set admin password: `python3 scripts/hash_admin_password.py`
+2. Set admin password: `cargo run -p ee-ops -- hash-admin-password`
 3. Configure Stripe (optional): Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`
 4. Restart control plane
 5. Test authentication and billing flows

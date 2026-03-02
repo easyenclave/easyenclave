@@ -1,0 +1,339 @@
+name: Staging Deploy
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "crates/**"
+      - "infra/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/**"
+      - "Dockerfile.ee-cp"
+  workflow_dispatch:
+
+concurrency:
+  group: easyenclave-staging-deploy
+  cancel-in-progress: true
+
+env:
+  SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID || 'eestaging' }}
+  GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
+  GCP_ZONE: ${{ vars.STAGING_GCP_ZONE || 'us-central1-a' }}
+  EE_GCP_FALLBACK_ZONES: ${{ vars.STAGING_GCP_FALLBACK_ZONES || 'us-central1-b,us-central1-c,us-central1-f' }}
+  BUILD_ZONE: ${{ vars.STAGING_GCP_IMAGE_BUILD_ZONE || 'us-central1-a' }}
+  BUILD_FALLBACK_ZONES: ${{ vars.STAGING_GCP_IMAGE_BUILD_FALLBACK_ZONES || 'us-central1-b,us-central1-c,us-central1-f' }}
+  BUILD_MACHINE_TYPE: ${{ vars.STAGING_GCP_IMAGE_BUILD_MACHINE_TYPE || 'e2-standard-4' }}
+  BUILD_BOOT_DISK_GB: ${{ vars.STAGING_GCP_IMAGE_BUILD_BOOT_DISK_GB || '80' }}
+  EASYENCLAVE_DOMAIN: ${{ vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com' }}
+  STAGING_CP_URL: ${{ vars.STAGING_CP_URL || format('https://app-staging.{0}', vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com') }}
+
+jobs:
+  skip-fork:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip fork PRs
+        run: echo "Skipping staging deploy for fork PR (secrets are unavailable)."
+
+  prep:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha12: ${{ steps.vars.outputs.sha12 }}
+      network_name: ${{ steps.vars.outputs.network_name }}
+      release_tag: ${{ steps.vars.outputs.release_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Lint + test
+        run: |
+          cargo fmt --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Resolve rollout vars
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha12="$(echo "${SOURCE_SHA}" | cut -c1-12)"
+          {
+            echo "sha12=${sha12}"
+            echo "network_name=staging"
+            echo "release_tag=staging-${sha12}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build ee-agent release binary
+        run: cargo build -p ee-agent --release
+
+      - name: Upload ee-agent binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-ee-agent-bin-${{ github.run_id }}
+          path: target/release/ee-agent
+          if-no-files-found: error
+
+  cleanup_managed_vms:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: prep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Cleanup previous managed staging-project VMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud compute instances list --project "${GCP_PROJECT_ID}" \
+            --filter "labels.easyenclave=managed" \
+            --format "value(name,zone.basename())" > /tmp/staging-gc.txt || true
+          if [ ! -s /tmp/staging-gc.txt ]; then
+            echo "No existing managed VMs found."
+            exit 0
+          fi
+          while read -r name zone; do
+            [ -n "${name:-}" ] || continue
+            [ -n "${zone:-}" ] || continue
+            echo "Deleting ${name} (${zone})"
+            gcloud compute instances delete "${name}" --project "${GCP_PROJECT_ID}" --zone "${zone}" --quiet || true
+          done < /tmp/staging-gc.txt
+
+  build_cp_image:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: prep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.cp_image.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Build and push control plane image
+        id: cp_image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY}/control-plane-rust:${SOURCE_SHA}"
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker build -f Dockerfile.ee-cp -t "${image}" .
+          docker push "${image}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+
+  bake_agent_image:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: prep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Download ee-agent binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: staging-ee-agent-bin-${{ github.run_id }}
+          path: /tmp/staging-ee-agent-bin
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Bake staging GCP image for commit
+        shell: bash
+        env:
+          SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
+          SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
+          EE_AGENT_BINARY_PATH: /tmp/staging-ee-agent-bin/ee-agent
+        run: |
+          set -euo pipefail
+          export TARGET_IMAGE_NAME="easyenclave-agent-main-${{ needs.prep.outputs.sha12 }}"
+          export TARGET_IMAGE_FAMILY="easyenclave-agent-main"
+          export TARGET_IMAGE_DESCRIPTION="EasyEnclave staging commit ${SOURCE_SHA}"
+          export TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=staging,gitsha=${{ needs.prep.outputs.sha12 }}"
+          chmod 0755 "${EE_AGENT_BINARY_PATH}"
+          bash crates/ee-ops/assets/gcp-bake-image.sh
+
+  deploy:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs:
+      - prep
+      - cleanup_managed_vms
+      - build_cp_image
+      - bake_agent_image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Measure trusted values
+        id: measure
+        env:
+          MEASURE_SIZES: tiny
+          MEASURE_ATTEMPTS: "3"
+          MEASURE_TIMEOUT_SECONDS: "420"
+        run: cargo run -p ee-ops -- ci-build-measure
+
+      - name: Deploy staging control plane and agent
+        id: deploy
+        shell: bash
+        env:
+          AGENT_DATACENTER_AZ: ${{ env.GCP_ZONE }}
+          ADMIN_PASSWORD: ${{ secrets.CP_ADMIN_PASSWORD }}
+          ADMIN_GITHUB_LOGINS: ${{ secrets.ADMIN_GITHUB_LOGINS }}
+          ITA_API_KEY: ${{ secrets.ITA_API_KEY || secrets.INTEL_API_KEY }}
+          EE_AGENT_ITA_API_KEY: ${{ secrets.ITA_API_KEY || secrets.INTEL_API_KEY }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          EASYENCLAVE_ENV: staging
+          EASYENCLAVE_NETWORK_NAME: ${{ needs.prep.outputs.network_name }}
+          EASYENCLAVE_RELEASE_TAG: ${{ needs.prep.outputs.release_tag }}
+          EASYENCLAVE_GIT_SHA: ${{ env.SOURCE_SHA }}
+          CONTROL_PLANE_IMAGE: ${{ needs.build_cp_image.outputs.image }}
+          NUM_TINY_AGENTS: "1"
+          NUM_STANDARD_AGENTS: "0"
+          NUM_LLM_AGENTS: "0"
+          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
+          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
+          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
+          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
+          TCB_ENFORCEMENT_MODE: warn
+          ALLOWED_TCB_STATUSES: UpToDate
+          NONCE_ENFORCEMENT_MODE: optional
+          RTMR_ENFORCEMENT_MODE: warn
+          SIGNATURE_VERIFICATION_MODE: warn
+          CP_TO_AGENT_ATTESTATION_MODE: optional
+          AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION: "false"
+          PASSWORD_LOGIN_ENABLED: "true"
+          AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION: "true"
+          BILLING_ENABLED: "false"
+          BILLING_CAPACITY_REQUEST_DEV_SIMULATION: "true"
+          GITHUB_OAUTH_CLIENT_ID: ${{ secrets.STAGING_EE_GITHUB_OAUTH_CLIENT_ID }}
+          GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.STAGING_EE_GITHUB_OAUTH_CLIENT_SECRET }}
+          GITHUB_OAUTH_REDIRECT_URI: ${{ format('https://app-staging.{0}/auth/github/callback', env.EASYENCLAVE_DOMAIN) }}
+          EE_GCP_IMAGE_FAMILY: easyenclave-agent-main
+          CI_DEPLOY_TIMEOUT_SECONDS: "1200"
+          CP_BOOTSTRAP_TIMEOUT: "600"
+          AGENT_VERIFY_WAIT_ATTEMPTS: "48"
+          AGENT_VERIFY_WAIT_SECONDS: "5"
+        run: |
+          set -euo pipefail
+          timeout 1300 cargo run -p ee-ops -- ci-deploy 2>&1 | tee /tmp/ci-deploy.log
+
+      - name: Smoke check staging (public URL)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURL_ARGS=(--connect-timeout 3 --max-time 8)
+          ok=0
+          for _ in $(seq 1 36); do
+            if curl -fsS "${CURL_ARGS[@]}" "${STAGING_CP_URL}/health" >/tmp/staging-health.json 2>/tmp/staging-health.err; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Public staging health check failed for ${STAGING_CP_URL}/health"
+            cat /tmp/staging-health.err || true
+            exit 1
+          fi
+          jq . < /tmp/staging-health.json
+
+      - name: Dump GCP serial logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud compute instances list --project "${GCP_PROJECT_ID}" \
+            --filter "labels.easyenclave=managed" \
+            --format "value(name,zone)" > /tmp/staging_instances.txt || true
+          while read -r name zone; do
+            [ -n "${name:-}" ] || continue
+            [ -n "${zone:-}" ] || continue
+            zone_short="${zone##*/}"
+            echo "===== ${name} (${zone_short}) ====="
+            gcloud compute instances get-serial-port-output "${name}" \
+              --project "${GCP_PROJECT_ID}" \
+              --zone "${zone_short}" \
+              --port 1 | tail -n 200 || true
+            if [[ "${name}" == ee-cp-* ]]; then
+              echo "===== ${name} (${zone_short}) control-plane container logs ====="
+              gcloud compute ssh "${name}" \
+                --project "${GCP_PROJECT_ID}" \
+                --zone "${zone_short}" \
+                --quiet \
+                --command "sudo docker logs --tail 200 easyenclave-control-plane || true" || true
+            fi
+          done < /tmp/staging_instances.txt
+
+      - name: Upload deploy log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-deploy-log-${{ github.run_id }}
+          path: /tmp/ci-deploy.log
+          if-no-files-found: ignore

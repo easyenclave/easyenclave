@@ -1,0 +1,16 @@
+[package]
+name = "ee-agent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ee-attestation = { path = "../ee-attestation" }
+ee-common = { path = "../ee-common" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+base64 = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+futures-util = "0.3"
+bollard = "0.18"

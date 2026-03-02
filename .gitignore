@@ -7,6 +7,7 @@ venv/
 *.egg-info/
 dist/
 build/
+target/
 
 # VM images and build outputs
 infra/output/
@@ -14,6 +15,7 @@ infra/output/
 *.iso
 
 # Temporary files
+*.swp
 plan
 *.log
 /tmp/
@@ -22,4 +24,3 @@ plan
 easyenclave.db
 easyenclave.db-wal
 easyenclave.db-shm
-

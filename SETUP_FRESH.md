@@ -24,7 +24,7 @@ rm -f $EASYENCLAVE_DB_PATH
 
 ```bash
 # Generate password hash
-python3 scripts/hash_admin_password.py
+cargo run -p ee-ops -- hash-admin-password
 
 # Copy the output and set environment variable
 export ADMIN_PASSWORD_HASH='$2b$12$...'
@@ -50,7 +50,7 @@ The database schema will be created automatically with all the new fields!
 ### Create Your First Account
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/accounts \
+curl -X POST http://localhost:8000/api/accounts \
   -H "Content-Type: application/json" \
   -d '{
     "name": "my-deployer-account",
@@ -77,7 +77,7 @@ Example response:
 ### Add Funds (Manual Deposit for Testing)
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/accounts/{account_id}/deposit \
+curl -X POST http://localhost:8000/api/accounts/{account_id}/deposit \
   -H "Authorization: Bearer ee_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -89,7 +89,7 @@ curl -X POST http://localhost:8000/api/v1/accounts/{account_id}/deposit \
 ### Deploy with Billing
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/apps/hello-tdx/versions/v1/deploy \
+curl -X POST http://localhost:8000/api/apps/hello-tdx/versions/v1/deploy \
   -H "Content-Type: application/json" \
   -d '{
     "agent_id": "agent-uuid",
@@ -106,11 +106,11 @@ curl -X POST http://localhost:8000/api/v1/apps/hello-tdx/versions/v1/deploy \
 
 ```bash
 # View account
-curl http://localhost:8000/api/v1/accounts/{account_id} \
+curl http://localhost:8000/api/accounts/{account_id} \
   -H "Authorization: Bearer ee_live_xxx"
 
 # List transactions
-curl http://localhost:8000/api/v1/accounts/{account_id}/transactions \
+curl http://localhost:8000/api/accounts/{account_id}/transactions \
   -H "Authorization: Bearer ee_live_xxx"
 ```
 
@@ -128,14 +128,14 @@ Save the `token` from response and use it for admin endpoints:
 
 ```bash
 # List all accounts (admin only)
-curl http://localhost:8000/api/v1/accounts \
+curl http://localhost:8000/api/accounts \
   -H "Authorization: Bearer <admin_session_token>"
 ```
 
 ## Environment Variables Summary
 
 **Required:**
-- `ADMIN_PASSWORD_HASH` - bcrypt hash from `scripts/hash_admin_password.py`
+- `ADMIN_PASSWORD_HASH` - bcrypt hash from `cargo run -p ee-ops -- hash-admin-password`
 
 **Optional:**
 - `EASYENCLAVE_DB_PATH` - Database path (defaults to `./easyenclave.db`)
@@ -148,7 +148,7 @@ curl http://localhost:8000/api/v1/accounts \
 
 ```bash
 # 1. Create deployer account
-RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/accounts \
+RESPONSE=$(curl -s -X POST http://localhost:8000/api/accounts \
   -H "Content-Type: application/json" \
   -d '{"name":"test-deployer","account_type":"deployer"}')
 
@@ -159,7 +159,7 @@ echo "Account ID: $ACCOUNT_ID"
 echo "API Key: $API_KEY"
 
 # 2. Create agent account (for earnings)
-AGENT_RESPONSE=$(curl -s -X POST http://localhost:8000/api/v1/accounts \
+AGENT_RESPONSE=$(curl -s -X POST http://localhost:8000/api/accounts \
   -H "Content-Type: application/json" \
   -d '{"name":"test-agent","account_type":"agent"}')
 
@@ -167,18 +167,18 @@ AGENT_ACCOUNT_ID=$(echo $AGENT_RESPONSE | jq -r '.account_id')
 echo "Agent Account ID: $AGENT_ACCOUNT_ID"
 
 # 3. Add funds to deployer account
-curl -X POST http://localhost:8000/api/v1/accounts/$ACCOUNT_ID/deposit \
+curl -X POST http://localhost:8000/api/accounts/$ACCOUNT_ID/deposit \
   -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"amount": 10.0, "description": "Test deposit"}'
 
 # 4. Check balance
-curl http://localhost:8000/api/v1/accounts/$ACCOUNT_ID \
+curl http://localhost:8000/api/accounts/$ACCOUNT_ID \
   -H "Authorization: Bearer $API_KEY"
 
 # 5. Deploy (will start hourly charging)
 # Note: Replace agent_id with real agent after agent registration
-curl -X POST http://localhost:8000/api/v1/apps/hello-tdx/versions/v1/deploy \
+curl -X POST http://localhost:8000/api/apps/hello-tdx/versions/v1/deploy \
   -H "Content-Type: application/json" \
   -d "{
     \"agent_id\": \"your-agent-id\",
@@ -218,11 +218,11 @@ Once the control plane starts, these tasks run automatically:
 - Check Authorization header format: `Bearer ee_live_xxx`
 
 **"Insufficient funds"**
-- Deposit funds before deploying: `POST /api/v1/accounts/{id}/deposit`
+- Deposit funds before deploying: `POST /api/accounts/{id}/deposit`
 - Minimum balance = 1 hour of deployment cost
 
 **"Admin password not configured"**
-- Run `python3 scripts/hash_admin_password.py`
+- Run `cargo run -p ee-ops -- hash-admin-password`
 - Set `ADMIN_PASSWORD_HASH` environment variable
 - Restart control plane
 

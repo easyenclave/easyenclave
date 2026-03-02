@@ -9,7 +9,7 @@ Bcrypt hash of the control plane admin password.
 
 **To generate:**
 ```bash
-python3 scripts/hash_admin_password.py
+cargo run -p ee-ops -- hash-admin-password
 ```
 
 Then add the output to GitHub Secrets:
@@ -51,6 +51,33 @@ Get from Stripe Dashboard → Webhooks:
 ```
 whsec_xxx
 ```
+
+### Optional Secrets (For Admin Login)
+
+#### EE_GITHUB_OAUTH_CLIENT_ID
+GitHub OAuth App client ID (used for admin login).
+
+#### EE_GITHUB_OAUTH_CLIENT_SECRET
+GitHub OAuth App client secret (used for admin login).
+
+#### EE_GITHUB_OAUTH_REDIRECT_URI (Optional)
+Override the redirect URI configured in the OAuth App.
+
+If omitted, the control plane defaults to:
+```
+https://app.easyenclave.com/auth/github/callback
+```
+
+#### ADMIN_GITHUB_LOGINS (Recommended)
+Comma-separated GitHub logins that should have **admin** access after GitHub OAuth login.
+
+Example:
+```
+alice,bob
+```
+
+Note: GitHub Actions blocks repository secret names starting with `GITHUB_`, so we store OAuth
+secrets with the `EE_GITHUB_...` prefix and map them into `GITHUB_OAUTH_...` env vars at runtime.
 
 ## Testing Secrets Setup
 

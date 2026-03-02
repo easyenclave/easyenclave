@@ -1,7 +1,7 @@
 // EasyEnclave Web GUI JavaScript
 
 // Use CONFIG.API_BASE from config.js, fallback to relative URL for local dev
-const API_BASE = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE) ? CONFIG.API_BASE : '/api/v1';
+const API_BASE = (typeof CONFIG !== 'undefined' && CONFIG.API_BASE) ? CONFIG.API_BASE : '/api';
 const REFRESH_INTERVAL = (typeof CONFIG !== 'undefined' && CONFIG.REFRESH_INTERVAL) ? CONFIG.REFRESH_INTERVAL : 30000;
 
 let allServices = [];

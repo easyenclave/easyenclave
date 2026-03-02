@@ -351,62 +351,48 @@ docker build -t ghcr.io/you/myapp:v1.0.0 .
 docker push ghcr.io/you/myapp:v1.0.0
 ```
 
-**Step 3: Register with EasyEnclave**
+**Step 3: Create a deployer account (one-time)**
 ```bash
-curl -X POST https://app.easyenclave.com/api/v1/apps \
+curl -X POST https://app.easyenclave.com/api/accounts \
   -H "Content-Type: application/json" \
-  -d '{"name": "myapp", "description": "My app"}'
+  -d '{"name":"my-org-deployer","account_type":"deployer","github_org":"my-org"}'
 ```
 
-**Step 4: Publish version**
+**Step 4: Deploy to verified TDX capacity**
 ```bash
-COMPOSE_B64=$(base64 -w 0 docker-compose.yml)
-curl -X POST https://app.easyenclave.com/api/v1/apps/myapp/versions \
-  -d "{\"version\": \"v1.0.0\", \"compose\": \"$COMPOSE_B64\"}"
-```
-
-**Step 5: Deploy to verified TDX capacity**
-```bash
-curl -X POST https://app.easyenclave.com/api/v1/apps/myapp/versions/v1.0.0/deploy \
-  -d '{
-    "node_size": "tiny",
-    "allowed_datacenters": ["gcp:us-central1-a"]
-  }'
+curl -X POST https://app.easyenclave.com/api/deploy \
+  -H "Authorization: Bearer $EE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --rawfile compose docker-compose.yml '{compose:$compose,node_size:\"tiny\",datacenter:\"gcp:us-central1-f\"}')"
 ```
 
 The control plane selects the agent automatically from verified healthy capacity. Use `agent_id` only for controlled upgrade or recovery workflows.
 
-**See full guide:** main README deployment examples and `.github/workflows/deploy-examples.yml`.
+**See full guide:** `docs/runbooks/deploy-app.md`.
 
 ### How does the measuring enclave work?
 
 **Problem:** Docker image tags are mutable (`:latest` changes)
 
-**Solution:** Measurer apps resolve tags to immutable digests and return per-size measurements
+**Current solution:** The control plane resolves tags to immutable digests and stores per-size trusted measurements.
 
 ```
 1. You publish: myapp:v1.0.0 (with optional `node_size`)
    ↓
-2. Control plane routes to measurer app:
-   measuring-enclave or measuring-enclave-<node_size>
-   ↓
-3. Measurer resolves:
+2. Control plane resolves:
    myapp:v1.0.0 → sha256:abc123... (immutable)
    ↓
-4. Compute trusted values for that size
+3. Compute trusted values for that size
    ↓
-5. Store measurement on app version (scoped by node_size)
+4. Store measurement on app version (scoped by node_size)
    ↓
-6. Scheduler only deploys to agents with matching node_size + measurement
+5. Scheduler only deploys to agents with matching node_size + measurement
 ```
 
 **Security benefits:**
 - ✅ Tag updates don't break attestation
 - ✅ Workers verify exact image + size profile
-- ✅ Measurer runs as an attested app on verified tiny TDX agents (bare metal or GCP)
 - ✅ Unmeasured versions are blocked from deployment
-
-**See:** `apps/measuring-enclave/` for implementation
 
 ### Can I run EasyEnclave on non-TDX hardware?
 
