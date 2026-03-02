@@ -319,6 +319,14 @@ jobs:
               --project "${GCP_PROJECT_ID}" \
               --zone "${zone_short}" \
               --port 1 | tail -n 200 || true
+            if [[ "${name}" == ee-cp-* ]]; then
+              echo "===== ${name} (${zone_short}) control-plane container logs ====="
+              gcloud compute ssh "${name}" \
+                --project "${GCP_PROJECT_ID}" \
+                --zone "${zone_short}" \
+                --quiet \
+                --command "sudo docker logs --tail 200 easyenclave-control-plane || true" || true
+            fi
           done < /tmp/staging_instances.txt
 
       - name: Upload deploy log
