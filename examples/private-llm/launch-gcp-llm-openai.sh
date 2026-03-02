@@ -31,6 +31,7 @@ require_cmd python3
 : "${OPENAI_TIMEOUT_SECONDS:=600}"
 : "${KEEP_VM:=true}"
 : "${POLL_SECONDS:=10}"
+: "${TUNNEL_DOMAIN:=}"
 
 if [ -n "${GITHUB_RUN_ID:-}" ]; then
   : "${APP_NAME:=private-llm-${GITHUB_RUN_ID}}"
@@ -95,14 +96,12 @@ log "Launched VM name=${VM_NAME} zone=${VM_ZONE}"
 
 deadline=$(( $(date +%s) + REGISTER_TIMEOUT_SECONDS ))
 AGENT_ID=""
-HOSTNAME=""
 while [ "$(date +%s)" -lt "$deadline" ]; do
   agent_row="$(curl -fsS "${CP_URL}/api/agents" | jq -c --arg vm "$VM_NAME" '[.[] | select(.vm_name == $vm)] | last // empty')"
   if [ -n "$agent_row" ] && [ "$agent_row" != "null" ]; then
     AGENT_ID="$(echo "$agent_row" | jq -r '.agent_id // ""')"
-    HOSTNAME="$(echo "$agent_row" | jq -r '.hostname // ""')"
     status="$(echo "$agent_row" | jq -r '.status // ""')"
-    if [ -n "$AGENT_ID" ] && [ "$status" = "undeployed" ] && [ -n "$HOSTNAME" ]; then
+    if [ -n "$AGENT_ID" ] && [ "$status" = "undeployed" ]; then
       break
     fi
   fi
@@ -110,7 +109,18 @@ while [ "$(date +%s)" -lt "$deadline" ]; do
 done
 
 [ -n "$AGENT_ID" ] || fatal "timed out waiting for agent registration in control plane"
-[ -n "$HOSTNAME" ] || fatal "agent registered but hostname is empty"
+
+if [ -z "$TUNNEL_DOMAIN" ]; then
+  cp_host="$(echo "$CP_URL" | sed -E 's#^https?://##; s#/.*$##')"
+  case "$cp_host" in
+    app.*) TUNNEL_DOMAIN="${cp_host#app.}" ;;
+    app-staging.*) TUNNEL_DOMAIN="${cp_host#app-staging.}" ;;
+    *) TUNNEL_DOMAIN="$cp_host" ;;
+  esac
+fi
+
+[ -n "$TUNNEL_DOMAIN" ] || fatal "failed to resolve tunnel domain"
+HOSTNAME="${VM_NAME}.${TUNNEL_DOMAIN}"
 log "Agent registered agent_id=${AGENT_ID} hostname=${HOSTNAME}"
 
 deploy_payload="$(
