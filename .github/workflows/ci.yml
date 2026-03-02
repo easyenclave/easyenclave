@@ -20,6 +20,31 @@ on:
       - ".github/workflows/**"
       - "Dockerfile.ee-cp"
   workflow_dispatch:
+    inputs:
+      run_private_llm_example:
+        description: "Launch production llm VM, deploy Ollama tiny model, run OpenAI smoke test"
+        required: false
+        default: "false"
+      cp_url:
+        description: "Control plane URL (for example https://app.easyenclave.com)"
+        required: false
+        default: "https://app.easyenclave.com"
+      node_size:
+        description: "Agent size"
+        required: false
+        default: "llm"
+      model_name:
+        description: "Ollama model name"
+        required: false
+        default: "smollm2:135m"
+      keep_vm:
+        description: "Keep created VM after test"
+        required: false
+        default: "true"
+      gcp_zone:
+        description: "Preferred GCP zone (optional)"
+        required: false
+        default: ""
 
 concurrency:
   group: easyenclave-ci-${{ github.ref }}
@@ -27,6 +52,7 @@ concurrency:
 
 jobs:
   lint-test:
+    if: github.event_name != 'workflow_dispatch' || inputs.run_private_llm_example != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,3 +74,71 @@ jobs:
 
       - name: Rust test
         run: cargo test --workspace
+
+  private-llm-example:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_private_llm_example == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ secrets.PRODUCTION_GCP_PROJECT_ID }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.PRODUCTION_GCP_SERVICE_ACCOUNT_KEY }}
+      GCP_ZONE: ${{ inputs.gcp_zone }}
+      EE_GCP_FALLBACK_ZONES: ${{ vars.PRODUCTION_GCP_FALLBACK_ZONES || 'us-central1-a,us-central1-b,us-central1-c,us-central1-f' }}
+      CP_URL: ${{ inputs.cp_url }}
+      NODE_SIZE: ${{ inputs.node_size }}
+      MODEL_NAME: ${{ inputs.model_name }}
+      KEEP_VM: ${{ inputs.keep_vm }}
+      ITA_API_KEY: ${{ secrets.ITA_API_KEY || secrets.INTEL_API_KEY }}
+      CP_DEPLOYER_API_KEY: ${{ secrets.CP_DEPLOYER_API_KEY }}
+      EASYENCLAVE_ENV: production
+      EASYENCLAVE_NETWORK_NAME: production
+      EE_GCP_IMAGE_FAMILY: easyenclave-agent-main
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install OpenAI client deps
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install openai httpx
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Launch + deploy + OpenAI smoke test
+        id: example
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash examples/private-llm/launch-gcp-llm-openai.sh
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Private LLM Example"
+            echo ""
+            echo "- vm_name: ${{ steps.example.outputs.vm_name }}"
+            echo "- vm_zone: ${{ steps.example.outputs.vm_zone }}"
+            echo "- agent_id: ${{ steps.example.outputs.agent_id }}"
+            echo "- hostname: ${{ steps.example.outputs.hostname }}"
+            echo "- service_url: ${{ steps.example.outputs.service_url }}"
+            echo "- deployment_id: ${{ steps.example.outputs.deployment_id }}"
+            echo "- app_name: ${{ steps.example.outputs.app_name }}"
+            echo "- model_name: ${{ steps.example.outputs.model_name }}"
+          } >> "$GITHUB_STEP_SUMMARY"
