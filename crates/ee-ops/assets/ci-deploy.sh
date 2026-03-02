@@ -267,14 +267,22 @@ fi
 
 # Export URLs for callers (reusable workflow outputs).
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  # cp_internal_url is process-local and may be an ephemeral SSH tunnel (127.0.0.1),
+  # so expose a stable runner-facing URL for follow-up workflow steps.
+  CP_RUNNER_URL=""
+  if [ -n "${CP_PUBLIC_URL:-}" ]; then
+    CP_RUNNER_URL="$CP_PUBLIC_URL"
+  elif [ -n "${CP_URL_CANDIDATE:-}" ]; then
+    CP_RUNNER_URL="$CP_URL_CANDIDATE"
+  elif [ -n "${CP_IP_URL:-}" ]; then
+    CP_RUNNER_URL="$CP_IP_URL"
+  else
+    CP_RUNNER_URL="$CP_BOOTSTRAP_URL"
+  fi
   {
     echo "cp_internal_url=$CP_INTERNAL_URL"
     echo "cp_public_url=$CP_PUBLIC_URL"
-    if [ -n "${CP_PUBLIC_URL:-}" ]; then
-      echo "cp_url=$CP_PUBLIC_URL"
-    else
-      echo "cp_url=$CP_INTERNAL_URL"
-    fi
+    echo "cp_url=$CP_RUNNER_URL"
   } >> "$GITHUB_OUTPUT"
 fi
 

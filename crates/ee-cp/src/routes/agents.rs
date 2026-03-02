@@ -52,7 +52,11 @@ pub async fn register(
     let _verified = state
         .attestation
         .verify_registration_token(&payload.intel_ta_token)
-        .map_err(|_| {
+        .map_err(|err| {
+            eprintln!(
+                "ee-cp: agent registration attestation failed vm_name={} error={}",
+                payload.vm_name, err
+            );
             error_response(
                 StatusCode::UNAUTHORIZED,
                 "invalid_attestation",
