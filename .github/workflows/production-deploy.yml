@@ -177,13 +177,14 @@ jobs:
           CP_URL: ${{ steps.deploy.outputs.cp_url }}
         run: |
           set -euo pipefail
+          CURL_ARGS=(--connect-timeout 3 --max-time 8)
           if [ -z "${CP_URL:-}" ]; then
             echo "::error::Missing cp_url from deploy step"
             exit 1
           fi
           ok=0
           for _ in $(seq 1 30); do
-            if curl -fsS "${CP_URL}/health" >/tmp/production-api-health.json 2>/tmp/production-api-health.err; then
+            if curl -fsS "${CURL_ARGS[@]}" "${CP_URL}/health" >/tmp/production-api-health.json 2>/tmp/production-api-health.err; then
               ok=1
               break
             fi
@@ -195,7 +196,7 @@ jobs:
             exit 1
           fi
           jq . < /tmp/production-api-health.json
-          body="$(curl -fsS "${CP_URL}/api/agents" || curl -fsS "${CP_URL}/api/v1/agents")"
+          body="$(curl -fsS "${CURL_ARGS[@]}" "${CP_URL}/api/agents" || curl -fsS "${CURL_ARGS[@]}" "${CP_URL}/api/v1/agents")"
           verified="$(echo "$body" | jq -r '(if type=="array" then . else (.agents // []) end) | [ .[] | select(.verified==true) ] | length')"
           echo "verified_agents=${verified}"
           test "${verified}" -ge 1
@@ -204,9 +205,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CURL_ARGS=(--connect-timeout 3 --max-time 8)
           ok=0
           for _ in $(seq 1 36); do
-            if curl -fsS "${PRODUCTION_CP_URL}/health" >/tmp/production-health.json 2>/tmp/production-health.err; then
+            if curl -fsS "${CURL_ARGS[@]}" "${PRODUCTION_CP_URL}/health" >/tmp/production-health.json 2>/tmp/production-health.err; then
               ok=1
               break
             fi
