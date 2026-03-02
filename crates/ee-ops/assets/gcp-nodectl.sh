@@ -208,7 +208,7 @@ create_instance_with_fallback() {
       --provisioning-model STANDARD \
       --confidential-compute-type TDX \
       --labels "$labels_csv" \
-      --metadata "serial-port-enable=1" \
+      --metadata "serial-port-enable=1,enable-oslogin=FALSE" \
       --metadata-from-file "startup-script=${startup_script}" \
       --scopes "https://www.googleapis.com/auth/cloud-platform" \
       "${source_args[@]}" 2>&1)"
@@ -296,6 +296,9 @@ systemctl daemon-reload || true
 systemctl disable --now easyenclave-agent.service || true
 systemctl enable easyenclave-control-plane.service || true
 systemctl restart easyenclave-control-plane.service || true
+echo "__EE_CP_SERVICE_STATUS_BEGIN__"
+systemctl status easyenclave-control-plane.service --no-pager || true
+echo "__EE_CP_SERVICE_STATUS_END__"
 echo "__EE_CP_LOCAL_HEALTH_WAIT__ port=${port}"
 for _ in \$(seq 1 150); do
   if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
@@ -306,6 +309,14 @@ for _ in \$(seq 1 150); do
 done
 if ! curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
   echo "__EE_CP_LOCAL_HEALTH_TIMEOUT__"
+  echo "__EE_CP_DEBUG_BEGIN__"
+  systemctl status easyenclave-control-plane.service --no-pager || true
+  journalctl -u easyenclave-control-plane.service -n 200 --no-pager || true
+  docker ps -a || true
+  if docker ps -a --format '{{.Names}}' | grep -qx 'easyenclave-control-plane'; then
+    docker logs --tail 200 easyenclave-control-plane || true
+  fi
+  echo "__EE_CP_DEBUG_END__"
 fi
 SCRIPT
   chmod +x "$script_path"
@@ -453,9 +464,10 @@ cmd_control_plane_new() {
   selected_url="$public_alias_url"
 
   if [ "$wait_flag" = "true" ]; then
-    local deadline local_ready serial health_candidate
+    local deadline local_ready local_timeout serial health_candidate
     deadline=$(( $(date +%s) + timeout_seconds ))
     local_ready=0
+    local_timeout=0
     health_candidate=""
 
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -472,6 +484,10 @@ cmd_control_plane_new() {
         local_ready=1
         break
       fi
+      if echo "$serial" | grep -q "__EE_CP_LOCAL_HEALTH_TIMEOUT__"; then
+        local_timeout=1
+        break
+      fi
       sleep 3
     done
 
@@ -482,6 +498,9 @@ cmd_control_plane_new() {
     else
       warn "Control-plane serial-port tail follows:"
       serial_tail "$name" "$zone" 120 >&2 || true
+      if [ "$local_timeout" -eq 1 ]; then
+        fatal "Control plane reported local /health timeout"
+      fi
       fatal "Control plane did not become healthy within timeout"
     fi
   fi
