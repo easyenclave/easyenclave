@@ -320,6 +320,11 @@ fn discover_template_vm() -> Result<String, String> {
     if let Ok(raw) = env::var("EE_LOCAL_TDX_TEMPLATE_VM") {
         let value = raw.trim().to_string();
         if !value.is_empty() {
+            if !template_disk_exists(&value)? {
+                return Err(format!(
+                    "EE_LOCAL_TDX_TEMPLATE_VM is set to '{value}', but its boot disk source path is missing"
+                ));
+            }
             return Ok(value);
         }
     }
@@ -332,10 +337,20 @@ fn discover_template_vm() -> Result<String, String> {
             "--name".to_string(),
         ],
     )?;
+    let mut candidates: Vec<String> = Vec::new();
     for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if line.starts_with(LOCAL_TDX_TEMPLATE_PREFIX) {
-            return Ok(line.to_string());
+            candidates.push(line.to_string());
+            if template_disk_exists(line)? {
+                return Ok(line.to_string());
+            }
         }
+    }
+    if !candidates.is_empty() {
+        return Err(format!(
+            "found template VMs ({}) but none have an accessible boot disk source path",
+            candidates.join(", ")
+        ));
     }
     Err(format!(
         "no local template VM found (expected prefix '{}'); set EE_LOCAL_TDX_TEMPLATE_VM",
@@ -401,6 +416,11 @@ fn source_disk_for_vm(vm_name: &str) -> Result<String, String> {
     Err(format!(
         "failed to resolve boot disk path from 'virsh domblklist {vm_name}'"
     ))
+}
+
+fn template_disk_exists(vm_name: &str) -> Result<bool, String> {
+    let disk = source_disk_for_vm(vm_name)?;
+    Ok(PathBuf::from(disk).exists())
 }
 
 fn random_mac() -> String {
