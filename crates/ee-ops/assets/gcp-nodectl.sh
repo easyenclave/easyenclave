@@ -424,9 +424,6 @@ cmd_control_plane_new() {
   fi
 
   cp_url_for_agents="https://${alias_host}"
-  if [ -n "$network_host" ]; then
-    cp_url_for_agents="https://${network_host}"
-  fi
 
   local seed name machine_type disk_gib disk_type zone_pref startup_script cfg_json labels
   seed="${network_name:-$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-8)}"

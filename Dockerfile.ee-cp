@@ -7,7 +7,15 @@ RUN cargo build --release -p ee-cp
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gnupg && \
+    mkdir -p /etc/apt/keyrings && \
+    chmod 0755 /etc/apt/keyrings && \
+    . /etc/os-release && \
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | gpg --dearmor -o /etc/apt/keyrings/cloudflare-main.gpg && \
+    chmod 0644 /etc/apt/keyrings/cloudflare-main.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared ${VERSION_CODENAME} main" > /etc/apt/sources.list.d/cloudflared.list && \
+    apt-get update && apt-get install -y --no-install-recommends cloudflared && \
+    apt-get purge -y --auto-remove gnupg && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

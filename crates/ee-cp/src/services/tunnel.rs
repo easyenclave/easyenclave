@@ -124,6 +124,65 @@ impl TunnelService {
         })
     }
 
+    pub async fn create_tunnel_for_hostname(
+        &self,
+        tunnel_name_hint: &str,
+        hostname: &str,
+    ) -> AppResult<TunnelRegistration> {
+        let Some(config) = &self.config else {
+            if self.runtime_env.is_protected() {
+                return Err(AppError::Config(
+                    "cloudflare tunnel configuration is required in staging/production".to_string(),
+                ));
+            }
+            return Err(AppError::Config(
+                "cloudflare tunnel configuration is not available".to_string(),
+            ));
+        };
+
+        let fallback_name = "cp-ingress";
+        let tunnel_name = sanitize_dns_label(Some(tunnel_name_hint), fallback_name);
+        let secret = base64::engine::general_purpose::STANDARD.encode(Uuid::new_v4().as_bytes());
+        let hostname = hostname.trim().to_ascii_lowercase();
+        if hostname.is_empty() {
+            return Err(AppError::InvalidInput(
+                "hostname is required for control-plane ingress".to_string(),
+            ));
+        }
+
+        // Upsert DNS: delete existing record so we can recreate with the fresh tunnel target.
+        if let Some(dns_record_id) = self.find_dns_record_id(config, &hostname).await? {
+            self.delete_dns_record(config, &dns_record_id).await?;
+        }
+
+        let tunnel_id = self.create_tunnel(config, &tunnel_name, &secret).await?;
+        let tunnel_token = match self.get_tunnel_token(config, &tunnel_id).await {
+            Ok(token) => token,
+            Err(err) => {
+                let _ = self.delete_tunnel(config, &tunnel_id).await;
+                return Err(err);
+            }
+        };
+
+        if let Err(err) = self
+            .create_dns_record(
+                config,
+                &hostname,
+                &format!("{}.cfargotunnel.com", tunnel_id),
+            )
+            .await
+        {
+            let _ = self.delete_tunnel(config, &tunnel_id).await;
+            return Err(err);
+        }
+
+        Ok(TunnelRegistration {
+            tunnel_id,
+            tunnel_token,
+            hostname,
+        })
+    }
+
     pub async fn delete_tunnel_for_agent(&self, tunnel_id: &str, hostname: &str) -> AppResult<()> {
         let Some(config) = &self.config else {
             if self.runtime_env.is_protected() {
@@ -663,6 +722,75 @@ mod tests {
             .await
             .expect_err("create should fail");
         assert!(err.to_string().contains("cloudflare http 500"));
+    }
+
+    #[tokio::test]
+    async fn create_tunnel_for_hostname_replaces_existing_dns_record() {
+        let mut server = Server::new_async().await;
+
+        let _find_dns = server
+            .mock("GET", "/zones/zone/dns_records")
+            .match_query(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::UrlEncoded("type".to_string(), "CNAME".to_string()),
+                mockito::Matcher::UrlEncoded(
+                    "name".to_string(),
+                    "app-staging.example.com".to_string(),
+                ),
+            ]))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":[{"id":"dns-old"}]}"#)
+            .create_async()
+            .await;
+
+        let _delete_dns = server
+            .mock("DELETE", "/zones/zone/dns_records/dns-old")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":{"id":"dns-old"}}"#)
+            .create_async()
+            .await;
+
+        let _create_tunnel = server
+            .mock("POST", "/accounts/acct/cfd_tunnel")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":{"id":"tunnel-cp"}}"#)
+            .create_async()
+            .await;
+
+        let _get_token = server
+            .mock("GET", "/accounts/acct/cfd_tunnel/tunnel-cp/token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":"token-cp"}"#)
+            .create_async()
+            .await;
+
+        let _create_dns = server
+            .mock("POST", "/zones/zone/dns_records")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":{"id":"dns-new"}}"#)
+            .create_async()
+            .await;
+
+        let svc = TunnelService::with_config(CloudflareConfig {
+            account_id: "acct".to_string(),
+            zone_id: "zone".to_string(),
+            api_token: "token".to_string(),
+            domain: "example.com".to_string(),
+            api_base_url: server.url(),
+        });
+
+        let reg = svc
+            .create_tunnel_for_hostname("cp-staging", "app-staging.example.com")
+            .await
+            .expect("provision hostname");
+
+        assert_eq!(reg.tunnel_id, "tunnel-cp");
+        assert_eq!(reg.tunnel_token, "token-cp");
+        assert_eq!(reg.hostname, "app-staging.example.com");
     }
 
     #[test]
