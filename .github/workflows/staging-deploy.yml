@@ -117,7 +117,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build ee-agent release binary
-        run: cargo build -p ee-agent --release
+        run: cargo build -p ee --bin ee-agent --release
 
       - name: Upload ee-agent binary artifact
         uses: actions/upload-artifact@v4

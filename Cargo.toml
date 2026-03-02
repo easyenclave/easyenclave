@@ -2,8 +2,7 @@
 members = [
     "crates/ee-common",
     "crates/ee-attestation",
-    "crates/ee-cp",
-    "crates/ee-agent",
+    "crates/ee",
     "crates/ee-ops",
 ]
 resolver = "2"

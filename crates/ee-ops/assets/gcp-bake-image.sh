@@ -113,8 +113,8 @@ if [ -n "${EE_AGENT_BINARY_PATH}" ]; then
   AGENT_BINARY_PATH="${EE_AGENT_BINARY_PATH}"
   log "Using prebuilt ee-agent binary: ${AGENT_BINARY_PATH}"
 else
-  if [ ! -f "crates/ee-agent/src/main.rs" ]; then
-    fail "Missing required file: crates/ee-agent/src/main.rs"
+  if [ ! -f "crates/ee/src/bin/ee-agent.rs" ]; then
+    fail "Missing required file: crates/ee/src/bin/ee-agent.rs"
   fi
   if ! command -v cargo >/dev/null 2>&1; then
     fail "cargo is required to build ee-agent for image bake"
@@ -205,7 +205,7 @@ trap cleanup EXIT
 
 if [ -z "${AGENT_BINARY_PATH}" ]; then
   log "Building ee-agent (release)..."
-  cargo build -p ee-agent --release
+  cargo build -p ee --bin ee-agent --release
   if [ ! -x "target/release/ee-agent" ]; then
     fail "ee-agent binary not found after build: target/release/ee-agent"
   fi
