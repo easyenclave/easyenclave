@@ -121,7 +121,8 @@ jobs:
         id: measure
         env:
           MEASURE_SIZES: tiny
-          MEASURE_ATTEMPTS: "2"
+          MEASURE_ATTEMPTS: "3"
+          MEASURE_TIMEOUT_SECONDS: "420"
         run: cargo run -p ee-ops -- ci-build-measure
 
       - name: Deploy production control plane and agent
