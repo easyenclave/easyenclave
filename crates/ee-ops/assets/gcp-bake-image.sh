@@ -96,17 +96,29 @@ TARGET_IMAGE_LABELS="$(trim "${TARGET_IMAGE_LABELS:-}")"
 SOURCE_SHA="$(trim "${SOURCE_SHA:-}")"
 BAKE_METADATA_PATH="$(trim "${BAKE_METADATA_PATH:-}")"
 INSTANCE_CREATE_CALL_TIMEOUT_SECONDS="$(trim "${INSTANCE_CREATE_CALL_TIMEOUT_SECONDS:-300}")"
+EE_AGENT_BINARY_PATH="$(trim "${EE_AGENT_BINARY_PATH:-}")"
 mapfile -t BUILD_ZONE_CANDIDATES < <(build_zone_candidates)
 if [ "${#BUILD_ZONE_CANDIDATES[@]}" -eq 0 ]; then
   fail "No usable BUILD_ZONE candidates were resolved."
 fi
 
-if [ ! -f "crates/ee-agent/src/main.rs" ]; then
-  fail "Missing required file: crates/ee-agent/src/main.rs"
-fi
-
-if ! command -v cargo >/dev/null 2>&1; then
-  fail "cargo is required to build ee-agent for image bake"
+AGENT_BINARY_PATH=""
+if [ -n "${EE_AGENT_BINARY_PATH}" ]; then
+  if [ ! -f "${EE_AGENT_BINARY_PATH}" ]; then
+    fail "Configured EE_AGENT_BINARY_PATH does not exist: ${EE_AGENT_BINARY_PATH}"
+  fi
+  if [ ! -x "${EE_AGENT_BINARY_PATH}" ]; then
+    chmod 0755 "${EE_AGENT_BINARY_PATH}" || fail "Could not make EE_AGENT_BINARY_PATH executable: ${EE_AGENT_BINARY_PATH}"
+  fi
+  AGENT_BINARY_PATH="${EE_AGENT_BINARY_PATH}"
+  log "Using prebuilt ee-agent binary: ${AGENT_BINARY_PATH}"
+else
+  if [ ! -f "crates/ee-agent/src/main.rs" ]; then
+    fail "Missing required file: crates/ee-agent/src/main.rs"
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    fail "cargo is required to build ee-agent for image bake"
+  fi
 fi
 
 source_selector=""
@@ -191,10 +203,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "Building ee-agent (release)..."
-cargo build -p ee-agent --release
-if [ ! -x "target/release/ee-agent" ]; then
-  fail "ee-agent binary not found after build: target/release/ee-agent"
+if [ -z "${AGENT_BINARY_PATH}" ]; then
+  log "Building ee-agent (release)..."
+  cargo build -p ee-agent --release
+  if [ ! -x "target/release/ee-agent" ]; then
+    fail "ee-agent binary not found after build: target/release/ee-agent"
+  fi
+  AGENT_BINARY_PATH="target/release/ee-agent"
 fi
 
 cat > "${startup_script_file}" <<EOF
@@ -387,7 +402,7 @@ for _ in $(seq 1 40); do
     --zone "${BUILD_ZONE}" \
     --quiet \
     --scp-flag=-oStrictHostKeyChecking=no \
-    target/release/ee-agent \
+    "${AGENT_BINARY_PATH}" \
     "ubuntu@${builder_name}:/tmp/ee-agent" >/tmp/ee-gcp-bake-scp.log 2>&1; then
     scp_ok="true"
     break

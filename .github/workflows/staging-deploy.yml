@@ -79,6 +79,16 @@ jobs:
             echo "release_tag=staging-${sha12}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Build ee-agent release binary
+        run: cargo build -p ee-agent --release
+
+      - name: Upload ee-agent binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-ee-agent-bin-${{ github.run_id }}
+          path: target/release/ee-agent
+          if-no-files-found: error
+
   cleanup_managed_vms:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: prep
@@ -154,11 +164,11 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Download ee-agent binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: staging-ee-agent-bin-${{ github.run_id }}
+          path: /tmp/staging-ee-agent-bin
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
@@ -175,13 +185,15 @@ jobs:
         env:
           SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
           SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
+          EE_AGENT_BINARY_PATH: /tmp/staging-ee-agent-bin/ee-agent
         run: |
           set -euo pipefail
           export TARGET_IMAGE_NAME="easyenclave-agent-main-${{ needs.prep.outputs.sha12 }}"
           export TARGET_IMAGE_FAMILY="easyenclave-agent-main"
           export TARGET_IMAGE_DESCRIPTION="EasyEnclave staging commit ${SOURCE_SHA}"
           export TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=staging,gitsha=${{ needs.prep.outputs.sha12 }}"
-          cargo run -p ee-ops -- gcp-bake-image
+          chmod 0755 "${EE_AGENT_BINARY_PATH}"
+          bash crates/ee-ops/assets/gcp-bake-image.sh
 
   deploy:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
