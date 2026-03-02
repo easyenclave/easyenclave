@@ -12,6 +12,11 @@ on:
       - ".github/workflows/**"
       - "Dockerfile.ee-cp"
   workflow_dispatch:
+    inputs:
+      provider:
+        description: "Staging provider (local-tdx or gcp)"
+        required: false
+        default: "local-tdx"
 
 concurrency:
   group: easyenclave-staging-deploy
@@ -19,6 +24,7 @@ concurrency:
 
 env:
   SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+  STAGING_PROVIDER_DEFAULT: ${{ vars.STAGING_PROVIDER || 'local-tdx' }}
   GCP_PROJECT_ID: ${{ secrets.STAGING_GCP_PROJECT_ID || 'eestaging' }}
   GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.STAGING_GCP_SERVICE_ACCOUNT_KEY }}
   GCP_ZONE: ${{ vars.STAGING_GCP_ZONE || 'us-central1-a' }}
@@ -31,6 +37,36 @@ env:
   STAGING_CP_URL: ${{ vars.STAGING_CP_URL || format('https://app-staging.{0}', vars.STAGING_EASYENCLAVE_DOMAIN || 'easyenclave.com') }}
 
 jobs:
+  resolve_provider:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      provider: ${{ steps.pick.outputs.provider }}
+    steps:
+      - name: Resolve staging provider
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          provider="${STAGING_PROVIDER_DEFAULT}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.provider }}" ]; then
+            provider="${{ inputs.provider }}"
+          fi
+          provider="$(echo "${provider}" | tr '[:upper:]' '[:lower:]')"
+          case "${provider}" in
+            local-tdx|local_tdx|local)
+              provider="local-tdx"
+              ;;
+            gcp)
+              ;;
+            *)
+              echo "::error::Unsupported staging provider '${provider}' (expected local-tdx or gcp)"
+              exit 1
+              ;;
+          esac
+          echo "provider=${provider}" >> "$GITHUB_OUTPUT"
+          echo "Selected staging provider: ${provider}"
+
   skip-fork:
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
@@ -40,6 +76,7 @@ jobs:
 
   prep:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: resolve_provider
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,8 +127,10 @@ jobs:
           if-no-files-found: error
 
   cleanup_managed_vms:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: prep
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.resolve_provider.outputs.provider == 'gcp'
+    needs:
+      - resolve_provider
+      - prep
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -126,8 +165,10 @@ jobs:
           done < /tmp/staging-gc.txt
 
   build_cp_image:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: prep
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.resolve_provider.outputs.provider == 'gcp'
+    needs:
+      - resolve_provider
+      - prep
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -152,8 +193,10 @@ jobs:
           echo "image=${image}" >> "$GITHUB_OUTPUT"
 
   bake_agent_image:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: prep
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.resolve_provider.outputs.provider == 'gcp'
+    needs:
+      - resolve_provider
+      - prep
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -196,8 +239,9 @@ jobs:
           bash crates/ee-ops/assets/gcp-bake-image.sh
 
   deploy:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.resolve_provider.outputs.provider == 'gcp'
     needs:
+      - resolve_provider
       - prep
       - cleanup_managed_vms
       - build_cp_image
@@ -336,4 +380,52 @@ jobs:
         with:
           name: staging-deploy-log-${{ github.run_id }}
           path: /tmp/ci-deploy.log
+          if-no-files-found: ignore
+
+  local_tdx_staging:
+    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && needs.resolve_provider.outputs.provider == 'local-tdx'
+    needs:
+      - resolve_provider
+      - prep
+    runs-on: self-hosted
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Reset managed local TDX VMs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p ee-ops -- ops --provider local-tdx node delete all || true
+
+      - name: Launch fresh local TDX staging nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p ee-ops -- ops --provider local-tdx node new --count 2 | tee /tmp/local-tdx-created.txt
+
+      - name: List local TDX staging nodes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p ee-ops -- ops --provider local-tdx node list | tee /tmp/local-tdx-list.txt
+
+      - name: Upload local staging node list
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-local-tdx-nodes-${{ github.run_id }}
+          path: |
+            /tmp/local-tdx-created.txt
+            /tmp/local-tdx-list.txt
           if-no-files-found: ignore
