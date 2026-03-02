@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -26,35 +27,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     attestation.validate_runtime_requirements()?;
     tunnel.validate_runtime_requirements()?;
 
-    if public_ingress_enabled() {
-        let protected = is_protected_env();
-        let Some(public_hostname) = control_plane_public_hostname() else {
-            if protected {
-                return Err("missing control-plane public hostname (set EASYENCLAVE_CP_URL or CP_PUBLIC_HOSTNAME)".into());
-            }
-            eprintln!("ee-cp: public ingress disabled (no control-plane hostname configured)");
-            return run_server(
-                config,
-                pool,
-                settings,
-                nonce,
-                attestation,
-                github_oidc,
-                tunnel,
-            )
-            .await;
-        };
-        let tunnel_name = control_plane_tunnel_name();
-        let registration = tunnel
-            .create_tunnel_for_hostname(&tunnel_name, &public_hostname)
-            .await
-            .map_err(|err| format!("failed to provision CP Cloudflare ingress: {err}"))?;
-        eprintln!(
-            "ee-cp: provisioned control-plane ingress hostname={} tunnel_id={}",
-            registration.hostname, registration.tunnel_id
-        );
-        start_cloudflared_supervisor(registration.tunnel_token);
-    }
+    let ingress_plan = desired_public_ingress_plan()?;
 
     run_server(
         config,
@@ -64,6 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         attestation,
         github_oidc,
         tunnel,
+        ingress_plan,
     )
     .await
 }
@@ -76,7 +50,11 @@ async fn run_server(
     attestation: AttestationService,
     github_oidc: GithubOidcService,
     tunnel: TunnelService,
+    ingress_plan: Option<IngressPlan>,
 ) -> Result<(), Box<dyn Error>> {
+    let bind_addr = config.bind_addr.clone();
+    let ingress_tunnel = tunnel.clone();
+
     let git_sha = std::env::var("GIT_SHA")
         .ok()
         .or_else(|| std::env::var("EASYENCLAVE_GIT_SHA").ok());
@@ -103,9 +81,106 @@ async fn run_server(
 
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&config.bind_addr).await?;
+
+    if let Some(plan) = ingress_plan {
+        tokio::spawn(async move {
+            provision_public_ingress_when_ready(ingress_tunnel, bind_addr, plan).await;
+        });
+    }
+
     axum::serve(listener, app).await?;
 
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct IngressPlan {
+    tunnel_name: String,
+    public_hostname: String,
+}
+
+fn desired_public_ingress_plan() -> Result<Option<IngressPlan>, Box<dyn Error>> {
+    if !public_ingress_enabled() {
+        return Ok(None);
+    }
+
+    let protected = is_protected_env();
+    let Some(public_hostname) = control_plane_public_hostname() else {
+        if protected {
+            return Err(
+                "missing control-plane public hostname (set EASYENCLAVE_CP_URL or CP_PUBLIC_HOSTNAME)"
+                    .into(),
+            );
+        }
+        eprintln!("ee-cp: public ingress disabled (no control-plane hostname configured)");
+        return Ok(None);
+    };
+
+    Ok(Some(IngressPlan {
+        tunnel_name: control_plane_tunnel_name(),
+        public_hostname,
+    }))
+}
+
+async fn provision_public_ingress_when_ready(
+    tunnel: TunnelService,
+    bind_addr: String,
+    plan: IngressPlan,
+) {
+    if !wait_for_local_health(&bind_addr).await {
+        eprintln!(
+            "ee-cp: local health did not become ready; skipping public ingress reconcile hostname={}",
+            plan.public_hostname
+        );
+        return;
+    }
+
+    match tunnel
+        .create_tunnel_for_hostname(&plan.tunnel_name, &plan.public_hostname)
+        .await
+    {
+        Ok(registration) => {
+            eprintln!(
+                "ee-cp: provisioned control-plane ingress hostname={} tunnel_id={}",
+                registration.hostname, registration.tunnel_id
+            );
+            start_cloudflared_supervisor(registration.tunnel_token);
+        }
+        Err(err) => {
+            eprintln!(
+                "ee-cp: failed to provision control-plane ingress hostname={} error={}",
+                plan.public_hostname, err
+            );
+        }
+    }
+}
+
+async fn wait_for_local_health(bind_addr: &str) -> bool {
+    let port = port_from_bind_addr(bind_addr).unwrap_or(8080);
+    let url = format!("http://127.0.0.1:{port}/health");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .expect("http client");
+
+    for _ in 0..150 {
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    false
+}
+
+fn port_from_bind_addr(bind_addr: &str) -> Option<u16> {
+    if let Ok(addr) = bind_addr.parse::<SocketAddr>() {
+        return Some(addr.port());
+    }
+    bind_addr
+        .rsplit_once(':')
+        .and_then(|(_, p)| p.parse::<u16>().ok())
 }
 
 fn public_ingress_enabled() -> bool {
