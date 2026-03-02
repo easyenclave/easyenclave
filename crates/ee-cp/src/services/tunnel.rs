@@ -106,6 +106,13 @@ impl TunnelService {
 
         let hostname = format!("{label}.{}", config.domain);
         if let Err(err) = self
+            .configure_tunnel_ingress(config, &tunnel_id, &hostname, "http://127.0.0.1:8080")
+            .await
+        {
+            let _ = self.delete_tunnel(config, &tunnel_id).await;
+            return Err(err);
+        }
+        if let Err(err) = self
             .create_dns_record(
                 config,
                 &hostname,
@@ -163,6 +170,13 @@ impl TunnelService {
                 return Err(err);
             }
         };
+        if let Err(err) = self
+            .configure_tunnel_ingress(config, &tunnel_id, &hostname, "http://127.0.0.1:8080")
+            .await
+        {
+            let _ = self.delete_tunnel(config, &tunnel_id).await;
+            return Err(err);
+        }
 
         if let Err(err) = self
             .create_dns_record(
@@ -213,7 +227,7 @@ impl TunnelService {
             .client
             .post(url)
             .bearer_auth(&cfg.api_token)
-            .json(&json!({"name": name, "secret": secret, "config_src": "local"}))
+            .json(&json!({"name": name, "secret": secret, "config_src": "cloudflare"}))
             .send()
             .await
             .map_err(|e| AppError::External(format!("cloudflare create tunnel failed: {e}")))?;
@@ -226,6 +240,42 @@ impl TunnelService {
             .ok_or_else(|| {
                 AppError::External("cloudflare create tunnel missing result.id".to_string())
             })
+    }
+
+    async fn configure_tunnel_ingress(
+        &self,
+        cfg: &CloudflareConfig,
+        tunnel_id: &str,
+        hostname: &str,
+        service_url: &str,
+    ) -> AppResult<()> {
+        let url = format!(
+            "{}/accounts/{}/cfd_tunnel/{}/configurations",
+            cfg.api_base_url, cfg.account_id, tunnel_id
+        );
+        let res = self
+            .client
+            .put(url)
+            .bearer_auth(&cfg.api_token)
+            .json(&json!({
+                "config": {
+                    "ingress": [
+                        {
+                            "hostname": hostname,
+                            "service": service_url
+                        },
+                        {
+                            "service": "http_status:404"
+                        }
+                    ]
+                }
+            }))
+            .send()
+            .await
+            .map_err(|e| AppError::External(format!("cloudflare set tunnel ingress failed: {e}")))?;
+
+        let _ = parse_success_json(res).await?;
+        Ok(())
     }
 
     async fn get_tunnel_token(&self, cfg: &CloudflareConfig, tunnel_id: &str) -> AppResult<String> {
@@ -551,6 +601,13 @@ mod tests {
             .with_body(r#"{"success":true,"result":{"id":"dns-1"}}"#)
             .create_async()
             .await;
+        let _set_ingress = server
+            .mock("PUT", "/accounts/acct/cfd_tunnel/tunnel-123/configurations")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":{"config":{"ingress":[]}}}"#)
+            .create_async()
+            .await;
 
         let svc = TunnelService::with_config(CloudflareConfig {
             account_id: "acct".to_string(),
@@ -700,6 +757,13 @@ mod tests {
             .with_body(r#"{"success":false,"errors":[{"message":"boom"}]}"#)
             .create_async()
             .await;
+        let _set_ingress = server
+            .mock("PUT", "/accounts/acct/cfd_tunnel/tunnel-123/configurations")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":{"config":{"ingress":[]}}}"#)
+            .create_async()
+            .await;
 
         let _delete_tunnel = server
             .mock("DELETE", "/accounts/acct/cfd_tunnel/tunnel-123")
@@ -772,6 +836,13 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"success":true,"result":{"id":"dns-new"}}"#)
+            .create_async()
+            .await;
+        let _set_ingress = server
+            .mock("PUT", "/accounts/acct/cfd_tunnel/tunnel-cp/configurations")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"success":true,"result":{"config":{"ingress":[]}}}"#)
             .create_async()
             .await;
 
