@@ -140,6 +140,9 @@ fn map_algorithm(alg: Algorithm) -> AppResult<Algorithm> {
         Algorithm::RS256
         | Algorithm::RS384
         | Algorithm::RS512
+        | Algorithm::PS256
+        | Algorithm::PS384
+        | Algorithm::PS512
         | Algorithm::HS256
         | Algorithm::HS384
         | Algorithm::HS512 => Ok(alg),
@@ -364,6 +367,12 @@ mod tests {
         verifier.verify_attestation_token(&token).expect("first");
         verifier.verify_attestation_token(&token).expect("second");
         jwks_mock.assert();
+    }
+
+    #[test]
+    fn accepts_ps384_algorithm_for_intel_ita_tokens() {
+        let mapped = super::map_algorithm(Algorithm::PS384).expect("algorithm");
+        assert_eq!(mapped, Algorithm::PS384);
     }
 
     #[test]
