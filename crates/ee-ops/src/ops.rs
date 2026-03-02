@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use uuid::Uuid;
 
+const LOCAL_TDX_MANAGED_PREFIX: &str = "ee-local-tdx-";
+const LOCAL_TDX_TEMPLATE_PREFIX: &str = "tdvirsh-trust_domain_verity-";
+
 pub fn run(args: &[String]) -> i32 {
     match run_inner(args) {
         Ok(()) => 0,
@@ -198,7 +201,10 @@ fn local_new(args: &[String]) -> Result<(), String> {
 
 fn local_delete(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
-        return Err("usage: ops --provider local-tdx node delete <name|all> [name...]".to_string());
+        return Err(
+            "usage: ops --provider local-tdx node delete <name|all|all-with-template> [name...]"
+                .to_string(),
+        );
     }
 
     let mut names: Vec<String> = Vec::new();
@@ -213,7 +219,23 @@ fn local_delete(args: &[String]) -> Result<(), String> {
                 ],
             )?;
             for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
-                if line.starts_with("tdvirsh-trust_domain_verity-") {
+                if line.starts_with(LOCAL_TDX_MANAGED_PREFIX) {
+                    names.push(line.to_string());
+                }
+            }
+        } else if arg == "all-with-template" {
+            let out = run_capture(
+                "virsh",
+                vec![
+                    "list".to_string(),
+                    "--all".to_string(),
+                    "--name".to_string(),
+                ],
+            )?;
+            for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                if line.starts_with(LOCAL_TDX_MANAGED_PREFIX)
+                    || line.starts_with(LOCAL_TDX_TEMPLATE_PREFIX)
+                {
                     names.push(line.to_string());
                 }
             }
@@ -311,16 +333,19 @@ fn discover_template_vm() -> Result<String, String> {
         ],
     )?;
     for line in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        if line.starts_with("tdvirsh-trust_domain_verity-") {
+        if line.starts_with(LOCAL_TDX_TEMPLATE_PREFIX) {
             return Ok(line.to_string());
         }
     }
-    Err("no local template VM found; set EE_LOCAL_TDX_TEMPLATE_VM".to_string())
+    Err(format!(
+        "no local template VM found (expected prefix '{}'); set EE_LOCAL_TDX_TEMPLATE_VM",
+        LOCAL_TDX_TEMPLATE_PREFIX
+    ))
 }
 
 fn clone_local_vm(template: &str) -> Result<String, String> {
     let vm_uuid = Uuid::new_v4().to_string();
-    let vm_name = format!("tdvirsh-trust_domain_verity-{vm_uuid}");
+    let vm_name = format!("{LOCAL_TDX_MANAGED_PREFIX}{vm_uuid}");
     let vm_mac = random_mac();
     let console_id = vm_uuid.replace('-', "");
     let console_path = format!("/var/tmp/tdvirsh/console.{}.log", &console_id[..16]);
