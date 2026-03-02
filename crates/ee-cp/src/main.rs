@@ -243,7 +243,50 @@ fn control_plane_tunnel_name() -> String {
     let env_name = std::env::var("EASYENCLAVE_ENV")
         .unwrap_or_else(|_| "local".to_string())
         .to_ascii_lowercase();
-    format!("cp-{env_name}")
+    let mut name = format!("cp-{env_name}");
+    let suffix = std::env::var("EASYENCLAVE_RELEASE_TAG")
+        .ok()
+        .or_else(|| std::env::var("EASYENCLAVE_BOOT_ID").ok())
+        .or_else(|| std::env::var("EASYENCLAVE_GIT_SHA").ok())
+        .map(|raw| sanitize_tunnel_name_component(&raw))
+        .unwrap_or_default();
+    if !suffix.is_empty() {
+        let max_suffix = 63usize.saturating_sub(name.len() + 1);
+        if max_suffix > 0 {
+            name.push('-');
+            name.push_str(&suffix[..suffix.len().min(max_suffix)]);
+        }
+    }
+    name
+}
+
+fn sanitize_tunnel_name_component(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut prev_dash = false;
+    for ch in raw.chars() {
+        let mapped = if ch.is_ascii_alphanumeric() {
+            ch.to_ascii_lowercase()
+        } else {
+            '-'
+        };
+        if mapped == '-' {
+            if prev_dash || out.is_empty() {
+                continue;
+            }
+            prev_dash = true;
+            out.push('-');
+        } else {
+            prev_dash = false;
+            out.push(mapped);
+        }
+        if out.len() >= 63 {
+            break;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 fn start_cloudflared_supervisor(token: String) {
