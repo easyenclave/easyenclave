@@ -180,6 +180,9 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+
       - name: Bake staging GCP image for commit
         shell: bash
         env:
