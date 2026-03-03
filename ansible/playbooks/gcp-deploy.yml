@@ -16,7 +16,18 @@
     agent_verify_wait_attempts: 90
     agent_verify_wait_seconds: 10
     output_json_path: /tmp/ee-ci-deploy.json
-    ansible_config_path: "{{ lookup('env', 'ANSIBLE_CONFIG') | default('ansible/ansible.cfg', true) }}"
+    repo_root: "{{ lookup('env', 'GITHUB_WORKSPACE') | default(playbook_dir | dirname | dirname, true) }}"
+    ansible_config_env: "{{ lookup('env', 'ANSIBLE_CONFIG') | default('', true) }}"
+    ansible_config_path: >-
+      {{
+        (
+          ansible_config_env
+          if ansible_config_env.startswith('/')
+          else (repo_root ~ '/' ~ ansible_config_env)
+        )
+        if (ansible_config_env | length > 0)
+        else (repo_root ~ '/ansible/ansible.cfg')
+      }}
     ita_api_key: "{{ lookup('env', 'ITA_API_KEY') | default(lookup('env', 'INTEL_API_KEY'), true) }}"
     admin_password: "{{ lookup('env', 'ADMIN_PASSWORD') | default(lookup('env', 'CP_ADMIN_PASSWORD'), true) }}"
   tasks:
@@ -52,7 +63,7 @@
       ansible.builtin.command:
         argv:
           - ansible-playbook
-          - ansible/playbooks/gcp-control-plane-new.yml
+          - "{{ playbook_dir }}/gcp-control-plane-new.yml"
           - -e
           - cp_port={{ cp_port }}
           - -e
@@ -63,6 +74,8 @@
           - cp_zone={{ agent_datacenter_az }}
           - -e
           - output_json_path={{ cp_boot_file.path }}
+      args:
+        chdir: "{{ repo_root }}"
       environment:
         ANSIBLE_CONFIG: "{{ ansible_config_path }}"
       register: cp_launch_cmd
@@ -100,12 +113,6 @@
       delay: 5
       until: cp_health.status == 200
 
-    - name: Select fleet launcher playbook
-      ansible.builtin.set_fact:
-        fleet_playbook: >-
-          {{ 'ansible/playbooks/gcp-vm-fleet-new.yml' if orchestration_provider == 'gcp'
-          else 'ansible/playbooks/baremetal-vm-fleet-new.yml' }}
-
     - name: Allocate additional-agent output file
       ansible.builtin.tempfile:
         state: file
@@ -117,7 +124,7 @@
       ansible.builtin.command:
         argv:
           - ansible-playbook
-          - "{{ fleet_playbook }}"
+          - "{{ playbook_dir }}/gcp-vm-fleet-new.yml"
           - -e
           - cp_url={{ cp_agent_url }}
           - -e
@@ -140,6 +147,8 @@
           - agent_datacenter={{ agent_datacenter }}
           - -e
           - output_json_path={{ fleet_output_file.path }}
+      args:
+        chdir: "{{ repo_root }}"
       environment:
         ANSIBLE_CONFIG: "{{ ansible_config_path }}"
       register: fleet_launch_cmd
@@ -152,7 +161,7 @@
       ansible.builtin.command:
         argv:
           - ansible-playbook
-          - "{{ fleet_playbook }}"
+          - "{{ playbook_dir }}/baremetal-vm-fleet-new.yml"
           - -e
           - cp_url={{ cp_agent_url }}
           - -e
@@ -179,6 +188,8 @@
           - tdx_runner_extra_args={{ lookup('env', 'TDX_RUNNER_EXTRA_ARGS') | default('', true) }}
           - -e
           - output_json_path={{ fleet_output_file.path }}
+      args:
+        chdir: "{{ repo_root }}"
       environment:
         ANSIBLE_CONFIG: "{{ ansible_config_path }}"
       register: fleet_launch_cmd
