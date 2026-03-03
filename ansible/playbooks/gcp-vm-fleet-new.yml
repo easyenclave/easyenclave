@@ -15,6 +15,16 @@
     agent_region: ""
     agent_datacenter: ""
     output_json_path: /tmp/ee-gcp-vm-fleet.json
+    size_profiles:
+      tiny:
+        machine_type: c3-standard-4
+        disk_gib: 80
+      standard:
+        machine_type: c3-standard-8
+        disk_gib: 100
+      llm:
+        machine_type: c3-standard-22
+        disk_gib: 140
   tasks:
     - name: Validate required vars
       ansible.builtin.assert:
@@ -28,203 +38,79 @@
       ansible.builtin.set_fact:
         launch_sizes: "{{ (['tiny'] * (num_tiny | int)) + (['standard'] * (num_standard | int)) + (['llm'] * (num_llm | int)) }}"
 
-    - name: Launch VM for each requested size
-      ansible.builtin.shell: |
-        set -euo pipefail
-
-        fail() {
-          echo "::error::$*"
-          exit 1
-        }
-
-        normalize_name() {
-          local input="$1" max_len="${2:-63}" cleaned
-          cleaned="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
-          [ -n "$cleaned" ] || cleaned="easyenclave"
-          cleaned="${cleaned:0:${max_len}}"
-          cleaned="$(printf '%s' "$cleaned" | sed -E 's/-+$//')"
-          [ -n "$cleaned" ] || cleaned="easyenclave"
-          printf '%s' "$cleaned"
-        }
-
-        random_suffix() {
-          cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-"${1:-8}"
-        }
-
-        machine_type_for_size() {
-          case "$1" in
-            tiny) echo "c3-standard-4" ;;
-            standard) echo "c3-standard-8" ;;
-            llm) echo "c3-standard-22" ;;
-            *) fail "Unsupported size '$1'" ;;
-          esac
-        }
-
-        disk_gib_for_size() {
-          case "$1" in
-            tiny) echo "80" ;;
-            standard) echo "100" ;;
-            llm) echo "140" ;;
-            *) fail "Unsupported size '$1'" ;;
-          esac
-        }
-
-        resolve_source_image() {
-          local image_project image_name image_family image_json image_disk_gib
-          image_project="${EE_GCP_IMAGE_PROJECT:-$GCP_PROJECT_ID}"
-          image_name="${EE_GCP_IMAGE_NAME:-}"
-          image_family="${EE_GCP_IMAGE_FAMILY:-easyenclave-agent-main}"
-
-          if [ -n "$image_name" ]; then
-            image_json="$(gcloud compute images describe "$image_name" --project "$image_project" --format=json)"
-          else
-            image_json="$(gcloud compute images describe-from-family "$image_family" --project "$image_project" --format=json)"
-            image_name="$(echo "$image_json" | jq -r '.name // ""')"
-          fi
-
-          [ -n "$image_name" ] || fail "Failed to resolve source image name"
-          image_disk_gib="$(echo "$image_json" | jq -r '.diskSizeGb // ""')"
-          if ! [[ "$image_disk_gib" =~ ^[0-9]+$ ]]; then
-            fail "Failed to resolve source image disk size for ${image_project}/${image_name}"
-          fi
-
-          printf '%s\n%s\n%s\n' "$image_project" "$image_name" "$image_disk_gib"
-        }
-
-        write_agent_startup_script() {
-          local cfg_json="$1" script_path="$2"
-          cat > "$script_path" <<SCRIPT
-        #!/usr/bin/env bash
-        set -euo pipefail
-        mkdir -p /etc/easyenclave
-        cat > /etc/easyenclave/agent.json <<'EOF_CONFIG'
-        ${cfg_json}
-        EOF_CONFIG
-        chmod 0600 /etc/easyenclave/agent.json
-        systemctl daemon-reload || true
-        systemctl disable --now easyenclave-control-plane.service || true
-        systemctl enable easyenclave-agent.service || true
-        systemctl restart easyenclave-agent.service || true
-        SCRIPT
-          chmod +x "$script_path"
-        }
-
-        [ -n "${GCP_PROJECT_ID:-}" ] || fail "Missing GCP_PROJECT_ID"
-        [ -n "${SIZE:-}" ] || fail "Missing SIZE"
-
-        size="$(printf '%s' "$SIZE" | tr '[:upper:]' '[:lower:]')"
-        machine_type="$(machine_type_for_size "$size")"
-        disk_gib="$(disk_gib_for_size "$size")"
-        zone="${AGENT_ZONE:-${GCP_ZONE:-us-central1-a}}"
-        env_name="${EASYENCLAVE_ENV:-staging}"
-        network_name="${EASYENCLAVE_NETWORK_NAME:-}"
-        vm_name="$(normalize_name "tdx-agent-$(random_suffix 10)" 63)"
-        datacenter_label="${AGENT_DATACENTER:-gcp:${zone}}"
-        region="${AGENT_REGION:-}"
-
-        cfg_json="$(jq -n \
-          --arg cp_url "$CP_URL" \
-          --arg zone "$zone" \
-          --arg region "$region" \
-          --arg datacenter "$datacenter_label" \
-          --arg size "$size" \
-          --arg ita "$ITA_API_KEY" \
-          --arg env_name "$env_name" \
-          --arg network_name "$network_name" \
-          '{
-            control_plane_url: $cp_url,
-            cloud_provider: "gcp",
-            availability_zone: $zone,
-            region: $region,
-            datacenter: $datacenter,
-            node_size: $size,
-            intel_api_key: $ita,
-            ita_api_key: $ita,
-            easyenclave_env: $env_name,
-            easyenclave_network_name: $network_name
-          } | with_entries(select(.value != "" and .value != null))')"
-
-        startup_script="$(mktemp -t ee-agent-startup.XXXXXX.sh)"
-        write_agent_startup_script "$cfg_json" "$startup_script"
-
-        labels="easyenclave=managed,ee_role=agent,ee_env=$(normalize_name "$env_name" 63),ee_network=$(normalize_name "${network_name:-default}" 63),ee_node_size=$(normalize_name "$size" 63)"
-        mapfile -t source_image < <(resolve_source_image)
-        source_image_project="${source_image[0]}"
-        source_image_name="${source_image[1]}"
-        source_image_disk_gib="${source_image[2]}"
-
-        if [ "$source_image_disk_gib" -gt "$disk_gib" ]; then
-          echo "Adjusting agent boot disk for size=${size} from ${disk_gib}GB to ${source_image_disk_gib}GB to match source image ${source_image_project}/${source_image_name}" >&2
-          disk_gib="$source_image_disk_gib"
-        fi
-
-        gcloud compute instances create "$vm_name" \
-          --project "$GCP_PROJECT_ID" \
-          --zone "$zone" \
-          --machine-type "$machine_type" \
-          --boot-disk-size "${disk_gib}GB" \
-          --boot-disk-type "pd-balanced" \
-          --maintenance-policy TERMINATE \
-          --provisioning-model STANDARD \
-          --confidential-compute-type TDX \
-          --labels "$labels" \
-          --metadata "serial-port-enable=1,enable-oslogin=FALSE" \
-          --metadata-from-file "startup-script=${startup_script}" \
-          --scopes "https://www.googleapis.com/auth/cloud-platform" \
-          --image-project "$source_image_project" \
-          --image "$source_image_name" >/dev/null
-
-        rm -f "$startup_script" || true
-
-        if [ "${VM_WAIT:-true}" = "true" ]; then
-          deadline=$(( $(date +%s) + VM_TIMEOUT_SECONDS ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            status="$(gcloud compute instances describe "$vm_name" --project "$GCP_PROJECT_ID" --zone "$zone" --format='value(status)' || true)"
-            if [ "${status^^}" = "RUNNING" ]; then
-              break
-            fi
-            sleep 3
-          done
-        fi
-
-        inst_json="$(gcloud compute instances describe "$vm_name" --project "$GCP_PROJECT_ID" --zone "$zone" --format=json)"
-        internal_ip="$(echo "$inst_json" | jq -r '.networkInterfaces[0].networkIP // ""')"
-        external_ip="$(echo "$inst_json" | jq -r '.networkInterfaces[0].accessConfigs[0].natIP // ""')"
-
-        jq -n \
-          --arg name "$vm_name" \
-          --arg zone "$zone" \
-          --arg internal_ip "$internal_ip" \
-          --arg external_ip "$external_ip" \
-          --arg datacenter "$datacenter_label" \
-          --arg size "$size" \
-          '{
-            name: $name,
-            zone: $zone,
-            internal_ip: ($internal_ip // ""),
-            external_ip: ($external_ip // ""),
-            cloud_provider: "gcp",
-            datacenter: $datacenter,
-            node_size: $size
-          }'
-      args:
-        executable: /bin/bash
-      environment:
-        SIZE: "{{ item }}"
-        CP_URL: "{{ cp_url }}"
-        ITA_API_KEY: "{{ ita_api_key }}"
-        VM_WAIT: "{{ vm_wait | bool | ternary('true', 'false') }}"
-        VM_TIMEOUT_SECONDS: "{{ vm_timeout_seconds | string }}"
-        AGENT_ZONE: "{{ agent_zone }}"
-        AGENT_REGION: "{{ agent_region }}"
-        AGENT_DATACENTER: "{{ agent_datacenter }}"
-      loop: "{{ launch_sizes }}"
-      register: vm_create_results
-      when: launch_sizes | length > 0
-
-    - name: Collect launched VM JSON records
+    - name: Resolve runtime defaults
       ansible.builtin.set_fact:
-        launched_vms: "{{ (vm_create_results.results | default([])) | map(attribute='stdout') | map('from_json') | list }}"
+        resolved_zone: "{{ agent_zone if (agent_zone | length > 0) else (lookup('env', 'GCP_ZONE') | default('us-central1-a', true)) }}"
+        resolved_region: "{{ agent_region }}"
+        resolved_env_name: "{{ lookup('env', 'EASYENCLAVE_ENV') | default('staging', true) }}"
+        resolved_network_name: "{{ lookup('env', 'EASYENCLAVE_NETWORK_NAME') | default('', true) }}"
+        env_label: "{{ ((lookup('env', 'EASYENCLAVE_ENV') | default('staging', true) | lower) | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) or 'staging' }}"
+        network_label: "{{ ((lookup('env', 'EASYENCLAVE_NETWORK_NAME') | default('default', true) | lower) | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) or 'default' }}"
+
+    - name: Resolve source image selector values
+      ansible.builtin.set_fact:
+        source_image_project: "{{ lookup('env', 'EE_GCP_IMAGE_PROJECT') | default(lookup('env', 'GCP_PROJECT_ID'), true) }}"
+        source_image_name_env: "{{ lookup('env', 'EE_GCP_IMAGE_NAME') | default('', true) }}"
+        source_image_family: "{{ lookup('env', 'EE_GCP_IMAGE_FAMILY') | default('easyenclave-agent-main', true) }}"
+
+    - name: Read source image by explicit name
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - images
+          - describe
+          - "{{ source_image_name_env }}"
+          - --project
+          - "{{ source_image_project }}"
+          - --format
+          - json
+      register: source_image_describe_cmd
+      changed_when: false
+      when: source_image_name_env | length > 0
+
+    - name: Read source image from family
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - images
+          - describe-from-family
+          - "{{ source_image_family }}"
+          - --project
+          - "{{ source_image_project }}"
+          - --format
+          - json
+      register: source_image_family_cmd
+      changed_when: false
+      when: source_image_name_env | length == 0
+
+    - name: Parse source image JSON
+      ansible.builtin.set_fact:
+        source_image_json: "{{ (source_image_describe_cmd.stdout if (source_image_name_env | length > 0) else source_image_family_cmd.stdout) | from_json }}"
+
+    - name: Extract source image values
+      ansible.builtin.set_fact:
+        source_image_name: "{{ source_image_json.name | default(source_image_name_env) }}"
+        source_image_disk_gib: "{{ source_image_json.diskSizeGb | default('0') }}"
+
+    - name: Validate resolved source image metadata
+      ansible.builtin.assert:
+        that:
+          - source_image_name | length > 0
+          - source_image_disk_gib is match('^[0-9]+$')
+        fail_msg: "Failed to resolve source image and disk size"
+
+    - name: Initialize launched VM list
+      ansible.builtin.set_fact:
+        launched_vms: []
+
+    - name: Launch each requested VM
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/tasks/gcp-vm-launch-one.yml"
+      loop: "{{ launch_sizes }}"
+      loop_control:
+        loop_var: launch_size
+      when: launch_sizes | length > 0
 
     - name: Write launched VM JSON output file
       ansible.builtin.copy:

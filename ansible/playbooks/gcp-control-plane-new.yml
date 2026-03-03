@@ -10,6 +10,13 @@
     cp_zone: ""
     cp_size: ""
     output_json_path: /tmp/ee-gcp-control-plane.json
+    cp_size_profiles:
+      tiny:
+        machine_type: c3-standard-4
+        disk_gib: 80
+      standard:
+        machine_type: c3-standard-8
+        disk_gib: 100
   tasks:
     - name: Validate GCP project
       ansible.builtin.assert:
@@ -17,299 +24,321 @@
           - lookup('env', 'GCP_PROJECT_ID') | length > 0
         fail_msg: "GCP_PROJECT_ID is required"
 
-    - name: Create control-plane VM and emit metadata JSON
-      ansible.builtin.shell: |
-        set -euo pipefail
+    - name: Resolve control-plane defaults
+      ansible.builtin.set_fact:
+        resolved_env_name: "{{ (lookup('env', 'EASYENCLAVE_ENV') | default('staging', true)) | lower }}"
+        resolved_domain: "{{ lookup('env', 'EASYENCLAVE_DOMAIN') | default('easyenclave.com', true) }}"
+        resolved_network_name: "{{ lookup('env', 'EASYENCLAVE_NETWORK_NAME') | default('', true) }}"
+        resolved_cp_zone: "{{ cp_zone if (cp_zone | length > 0) else ((lookup('env', 'GCP_ZONE') | default(lookup('env', 'AGENT_DATACENTER_AZ'), true)) | default('us-central1-a', true)) }}"
 
-        fail() {
-          echo "::error::$*"
-          exit 1
-        }
+    - name: Resolve control-plane size
+      ansible.builtin.set_fact:
+        resolved_cp_size: "{{ cp_size | lower if (cp_size | length > 0) else ('tiny' if resolved_env_name == 'staging' else 'standard') }}"
 
-        env_first() {
-          local key value
-          for key in "$@"; do
-            value="${!key:-}"
-            if [ -n "${value// }" ]; then
-              printf '%s' "$value"
-              return 0
-            fi
-          done
-          printf ''
-        }
+    - name: Validate control-plane size
+      ansible.builtin.assert:
+        that:
+          - resolved_cp_size in cp_size_profiles
+        fail_msg: "Unsupported control-plane size '{{ resolved_cp_size }}'"
 
-        normalize_name() {
-          local input="$1" max_len="${2:-63}" cleaned
-          cleaned="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
-          [ -n "$cleaned" ] || cleaned="easyenclave"
-          cleaned="${cleaned:0:${max_len}}"
-          cleaned="$(printf '%s' "$cleaned" | sed -E 's/-+$//')"
-          [ -n "$cleaned" ] || cleaned="easyenclave"
-          printf '%s' "$cleaned"
-        }
+    - name: Resolve control-plane profile and labels
+      ansible.builtin.set_fact:
+        cp_profile: "{{ cp_size_profiles[resolved_cp_size] }}"
+        env_label: "{{ (resolved_env_name | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) or 'staging' }}"
+        network_label: "{{ ((resolved_network_name if (resolved_network_name | length > 0) else 'default') | lower | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) or 'default' }}"
 
-        random_suffix() {
-          cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-"${1:-8}"
-        }
+    - name: Resolve control-plane DNS alias
+      ansible.builtin.set_fact:
+        alias_host: "{{ ('app-staging.' ~ resolved_domain) if resolved_env_name == 'staging' else ('app.' ~ resolved_domain) }}"
+        cp_url_for_agents: "{{ ('https://app-staging.' ~ resolved_domain) if resolved_env_name == 'staging' else ('https://app.' ~ resolved_domain) }}"
 
-        machine_type_for_size() {
-          case "$1" in
-            tiny) echo "c3-standard-4" ;;
-            standard) echo "c3-standard-8" ;;
-            *) fail "Unsupported control-plane size '$1'" ;;
-          esac
-        }
+    - name: Resolve source image selector values
+      ansible.builtin.set_fact:
+        source_image_project: "{{ lookup('env', 'EE_GCP_IMAGE_PROJECT') | default(lookup('env', 'GCP_PROJECT_ID'), true) }}"
+        source_image_name_env: "{{ lookup('env', 'EE_GCP_IMAGE_NAME') | default('', true) }}"
+        source_image_family: "{{ lookup('env', 'EE_GCP_IMAGE_FAMILY') | default('easyenclave-agent-main', true) }}"
 
-        disk_gib_for_size() {
-          case "$1" in
-            tiny) echo "80" ;;
-            standard) echo "100" ;;
-            *) fail "Unsupported control-plane size '$1'" ;;
-          esac
-        }
+    - name: Read source image by explicit name
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - images
+          - describe
+          - "{{ source_image_name_env }}"
+          - --project
+          - "{{ source_image_project }}"
+          - --format
+          - json
+      register: source_image_describe_cmd
+      changed_when: false
+      when: source_image_name_env | length > 0
 
-        control_plane_alias_host() {
-          local env_name="$1" domain="$2"
-          if [ "$env_name" = "staging" ]; then
-            printf 'app-staging.%s' "$domain"
-          else
-            printf 'app.%s' "$domain"
-          fi
-        }
+    - name: Read source image from family
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - images
+          - describe-from-family
+          - "{{ source_image_family }}"
+          - --project
+          - "{{ source_image_project }}"
+          - --format
+          - json
+      register: source_image_family_cmd
+      changed_when: false
+      when: source_image_name_env | length == 0
 
-        resolve_source_image() {
-          local image_project image_name image_family image_json image_disk_gib
-          image_project="$(env_first EE_GCP_IMAGE_PROJECT)"
-          [ -n "$image_project" ] || image_project="$GCP_PROJECT_ID"
-          image_name="$(env_first EE_GCP_IMAGE_NAME)"
-          image_family="$(env_first EE_GCP_IMAGE_FAMILY)"
-          [ -n "$image_family" ] || image_family="easyenclave-agent-main"
+    - name: Parse source image JSON
+      ansible.builtin.set_fact:
+        source_image_json: "{{ (source_image_describe_cmd.stdout if (source_image_name_env | length > 0) else source_image_family_cmd.stdout) | from_json }}"
 
-          if [ -n "$image_name" ]; then
-            image_json="$(gcloud compute images describe "$image_name" --project "$image_project" --format=json)"
-          else
-            image_json="$(gcloud compute images describe-from-family "$image_family" --project "$image_project" --format=json)"
-            image_name="$(echo "$image_json" | jq -r '.name // ""')"
-          fi
+    - name: Extract source image values
+      ansible.builtin.set_fact:
+        source_image_name: "{{ source_image_json.name | default(source_image_name_env) }}"
+        source_image_disk_gib: "{{ source_image_json.diskSizeGb | default('0') }}"
 
-          [ -n "$image_name" ] || fail "Failed to resolve source image name"
-          image_disk_gib="$(echo "$image_json" | jq -r '.diskSizeGb // ""')"
-          if ! [[ "$image_disk_gib" =~ ^[0-9]+$ ]]; then
-            fail "Failed to resolve source image disk size for ${image_project}/${image_name}"
-          fi
+    - name: Validate resolved source image metadata
+      ansible.builtin.assert:
+        that:
+          - source_image_name | length > 0
+          - source_image_disk_gib is match('^[0-9]+$')
+        fail_msg: "Failed to resolve source image and disk size"
 
-          printf '%s\n%s\n%s\n' "$image_project" "$image_name" "$image_disk_gib"
-        }
+    - name: Resolve control-plane boot disk size
+      ansible.builtin.set_fact:
+        cp_boot_disk_gib: "{{ [cp_profile.disk_gib | int, source_image_disk_gib | int] | max }}"
 
-        write_control_plane_startup_script() {
-          local cfg_json="$1" port="$2" script_path="$3"
-          cat > "$script_path" <<SCRIPT
-        #!/usr/bin/env bash
-        set -euo pipefail
-        exec > >(tee -a /var/log/easyenclave-control-plane-bootstrap.log /dev/ttyS0) 2>&1
-        mkdir -p /etc/easyenclave
-        cat > /etc/easyenclave/control-plane.json <<'EOF_CONFIG'
-        ${cfg_json}
-        EOF_CONFIG
-        chmod 0600 /etc/easyenclave/control-plane.json
-        systemctl daemon-reload || true
-        systemctl disable --now easyenclave-agent.service || true
-        systemctl enable easyenclave-control-plane.service || true
-        systemctl restart easyenclave-control-plane.service || true
-        echo "__EE_CP_LOCAL_HEALTH_WAIT__ port=${port}"
-        for _ in \$(seq 1 150); do
-          if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
-            echo "__EE_CP_LOCAL_HEALTH_OK__"
-            break
-          fi
-          sleep 2
-        done
-        SCRIPT
-          chmod +x "$script_path"
-        }
+    - name: Resolve control-plane config env inputs
+      ansible.builtin.set_fact:
+        admin_password_env: "{{ lookup('env', 'CP_ADMIN_PASSWORD') | default(lookup('env', 'ADMIN_PASSWORD'), true) }}"
+        ee_agent_ita_api_key_env: "{{ lookup('env', 'EE_AGENT_ITA_API_KEY') | default(lookup('env', 'ITA_API_KEY') | default(lookup('env', 'INTEL_API_KEY'), true), true) }}"
 
-        [ -n "${GCP_PROJECT_ID:-}" ] || fail "Missing GCP_PROJECT_ID"
+    - name: Build control-plane config payload
+      ansible.builtin.set_fact:
+        control_plane_config_all:
+          port: "{{ cp_port | int }}"
+          control_plane_image: "{{ lookup('env', 'CONTROL_PLANE_IMAGE') | default('', true) }}"
+          easyenclave_domain: "{{ lookup('env', 'EASYENCLAVE_DOMAIN') | default('', true) }}"
+          easyenclave_env: "{{ lookup('env', 'EASYENCLAVE_ENV') | default('', true) }}"
+          easyenclave_network_name: "{{ lookup('env', 'EASYENCLAVE_NETWORK_NAME') | default('', true) }}"
+          easyenclave_boot_id: "{{ lookup('env', 'EASYENCLAVE_BOOT_ID') | default('', true) }}"
+          easyenclave_git_sha: "{{ lookup('env', 'EASYENCLAVE_GIT_SHA') | default('', true) }}"
+          easyenclave_release_tag: "{{ lookup('env', 'EASYENCLAVE_RELEASE_TAG') | default('', true) }}"
+          easyenclave_cp_url: "{{ cp_url_for_agents }}"
+          cloudflare_api_token: "{{ lookup('env', 'CLOUDFLARE_API_TOKEN') | default('', true) }}"
+          cloudflare_account_id: "{{ lookup('env', 'CLOUDFLARE_ACCOUNT_ID') | default('', true) }}"
+          cloudflare_zone_id: "{{ lookup('env', 'CLOUDFLARE_ZONE_ID') | default('', true) }}"
+          admin_password: "{{ admin_password_env }}"
+          admin_github_logins: "{{ lookup('env', 'ADMIN_GITHUB_LOGINS') | default('', true) }}"
+          admin_password_hash: "{{ lookup('env', 'ADMIN_PASSWORD_HASH') | default('', true) }}"
+          ee_agent_ita_api_key: "{{ ee_agent_ita_api_key_env }}"
+          gcp_project_id: "{{ lookup('env', 'GCP_PROJECT_ID') | default('', true) }}"
+          gcp_service_account_key: "{{ lookup('env', 'GCP_SERVICE_ACCOUNT_KEY') | default('', true) }}"
+          ee_gcp_image_project: "{{ lookup('env', 'EE_GCP_IMAGE_PROJECT') | default('', true) }}"
+          ee_gcp_image_family: "{{ lookup('env', 'EE_GCP_IMAGE_FAMILY') | default('', true) }}"
+          ee_gcp_image_name: "{{ lookup('env', 'EE_GCP_IMAGE_NAME') | default('', true) }}"
+          github_oauth_client_id: "{{ lookup('env', 'GITHUB_OAUTH_CLIENT_ID') | default('', true) }}"
+          github_oauth_client_secret: "{{ lookup('env', 'GITHUB_OAUTH_CLIENT_SECRET') | default('', true) }}"
+          github_oauth_redirect_uri: "{{ lookup('env', 'GITHUB_OAUTH_REDIRECT_URI') | default('', true) }}"
+          trusted_agent_mrtds: "{{ lookup('env', 'TRUSTED_AGENT_MRTDS') | default('', true) }}"
+          trusted_proxy_mrtds: "{{ lookup('env', 'TRUSTED_PROXY_MRTDS') | default('', true) }}"
+          trusted_agent_rtmrs: "{{ lookup('env', 'TRUSTED_AGENT_RTMRS') | default('', true) }}"
+          trusted_proxy_rtmrs: "{{ lookup('env', 'TRUSTED_PROXY_RTMRS') | default('', true) }}"
+          trusted_agent_rtmrs_by_size: "{{ lookup('env', 'TRUSTED_AGENT_RTMRS_BY_SIZE') | default('', true) }}"
+          trusted_proxy_rtmrs_by_size: "{{ lookup('env', 'TRUSTED_PROXY_RTMRS_BY_SIZE') | default('', true) }}"
+          tcb_enforcement_mode: "{{ lookup('env', 'TCB_ENFORCEMENT_MODE') | default('', true) }}"
+          allowed_tcb_statuses: "{{ lookup('env', 'ALLOWED_TCB_STATUSES') | default('', true) }}"
+          nonce_enforcement_mode: "{{ lookup('env', 'NONCE_ENFORCEMENT_MODE') | default('', true) }}"
+          rtmr_enforcement_mode: "{{ lookup('env', 'RTMR_ENFORCEMENT_MODE') | default('', true) }}"
+          signature_verification_mode: "{{ lookup('env', 'SIGNATURE_VERIFICATION_MODE') | default('', true) }}"
+          cp_to_agent_attestation_mode: "{{ lookup('env', 'CP_TO_AGENT_ATTESTATION_MODE') | default('', true) }}"
+          auth_require_github_oauth_in_production: "{{ lookup('env', 'AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION') | default('', true) }}"
+          password_login_enabled: "{{ lookup('env', 'PASSWORD_LOGIN_ENABLED') | default('', true) }}"
+          auth_allow_password_login_in_production: "{{ lookup('env', 'AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION') | default('', true) }}"
+          billing_enabled: "{{ lookup('env', 'BILLING_ENABLED') | default('', true) }}"
+          billing_capacity_request_dev_simulation: "{{ lookup('env', 'BILLING_CAPACITY_REQUEST_DEV_SIMULATION') | default('', true) }}"
+          cp_ita_jwks_url: https://portal.trustauthority.intel.com/certs
+          cp_ita_issuer: https://portal.trustauthority.intel.com
 
-        CP_PORT="${CP_PORT:-8080}"
-        CP_WAIT="${CP_WAIT:-true}"
-        CP_TIMEOUT_SECONDS="${CP_TIMEOUT_SECONDS:-600}"
-        CP_ZONE="${CP_ZONE:-}"
-        CP_SIZE="${CP_SIZE:-}"
-        OUTPUT_JSON_PATH="${OUTPUT_JSON_PATH:-/tmp/ee-gcp-control-plane.json}"
+    - name: Remove empty config values
+      ansible.builtin.set_fact:
+        control_plane_config: "{{ control_plane_config_all | dict2items | rejectattr('value', 'equalto', '') | rejectattr('value', 'equalto', none) | items2dict }}"
 
-        env_name="$(printf '%s' "$(env_first EASYENCLAVE_ENV)" | tr '[:upper:]' '[:lower:]')"
-        [ -n "$env_name" ] || env_name="staging"
+    - name: Generate control-plane VM name
+      ansible.builtin.set_fact:
+        cp_name_seed_raw: "{{ resolved_network_name if (resolved_network_name | length > 0) else lookup('pipe', 'cat /proc/sys/kernel/random/uuid | tr -d - | cut -c1-8') }}"
+        cp_name_seed_label: "{{ ((cp_name_seed_raw | lower) | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) or 'default' }}"
+        cp_name_candidate: "ee-cp-{{ env_label }}-{{ cp_name_seed_label }}-{{ lookup('pipe', 'date +%s') }}"
+        cp_name: "{{ (((cp_name_candidate | lower | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) | truncate(63, true, '')) | regex_replace('-+$', '')) or ('ee-cp-' ~ lookup('pipe', 'date +%s')) }}"
 
-        if [ -z "$CP_SIZE" ]; then
-          if [ "$env_name" = "staging" ]; then
-            CP_SIZE="tiny"
-          else
-            CP_SIZE="standard"
-          fi
-        fi
+    - name: Allocate startup script file
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .sh
+      register: cp_startup_script_file
 
-        if [ -z "$CP_ZONE" ]; then
-          CP_ZONE="$(env_first GCP_ZONE AGENT_DATACENTER_AZ)"
-        fi
-        [ -n "$CP_ZONE" ] || CP_ZONE="us-central1-a"
+    - name: Render control-plane startup script
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/templates/control-plane-startup.sh.j2"
+        dest: "{{ cp_startup_script_file.path }}"
+        mode: "0755"
+      vars:
+        control_plane_config_json: "{{ control_plane_config | to_nice_json }}"
 
-        machine_type="$(machine_type_for_size "$CP_SIZE")"
-        disk_gib="$(disk_gib_for_size "$CP_SIZE")"
+    - name: Create control-plane VM
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - instances
+          - create
+          - "{{ cp_name }}"
+          - --project
+          - "{{ lookup('env', 'GCP_PROJECT_ID') }}"
+          - --zone
+          - "{{ resolved_cp_zone }}"
+          - --machine-type
+          - "{{ cp_profile.machine_type }}"
+          - --boot-disk-size
+          - "{{ cp_boot_disk_gib }}GB"
+          - --boot-disk-type
+          - pd-balanced
+          - --maintenance-policy
+          - TERMINATE
+          - --provisioning-model
+          - STANDARD
+          - --confidential-compute-type
+          - TDX
+          - --labels
+          - "easyenclave=managed,ee_role=control-plane,ee_env={{ env_label }},ee_network={{ network_label }}"
+          - --metadata
+          - serial-port-enable=1,enable-oslogin=FALSE
+          - --metadata-from-file
+          - "startup-script={{ cp_startup_script_file.path }}"
+          - --scopes
+          - https://www.googleapis.com/auth/cloud-platform
+          - --image-project
+          - "{{ source_image_project }}"
+          - --image
+          - "{{ source_image_name }}"
 
-        network_name="$(env_first EASYENCLAVE_NETWORK_NAME)"
-        domain="$(env_first EASYENCLAVE_DOMAIN)"
-        [ -n "$domain" ] || domain="easyenclave.com"
+    - name: Remove temporary startup script
+      ansible.builtin.file:
+        path: "{{ cp_startup_script_file.path }}"
+        state: absent
+      when: cp_startup_script_file.path is defined
 
-        alias_host="$(control_plane_alias_host "$env_name" "$domain")"
-        cp_url_for_agents="https://${alias_host}"
+    - name: Wait for control-plane VM status RUNNING
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - instances
+          - describe
+          - "{{ cp_name }}"
+          - --project
+          - "{{ lookup('env', 'GCP_PROJECT_ID') }}"
+          - --zone
+          - "{{ resolved_cp_zone }}"
+          - --format
+          - value(status)
+      register: cp_status_cmd
+      changed_when: false
+      retries: 100
+      delay: 3
+      until: (cp_status_cmd.stdout | trim | upper) == 'RUNNING'
 
-        cfg="$(jq -n --arg port "$CP_PORT" '{port: ($port | tonumber)}')"
-        add_cfg() {
-          local json_key="$1" value="$2"
-          [ -n "$value" ] || return 0
-          cfg="$(echo "$cfg" | jq --arg k "$json_key" --arg v "$value" '. + {($k): $v}')"
-        }
+    - name: Read control-plane VM metadata
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - instances
+          - describe
+          - "{{ cp_name }}"
+          - --project
+          - "{{ lookup('env', 'GCP_PROJECT_ID') }}"
+          - --zone
+          - "{{ resolved_cp_zone }}"
+          - --format
+          - json
+      register: cp_meta_cmd
+      changed_when: false
 
-        add_cfg "control_plane_image" "$(env_first CONTROL_PLANE_IMAGE)"
-        add_cfg "easyenclave_domain" "$(env_first EASYENCLAVE_DOMAIN)"
-        add_cfg "easyenclave_env" "$(env_first EASYENCLAVE_ENV)"
-        add_cfg "easyenclave_network_name" "$(env_first EASYENCLAVE_NETWORK_NAME)"
-        add_cfg "easyenclave_boot_id" "$(env_first EASYENCLAVE_BOOT_ID)"
-        add_cfg "easyenclave_git_sha" "$(env_first EASYENCLAVE_GIT_SHA)"
-        add_cfg "easyenclave_release_tag" "$(env_first EASYENCLAVE_RELEASE_TAG)"
-        add_cfg "easyenclave_cp_url" "$cp_url_for_agents"
-        add_cfg "cloudflare_api_token" "$(env_first CLOUDFLARE_API_TOKEN)"
-        add_cfg "cloudflare_account_id" "$(env_first CLOUDFLARE_ACCOUNT_ID)"
-        add_cfg "cloudflare_zone_id" "$(env_first CLOUDFLARE_ZONE_ID)"
-        add_cfg "admin_password" "$(env_first CP_ADMIN_PASSWORD ADMIN_PASSWORD)"
-        add_cfg "admin_github_logins" "$(env_first ADMIN_GITHUB_LOGINS)"
-        add_cfg "admin_password_hash" "$(env_first ADMIN_PASSWORD_HASH)"
-        add_cfg "ee_agent_ita_api_key" "$(env_first EE_AGENT_ITA_API_KEY ITA_API_KEY INTEL_API_KEY)"
-        add_cfg "gcp_project_id" "$(env_first GCP_PROJECT_ID)"
-        add_cfg "gcp_service_account_key" "$(env_first GCP_SERVICE_ACCOUNT_KEY)"
-        add_cfg "ee_gcp_image_project" "$(env_first EE_GCP_IMAGE_PROJECT)"
-        add_cfg "ee_gcp_image_family" "$(env_first EE_GCP_IMAGE_FAMILY)"
-        add_cfg "ee_gcp_image_name" "$(env_first EE_GCP_IMAGE_NAME)"
-        add_cfg "github_oauth_client_id" "$(env_first GITHUB_OAUTH_CLIENT_ID)"
-        add_cfg "github_oauth_client_secret" "$(env_first GITHUB_OAUTH_CLIENT_SECRET)"
-        add_cfg "github_oauth_redirect_uri" "$(env_first GITHUB_OAUTH_REDIRECT_URI)"
-        add_cfg "trusted_agent_mrtds" "$(env_first TRUSTED_AGENT_MRTDS)"
-        add_cfg "trusted_proxy_mrtds" "$(env_first TRUSTED_PROXY_MRTDS)"
-        add_cfg "trusted_agent_rtmrs" "$(env_first TRUSTED_AGENT_RTMRS)"
-        add_cfg "trusted_proxy_rtmrs" "$(env_first TRUSTED_PROXY_RTMRS)"
-        add_cfg "trusted_agent_rtmrs_by_size" "$(env_first TRUSTED_AGENT_RTMRS_BY_SIZE)"
-        add_cfg "trusted_proxy_rtmrs_by_size" "$(env_first TRUSTED_PROXY_RTMRS_BY_SIZE)"
-        add_cfg "tcb_enforcement_mode" "$(env_first TCB_ENFORCEMENT_MODE)"
-        add_cfg "allowed_tcb_statuses" "$(env_first ALLOWED_TCB_STATUSES)"
-        add_cfg "nonce_enforcement_mode" "$(env_first NONCE_ENFORCEMENT_MODE)"
-        add_cfg "rtmr_enforcement_mode" "$(env_first RTMR_ENFORCEMENT_MODE)"
-        add_cfg "signature_verification_mode" "$(env_first SIGNATURE_VERIFICATION_MODE)"
-        add_cfg "cp_to_agent_attestation_mode" "$(env_first CP_TO_AGENT_ATTESTATION_MODE)"
-        add_cfg "auth_require_github_oauth_in_production" "$(env_first AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION)"
-        add_cfg "password_login_enabled" "$(env_first PASSWORD_LOGIN_ENABLED)"
-        add_cfg "auth_allow_password_login_in_production" "$(env_first AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION)"
-        add_cfg "billing_enabled" "$(env_first BILLING_ENABLED)"
-        add_cfg "billing_capacity_request_dev_simulation" "$(env_first BILLING_CAPACITY_REQUEST_DEV_SIMULATION)"
+    - name: Parse control-plane VM metadata
+      ansible.builtin.set_fact:
+        cp_meta: "{{ cp_meta_cmd.stdout | from_json }}"
+        cp_internal_ip: "{{ ((cp_meta_cmd.stdout | from_json).networkInterfaces | default([]) | first | default({})).networkIP | default('') }}"
+        cp_external_ip: "{{ (((cp_meta_cmd.stdout | from_json).networkInterfaces | default([]) | first | default({})).accessConfigs | default([]) | first | default({})).natIP | default('') }}"
 
-        if ! echo "$cfg" | jq -e '.cp_ita_jwks_url? // empty' >/dev/null; then
-          cfg="$(echo "$cfg" | jq '. + {"cp_ita_jwks_url":"https://portal.trustauthority.intel.com/certs"}')"
-        fi
-        if ! echo "$cfg" | jq -e '.cp_ita_issuer? // empty' >/dev/null; then
-          cfg="$(echo "$cfg" | jq '. + {"cp_ita_issuer":"https://portal.trustauthority.intel.com"}')"
-        fi
+    - name: Set default control-plane URL
+      ansible.builtin.set_fact:
+        selected_url: "https://{{ alias_host }}"
 
-        startup_script="$(mktemp -t ee-cp-startup.XXXXXX.sh)"
-        write_control_plane_startup_script "$(echo "$cfg" | jq .)" "$CP_PORT" "$startup_script"
+    - name: Probe external control-plane health URL
+      ansible.builtin.uri:
+        url: "http://{{ cp_external_ip }}:{{ cp_port }}/health"
+        method: GET
+        status_code: 200
+      register: cp_external_health
+      retries: "{{ [1, ((cp_timeout_seconds | int + 2) // 3)] | max }}"
+      delay: 3
+      until: cp_external_health.status == 200
+      failed_when: false
+      when:
+        - cp_wait | bool
+        - cp_external_ip | length > 0
 
-        seed="${network_name:-$(random_suffix 8)}"
-        name="$(normalize_name "ee-cp-${env_name}-${seed}-$(date +%s)" 63)"
-        labels="easyenclave=managed,ee_role=control-plane,ee_env=$(normalize_name "$env_name" 63),ee_network=$(normalize_name "${network_name:-default}" 63)"
+    - name: Select external URL when healthy
+      ansible.builtin.set_fact:
+        selected_url: "http://{{ cp_external_ip }}:{{ cp_port }}"
+      when:
+        - cp_wait | bool
+        - cp_external_health is defined
+        - cp_external_health.status | default(0) == 200
 
-        mapfile -t source_image < <(resolve_source_image)
-        source_image_project="${source_image[0]}"
-        source_image_name="${source_image[1]}"
-        source_image_disk_gib="${source_image[2]}"
+    - name: Probe internal control-plane health URL
+      ansible.builtin.uri:
+        url: "http://{{ cp_internal_ip }}:{{ cp_port }}/health"
+        method: GET
+        status_code: 200
+      register: cp_internal_health
+      retries: "{{ [1, ((cp_timeout_seconds | int + 2) // 3)] | max }}"
+      delay: 3
+      until: cp_internal_health.status == 200
+      failed_when: false
+      when:
+        - cp_wait | bool
+        - cp_internal_ip | length > 0
+        - selected_url == ('https://' ~ alias_host)
 
-        if [ "$source_image_disk_gib" -gt "$disk_gib" ]; then
-          echo "Adjusting control-plane boot disk from ${disk_gib}GB to ${source_image_disk_gib}GB to match source image ${source_image_project}/${source_image_name}"
-          disk_gib="$source_image_disk_gib"
-        fi
+    - name: Select internal URL when healthy
+      ansible.builtin.set_fact:
+        selected_url: "http://{{ cp_internal_ip }}:{{ cp_port }}"
+      when:
+        - cp_wait | bool
+        - cp_internal_health is defined
+        - cp_internal_health.status | default(0) == 200
 
-        gcloud compute instances create "$name" \
-          --project "$GCP_PROJECT_ID" \
-          --zone "$CP_ZONE" \
-          --machine-type "$machine_type" \
-          --boot-disk-size "${disk_gib}GB" \
-          --boot-disk-type "pd-balanced" \
-          --maintenance-policy TERMINATE \
-          --provisioning-model STANDARD \
-          --confidential-compute-type TDX \
-          --labels "$labels" \
-          --metadata "serial-port-enable=1,enable-oslogin=FALSE" \
-          --metadata-from-file "startup-script=${startup_script}" \
-          --scopes "https://www.googleapis.com/auth/cloud-platform" \
-          --image-project "$source_image_project" \
-          --image "$source_image_name" >/dev/null
-
-        rm -f "$startup_script" || true
-
-        deadline=$(( $(date +%s) + 300 ))
-        while [ "$(date +%s)" -lt "$deadline" ]; do
-          status="$(gcloud compute instances describe "$name" --project "$GCP_PROJECT_ID" --zone "$CP_ZONE" --format='value(status)' || true)"
-          if [ "${status^^}" = "RUNNING" ]; then
-            break
-          fi
-          sleep 3
-        done
-
-        inst_json="$(gcloud compute instances describe "$name" --project "$GCP_PROJECT_ID" --zone "$CP_ZONE" --format=json)"
-        internal_ip="$(echo "$inst_json" | jq -r '.networkInterfaces[0].networkIP // ""')"
-        external_ip="$(echo "$inst_json" | jq -r '.networkInterfaces[0].accessConfigs[0].natIP // ""')"
-
-        selected_url="https://${alias_host}"
-        if [ "$CP_WAIT" = "true" ]; then
-          deadline=$(( $(date +%s) + CP_TIMEOUT_SECONDS ))
-          while [ "$(date +%s)" -lt "$deadline" ]; do
-            if [ -n "$external_ip" ] && curl -fsS --max-time 3 "http://${external_ip}:${CP_PORT}/health" >/dev/null 2>&1; then
-              selected_url="http://${external_ip}:${CP_PORT}"
-              break
-            fi
-            if [ -n "$internal_ip" ] && curl -fsS --max-time 3 "http://${internal_ip}:${CP_PORT}/health" >/dev/null 2>&1; then
-              selected_url="http://${internal_ip}:${CP_PORT}"
-              break
-            fi
-            sleep 3
-          done
-        fi
-
-        mkdir -p "$(dirname "$OUTPUT_JSON_PATH")"
-        jq -n \
-          --arg name "$name" \
-          --arg zone "$CP_ZONE" \
-          --arg ip "${external_ip:-$internal_ip}" \
-          --arg internal_ip "$internal_ip" \
-          --arg external_ip "$external_ip" \
-          --arg control_plane_url "$selected_url" \
-          --arg control_plane_hostname "$alias_host" \
-          '{
-            name: $name,
-            zone: $zone,
-            ip: ($ip // ""),
-            internal_ip: ($internal_ip // ""),
-            external_ip: ($external_ip // ""),
-            control_plane_url: $control_plane_url,
-            control_plane_hostname: $control_plane_hostname,
-            bootstrap_agents: []
-          }' > "$OUTPUT_JSON_PATH"
-      args:
-        executable: /bin/bash
-      environment:
-        CP_PORT: "{{ cp_port | string }}"
-        CP_WAIT: "{{ cp_wait | bool | ternary('true', 'false') }}"
-        CP_TIMEOUT_SECONDS: "{{ cp_timeout_seconds | string }}"
-        CP_ZONE: "{{ cp_zone }}"
-        CP_SIZE: "{{ cp_size }}"
-        OUTPUT_JSON_PATH: "{{ output_json_path }}"
+    - name: Write control-plane metadata JSON
+      ansible.builtin.copy:
+        dest: "{{ output_json_path }}"
+        mode: "0600"
+        content: >-
+          {{
+            {
+              'name': cp_name,
+              'zone': resolved_cp_zone,
+              'ip': (cp_external_ip if (cp_external_ip | length > 0) else cp_internal_ip),
+              'internal_ip': cp_internal_ip,
+              'external_ip': cp_external_ip,
+              'control_plane_url': selected_url,
+              'control_plane_hostname': alias_host,
+              'bootstrap_agents': []
+            } | to_nice_json
+          }}
 
     - name: Load control-plane metadata JSON
       ansible.builtin.set_fact:
