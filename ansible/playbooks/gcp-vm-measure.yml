@@ -121,7 +121,7 @@
         source_image_disk_gib="${source_image[2]}"
 
         if [ "$source_image_disk_gib" -gt "$disk_gib" ]; then
-          echo "Adjusting measure boot disk for size=${size} from ${disk_gib}GB to ${source_image_disk_gib}GB to match source image ${source_image_project}/${source_image_name}"
+          echo "Adjusting measure boot disk for size=${size} from ${disk_gib}GB to ${source_image_disk_gib}GB to match source image ${source_image_project}/${source_image_name}" >&2
           disk_gib="$source_image_disk_gib"
         fi
 
