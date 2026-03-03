@@ -20,7 +20,7 @@
   tasks:
     - name: Deploy via ansible-orchestrated shell flow
       ansible.builtin.shell:
-        cmd: |
+        cmd: !unsafe |
           set -euo pipefail
 
           cd "$(git rev-parse --show-toplevel)"
