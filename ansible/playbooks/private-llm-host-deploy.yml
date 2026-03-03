@@ -1,0 +1,81 @@
+---
+- name: Deploy private-llm directly on a host
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    repo_root: "{{ lookup('env', 'GITHUB_WORKSPACE') | default(playbook_dir | dirname | dirname, true) }}"
+    deploy_dir: /opt/easyenclave/private-llm
+    private_llm_use_gpu: false
+    ollama_model: smollm2:135m
+
+  tasks:
+    - name: Install OS dependencies and Docker packages
+      ansible.builtin.apt:
+        update_cache: true
+        name:
+          - ca-certificates
+          - curl
+          - docker.io
+          - docker-compose-v2
+        state: present
+
+    - name: Ensure Docker service is enabled and started
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Ensure deployment directory exists
+      ansible.builtin.file:
+        path: "{{ deploy_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy base private-llm compose
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/examples/private-llm/docker-compose.yml"
+        dest: "{{ deploy_dir }}/docker-compose.yml"
+        mode: "0644"
+
+    - name: Copy H100 override compose
+      ansible.builtin.copy:
+        src: "{{ repo_root }}/examples/private-llm/docker-compose.h100.yml"
+        dest: "{{ deploy_dir }}/docker-compose.h100.yml"
+        mode: "0644"
+
+    - name: Write private-llm environment file
+      ansible.builtin.copy:
+        dest: "{{ deploy_dir }}/.env"
+        mode: "0644"
+        content: |
+          OLLAMA_MODEL={{ ollama_model }}
+
+    - name: Require NVIDIA tooling when GPU mode is enabled
+      ansible.builtin.command: nvidia-smi -L
+      changed_when: false
+      when: private_llm_use_gpu | bool
+
+    - name: Build compose file args
+      ansible.builtin.set_fact:
+        compose_args: >-
+          -f docker-compose.yml
+          {{ '-f docker-compose.h100.yml' if (private_llm_use_gpu | bool) else '' }}
+
+    - name: Start private-llm stack
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker compose {{ compose_args }} up -d
+      args:
+        chdir: "{{ deploy_dir }}"
+        executable: /bin/bash
+
+    - name: Wait for Ollama API to become reachable
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8080/api/tags
+        method: GET
+        status_code: 200
+      register: ollama_health
+      retries: 60
+      delay: 5
+      until: ollama_health.status == 200

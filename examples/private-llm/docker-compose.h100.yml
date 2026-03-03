@@ -1,0 +1,13 @@
+services:
+  private-llm:
+    gpus: all
+    environment:
+      - OLLAMA_HOST=0.0.0.0:8080
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+  model-loader:
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:32b}

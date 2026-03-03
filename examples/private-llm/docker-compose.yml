@@ -19,7 +19,13 @@ services:
       private-llm:
         condition: service_healthy
     restart: "no"
-    entrypoint: ["sh", "-c", "curl -sf -X POST http://private-llm:8080/api/pull -d '{\"name\":\"smollm2:135m\"}'"]
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        curl -sf -X POST http://private-llm:8080/api/pull
+        -H "Content-Type: application/json"
+        -d "{\"name\":\"${OLLAMA_MODEL:-smollm2:135m}\"}"
 
 volumes:
   ollama_data:

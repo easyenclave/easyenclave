@@ -15,13 +15,16 @@ import httpx as _httpx
 from easyenclave import EasyEnclaveClient
 from openai import OpenAI
 
-MODEL = "smollm2:135m"
+MODEL = os.environ.get("MODEL") or os.environ.get("OLLAMA_MODEL") or "smollm2:135m"
 CHAT_PATH = "/v1/chat/completions"
 CHAT_BODY = {
     "model": MODEL,
     "messages": [{"role": "user", "content": "Say hello in one sentence."}],
 }
-TIMEOUT = 300  # 5 minutes
+try:
+    TIMEOUT = int(os.environ.get("MODEL_TIMEOUT_SECONDS", "300"))
+except ValueError:
+    TIMEOUT = 300
 RETRY_INTERVAL = 15
 
 
