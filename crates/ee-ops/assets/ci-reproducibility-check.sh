@@ -33,11 +33,133 @@ require_cmd() {
 }
 
 require_cmd jq
+require_cmd sha256sum
 
 parse_output_value() {
   local file="$1"
   local key="$2"
   grep -E "^${key}=" "$file" | tail -n1 | sed -E "s/^${key}=//"
+}
+
+measure_values_to_output() {
+  local out_file="$1"
+  local label="$2"
+  local measure_sizes="${MEASURE_SIZES:-tiny}"
+  local measure_attempts="${MEASURE_ATTEMPTS:-3}"
+  local measure_retry_sleep_seconds="${MEASURE_RETRY_SLEEP_SECONDS:-10}"
+  local measure_timeout_seconds="${MEASURE_TIMEOUT_SECONDS:-240}"
+  local default_size
+  local digest
+  local digest_payload
+  local mrtd
+  local mrtds
+  local mrtds_by_size_json='{}'
+  local rtmrs
+  local rtmrs_by_size_json='{}'
+
+  IFS=',' read -r -a sizes <<<"$measure_sizes"
+  if [ "${#sizes[@]}" -eq 0 ]; then
+    echo "::error::MEASURE_SIZES is empty"
+    exit 1
+  fi
+
+  for s in "${sizes[@]}"; do
+    case "$s" in
+      tiny | standard | llm) ;;
+      *)
+        echo "::error::Unsupported node_size in MEASURE_SIZES: '$s' (expected tiny,standard,llm)"
+        exit 1
+        ;;
+    esac
+  done
+
+  for size in "${sizes[@]}"; do
+    local measures=""
+    local measure_ok="false"
+    local attempt
+    echo "--- [$label] Measuring node_size=$size ---"
+    for attempt in $(seq 1 "$measure_attempts"); do
+      local err_file="/tmp/ci-repro-measure-${label}-${size}.err"
+      echo "[$label] measurement attempt ${attempt}/${measure_attempts} for node_size=$size"
+      set +e
+      measures="$(
+        bash crates/ee-ops/assets/gcp-nodectl.sh vm measure \
+          --json \
+          --timeout "$measure_timeout_seconds" \
+          --size "$size" \
+          2>"$err_file"
+      )"
+      measure_rc=$?
+      set -e
+
+      if [ "$measure_rc" -eq 0 ] \
+        && [ -n "${measures:-}" ] \
+        && echo "$measures" | jq -e '.mrtd and .rtmr0 and .rtmr1 and .rtmr2 and .rtmr3' >/dev/null 2>&1; then
+        measure_ok="true"
+        break
+      fi
+
+      echo "::warning::Measurement attempt ${attempt}/${measure_attempts} failed for node_size=$size (rc=${measure_rc})."
+      if [ -s "$err_file" ]; then
+        tail -n 20 "$err_file" || true
+      fi
+      if [ "$attempt" -lt "$measure_attempts" ]; then
+        sleep "$measure_retry_sleep_seconds"
+      fi
+    done
+
+    if [ "$measure_ok" != "true" ]; then
+      echo "::error::Failed to capture measurements for node_size=$size after ${measure_attempts} attempts"
+      exit 1
+    fi
+
+    local mrtd_size
+    local rtmrs_size
+    mrtd_size="$(echo "$measures" | jq -r '.mrtd')"
+    rtmrs_size="$(echo "$measures" | jq -c '{rtmr0,rtmr1,rtmr2,rtmr3}')"
+
+    if [ -z "$mrtd_size" ] || [ "$mrtd_size" = "null" ]; then
+      echo "::error::Failed to measure MRTD for node_size=$size"
+      exit 1
+    fi
+
+    mrtds_by_size_json="$(
+      jq -cn --arg k "$size" --arg v "$mrtd_size" --argjson obj "$mrtds_by_size_json" '$obj + {($k): $v}'
+    )"
+    rtmrs_by_size_json="$(
+      jq -cn --arg k "$size" --argjson v "$rtmrs_size" --argjson obj "$rtmrs_by_size_json" '$obj + {($k): $v}'
+    )"
+  done
+
+  default_size="${sizes[0]}"
+  if echo "$mrtds_by_size_json" | jq -e 'has("tiny")' >/dev/null; then
+    default_size="tiny"
+  fi
+
+  mrtd="$(echo "$mrtds_by_size_json" | jq -r --arg s "$default_size" '.[$s]')"
+  rtmrs="$(echo "$rtmrs_by_size_json" | jq -c --arg s "$default_size" '.[$s]')"
+  mrtds="$(echo "$mrtds_by_size_json" | jq -r '[.[]] | map(select(type == "string" and length > 0)) | unique | join(",")')"
+  if [ -z "$mrtds" ]; then
+    echo "::error::Failed to build TRUSTED_AGENT_MRTDS list"
+    exit 1
+  fi
+
+  digest_payload="$(
+    jq -cn \
+      --argjson mrtds_by_size "$mrtds_by_size_json" \
+      --argjson rtmrs_by_size "$rtmrs_by_size_json" \
+      '{mrtds_by_size: $mrtds_by_size, rtmrs_by_size: $rtmrs_by_size}'
+  )"
+  digest="$(printf '%s' "$digest_payload" | sha256sum | awk '{print $1}')"
+
+  {
+    echo "digest=$digest"
+    echo "mrtd=$mrtd"
+    echo "mrtds=$mrtds"
+    echo "mrtds_by_size=$mrtds_by_size_json"
+    echo "rtmrs=$rtmrs"
+    echo "rtmrs_by_size=$rtmrs_by_size_json"
+  } > "$out_file"
 }
 
 run_measure_pass() {
@@ -54,7 +176,7 @@ run_measure_pass() {
   start_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
   echo "---- [$label] measurement pass ----"
-  GITHUB_OUTPUT="$gh_out" MEASURE_SIZES="$MEASURE_SIZES" cargo run -p ee-ops -- ci-build-measure
+  measure_values_to_output "$gh_out" "$label"
 
   end_epoch="$(date -u +%s)"
   end_iso="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"

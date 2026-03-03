@@ -18,6 +18,25 @@ require_cmd() {
   fi
 }
 
+escape_sed_replacement() {
+  echo "$1" | sed -e 's/[\/&]/\\&/g'
+}
+
+render_template() {
+  local src="$1"
+  local dst="$2"
+  local vm_name_value="$3"
+  local ssh_username_value="$4"
+  local ssh_pub_key_value="$5"
+
+  [ -f "${src}" ] || fail "Missing template file: ${src}"
+  sed \
+    -e "s/__VM_NAME__/$(escape_sed_replacement "${vm_name_value}")/g" \
+    -e "s/__SSH_USERNAME__/$(escape_sed_replacement "${ssh_username_value}")/g" \
+    -e "s/__SSH_PUB_KEY__/$(escape_sed_replacement "${ssh_pub_key_value}")/g" \
+    "${src}" > "${dst}"
+}
+
 trim() {
   local value="$1"
   echo "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//'
@@ -31,13 +50,9 @@ sanitize_name() {
   echo "${cleaned:0:63}"
 }
 
-random_password() {
-  tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24
-}
-
 require_cmd packer
-require_cmd cloud-localds
 require_cmd jq
+require_cmd ssh-keygen
 
 TARGET_IMAGE_NAME="$(trim "${TARGET_IMAGE_NAME:-easyenclave-baremetal-$(date +%Y%m%d%H%M%S)}")"
 SOURCE_SHA="$(trim "${SOURCE_SHA:-}")"
@@ -49,14 +64,21 @@ BAREMETAL_ACCELERATOR="$(trim "${BAREMETAL_ACCELERATOR:-kvm}")"
 BAREMETAL_DISK_SIZE="$(trim "${BAREMETAL_DISK_SIZE:-80G}")"
 BAREMETAL_CPUS="$(trim "${BAREMETAL_CPUS:-4}")"
 BAREMETAL_MEMORY_MB="$(trim "${BAREMETAL_MEMORY_MB:-8192}")"
-BAREMETAL_SSH_USERNAME="$(trim "${BAREMETAL_SSH_USERNAME:-ubuntu}")"
-BAREMETAL_SSH_PASSWORD="$(trim "${BAREMETAL_SSH_PASSWORD:-}")"
+BAREMETAL_SSH_USERNAME="$(trim "${BAREMETAL_SSH_USERNAME:-eebuilder}")"
 BAREMETAL_SSH_TIMEOUT="$(trim "${BAREMETAL_SSH_TIMEOUT:-20m}")"
 BAREMETAL_EXPORT_RAW="$(trim "${BAREMETAL_EXPORT_RAW:-true}")"
 EE_AGENT_BINARY_PATH="$(trim "${EE_AGENT_BINARY_PATH:-}")"
+USER_DATA_TEMPLATE_PATH="$(trim "${USER_DATA_TEMPLATE_PATH:-crates/ee-ops/assets/packer/templates/baremetal-user-data.tmpl}")"
+META_DATA_TEMPLATE_PATH="$(trim "${META_DATA_TEMPLATE_PATH:-crates/ee-ops/assets/packer/templates/baremetal-meta-data.tmpl}")"
 
 if [ ! -f "${PACKER_TEMPLATE_PATH}" ]; then
   fail "Missing packer template: ${PACKER_TEMPLATE_PATH}"
+fi
+if [ ! -f "${USER_DATA_TEMPLATE_PATH}" ]; then
+  fail "Missing user-data template: ${USER_DATA_TEMPLATE_PATH}"
+fi
+if [ ! -f "${META_DATA_TEMPLATE_PATH}" ]; then
+  fail "Missing meta-data template: ${META_DATA_TEMPLATE_PATH}"
 fi
 if ! [[ "${BAREMETAL_CPUS}" =~ ^[0-9]+$ ]]; then
   fail "BAREMETAL_CPUS must be an integer; got '${BAREMETAL_CPUS}'"
@@ -79,43 +101,25 @@ else
   AGENT_BINARY_PATH="target/release/ee-agent"
 fi
 
-if [ -z "${BAREMETAL_SSH_PASSWORD}" ]; then
-  BAREMETAL_SSH_PASSWORD="$(random_password)"
-fi
-
 vm_name="$(sanitize_name "${TARGET_IMAGE_NAME}")"
 output_dir="${BAREMETAL_OUTPUT_ROOT}/${TARGET_IMAGE_NAME}"
-mkdir -p "${output_dir}"
+mkdir -p "${BAREMETAL_OUTPUT_ROOT}"
+if [ -e "${output_dir}" ]; then
+  fail "Output directory already exists: ${output_dir}"
+fi
 
 tmp_dir="$(mktemp -d -t ee-baremetal-packer-XXXXXX)"
-seed_iso="${tmp_dir}/seed.iso"
 cloud_user_data="${tmp_dir}/user-data"
 cloud_meta_data="${tmp_dir}/meta-data"
+ssh_key_path="${tmp_dir}/builder_ed25519"
+ssh_pub_key_path="${ssh_key_path}.pub"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
-cat > "${cloud_user_data}" <<EOF
-#cloud-config
-ssh_pwauth: true
-users:
-  - default
-  - name: ${BAREMETAL_SSH_USERNAME}
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    groups: sudo
-    shell: /bin/bash
-lock_passwd: false
-chpasswd:
-  expire: false
-  users:
-    - name: ${BAREMETAL_SSH_USERNAME}
-      password: ${BAREMETAL_SSH_PASSWORD}
-EOF
+ssh-keygen -q -t ed25519 -N '' -f "${ssh_key_path}" >/dev/null
+builder_pub_key="$(cat "${ssh_pub_key_path}")"
 
-cat > "${cloud_meta_data}" <<EOF
-instance-id: ${vm_name}
-local-hostname: ${vm_name}
-EOF
-
-cloud-localds "${seed_iso}" "${cloud_user_data}" "${cloud_meta_data}"
+render_template "${USER_DATA_TEMPLATE_PATH}" "${cloud_user_data}" "${vm_name}" "${BAREMETAL_SSH_USERNAME}" "${builder_pub_key}"
+render_template "${META_DATA_TEMPLATE_PATH}" "${cloud_meta_data}" "${vm_name}" "${BAREMETAL_SSH_USERNAME}" "${builder_pub_key}"
 
 log "Running Packer build: ${TARGET_IMAGE_NAME}"
 packer init "${PACKER_TEMPLATE_PATH}"
@@ -130,9 +134,10 @@ packer build \
   -var "cpus=${BAREMETAL_CPUS}" \
   -var "memory_mb=${BAREMETAL_MEMORY_MB}" \
   -var "ssh_username=${BAREMETAL_SSH_USERNAME}" \
-  -var "ssh_password=${BAREMETAL_SSH_PASSWORD}" \
+  -var "ssh_private_key_file=${ssh_key_path}" \
   -var "ssh_timeout=${BAREMETAL_SSH_TIMEOUT}" \
-  -var "cloud_init_seed_path=${seed_iso}" \
+  -var "cloud_init_user_data_path=${cloud_user_data}" \
+  -var "cloud_init_meta_data_path=${cloud_meta_data}" \
   -var "agent_binary_path=${AGENT_BINARY_PATH}" \
   "${PACKER_TEMPLATE_PATH}"
 

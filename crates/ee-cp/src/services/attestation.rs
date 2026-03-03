@@ -4,11 +4,13 @@ use std::time::Duration;
 
 use ee_attestation::ita::ItaVerifier;
 use ee_common::error::{AppError, AppResult};
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedAttestation {
     pub mrtd: Option<String>,
     pub tcb_status: Option<String>,
+    pub rtmrs: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -91,6 +93,7 @@ impl AttestationService {
             return Ok(VerifiedAttestation {
                 mrtd: None,
                 tcb_status: None,
+                rtmrs: None,
             });
         }
 
@@ -99,6 +102,7 @@ impl AttestationService {
             return Ok(VerifiedAttestation {
                 mrtd: claims.tdx_mrtd,
                 tcb_status: claims.attester_tcb_status,
+                rtmrs: extract_rtmrs(&claims.extra),
             });
         }
 
@@ -106,6 +110,29 @@ impl AttestationService {
             "attestation verifier is not configured (set CP_ITA_JWKS_URL, CP_ITA_ISSUER, CP_ITA_AUDIENCE or enable CP_ATTESTATION_ALLOW_INSECURE=true for local testing)".to_string(),
         ))
     }
+}
+
+fn extract_rtmrs(extra: &std::collections::HashMap<String, Value>) -> Option<Value> {
+    fn pick(extra: &std::collections::HashMap<String, Value>, keys: &[&str]) -> Option<String> {
+        keys.iter()
+            .find_map(|k| extra.get(*k))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_ascii_lowercase())
+    }
+
+    let rtmr0 = pick(extra, &["tdx_rtmr0", "rtmr0"])?;
+    let rtmr1 = pick(extra, &["tdx_rtmr1", "rtmr1"])?;
+    let rtmr2 = pick(extra, &["tdx_rtmr2", "rtmr2"])?;
+    let rtmr3 = pick(extra, &["tdx_rtmr3", "rtmr3"])?;
+
+    Some(json!({
+        "rtmr0": rtmr0,
+        "rtmr1": rtmr1,
+        "rtmr2": rtmr2,
+        "rtmr3": rtmr3,
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
