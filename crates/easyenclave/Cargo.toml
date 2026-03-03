@@ -16,8 +16,8 @@ name = "ee-agent"
 path = "src/bin/ee-agent/main.rs"
 
 [[bin]]
-name = "ee-ops"
-path = "src/bin/ee-ops/main.rs"
+name = "ee-admin"
+path = "src/bin/ee-admin/main.rs"
 
 [dependencies]
 argon2 = { workspace = true }

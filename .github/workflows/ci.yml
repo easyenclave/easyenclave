@@ -6,6 +6,9 @@ on:
     paths:
       - "crates/**"
       - "infra/**"
+      - "ansible/**"
+      - "packer/**"
+      - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
@@ -15,6 +18,9 @@ on:
     paths:
       - "crates/**"
       - "infra/**"
+      - "ansible/**"
+      - "packer/**"
+      - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"

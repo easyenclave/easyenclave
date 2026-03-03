@@ -4,7 +4,7 @@ use bcrypt::{hash, DEFAULT_COST};
 
 fn usage() {
     eprintln!(
-        "Usage: cargo run -p easyenclave --bin ee-ops -- hash-admin-password [--password <value> | --stdin]\n\nWithout flags, prompts interactively."
+        "Usage: cargo run -p easyenclave --bin ee-admin -- hash-admin-password [--password <value> | --stdin]\n\nWithout flags, prompts interactively."
     );
 }
 

@@ -32,13 +32,13 @@ CI also publishes a determinism report:
 The gate is executed by:
 
 ```bash
-cargo run -p easyenclave --bin ee-ops -- ci-reproducibility-check
+bash scripts/ci-reproducibility-check.sh
 ```
 
 The same strict check runs locally with:
 
 ```bash
-cargo run -p easyenclave --bin ee-ops -- ci-reproducibility-check
+bash scripts/ci-reproducibility-check.sh
 ```
 
 ## Running locally
@@ -51,7 +51,7 @@ Prerequisites:
 From repo root:
 
 ```bash
-cargo run -p easyenclave --bin ee-ops -- ci-reproducibility-check
+bash scripts/ci-reproducibility-check.sh
 ```
 
 Local report output is written to:
@@ -62,5 +62,5 @@ infra/output/reproducibility/
 
 ## Notes
 
-- `ee-ops ci-reproducibility-check` now emits deploy trust outputs (`mrtds`, `rtmrs`, `rtmrs_by_size`) directly after the reproducibility gate passes.
+- `scripts/ci-reproducibility-check.sh` now emits deploy trust outputs (`mrtds`, `rtmrs`, `rtmrs_by_size`) directly after the reproducibility gate passes.
 - This gate proves short-horizon build reproducibility in one CI run. Snapshot pinning and longer-horizon reproducibility controls are tracked in the consolidated roadmap issue.

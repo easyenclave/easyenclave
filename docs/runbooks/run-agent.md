@@ -48,8 +48,8 @@ export EE_GCP_IMAGE_FAMILY="easyenclave-agent-main"
 
 ```bash
 export ITA_API_KEY="<intel-ta-api-key>"
-ANSIBLE_CONFIG=crates/ee-ops/ansible/ansible.cfg \
-ansible-playbook crates/ee-ops/ansible/playbooks/gcp-vm-fleet-new.yml \
+ANSIBLE_CONFIG=ansible/ansible.cfg \
+ansible-playbook ansible/playbooks/gcp-vm-fleet-new.yml \
   -e cp_url="https://app.easyenclave.com" \
   -e ita_api_key="$ITA_API_KEY" \
   -e num_tiny=1 \

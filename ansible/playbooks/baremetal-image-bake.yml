@@ -6,7 +6,7 @@
   vars:
     target_image_name: ""
     source_sha: ""
-    packer_template_path: crates/ee-ops/assets/packer/baremetal-agent-image.pkr.hcl
+    packer_template_path: packer/baremetal-agent-image.pkr.hcl
     base_image_url: https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img
     base_image_checksum: none
     output_root: artifacts/baremetal-images
@@ -18,8 +18,8 @@
     ssh_timeout: 20m
     export_raw: true
     ee_agent_binary_path: ""
-    user_data_template_path: crates/ee-ops/assets/packer/templates/baremetal-user-data.tmpl
-    meta_data_template_path: crates/ee-ops/assets/packer/templates/baremetal-meta-data.tmpl
+    user_data_template_path: packer/templates/baremetal-user-data.tmpl
+    meta_data_template_path: packer/templates/baremetal-meta-data.tmpl
   tasks:
     - name: Bake image with packer
       ansible.builtin.shell: |
@@ -85,7 +85,7 @@
         fi
 
         SOURCE_SHA="$(trim "${SOURCE_SHA:-}")"
-        PACKER_TEMPLATE_PATH="$(trim "${PACKER_TEMPLATE_PATH:-crates/ee-ops/assets/packer/baremetal-agent-image.pkr.hcl}")"
+        PACKER_TEMPLATE_PATH="$(trim "${PACKER_TEMPLATE_PATH:-packer/baremetal-agent-image.pkr.hcl}")"
         BAREMETAL_BASE_IMAGE_URL="$(trim "${BAREMETAL_BASE_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}")"
         BAREMETAL_BASE_IMAGE_CHECKSUM="$(trim "${BAREMETAL_BASE_IMAGE_CHECKSUM:-none}")"
         BAREMETAL_OUTPUT_ROOT="$(trim "${BAREMETAL_OUTPUT_ROOT:-artifacts/baremetal-images}")"
@@ -97,8 +97,8 @@
         BAREMETAL_SSH_TIMEOUT="$(trim "${BAREMETAL_SSH_TIMEOUT:-20m}")"
         BAREMETAL_EXPORT_RAW="$(trim "${BAREMETAL_EXPORT_RAW:-true}")"
         EE_AGENT_BINARY_PATH="$(trim "${EE_AGENT_BINARY_PATH:-}")"
-        USER_DATA_TEMPLATE_PATH="$(trim "${USER_DATA_TEMPLATE_PATH:-crates/ee-ops/assets/packer/templates/baremetal-user-data.tmpl}")"
-        META_DATA_TEMPLATE_PATH="$(trim "${META_DATA_TEMPLATE_PATH:-crates/ee-ops/assets/packer/templates/baremetal-meta-data.tmpl}")"
+        USER_DATA_TEMPLATE_PATH="$(trim "${USER_DATA_TEMPLATE_PATH:-packer/templates/baremetal-user-data.tmpl}")"
+        META_DATA_TEMPLATE_PATH="$(trim "${META_DATA_TEMPLATE_PATH:-packer/templates/baremetal-meta-data.tmpl}")"
 
         if [ ! -f "${PACKER_TEMPLATE_PATH}" ]; then
           fail "Missing packer template: ${PACKER_TEMPLATE_PATH}"

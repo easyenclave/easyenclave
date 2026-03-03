@@ -42,7 +42,7 @@
           CP_TUNNEL_PID=""
           CP_TUNNEL_LOG=""
           OUTPUT_JSON_PATH="${OUTPUT_JSON_PATH:-/tmp/ee-ci-deploy.json}"
-          ANSIBLE_DIR="crates/ee-ops/ansible"
+          ANSIBLE_DIR="ansible"
   
           cleanup_cp_tunnel() {
             if [ -n "${CP_TUNNEL_PID:-}" ] && kill -0 "$CP_TUNNEL_PID" 2>/dev/null; then

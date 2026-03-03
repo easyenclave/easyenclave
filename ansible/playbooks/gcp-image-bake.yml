@@ -115,7 +115,7 @@
         SOURCE_SHA="$(trim "${SOURCE_SHA:-}")"
         BAKE_METADATA_PATH="$(trim "${BAKE_METADATA_PATH:-}")"
         EE_AGENT_BINARY_PATH="$(trim "${EE_AGENT_BINARY_PATH:-}")"
-        PACKER_TEMPLATE_PATH="$(trim "${PACKER_TEMPLATE_PATH:-crates/ee-ops/assets/packer/gcp-agent-image.pkr.hcl}")"
+        PACKER_TEMPLATE_PATH="$(trim "${PACKER_TEMPLATE_PATH:-packer/gcp-agent-image.pkr.hcl}")"
 
         if ! [[ "${BUILD_BOOT_DISK_GB}" =~ ^[0-9]+$ ]]; then
           fail "BUILD_BOOT_DISK_GB must be an integer; got '${BUILD_BOOT_DISK_GB}'."

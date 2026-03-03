@@ -32,7 +32,7 @@ Add CP-native provisioning support for a new cloud with deterministic placement 
 - Keep datacenter format normalized as `<cloud>:<zone-or-region>`.
 
 3. Agent config pass-through:
-- Add provider config fields in the Ansible orchestration layer under `crates/ee-ops/ansible/playbooks/`.
+- Add provider config fields in the Ansible orchestration layer under `ansible/playbooks/`.
 - Export provider env vars in `crates/easyenclave/src/bin/ee-agent`.
 
 4. CI/CD workflow coverage:

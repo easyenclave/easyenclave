@@ -6,6 +6,9 @@ on:
     paths:
       - "crates/**"
       - "infra/**"
+      - "ansible/**"
+      - "packer/**"
+      - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
@@ -99,10 +102,10 @@ jobs:
       - name: Bake production GCP image for commit
         shell: bash
         env:
-          ANSIBLE_CONFIG: crates/ee-ops/ansible/ansible.cfg
+          ANSIBLE_CONFIG: ansible/ansible.cfg
         run: |
           set -euo pipefail
-          ansible-playbook crates/ee-ops/ansible/playbooks/gcp-image-bake.yml \
+          ansible-playbook ansible/playbooks/gcp-image-bake.yml \
             -e "source_image_project=ubuntu-os-cloud" \
             -e "source_image_family=ubuntu-2404-lts-amd64" \
             -e "target_image_name=easyenclave-agent-main-${{ steps.vars.outputs.sha12 }}" \
@@ -150,10 +153,10 @@ jobs:
           CP_BOOTSTRAP_TIMEOUT: "600"
           AGENT_VERIFY_WAIT_ATTEMPTS: "60"
           AGENT_VERIFY_WAIT_SECONDS: "5"
-          ANSIBLE_CONFIG: crates/ee-ops/ansible/ansible.cfg
+          ANSIBLE_CONFIG: ansible/ansible.cfg
         run: |
           set -euo pipefail
-          timeout 1600 ansible-playbook crates/ee-ops/ansible/playbooks/gcp-deploy.yml \
+          timeout 1600 ansible-playbook ansible/playbooks/gcp-deploy.yml \
             -e "cp_port=8080" \
             -e "cp_bootstrap_timeout=${CP_BOOTSTRAP_TIMEOUT}" \
             -e "num_tiny_agents=${NUM_TINY_AGENTS}" \

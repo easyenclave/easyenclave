@@ -53,7 +53,7 @@ jobs:
       - name: Build bare-metal image
         shell: bash
         env:
-          ANSIBLE_CONFIG: crates/ee-ops/ansible/ansible.cfg
+          ANSIBLE_CONFIG: ansible/ansible.cfg
         run: |
           set -euo pipefail
           target_name="${{ inputs.target_image_name }}"
@@ -61,7 +61,7 @@ jobs:
             target_name="easyenclave-baremetal-$(echo "${SOURCE_SHA}" | cut -c1-12)"
           fi
 
-          ansible-playbook crates/ee-ops/ansible/playbooks/baremetal-image-bake.yml \
+          ansible-playbook ansible/playbooks/baremetal-image-bake.yml \
             -e "target_image_name=${target_name}" \
             -e "source_sha=${SOURCE_SHA}" \
             -e "base_image_url=${{ inputs.base_image_url }}" \

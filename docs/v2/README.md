@@ -25,7 +25,7 @@ This folder breaks the v2 rewrite plan into phase-by-phase implementation docs w
 - [Phase 11 - GCP + Admin](phase-11.md)
 - [Phase 12 - OCI Measurement Pipeline](phase-12.md)
 - [Phase 13 - ee-agent](phase-13.md)
-- [Phase 14 - ee-ops](phase-14.md)
+- [Phase 14 - Legacy Ops Wrapper](phase-14.md)
 - [Phase 15 - Image + E2E + Release Pipelines](phase-15.md)
 
 ## Tracking

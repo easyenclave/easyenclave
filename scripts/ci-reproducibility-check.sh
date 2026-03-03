@@ -84,8 +84,8 @@ measure_values_to_output() {
       local measure_file="/tmp/ci-repro-measure-${label}-${size}.json"
       echo "[$label] measurement attempt ${attempt}/${measure_attempts} for node_size=$size"
       set +e
-      ANSIBLE_CONFIG="crates/ee-ops/ansible/ansible.cfg" \
-        ansible-playbook crates/ee-ops/ansible/playbooks/gcp-vm-measure.yml \
+      ANSIBLE_CONFIG="ansible/ansible.cfg" \
+        ansible-playbook ansible/playbooks/gcp-vm-measure.yml \
           -e "node_size=$size" \
           -e "timeout_seconds=$measure_timeout_seconds" \
           -e "output_json_path=$measure_file" \

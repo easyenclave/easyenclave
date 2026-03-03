@@ -1,4 +1,4 @@
-# Phase 14 - ee-ops
+# Phase 14 - Legacy Ops Wrapper (Superseded)
 
 Status: In progress
 
@@ -8,7 +8,7 @@ Consolidate repo automation under Cargo and remove top-level script entrypoints.
 
 ## Deliverables
 
-- `crates/ee-ops` command dispatcher
+- (Historical) `ee-ops` command dispatcher
 - Cargo command parity for:
   - lint
   - reproducibility gate
@@ -16,20 +16,19 @@ Consolidate repo automation under Cargo and remove top-level script entrypoints.
   - CI deploy bootstrap
   - GCP image bake
   - admin password hash helper
-- CI workflow migration from `./scripts/*` to `cargo run -p ee-ops -- ...`
-- Deletion of legacy top-level `scripts/` directory
+- CI workflow migration toward first-class automation entrypoints
+- Root-level infra layout (`ansible/`, `packer/`, `scripts/`)
 
 ## Test Gates
 
 - command argument/dispatch validation
 - CI workflow smoke checks pass with Cargo entrypoint
-- repro/deploy/image-bake commands execute through `ee-ops`
+- repro/deploy/image-bake commands execute through maintained entrypoints
 
 ## Definition Of Done
 
-- [ ] All former `scripts/*` commands are available via `ee-ops`
-- [ ] CI workflows use Cargo commands only
-- [ ] No top-level `scripts/` directory remains
+- [ ] (Historical) migration tasks captured
+- [ ] CI workflows use maintained entrypoints
 
 ## PR Checklist
 
