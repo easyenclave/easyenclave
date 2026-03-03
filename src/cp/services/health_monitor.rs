@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use crate::common::error::{AppError, AppResult};
-use crate::common::types::DeploymentStatus;
+use crate::types::DeploymentStatus;
 use serde_json::Value;
 
 use crate::state::AppState;
@@ -68,7 +68,7 @@ pub async fn run_once(state: &AppState) -> AppResult<()> {
                 .promote_deploying_to_running_for_agent(target.agent_id)
                 .await;
             let _ = agent_store
-                .update_status(target.agent_id, crate::common::types::AgentStatus::Deployed)
+                .update_status(target.agent_id, crate::types::AgentStatus::Deployed)
                 .await;
         }
 
@@ -189,7 +189,6 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
     use uuid::Uuid;
 
-    use crate::common::types::{AgentStatus, DeploymentStatus};
     use crate::services::attestation::AttestationService;
     use crate::services::github_oidc::GithubOidcService;
     use crate::services::nonce::NonceService;
@@ -199,6 +198,7 @@ mod tests {
     use crate::stores::deployment::{DeploymentStore, NewDeployment};
     use crate::stores::health::HealthStore;
     use crate::stores::setting::SettingsStore;
+    use crate::types::{AgentStatus, DeploymentStatus};
 
     #[tokio::test]
     async fn run_once_marks_stale_running_target_as_failed_check() {

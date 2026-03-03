@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 
-use super::error::{AppError, AppResult};
+use crate::common::error::AppResult;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpConfig {
@@ -11,15 +11,6 @@ pub struct CpConfig {
     pub tcb_enforcement_mode: String,
     pub rtmr_enforcement_mode: String,
     pub nonce_enforcement_mode: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentConfig {
-    pub cp_url: String,
-    pub bootstrap_token: Option<String>,
-    pub node_size: String,
-    pub datacenter: String,
-    pub owner: Option<String>,
 }
 
 impl CpConfig {
@@ -39,23 +30,6 @@ impl CpConfig {
     }
 }
 
-impl AgentConfig {
-    pub fn from_env() -> AppResult<Self> {
-        Self::from_map(&env_map())
-    }
-
-    pub fn from_map(vars: &HashMap<String, String>) -> AppResult<Self> {
-        let cp_url = required(vars, "AGENT_CP_URL")?;
-        Ok(Self {
-            cp_url,
-            bootstrap_token: optional(vars, "AGENT_BOOTSTRAP_TOKEN"),
-            node_size: get(vars, "AGENT_NODE_SIZE", "standard"),
-            datacenter: get(vars, "AGENT_DATACENTER", "local:qemu"),
-            owner: optional(vars, "AGENT_OWNER"),
-        })
-    }
-}
-
 fn env_map() -> HashMap<String, String> {
     env::vars().collect()
 }
@@ -67,13 +41,6 @@ fn get(vars: &HashMap<String, String>, key: &str, default: &str) -> String {
         .unwrap_or_else(|| default.to_string())
 }
 
-fn required(vars: &HashMap<String, String>, key: &str) -> AppResult<String> {
-    vars.get(key)
-        .cloned()
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| AppError::Config(format!("missing required env var {key}")))
-}
-
 fn optional(vars: &HashMap<String, String>, key: &str) -> Option<String> {
     vars.get(key).cloned().filter(|v| !v.is_empty())
 }
@@ -82,7 +49,7 @@ fn optional(vars: &HashMap<String, String>, key: &str) -> Option<String> {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{AgentConfig, CpConfig};
+    use super::CpConfig;
 
     #[test]
     fn cp_config_defaults_apply() {
@@ -94,12 +61,5 @@ mod tests {
         assert_eq!(cfg.tcb_enforcement_mode, "strict");
         assert_eq!(cfg.rtmr_enforcement_mode, "strict");
         assert_eq!(cfg.nonce_enforcement_mode, "required");
-    }
-
-    #[test]
-    fn agent_config_requires_cp_url() {
-        let vars = HashMap::new();
-        let err = AgentConfig::from_map(&vars).expect_err("should fail");
-        assert!(err.to_string().contains("AGENT_CP_URL"));
     }
 }

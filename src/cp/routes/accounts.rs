@@ -1,5 +1,5 @@
 use crate::common::api::{ApiErrorResponse, CreateAccountRequest, CreateAccountResponse};
-use crate::common::types::AccountType;
+use crate::types::AccountType;
 use axum::extract::{Path, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;

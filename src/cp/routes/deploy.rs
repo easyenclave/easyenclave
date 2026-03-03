@@ -1,5 +1,5 @@
 use crate::common::api::{ApiErrorResponse, DeployRequest, DeployResponse};
-use crate::common::types::{AgentStatus, DeploymentStatus};
+use crate::types::{AgentStatus, DeploymentStatus};
 use axum::extract::{Path, Query, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;
@@ -325,7 +325,6 @@ mod tests {
     use sqlx::sqlite::SqlitePoolOptions;
     use tower::ServiceExt;
 
-    use crate::common::types::AgentStatus;
     use crate::routes::build_router;
     use crate::services::attestation::AttestationService;
     use crate::services::github_oidc::GithubOidcService;
@@ -334,6 +333,7 @@ mod tests {
     use crate::state::AppState;
     use crate::stores::agent::AgentStore;
     use crate::stores::setting::SettingsStore;
+    use crate::types::AgentStatus;
 
     async fn test_app_with_oidc(
         github_oidc: GithubOidcService,

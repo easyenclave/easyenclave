@@ -2,7 +2,7 @@ use crate::common::api::{
     AgentChallengeResponse, AgentCheckIngestRequest, AgentCheckIngestResponse,
     AgentRegisterRequest, AgentRegisterResponse, ApiErrorResponse,
 };
-use crate::common::types::AgentStatus;
+use crate::types::AgentStatus;
 use axum::extract::{Path, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;

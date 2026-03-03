@@ -4,7 +4,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use easyenclave::common::config::CpConfig;
+use easyenclave::config::CpConfig;
 use easyenclave::db::connect_and_migrate;
 use easyenclave::routes::build_router;
 use easyenclave::services::attestation::AttestationService;
@@ -55,7 +55,7 @@ struct ServerDeps {
 }
 
 async fn run_server(
-    config: easyenclave::common::config::CpConfig,
+    config: easyenclave::config::CpConfig,
     deps: ServerDeps,
 ) -> Result<(), Box<dyn Error>> {
     let bind_addr = config.bind_addr.clone();

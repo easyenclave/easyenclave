@@ -4,6 +4,11 @@ pub mod common;
 #[path = "attestation/lib.rs"]
 pub mod attestation;
 
+#[path = "cp/config.rs"]
+pub mod config;
+#[path = "cp/types.rs"]
+pub mod types;
+
 #[path = "cp/auth/mod.rs"]
 pub mod auth;
 #[path = "cp/db.rs"]

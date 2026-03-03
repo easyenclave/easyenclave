@@ -1,5 +1,5 @@
 use crate::common::error::{AppError, AppResult};
-use crate::common::types::AgentStatus;
+use crate::types::AgentStatus;
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
@@ -457,7 +457,7 @@ fn status_from_db(raw: &str) -> AppResult<AgentStatus> {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::types::AgentStatus;
+    use crate::types::AgentStatus;
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::Row;
     use uuid::Uuid;

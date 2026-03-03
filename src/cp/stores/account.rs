@@ -1,5 +1,5 @@
 use crate::common::error::{AppError, AppResult};
-use crate::common::types::AccountType;
+use crate::types::AccountType;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -211,7 +211,7 @@ fn account_type_from_db(raw: &str) -> AppResult<AccountType> {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::types::AccountType;
+    use crate::types::AccountType;
     use sqlx::sqlite::SqlitePoolOptions;
 
     use super::AccountStore;

@@ -361,7 +361,7 @@ fn error_response(
 mod tests {
     use std::time::Duration;
 
-    use crate::common::types::AgentStatus;
+    use crate::types::AgentStatus;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::{json, Value};

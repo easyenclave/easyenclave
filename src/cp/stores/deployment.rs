@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::common::error::{AppError, AppResult};
-use crate::common::types::DeploymentStatus;
+use crate::types::DeploymentStatus;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
 use uuid::Uuid;
@@ -301,7 +301,7 @@ fn status_from_db(raw: &str) -> AppResult<DeploymentStatus> {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::types::DeploymentStatus;
+    use crate::types::DeploymentStatus;
     use sqlx::sqlite::SqlitePoolOptions;
     use uuid::Uuid;
 
