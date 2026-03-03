@@ -4,7 +4,7 @@ use std::env;
 
 fn usage() {
     eprintln!(
-        "Usage: cargo run -p easyenclave --bin ee-admin -- <command> [args...]\n\nCommands:\n  hash-admin-password"
+        "Usage: cargo run --bin ee-admin -- <command> [args...]\n\nCommands:\n  hash-admin-password"
     );
 }
 

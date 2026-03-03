@@ -14,7 +14,7 @@ This directory is the runtime infra surface for EasyEnclave.
 - `ansible/playbooks/*.yml`: Ansible orchestration layer for GCP control-plane/VM/image operations, CI deploy orchestration, baremetal image baking, and baremetal VM launches.
 - `packer/baremetal-agent-image.pkr.hcl`: Bare-metal Packer template.
 - `packer/templates/*`: Cloud-init templates used by bare-metal image baking.
-- `crates/easyenclave`: Rust package providing `ee-agent`, `ee-cp`, and `ee-admin` binaries.
+- repo-root Rust package providing `ee-agent`, `ee-cp`, and `ee-admin` binaries.
 
 ## Required environment
 

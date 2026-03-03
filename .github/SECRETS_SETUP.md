@@ -9,7 +9,7 @@ Bcrypt hash of the control plane admin password.
 
 **To generate:**
 ```bash
-cargo run -p easyenclave --bin ee-admin -- hash-admin-password
+cargo run --bin ee-admin -- hash-admin-password
 ```
 
 Then add the output to GitHub Secrets:

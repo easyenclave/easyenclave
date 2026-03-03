@@ -1,6 +1,6 @@
 # Run an Agent on GCP TDX
 
-Primary directories: `infra/`, `crates/easyenclave/`
+Primary directories: `infra/`, `src/`
 
 ## Goal
 

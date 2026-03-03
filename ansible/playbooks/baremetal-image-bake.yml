@@ -125,7 +125,7 @@
         else
           require_cmd cargo
           log "Building ee-agent (release)..."
-          cargo build -p easyenclave --bin ee-agent --release
+          cargo build --bin ee-agent --release
           [ -x "target/release/ee-agent" ] || fail "ee-agent binary not found: target/release/ee-agent"
           AGENT_BINARY_PATH="target/release/ee-agent"
         fi

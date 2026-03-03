@@ -4,7 +4,9 @@ on:
   push:
     branches: [main]
     paths:
-      - "crates/**"
+      - "src/**"
+      - "migrations/**"
+      - "tests/**"
       - "infra/**"
       - "ansible/**"
       - "packer/**"
@@ -16,7 +18,9 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "crates/**"
+      - "src/**"
+      - "migrations/**"
+      - "tests/**"
       - "infra/**"
       - "ansible/**"
       - "packer/**"

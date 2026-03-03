@@ -30,12 +30,12 @@ GITHUB_OAUTH_REDIRECT_URI=https://app.easyenclave.com/auth/github/callback
 
 ## Implementation references
 
-- Route handlers: `crates/easyenclave/src/cp/routes/auth.rs`
-- Admin root UI: `crates/easyenclave/src/cp/routes/ui_root.html`
-- Session store: `crates/easyenclave/src/cp/stores/session.rs`
+- Route handlers: `src/cp/routes/auth.rs`
+- Admin root UI: `src/cp/routes/ui_root.html`
+- Session store: `src/cp/stores/session.rs`
 
 ## Validation
 
 ```bash
-cargo test -p easyenclave auth
+cargo test auth
 ```

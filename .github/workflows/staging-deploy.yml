@@ -5,7 +5,9 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
-      - "crates/**"
+      - "src/**"
+      - "migrations/**"
+      - "tests/**"
       - "infra/**"
       - "ansible/**"
       - "packer/**"
@@ -83,7 +85,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build ee-agent release binary
-        run: cargo build -p easyenclave --bin ee-agent --release
+        run: cargo build --bin ee-agent --release
 
       - name: Upload ee-agent binary artifact
         uses: actions/upload-artifact@v4

@@ -130,7 +130,7 @@
           AGENT_BINARY_PATH="$EE_AGENT_BINARY_PATH"
         else
           require_cmd cargo
-          cargo build -p easyenclave --bin ee-agent --release
+          cargo build --bin ee-agent --release
           [ -x "target/release/ee-agent" ] || fail "ee-agent binary not found after build: target/release/ee-agent"
           AGENT_BINARY_PATH="target/release/ee-agent"
         fi
