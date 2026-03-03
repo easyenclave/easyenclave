@@ -1,10 +1,6 @@
 [workspace]
 members = [
-    "crates/ee-common",
-    "crates/ee-attestation",
-    "crates/ee-cp",
-    "crates/ee-agent",
-    "crates/ee-ops",
+    "crates/easyenclave",
 ]
 resolver = "2"
 

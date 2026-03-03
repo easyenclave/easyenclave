@@ -37,9 +37,9 @@ If verification fails, registration is rejected.
 
 ## Implementation references
 
-- Route handlers: `crates/ee-cp/src/routes/agents.rs`
-- Nonce service: `crates/ee-cp/src/services/nonce.rs`
-- Config mapping: `crates/ee-cp/src/stores/setting.rs`
+- Route handlers: `crates/easyenclave/src/cp/routes/agents.rs`
+- Nonce service: `crates/easyenclave/src/cp/services/nonce.rs`
+- Config mapping: `crates/easyenclave/src/cp/stores/setting.rs`
 
 ## Configuration
 
@@ -48,6 +48,6 @@ If verification fails, registration is rejected.
 ## Validation
 
 ```bash
-cargo test -p ee-cp nonce
-cargo test -p ee-cp register
+cargo test -p easyenclave nonce
+cargo test -p easyenclave register
 ```

@@ -11,11 +11,10 @@ This directory is the runtime infra surface for EasyEnclave.
 
 ## Files
 
-- `crates/ee-ops/assets/baremetal-bake-image.sh`: Packer QEMU image build entrypoint for bare-metal/worker-hosted image outputs.
-- `crates/ee-ops/ansible/playbooks/*.yml`: Ansible orchestration layer for GCP control-plane/VM/image operations and baremetal VM launches.
+- `crates/ee-ops/ansible/playbooks/*.yml`: Ansible orchestration layer for GCP control-plane/VM/image operations, CI deploy orchestration, baremetal image baking, and baremetal VM launches.
 - `crates/ee-ops/assets/packer/baremetal-agent-image.pkr.hcl`: Bare-metal Packer template.
 - `crates/ee-ops/assets/packer/templates/*`: Cloud-init templates used by bare-metal image baking.
-- `crates/ee-agent`: Rust in-VM runtime used for agent/control-plane/measure modes.
+- `crates/easyenclave`: Rust package providing `ee-agent`, `ee-cp`, and `ee-ops` binaries.
 
 ## Required environment
 
@@ -36,5 +35,6 @@ Optional:
 ANSIBLE_CONFIG=crates/ee-ops/ansible/ansible.cfg ansible-playbook crates/ee-ops/ansible/playbooks/gcp-control-plane-new.yml -e cp_wait=true
 ANSIBLE_CONFIG=crates/ee-ops/ansible/ansible.cfg ansible-playbook crates/ee-ops/ansible/playbooks/gcp-vm-fleet-new.yml -e cp_url=https://app-staging.easyenclave.com -e ita_api_key="$ITA_API_KEY" -e num_tiny=1
 ANSIBLE_CONFIG=crates/ee-ops/ansible/ansible.cfg ansible-playbook crates/ee-ops/ansible/playbooks/gcp-vm-measure.yml -e node_size=tiny
-cargo run -p ee-ops -- baremetal-bake-image
+ANSIBLE_CONFIG=crates/ee-ops/ansible/ansible.cfg ansible-playbook crates/ee-ops/ansible/playbooks/gcp-deploy.yml -e cp_bootstrap_timeout=600 -e num_tiny_agents=1
+ANSIBLE_CONFIG=crates/ee-ops/ansible/ansible.cfg ansible-playbook crates/ee-ops/ansible/playbooks/baremetal-image-bake.yml -e target_image_name=easyenclave-baremetal-local
 ```

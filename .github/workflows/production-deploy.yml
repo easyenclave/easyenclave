@@ -150,9 +150,20 @@ jobs:
           CP_BOOTSTRAP_TIMEOUT: "600"
           AGENT_VERIFY_WAIT_ATTEMPTS: "60"
           AGENT_VERIFY_WAIT_SECONDS: "5"
+          ANSIBLE_CONFIG: crates/ee-ops/ansible/ansible.cfg
         run: |
           set -euo pipefail
-          timeout 1600 cargo run -p ee-ops -- ci-deploy 2>&1 | tee /tmp/ci-deploy.log
+          timeout 1600 ansible-playbook crates/ee-ops/ansible/playbooks/gcp-deploy.yml \
+            -e "cp_port=8080" \
+            -e "cp_bootstrap_timeout=${CP_BOOTSTRAP_TIMEOUT}" \
+            -e "num_tiny_agents=${NUM_TINY_AGENTS}" \
+            -e "num_standard_agents=${NUM_STANDARD_AGENTS}" \
+            -e "num_llm_agents=${NUM_LLM_AGENTS}" \
+            -e "orchestration_provider=gcp" \
+            -e "agent_datacenter_az=${AGENT_DATACENTER_AZ}" \
+            -e "agent_verify_wait_attempts=${AGENT_VERIFY_WAIT_ATTEMPTS}" \
+            -e "agent_verify_wait_seconds=${AGENT_VERIFY_WAIT_SECONDS}" \
+            -e "output_json_path=/tmp/ci-deploy-output.json" 2>&1 | tee /tmp/ci-deploy.log
 
       - name: Smoke check production (public URL)
         shell: bash

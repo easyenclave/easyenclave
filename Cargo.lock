@@ -433,74 +433,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
-name = "ee-agent"
-version = "0.1.0"
-dependencies = [
- "base64",
- "bollard",
- "ee-attestation",
- "ee-common",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "ee-attestation"
-version = "0.1.0"
-dependencies = [
- "base64",
- "ee-common",
- "jsonwebtoken",
- "mockito",
- "reqwest",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "ee-common"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "http",
- "serde",
- "serde_json",
- "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "ee-cp"
+name = "easyenclave"
 version = "0.1.0"
 dependencies = [
  "argon2",
  "axum",
  "base64",
+ "bcrypt",
+ "bollard",
  "chrono",
- "ee-attestation",
- "ee-common",
+ "futures-util",
+ "http",
  "jsonwebtoken",
  "mockito",
  "rand_core 0.6.4",
  "reqwest",
+ "rpassword",
  "serde",
  "serde_json",
  "sqlx",
+ "thiserror",
  "tokio",
  "tower",
  "uuid",
-]
-
-[[package]]
-name = "ee-ops"
-version = "0.1.0"
-dependencies = [
- "bcrypt",
- "rpassword",
 ]
 
 [[package]]

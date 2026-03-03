@@ -32,13 +32,13 @@ CI also publishes a determinism report:
 The gate is executed by:
 
 ```bash
-cargo run -p ee-ops -- ci-reproducibility-check
+cargo run -p easyenclave --bin ee-ops -- ci-reproducibility-check
 ```
 
 The same strict check runs locally with:
 
 ```bash
-cargo run -p ee-ops -- ci-reproducibility-check
+cargo run -p easyenclave --bin ee-ops -- ci-reproducibility-check
 ```
 
 ## Running locally
@@ -51,7 +51,7 @@ Prerequisites:
 From repo root:
 
 ```bash
-cargo run -p ee-ops -- ci-reproducibility-check
+cargo run -p easyenclave --bin ee-ops -- ci-reproducibility-check
 ```
 
 Local report output is written to:

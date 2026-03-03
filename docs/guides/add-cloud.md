@@ -1,6 +1,6 @@
 # Add a New Cloud Provider
 
-Primary directories: `crates/ee-cp/`, `infra/`, `.github/workflows/`
+Primary directories: `crates/easyenclave/`, `infra/`, `.github/workflows/`
 
 ## Goal
 
@@ -24,7 +24,7 @@ Add CP-native provisioning support for a new cloud with deterministic placement 
 ## Architecture Points to Extend
 
 1. Provisioning module:
-- Add provider client/service under `crates/ee-cp/src/services/`.
+- Add provider client/service under `crates/easyenclave/src/cp/services/`.
 - Follow existing GCP patterns for auth, create, delete, and list.
 
 2. Control-plane orchestration:
@@ -33,7 +33,7 @@ Add CP-native provisioning support for a new cloud with deterministic placement 
 
 3. Agent config pass-through:
 - Add provider config fields in the Ansible orchestration layer under `crates/ee-ops/ansible/playbooks/`.
-- Export provider env vars in `crates/ee-agent`.
+- Export provider env vars in `crates/easyenclave/src/bin/ee-agent`.
 
 4. CI/CD workflow coverage:
 - Extend `ci.yml` and `staging-deploy.yml` checks if provider-specific behavior is required.
