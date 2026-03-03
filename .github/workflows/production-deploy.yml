@@ -158,7 +158,7 @@ jobs:
           ANSIBLE_CONFIG: ansible/ansible.cfg
         run: |
           set -euo pipefail
-          timeout 1600 ansible-playbook ansible/playbooks/gcp-deploy.yml \
+          timeout 1600 ansible-playbook -v ansible/playbooks/gcp-deploy.yml \
             -e "cp_port=8080" \
             -e "cp_bootstrap_timeout=${CP_BOOTSTRAP_TIMEOUT}" \
             -e "num_tiny_agents=${NUM_TINY_AGENTS}" \

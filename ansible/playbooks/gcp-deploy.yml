@@ -53,6 +53,14 @@
           Invalid fleet request: total_agents must be > 0 and ITA_API_KEY (or INTEL_API_KEY)
           is required when launching additional agents.
 
+    - name: Print deploy parameters
+      ansible.builtin.debug:
+        msg:
+          - "provider={{ orchestration_provider }} cp_zone={{ agent_datacenter_az }} cp_port={{ cp_port }}"
+          - "requested_agents total={{ total_agents }} additional={{ total_additional_agents }}"
+          - "cp_bootstrap_timeout={{ cp_bootstrap_timeout }} verify_attempts={{ agent_verify_wait_attempts }} verify_delay={{ agent_verify_wait_seconds }}"
+
+
     - name: Allocate control-plane output file
       ansible.builtin.tempfile:
         state: file
@@ -67,7 +75,7 @@
           - -e
           - cp_port={{ cp_port }}
           - -e
-          - cp_wait=true
+          - cp_wait=false
           - -e
           - cp_timeout_seconds={{ cp_bootstrap_timeout }}
           - -e
@@ -95,6 +103,13 @@
     - name: Compute agent registration URL
       ansible.builtin.set_fact:
         cp_agent_url: "{{ ('http://' ~ cp_internal_ip ~ ':' ~ (cp_port | string)) if (cp_internal_ip | length > 0) else (('http://' ~ cp_external_ip ~ ':' ~ (cp_port | string)) if (cp_external_ip | length > 0) else cp_bootstrap_url) }}"
+
+    - name: Print resolved control-plane endpoints
+      ansible.builtin.debug:
+        msg:
+          - "cp_bootstrap_url={{ cp_bootstrap_url }}"
+          - "cp_agent_url={{ cp_agent_url }}"
+          - "cp_public_hostname={{ cp_public_hostname | default('none') }} cp_external_ip={{ cp_external_ip | default('none') }} cp_internal_ip={{ cp_internal_ip | default('none') }}"
 
     - name: Ensure control-plane bootstrap URL exists
       ansible.builtin.assert:
@@ -198,6 +213,10 @@
         - total_additional_agents | int > 0
         - orchestration_provider == 'baremetal'
 
+    - name: Print additional fleet launch summary
+      ansible.builtin.debug:
+        msg: "additional agents requested={{ total_additional_agents }} provider={{ orchestration_provider }}"
+
     - name: Probe agents API v0 endpoint
       ansible.builtin.uri:
         url: "{{ cp_bootstrap_url }}/api/agents"
@@ -227,6 +246,10 @@
         that:
           - agents_api_path != '__missing__'
         fail_msg: "Neither /api/agents nor /api/v1/agents is available on the control plane"
+
+    - name: Print agent verification wait settings
+      ansible.builtin.debug:
+        msg: "waiting for verified agents expected={{ total_agents }} attempts={{ agent_verify_wait_attempts }} delay={{ agent_verify_wait_seconds }}s endpoint={{ agents_api_path }}"
 
     - name: Wait for all requested agents to verify
       ansible.builtin.uri:
@@ -262,6 +285,10 @@
     - name: Compute verified agent count
       ansible.builtin.set_fact:
         verified_agents: "{{ final_agents_list | selectattr('verified', 'equalto', true) | list | length }}"
+
+    - name: Print verified agent count
+      ansible.builtin.debug:
+        msg: "verified agents={{ verified_agents }} expected={{ total_agents }}"
 
     - name: Print unverified agents when verification target is missed
       ansible.builtin.debug:
