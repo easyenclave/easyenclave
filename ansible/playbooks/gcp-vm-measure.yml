@@ -57,16 +57,26 @@
           esac
         }
 
-        image_selector_args() {
-          local image_project image_name image_family
+        resolve_source_image() {
+          local image_project image_name image_family image_json image_disk_gib
           image_project="${EE_GCP_IMAGE_PROJECT:-$GCP_PROJECT_ID}"
           image_name="${EE_GCP_IMAGE_NAME:-}"
           image_family="${EE_GCP_IMAGE_FAMILY:-easyenclave-agent-main}"
+
           if [ -n "$image_name" ]; then
-            printf -- '--image-project\n%s\n--image\n%s\n' "$image_project" "$image_name"
+            image_json="$(gcloud compute images describe "$image_name" --project "$image_project" --format=json)"
           else
-            printf -- '--image-project\n%s\n--image-family\n%s\n' "$image_project" "$image_family"
+            image_json="$(gcloud compute images describe-from-family "$image_family" --project "$image_project" --format=json)"
+            image_name="$(echo "$image_json" | jq -r '.name // ""')"
           fi
+
+          [ -n "$image_name" ] || fail "Failed to resolve source image name"
+          image_disk_gib="$(echo "$image_json" | jq -r '.diskSizeGb // ""')"
+          if ! [[ "$image_disk_gib" =~ ^[0-9]+$ ]]; then
+            fail "Failed to resolve source image disk size for ${image_project}/${image_name}"
+          fi
+
+          printf '%s\n%s\n%s\n' "$image_project" "$image_name" "$image_disk_gib"
         }
 
         write_measure_startup_script() {
@@ -105,7 +115,15 @@
 
         startup_script="$(mktemp -t ee-measure-startup.XXXXXX.sh)"
         write_measure_startup_script "$size" "$startup_script"
-        mapfile -t source_args < <(image_selector_args)
+        mapfile -t source_image < <(resolve_source_image)
+        source_image_project="${source_image[0]}"
+        source_image_name="${source_image[1]}"
+        source_image_disk_gib="${source_image[2]}"
+
+        if [ "$source_image_disk_gib" -gt "$disk_gib" ]; then
+          echo "Adjusting measure boot disk for size=${size} from ${disk_gib}GB to ${source_image_disk_gib}GB to match source image ${source_image_project}/${source_image_name}"
+          disk_gib="$source_image_disk_gib"
+        fi
 
         cleanup() {
           rm -f "$startup_script" || true
@@ -129,7 +147,8 @@
           --metadata "serial-port-enable=1,enable-oslogin=FALSE" \
           --metadata-from-file "startup-script=${startup_script}" \
           --scopes "https://www.googleapis.com/auth/cloud-platform" \
-          "${source_args[@]}" >/dev/null
+          --image-project "$source_image_project" \
+          --image "$source_image_name" >/dev/null
 
         deadline=$(( $(date +%s) + timeout ))
         measurements=""
