@@ -1,7 +1,9 @@
 mod config;
-mod cp_client_api;
 mod measure;
 mod oci;
+mod cp_client_api {
+    include!(concat!(env!("OUT_DIR"), "/cp_client_api.rs"));
+}
 
 use std::collections::HashMap;
 use std::fs;

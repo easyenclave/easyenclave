@@ -2,8 +2,20 @@ openapi: 3.0.3
 info:
   title: EasyEnclave Control Plane API
   version: "0.1.0"
-  description: Minimal control-plane contract used by ee-agent bootstrap.
+  description: Control-plane API contract.
 paths:
+  /:
+    get:
+      summary: UI root
+      operationId: getUiRoot
+      responses:
+        "200":
+          description: HTML UI.
+          content:
+            text/html:
+              schema:
+                type: string
+
   /health:
     get:
       summary: Health probe
@@ -15,9 +27,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
+
   /api/agents/challenge:
     get:
-      summary: Issue a nonce for attestation quote binding
+      summary: Issue nonce for quote binding
       operationId: getAgentChallenge
       responses:
         "200":
@@ -26,9 +39,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AgentChallengeResponse"
+
   /api/agents/register:
     post:
-      summary: Register agent with attestation proof
+      summary: Register agent with attestation
       operationId: registerAgent
       requestBody:
         required: true
@@ -44,31 +58,625 @@ paths:
               schema:
                 $ref: "#/components/schemas/AgentRegisterResponse"
         "400":
-          description: Invalid request payload.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
+          $ref: "#/components/responses/ApiErrorBadRequest"
         "401":
-          description: Attestation or nonce verification failed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
+          $ref: "#/components/responses/ApiErrorUnauthorized"
         "409":
-          description: VM name conflict.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiErrorResponse"
+          $ref: "#/components/responses/ApiErrorConflict"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
         "502":
-          description: Upstream tunnel provisioning failure.
+          description: Upstream tunnel provisioning failed.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiErrorResponse"
+
+  /api/agents:
+    get:
+      summary: List agents
+      operationId: listAgents
+      responses:
+        "200":
+          description: Agents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentRecord"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/agents/{agent_id}:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+    get:
+      summary: Get agent
+      operationId: getAgent
+      responses:
+        "200":
+          description: Agent.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRecord"
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "404":
+          description: Agent not found.
+    delete:
+      summary: Delete agent owned by caller
+      operationId: deleteAgent
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Agent deleted.
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "403":
+          $ref: "#/components/responses/ApiErrorForbidden"
+        "404":
+          $ref: "#/components/responses/ApiErrorNotFound"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/agents/{agent_id}/reset:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+    post:
+      summary: Reset owned agent to undeployed
+      operationId: resetAgent
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Agent reset.
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "403":
+          $ref: "#/components/responses/ApiErrorForbidden"
+        "404":
+          $ref: "#/components/responses/ApiErrorNotFound"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/agents/{agent_id}/checks:
+    parameters:
+      - $ref: "#/components/parameters/AgentIdPath"
+    post:
+      summary: Ingest periodic agent workload health check
+      operationId: ingestAgentCheck
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentCheckIngestRequest"
+      responses:
+        "200":
+          description: Check ingested.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentCheckIngestResponse"
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "404":
+          $ref: "#/components/responses/ApiErrorNotFound"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/deploy:
+    post:
+      summary: Create deployment
+      operationId: createDeployment
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployRequest"
+      responses:
+        "200":
+          description: Deployment created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployResponse"
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "409":
+          $ref: "#/components/responses/ApiErrorConflict"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/deployments:
+    get:
+      summary: List deployments
+      operationId: listDeployments
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/DeploymentStatus"
+      responses:
+        "200":
+          description: Deployments.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DeploymentRecord"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/deployments/{deployment_id}:
+    parameters:
+      - $ref: "#/components/parameters/DeploymentIdPath"
+    get:
+      summary: Get deployment
+      operationId: getDeployment
+      responses:
+        "200":
+          description: Deployment.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeploymentRecord"
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "404":
+          description: Deployment not found.
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/stats/apps/recent:
+    get:
+      summary: Recent app health stats
+      operationId: recentAppStats
+      parameters:
+        - $ref: "#/components/parameters/WindowHours"
+      responses:
+        "200":
+          description: Recent app stats.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentAppStatsResponse"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/stats/agents/recent:
+    get:
+      summary: Recent agent health stats
+      operationId: recentAgentStats
+      parameters:
+        - $ref: "#/components/parameters/WindowHours"
+      responses:
+        "200":
+          description: Recent agent stats.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecentAgentStatsResponse"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/accounts:
+    post:
+      summary: Create account and API key
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAccountRequest"
+      responses:
+        "200":
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAccountResponse"
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "409":
+          $ref: "#/components/responses/ApiErrorConflict"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+    get:
+      summary: List accounts (admin session)
+      operationId: listAccounts
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Accounts.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccountRecord"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/accounts/{account_id}:
+    parameters:
+      - $ref: "#/components/parameters/AccountIdPath"
+    get:
+      summary: Get account by API key ownership
+      operationId: getAccount
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountRecord"
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "404":
+          description: Account not found.
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/admin/measurements/agents:
+    get:
+      summary: List observed agent measurements
+      operationId: listObservedAgentMeasurements
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: node_size
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: uint32
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Observed measurements.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentMeasurementRecord"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /api/admin/trusted-measurements/agent:
+    get:
+      summary: Get trusted agent measurements
+      operationId: getTrustedAgentMeasurements
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Trusted measurements snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrustedAgentMeasurementsResponse"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+    post:
+      summary: Upsert trusted agent measurement
+      operationId: upsertTrustedAgentMeasurement
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertTrustedAgentMeasurementRequest"
+      responses:
+        "200":
+          description: Trusted measurements updated.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UpsertTrustedAgentMeasurementResponse"
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /admin/login:
+    post:
+      summary: Admin login (password)
+      operationId: adminLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminLoginRequest"
+      responses:
+        "200":
+          description: Session token issued.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminLoginResponse"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+        "503":
+          description: Admin password auth unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+
+  /admin/logout:
+    post:
+      summary: Admin logout
+      operationId: adminLogout
+      security:
+        - BearerAuth: []
+      responses:
+        "204":
+          description: Session revoked.
+        "401":
+          description: Unauthorized.
+        "500":
+          description: Internal error.
+
+  /auth/methods:
+    get:
+      summary: Get configured auth methods
+      operationId: authMethods
+      responses:
+        "200":
+          description: Available auth methods.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthMethodsResponse"
+
+  /auth/github:
+    get:
+      summary: Start GitHub OAuth flow
+      operationId: githubOauthStart
+      responses:
+        "200":
+          description: OAuth URL issued.
+          headers:
+            Set-Cookie:
+              description: OAuth state cookie.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GithubOauthStartResponse"
+        "503":
+          description: GitHub OAuth unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+
+  /auth/github/callback:
+    get:
+      summary: Complete GitHub OAuth flow
+      operationId: githubOauthCallback
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "307":
+          description: Redirects to UI with issued token.
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/ApiErrorBadRequest"
+        "401":
+          $ref: "#/components/responses/ApiErrorUnauthorized"
+        "403":
+          $ref: "#/components/responses/ApiErrorForbidden"
+        "500":
+          $ref: "#/components/responses/ApiErrorInternal"
+        "502":
+          description: Upstream GitHub API failure.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+        "503":
+          description: GitHub OAuth unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiErrorResponse"
+
+  /auth/me:
+    get:
+      summary: Get admin session metadata
+      operationId: authMe
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Session metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthMeResponse"
+        "401":
+          description: Unauthorized.
+        "500":
+          description: Internal error.
+
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
+
+  parameters:
+    AgentIdPath:
+      name: agent_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DeploymentIdPath:
+      name: deployment_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    AccountIdPath:
+      name: account_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    WindowHours:
+      name: window_hours
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: uint32
+        minimum: 1
+        maximum: 168
+
+  responses:
+    ApiErrorBadRequest:
+      description: Bad request.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+    ApiErrorUnauthorized:
+      description: Unauthorized.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+    ApiErrorForbidden:
+      description: Forbidden.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+    ApiErrorNotFound:
+      description: Not found.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+    ApiErrorConflict:
+      description: Conflict.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+    ApiErrorInternal:
+      description: Internal server error.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiErrorResponse"
+
   schemas:
+    JsonValue:
+      oneOf:
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
+        - type: string
+        - type: number
+        - type: integer
+        - type: boolean
+      nullable: true
+
+    AgentStatus:
+      type: string
+      enum: [undeployed, deploying, deployed]
+
+    DeploymentStatus:
+      type: string
+      enum: [pending, deploying, running, failed, stopped]
+
+    AccountType:
+      type: string
+      enum: [deployer, agent, contributor, platform]
+
+    ApiErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        request_id:
+          type: string
+          nullable: true
+
     HealthResponse:
       type: object
       required: [ok]
@@ -81,6 +689,7 @@ components:
         git_sha:
           type: string
           nullable: true
+
     AgentChallengeResponse:
       type: object
       required: [nonce, expires_in_seconds]
@@ -91,6 +700,7 @@ components:
           type: integer
           format: uint64
           minimum: 1
+
     AgentRegisterRequest:
       type: object
       required: [intel_ta_token, vm_name, nonce]
@@ -110,6 +720,7 @@ components:
         github_owner:
           type: string
           nullable: true
+
     AgentRegisterResponse:
       type: object
       required: [agent_id, tunnel_token, hostname]
@@ -121,14 +732,470 @@ components:
           type: string
         hostname:
           type: string
-    ApiErrorResponse:
+
+    AgentRecord:
       type: object
-      required: [code, message]
+      required: [agent_id, vm_name, status, verified]
       properties:
-        code:
+        agent_id:
           type: string
-        message:
+          format: uuid
+        vm_name:
           type: string
-        request_id:
+        status:
+          $ref: "#/components/schemas/AgentStatus"
+        verified:
+          type: boolean
+        node_size:
           type: string
           nullable: true
+        datacenter:
+          type: string
+          nullable: true
+        github_owner:
+          type: string
+          nullable: true
+        account_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    AgentMeasurementRecord:
+      type: object
+      required: [agent_id, vm_name, mrtd, updated_at]
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+        vm_name:
+          type: string
+        node_size:
+          type: string
+          nullable: true
+        datacenter:
+          type: string
+          nullable: true
+        mrtd:
+          type: string
+        rtmrs:
+          $ref: "#/components/schemas/JsonValue"
+        tcb_status:
+          type: string
+          nullable: true
+        updated_at:
+          type: string
+
+    AgentCheckIngestRequest:
+      type: object
+      required: [health_ok, attestation_ok]
+      properties:
+        app_name:
+          type: string
+          nullable: true
+        health_ok:
+          type: boolean
+        attestation_ok:
+          type: boolean
+        failure_reason:
+          type: string
+          nullable: true
+
+    AgentCheckIngestResponse:
+      type: object
+      required:
+        [
+          app_name,
+          check_ok,
+          deployment_exempt,
+          counted_down,
+          imperfect_now,
+          consecutive_failures,
+          consecutive_successes,
+        ]
+      properties:
+        app_name:
+          type: string
+        check_ok:
+          type: boolean
+        deployment_exempt:
+          type: boolean
+        counted_down:
+          type: boolean
+        imperfect_now:
+          type: boolean
+        consecutive_failures:
+          type: integer
+          format: uint32
+        consecutive_successes:
+          type: integer
+          format: uint32
+
+    DeployRequest:
+      type: object
+      required: [compose]
+      properties:
+        compose:
+          type: string
+        config:
+          $ref: "#/components/schemas/JsonValue"
+        app_name:
+          type: string
+          nullable: true
+        app_version:
+          type: string
+          nullable: true
+        agent_name:
+          type: string
+          nullable: true
+        node_size:
+          type: string
+          nullable: true
+        datacenter:
+          type: string
+          nullable: true
+        dry_run:
+          type: boolean
+          nullable: true
+
+    DeployResponse:
+      type: object
+      required: [deployment_id, agent_id, status]
+      properties:
+        deployment_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+
+    DeploymentRecord:
+      type: object
+      required:
+        [
+          deployment_id,
+          agent_id,
+          account_id,
+          auth_method,
+          compose,
+          status,
+          cpu_vcpus,
+          memory_gb,
+          gpu_count,
+        ]
+      properties:
+        deployment_id:
+          type: string
+          format: uuid
+        agent_id:
+          type: string
+          format: uuid
+        account_id:
+          type: string
+          format: uuid
+        auth_method:
+          type: string
+        compose:
+          type: string
+        status:
+          $ref: "#/components/schemas/DeploymentStatus"
+        cpu_vcpus:
+          type: integer
+          format: int32
+        memory_gb:
+          type: number
+          format: double
+        gpu_count:
+          type: integer
+          format: int32
+
+    RecentAppStat:
+      type: object
+      required:
+        [
+          app_name,
+          checks_total,
+          failed_checks,
+          exempt_failures,
+          imperfect_now,
+          perfect_now,
+          downtime_seconds_estimate,
+          uptime_ratio,
+        ]
+      properties:
+        app_name:
+          type: string
+        checks_total:
+          type: integer
+          format: uint64
+        failed_checks:
+          type: integer
+          format: uint64
+        exempt_failures:
+          type: integer
+          format: uint64
+        imperfect_now:
+          type: integer
+          format: uint64
+        perfect_now:
+          type: boolean
+        last_imperfect_unix:
+          type: integer
+          format: int64
+          nullable: true
+        seconds_since_last_imperfect:
+          type: integer
+          format: uint64
+          nullable: true
+        downtime_seconds_estimate:
+          type: integer
+          format: uint64
+        uptime_ratio:
+          type: number
+          format: double
+
+    RecentAppStatsResponse:
+      type: object
+      required: [window_hours, window_start_unix, window_end_unix, total_apps, apps]
+      properties:
+        window_hours:
+          type: integer
+          format: uint32
+        window_start_unix:
+          type: integer
+          format: int64
+        window_end_unix:
+          type: integer
+          format: int64
+        total_apps:
+          type: integer
+          format: uint64
+        apps:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecentAppStat"
+
+    RecentAgentStat:
+      type: object
+      required:
+        [
+          agent_id,
+          checks_total,
+          failed_checks,
+          exempt_failures,
+          imperfect_now,
+          perfect_now,
+          downtime_seconds_estimate,
+          uptime_ratio,
+        ]
+      properties:
+        agent_id:
+          type: string
+          format: uuid
+        vm_name:
+          type: string
+          nullable: true
+        hostname:
+          type: string
+          nullable: true
+        app_name:
+          type: string
+          nullable: true
+        checks_total:
+          type: integer
+          format: uint64
+        failed_checks:
+          type: integer
+          format: uint64
+        exempt_failures:
+          type: integer
+          format: uint64
+        imperfect_now:
+          type: boolean
+        perfect_now:
+          type: boolean
+        last_imperfect_unix:
+          type: integer
+          format: int64
+          nullable: true
+        seconds_since_last_imperfect:
+          type: integer
+          format: uint64
+          nullable: true
+        downtime_seconds_estimate:
+          type: integer
+          format: uint64
+        uptime_ratio:
+          type: number
+          format: double
+
+    RecentAgentStatsResponse:
+      type: object
+      required: [window_hours, window_start_unix, window_end_unix, total_agents, agents]
+      properties:
+        window_hours:
+          type: integer
+          format: uint32
+        window_start_unix:
+          type: integer
+          format: int64
+        window_end_unix:
+          type: integer
+          format: int64
+        total_agents:
+          type: integer
+          format: uint64
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecentAgentStat"
+
+    CreateAccountRequest:
+      type: object
+      required: [name, account_type]
+      properties:
+        name:
+          type: string
+        account_type:
+          $ref: "#/components/schemas/AccountType"
+        github_login:
+          type: string
+          nullable: true
+        github_org:
+          type: string
+          nullable: true
+
+    CreateAccountResponse:
+      type: object
+      required: [account_id, api_key]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        api_key:
+          type: string
+
+    AccountRecord:
+      type: object
+      required: [account_id, name, account_type]
+      properties:
+        account_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        account_type:
+          $ref: "#/components/schemas/AccountType"
+        github_login:
+          type: string
+          nullable: true
+        github_org:
+          type: string
+          nullable: true
+
+    UpsertTrustedAgentMeasurementRequest:
+      type: object
+      required: [node_size, mrtd]
+      properties:
+        node_size:
+          type: string
+        mrtd:
+          type: string
+        rtmrs:
+          $ref: "#/components/schemas/RtmrsMap"
+        source:
+          type: string
+          nullable: true
+
+    RtmrsMap:
+      type: object
+      properties:
+        rtmr0:
+          type: string
+        rtmr1:
+          type: string
+        rtmr2:
+          type: string
+        rtmr3:
+          type: string
+      additionalProperties: false
+      nullable: true
+
+    TrustedAgentMeasurementsResponse:
+      type: object
+      required:
+        [trusted_agent_mrtds, trusted_agent_mrtds_by_size, trusted_agent_rtmrs_by_size]
+      properties:
+        trusted_agent_mrtds:
+          type: string
+        trusted_agent_mrtds_by_size:
+          type: object
+          additionalProperties: true
+        trusted_agent_rtmrs_by_size:
+          type: object
+          additionalProperties: true
+
+    UpsertTrustedAgentMeasurementResponse:
+      type: object
+      required: [updated, node_size, mrtd, trusted]
+      properties:
+        updated:
+          type: boolean
+        node_size:
+          type: string
+        mrtd:
+          type: string
+        source:
+          type: string
+          nullable: true
+        trusted:
+          $ref: "#/components/schemas/TrustedAgentMeasurementsResponse"
+
+    AdminLoginRequest:
+      type: object
+      required: [password]
+      properties:
+        password:
+          type: string
+
+    AdminLoginResponse:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+        expires_at:
+          type: string
+
+    AuthMeResponse:
+      type: object
+      required: [auth_method, expires_at]
+      properties:
+        auth_method:
+          type: string
+        github_login:
+          type: string
+          nullable: true
+        expires_at:
+          type: string
+
+    AuthMethodsResponse:
+      type: object
+      required: [methods, password, github]
+      properties:
+        methods:
+          type: array
+          items:
+            type: string
+        password:
+          type: boolean
+        github:
+          type: boolean
+
+    GithubOauthStartResponse:
+      type: object
+      required: [auth_url]
+      properties:
+        auth_url:
+          type: string
