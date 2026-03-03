@@ -47,9 +47,9 @@ impl GcpConfig {
             production_zone: zone_from_env(Environment::Production)
                 .unwrap_or_else(|| "us-central1-f".to_string()),
             staging_machine_type: machine_type_from_env(Environment::Staging)
-                .unwrap_or_else(|| "c3-standard-2".to_string()),
+                .unwrap_or_else(|| "c3-standard-4".to_string()),
             production_machine_type: machine_type_from_env(Environment::Production)
-                .unwrap_or_else(|| "c3-standard-2".to_string()),
+                .unwrap_or_else(|| "c3-standard-4".to_string()),
             network: first_env(&["GCP_NETWORK"]).unwrap_or_else(|| "default".to_string()),
             subnetwork: first_env(&["GCP_SUBNETWORK"]).unwrap_or_else(|| "default".to_string()),
             staging_service_account_email: required_service_account_email(Environment::Staging)?,
@@ -277,8 +277,8 @@ mod tests {
             production_project_id: "proj-prod".to_string(),
             staging_zone: "us-central1-a".to_string(),
             production_zone: "us-east1-b".to_string(),
-            staging_machine_type: "c3-standard-2".to_string(),
-            production_machine_type: "c3-standard-4".to_string(),
+            staging_machine_type: "c3-standard-4".to_string(),
+            production_machine_type: "c3-standard-8".to_string(),
             network: "vpc-main".to_string(),
             subnetwork: "subnet-main".to_string(),
             staging_service_account_email: "staging-sa@proj.iam.gserviceaccount.com".to_string(),
@@ -293,10 +293,10 @@ mod tests {
         assert_eq!(cfg.project_for(Environment::Production), "proj-prod");
         assert_eq!(cfg.zone_for(Environment::Staging), "us-central1-a");
         assert_eq!(cfg.zone_for(Environment::Production), "us-east1-b");
-        assert_eq!(cfg.machine_type_for(Environment::Staging), "c3-standard-2");
+        assert_eq!(cfg.machine_type_for(Environment::Staging), "c3-standard-4");
         assert_eq!(
             cfg.machine_type_for(Environment::Production),
-            "c3-standard-4"
+            "c3-standard-8"
         );
     }
 
@@ -306,7 +306,7 @@ mod tests {
         let payload = svc.build_tdx_instance_insert_payload(
             Environment::Staging,
             "ee-staging-001",
-            "c3-standard-2",
+            "c3-standard-4",
             "projects/example/global/images/family/ee-tdx",
             "echo hello",
         );
