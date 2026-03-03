@@ -44,22 +44,21 @@ export EE_GCP_IMAGE_PROJECT="$GCP_PROJECT_ID"
 export EE_GCP_IMAGE_FAMILY="easyenclave-agent-main"
 ```
 
-3. Boot an agent VM using `gcp-nodectl.sh`.
+3. Boot an agent VM using the Ansible GCP playbook.
 
 ```bash
 export ITA_API_KEY="<intel-ta-api-key>"
-bash crates/ee-ops/assets/gcp-nodectl.sh vm new \
-  --size tiny \
-  --cp-url "https://app.easyenclave.com" \
-  --ita-api-key "$ITA_API_KEY" \
-  --zone us-central1-f \
-  --wait
+ANSIBLE_CONFIG=crates/ee-ops/ansible/ansible.cfg \
+ansible-playbook crates/ee-ops/ansible/playbooks/gcp-vm-fleet-new.yml \
+  -e cp_url="https://app.easyenclave.com" \
+  -e ita_api_key="$ITA_API_KEY" \
+  -e num_tiny=1 \
+  -e agent_zone=us-central1-f
 ```
 
 4. Verify registration.
 
 ```bash
-bash crates/ee-ops/assets/gcp-nodectl.sh vm list
 curl -s https://app.easyenclave.com/api/agents | jq '.[] | {agent_id,vm_name,node_size,datacenter,status,verified}'
 ```
 

@@ -34,6 +34,7 @@ require_cmd() {
 
 require_cmd jq
 require_cmd sha256sum
+require_cmd ansible-playbook
 
 parse_output_value() {
   local file="$1"
@@ -80,17 +81,18 @@ measure_values_to_output() {
     echo "--- [$label] Measuring node_size=$size ---"
     for attempt in $(seq 1 "$measure_attempts"); do
       local err_file="/tmp/ci-repro-measure-${label}-${size}.err"
+      local measure_file="/tmp/ci-repro-measure-${label}-${size}.json"
       echo "[$label] measurement attempt ${attempt}/${measure_attempts} for node_size=$size"
       set +e
-      measures="$(
-        bash crates/ee-ops/assets/gcp-nodectl.sh vm measure \
-          --json \
-          --timeout "$measure_timeout_seconds" \
-          --size "$size" \
-          2>"$err_file"
-      )"
+      ANSIBLE_CONFIG="crates/ee-ops/ansible/ansible.cfg" \
+        ansible-playbook crates/ee-ops/ansible/playbooks/gcp-vm-measure.yml \
+          -e "node_size=$size" \
+          -e "timeout_seconds=$measure_timeout_seconds" \
+          -e "output_json_path=$measure_file" \
+          >/tmp/ci-repro-measure-"${label}"-"${size}".out 2>"$err_file"
       measure_rc=$?
       set -e
+      measures="$(cat "$measure_file" 2>/dev/null || true)"
 
       if [ "$measure_rc" -eq 0 ] \
         && [ -n "${measures:-}" ] \

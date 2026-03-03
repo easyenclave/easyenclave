@@ -180,6 +180,7 @@ run_ansible_playbook "$ANSIBLE_DIR/playbooks/gcp-control-plane-new.yml" \
   -e "cp_port=8080" \
   -e "cp_wait=true" \
   -e "cp_timeout_seconds=$CP_BOOTSTRAP_TIMEOUT" \
+  -e "cp_zone=$AGENT_DATACENTER_AZ" \
   -e "output_json_path=$CP_BOOT_JSON_FILE"
 CP_BOOT_JSON="$(cat "$CP_BOOT_JSON_FILE")"
 rm -f "$CP_BOOT_JSON_FILE" || true

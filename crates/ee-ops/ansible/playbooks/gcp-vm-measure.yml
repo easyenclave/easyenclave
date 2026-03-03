@@ -1,0 +1,167 @@
+---
+- name: Measure agent attestation values from GCP VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    node_size: standard
+    timeout_seconds: 600
+    zone: ""
+    output_json_path: /tmp/ee-gcp-measure.json
+  tasks:
+    - name: Validate vars
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'GCP_PROJECT_ID') | length > 0
+          - node_size in ['tiny', 'standard', 'llm']
+        fail_msg: "GCP_PROJECT_ID is required and node_size must be tiny|standard|llm"
+
+    - name: Launch measure VM and capture MRTD/RTMRs
+      ansible.builtin.shell: |
+        set -euo pipefail
+
+        fail() {
+          echo "::error::$*"
+          exit 1
+        }
+
+        normalize_name() {
+          local input="$1" max_len="${2:-63}" cleaned
+          cleaned="$(printf '%s' "$input" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//')"
+          [ -n "$cleaned" ] || cleaned="easyenclave"
+          cleaned="${cleaned:0:${max_len}}"
+          cleaned="$(printf '%s' "$cleaned" | sed -E 's/-+$//')"
+          [ -n "$cleaned" ] || cleaned="easyenclave"
+          printf '%s' "$cleaned"
+        }
+
+        random_suffix() {
+          cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-"${1:-8}"
+        }
+
+        machine_type_for_size() {
+          case "$1" in
+            tiny) echo "c3-standard-4" ;;
+            standard) echo "c3-standard-8" ;;
+            llm) echo "c3-standard-22" ;;
+            *) fail "Unsupported size '$1'" ;;
+          esac
+        }
+
+        disk_gib_for_size() {
+          case "$1" in
+            tiny) echo "80" ;;
+            standard) echo "100" ;;
+            llm) echo "140" ;;
+            *) fail "Unsupported size '$1'" ;;
+          esac
+        }
+
+        image_selector_args() {
+          local image_project image_name image_family
+          image_project="${EE_GCP_IMAGE_PROJECT:-$GCP_PROJECT_ID}"
+          image_name="${EE_GCP_IMAGE_NAME:-}"
+          image_family="${EE_GCP_IMAGE_FAMILY:-easyenclave-agent-main}"
+          if [ -n "$image_name" ]; then
+            printf -- '--image-project\n%s\n--image\n%s\n' "$image_project" "$image_name"
+          else
+            printf -- '--image-project\n%s\n--image-family\n%s\n' "$image_project" "$image_family"
+          fi
+        }
+
+        write_measure_startup_script() {
+          local size="$1" script_path="$2"
+          cat > "$script_path" <<SCRIPT
+        #!/usr/bin/env bash
+        set -euo pipefail
+        exec > >(tee -a /var/log/easyenclave-measure.log /dev/ttyS0) 2>&1
+        mkdir -p /etc/easyenclave
+        cat > /etc/easyenclave/measure.json <<'EOF_CONFIG'
+        {"node_size":"${size}"}
+        EOF_CONFIG
+        chmod 0600 /etc/easyenclave/measure.json
+        if [ ! -x /usr/local/bin/ee-agent ]; then
+          echo "EASYENCLAVE_MEASURE_ERROR=missing_agent_binary"
+          systemctl poweroff || true
+          exit 0
+        fi
+        EE_AGENT_MODE=measure EASYENCLAVE_CONFIG=/etc/easyenclave/measure.json timeout 300 /usr/local/bin/ee-agent || true
+        sleep 2
+        systemctl poweroff || true
+        SCRIPT
+          chmod +x "$script_path"
+        }
+
+        [ -n "${GCP_PROJECT_ID:-}" ] || fail "Missing GCP_PROJECT_ID"
+
+        size="${NODE_SIZE:-standard}"
+        timeout="${TIMEOUT_SECONDS:-600}"
+        zone="${ZONE:-${GCP_ZONE:-us-central1-a}}"
+        output_json_path="${OUTPUT_JSON_PATH:-/tmp/ee-gcp-measure.json}"
+
+        machine_type="$(machine_type_for_size "$size")"
+        disk_gib="$(disk_gib_for_size "$size")"
+        vm_name="$(normalize_name "ee-measure-${size}-$(random_suffix 8)" 63)"
+
+        startup_script="$(mktemp -t ee-measure-startup.XXXXXX.sh)"
+        write_measure_startup_script "$size" "$startup_script"
+        mapfile -t source_args < <(image_selector_args)
+
+        cleanup() {
+          rm -f "$startup_script" || true
+          if [ -n "${vm_name:-}" ]; then
+            gcloud compute instances delete "$vm_name" --project "$GCP_PROJECT_ID" --zone "$zone" --quiet >/dev/null 2>&1 || true
+          fi
+        }
+        trap cleanup EXIT
+
+        labels="easyenclave=managed,ee_role=measure,ee_env=$(normalize_name "${EASYENCLAVE_ENV:-staging}" 63)"
+        gcloud compute instances create "$vm_name" \
+          --project "$GCP_PROJECT_ID" \
+          --zone "$zone" \
+          --machine-type "$machine_type" \
+          --boot-disk-size "${disk_gib}GB" \
+          --boot-disk-type "pd-balanced" \
+          --maintenance-policy TERMINATE \
+          --provisioning-model STANDARD \
+          --confidential-compute-type TDX \
+          --labels "$labels" \
+          --metadata "serial-port-enable=1,enable-oslogin=FALSE" \
+          --metadata-from-file "startup-script=${startup_script}" \
+          --scopes "https://www.googleapis.com/auth/cloud-platform" \
+          "${source_args[@]}" >/dev/null
+
+        deadline=$(( $(date +%s) + timeout ))
+        measurements=""
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+          serial="$(gcloud compute instances get-serial-port-output "$vm_name" --project "$GCP_PROJECT_ID" --zone "$zone" --port 1 2>/dev/null | tail -n 400 || true)"
+          line="$(echo "$serial" | grep 'EASYENCLAVE_MEASUREMENTS=' | tail -n1 || true)"
+          if [ -n "$line" ]; then
+            measurements="${line#*=}"
+            break
+          fi
+          err="$(echo "$serial" | grep 'EASYENCLAVE_MEASURE_ERROR=' | tail -n1 || true)"
+          if [ -n "$err" ]; then
+            fail "Measure VM error: ${err#*=}"
+          fi
+          sleep 5
+        done
+
+        [ -n "$measurements" ] || fail "Timed out waiting for measurement output"
+        echo "$measurements" | jq -e '.mrtd and .rtmr0 and .rtmr1 and .rtmr2 and .rtmr3' >/dev/null
+
+        mkdir -p "$(dirname "$output_json_path")"
+        echo "$measurements" | jq . > "$output_json_path"
+        echo "$measurements" | jq .
+      args:
+        executable: /bin/bash
+      environment:
+        NODE_SIZE: "{{ node_size }}"
+        TIMEOUT_SECONDS: "{{ timeout_seconds | string }}"
+        ZONE: "{{ zone }}"
+        OUTPUT_JSON_PATH: "{{ output_json_path }}"
+      register: measure_cmd
+
+    - name: Print measurement result
+      ansible.builtin.debug:
+        var: measure_cmd.stdout_lines
