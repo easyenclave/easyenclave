@@ -35,8 +35,25 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v ansible-playbook >/dev/null 2>&1; then
+            exit 0
+          fi
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ansible
+          else
+            python3 -m pip install --user ansible
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+
       - name: Build bare-metal image
         shell: bash
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
         run: |
           set -euo pipefail
           target_name="${{ inputs.target_image_name }}"
@@ -44,10 +61,11 @@ jobs:
             target_name="easyenclave-baremetal-$(echo "${SOURCE_SHA}" | cut -c1-12)"
           fi
 
-          export TARGET_IMAGE_NAME="${target_name}"
-          export BAREMETAL_BASE_IMAGE_URL="${{ inputs.base_image_url }}"
-          export BAREMETAL_EXPORT_RAW="${{ inputs.export_raw }}"
-          cargo run -p ee-ops -- baremetal-bake-image
+          ansible-playbook ansible/playbooks/baremetal-image-bake.yml \
+            -e "target_image_name=${target_name}" \
+            -e "source_sha=${SOURCE_SHA}" \
+            -e "base_image_url=${{ inputs.base_image_url }}" \
+            -e "export_raw=${{ inputs.export_raw }}"
 
       - name: Upload image artifacts
         uses: actions/upload-artifact@v4

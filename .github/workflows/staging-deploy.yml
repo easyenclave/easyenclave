@@ -5,8 +5,13 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
-      - "crates/**"
+      - "src/**"
+      - "migrations/**"
+      - "tests/**"
       - "infra/**"
+      - "ansible/**"
+      - "packer/**"
+      - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
@@ -80,7 +85,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build ee-agent release binary
-        run: cargo build -p ee-agent --release
+        run: cargo build --bin ee-agent --release
 
       - name: Upload ee-agent binary artifact
         uses: actions/upload-artifact@v4
@@ -88,42 +93,6 @@ jobs:
           name: staging-ee-agent-bin-${{ github.run_id }}
           path: target/release/ee-agent
           if-no-files-found: error
-
-  cleanup_managed_vms:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    needs: prep
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ env.GCP_SERVICE_ACCOUNT_KEY }}
-
-      - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ env.GCP_PROJECT_ID }}
-
-      - name: Cleanup previous managed staging-project VMs
-        shell: bash
-        run: |
-          set -euo pipefail
-          gcloud compute instances list --project "${GCP_PROJECT_ID}" \
-            --filter "labels.easyenclave=managed" \
-            --format "value(name,zone.basename())" > /tmp/staging-gc.txt || true
-          if [ ! -s /tmp/staging-gc.txt ]; then
-            echo "No existing managed VMs found."
-            exit 0
-          fi
-          while read -r name zone; do
-            [ -n "${name:-}" ] || continue
-            [ -n "${zone:-}" ] || continue
-            echo "Deleting ${name} (${zone})"
-            gcloud compute instances delete "${name}" --project "${GCP_PROJECT_ID}" --zone "${zone}" --quiet || true
-          done < /tmp/staging-gc.txt
 
   build_cp_image:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -164,6 +133,13 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
 
+      - name: Install Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
       - name: Download ee-agent binary artifact
         uses: actions/download-artifact@v4
         with:
@@ -186,23 +162,24 @@ jobs:
       - name: Bake staging GCP image for commit
         shell: bash
         env:
-          SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
-          SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
-          EE_AGENT_BINARY_PATH: /tmp/staging-ee-agent-bin/ee-agent
+          ANSIBLE_CONFIG: ansible/ansible.cfg
         run: |
           set -euo pipefail
-          export TARGET_IMAGE_NAME="easyenclave-agent-main-${{ needs.prep.outputs.sha12 }}"
-          export TARGET_IMAGE_FAMILY="easyenclave-agent-main"
-          export TARGET_IMAGE_DESCRIPTION="EasyEnclave staging commit ${SOURCE_SHA}"
-          export TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=staging,gitsha=${{ needs.prep.outputs.sha12 }}"
-          chmod 0755 "${EE_AGENT_BINARY_PATH}"
-          bash crates/ee-ops/assets/gcp-bake-image.sh
+          chmod 0755 "/tmp/staging-ee-agent-bin/ee-agent"
+          ansible-playbook ansible/playbooks/gcp-image-bake.yml \
+            -e "source_image_project=ubuntu-os-cloud" \
+            -e "source_image_family=ubuntu-2404-lts-amd64" \
+            -e "target_image_name=easyenclave-agent-main-${{ needs.prep.outputs.sha12 }}" \
+            -e "target_image_family=easyenclave-agent-main" \
+            -e "target_image_description=EasyEnclave staging commit ${SOURCE_SHA}" \
+            -e "target_image_labels=easyenclave=managed,easyenclave_env=staging,gitsha=${{ needs.prep.outputs.sha12 }}" \
+            -e "source_sha=${SOURCE_SHA}" \
+            -e "ee_agent_binary_path=/tmp/staging-ee-agent-bin/ee-agent"
 
   deploy:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs:
       - prep
-      - cleanup_managed_vms
       - build_cp_image
       - bake_agent_image
     runs-on: ubuntu-latest
@@ -215,11 +192,12 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Install Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ansible
 
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
@@ -230,6 +208,15 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Cleanup managed staging VMs via Ansible
+        shell: bash
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
+        run: |
+          set -euo pipefail
+          ansible-playbook ansible/playbooks/gcp-cleanup-managed-vms.yml \
+            -e "ee_env_name=staging"
 
       - name: Deploy staging control plane and agent
         id: deploy
@@ -270,9 +257,20 @@ jobs:
           CP_BOOTSTRAP_TIMEOUT: "600"
           AGENT_VERIFY_WAIT_ATTEMPTS: "48"
           AGENT_VERIFY_WAIT_SECONDS: "5"
+          ANSIBLE_CONFIG: ansible/ansible.cfg
         run: |
           set -euo pipefail
-          timeout 1300 cargo run -p ee-ops -- ci-deploy 2>&1 | tee /tmp/ci-deploy.log
+          timeout 1300 ansible-playbook -v ansible/playbooks/gcp-deploy.yml \
+            -e "cp_port=8080" \
+            -e "cp_bootstrap_timeout=${CP_BOOTSTRAP_TIMEOUT}" \
+            -e "num_tiny_agents=${NUM_TINY_AGENTS}" \
+            -e "num_standard_agents=${NUM_STANDARD_AGENTS}" \
+            -e "num_llm_agents=${NUM_LLM_AGENTS}" \
+            -e "orchestration_provider=gcp" \
+            -e "agent_datacenter_az=${AGENT_DATACENTER_AZ}" \
+            -e "agent_verify_wait_attempts=${AGENT_VERIFY_WAIT_ATTEMPTS}" \
+            -e "agent_verify_wait_seconds=${AGENT_VERIFY_WAIT_SECONDS}" \
+            -e "output_json_path=/tmp/ci-deploy-output.json" 2>&1 | tee /tmp/ci-deploy.log
 
       - name: Smoke check staging (public URL)
         shell: bash

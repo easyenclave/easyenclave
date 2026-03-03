@@ -1,0 +1,82 @@
+---
+- name: Launch baremetal VM fleet via tdx-runner
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cp_url: ""
+    ita_api_key: ""
+    num_tiny: 0
+    num_standard: 0
+    num_llm: 0
+    vm_wait: true
+    vm_timeout_seconds: 600
+    agent_zone: ""
+    agent_region: ""
+    agent_datacenter: ""
+    tdx_runner_command: "tdx-runner vm new"
+    tdx_runner_extra_args: ""
+    output_json_path: /tmp/ee-baremetal-vm-fleet.json
+  tasks:
+    - name: Validate required vars
+      ansible.builtin.assert:
+        that:
+          - cp_url | length > 0
+          - ita_api_key | length > 0
+          - tdx_runner_command | length > 0
+        fail_msg: "cp_url, ita_api_key, and tdx_runner_command are required"
+
+    - name: Build launch-size list
+      ansible.builtin.set_fact:
+        launch_sizes: "{{ (['tiny'] * (num_tiny | int)) + (['standard'] * (num_standard | int)) + (['llm'] * (num_llm | int)) }}"
+
+    - name: Start baremetal VMs asynchronously via tdx-runner
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cmd=( {{ tdx_runner_command }} )
+        cmd+=(--size "{{ item }}" --cp-url "{{ cp_url }}" --ita-api-key "{{ ita_api_key }}")
+        if [ "{{ vm_wait | bool | ternary('true','false') }}" = "true" ]; then
+          cmd+=(--wait --timeout "{{ vm_timeout_seconds | int }}")
+        fi
+        if [ -n "{{ agent_zone }}" ]; then
+          cmd+=(--zone "{{ agent_zone }}")
+        fi
+        if [ -n "{{ agent_region }}" ]; then
+          cmd+=(--region "{{ agent_region }}")
+        fi
+        if [ -n "{{ agent_datacenter }}" ]; then
+          cmd+=(--datacenter "{{ agent_datacenter }}")
+        fi
+        if [ -n "{{ tdx_runner_extra_args }}" ]; then
+          # shellcheck disable=SC2206
+          extra=( {{ tdx_runner_extra_args }} )
+          cmd+=("${extra[@]}")
+        fi
+        "${cmd[@]}"
+      args:
+        executable: /bin/bash
+      async: "{{ (vm_timeout_seconds | int) + 300 }}"
+      poll: 0
+      loop: "{{ launch_sizes }}"
+      register: bm_jobs
+      when: launch_sizes | length > 0
+
+    - name: Wait for baremetal VM launch completion
+      ansible.builtin.async_status:
+        jid: "{{ item.ansible_job_id }}"
+      register: bm_job_status
+      until: bm_job_status.finished
+      retries: "{{ (((vm_timeout_seconds | int) + 300) // 5) | int }}"
+      delay: 5
+      loop: "{{ bm_jobs.results | default([]) }}"
+      when: launch_sizes | length > 0
+
+    - name: Collect tdx-runner outputs
+      ansible.builtin.set_fact:
+        launched_vms_raw: "{{ (bm_job_status.results | default([])) | map(attribute='stdout') | list }}"
+
+    - name: Write raw baremetal launch outputs
+      ansible.builtin.copy:
+        dest: "{{ output_json_path }}"
+        content: "{{ launched_vms_raw | default([]) | to_nice_json }}\n"
+        mode: "0600"

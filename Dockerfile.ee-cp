@@ -3,7 +3,7 @@ FROM rust:bookworm AS builder
 WORKDIR /workspace
 
 COPY . .
-RUN cargo build --release -p ee-cp
+RUN cargo build --release --bin ee-cp
 
 FROM debian:bookworm-slim
 
