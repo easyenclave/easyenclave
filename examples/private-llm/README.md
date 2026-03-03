@@ -5,12 +5,12 @@ Run a private Ollama model inside a TDX enclave.
 ## Model Profiles
 
 - Staging (CPU/no GPU): `smollm2:135m` (default)
-- Production (single H100): `qwen2.5:32b` (via GPU override compose)
+- Production (single H100): `qwen2.5:32b` (via dedicated H100 compose profile)
 
 ## Files
 
 - `docker-compose.yml`: base CPU-safe stack (works in staging)
-- `docker-compose.h100.yml`: production override enabling GPU and higher default model
+- `docker-compose.h100.yml`: production H100 profile (self-contained compose)
 - `test.py`: smoke test for direct + proxy + OpenAI-compatible paths
 
 ## Start In Staging (No GPU)
@@ -24,7 +24,7 @@ OLLAMA_MODEL=smollm2:135m \
 
 ```bash
 OLLAMA_MODEL=qwen2.5:32b \
-  docker compose -f docker-compose.yml -f docker-compose.h100.yml up -d
+  docker compose -f docker-compose.h100.yml up -d
 ```
 
 ## Query
