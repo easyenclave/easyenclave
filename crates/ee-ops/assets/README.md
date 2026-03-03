@@ -12,7 +12,6 @@ This directory is the runtime infra surface for EasyEnclave.
 ## Files
 
 - `crates/ee-ops/assets/gcp-nodectl.sh`: CLI used by CI/workflows to create, list, delete, and measure GCP TDX VMs.
-- `crates/ee-ops/assets/gcp-bake-image.sh`: Image build entrypoint used by staging/production workflows.
 - `crates/ee-ops/assets/baremetal-bake-image.sh`: Packer QEMU image build entrypoint for bare-metal/worker-hosted image outputs.
 - `crates/ee-ops/ansible/playbooks/*.yml`: Ansible orchestration layer for GCP control-plane/VM/image operations and baremetal VM launches.
 - `crates/ee-ops/assets/packer/baremetal-agent-image.pkr.hcl`: Bare-metal Packer template.

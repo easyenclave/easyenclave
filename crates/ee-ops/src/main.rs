@@ -14,7 +14,7 @@ enum Op {
 
 fn usage() {
     eprintln!(
-        "Usage: cargo run -p ee-ops -- <command> [args...]\n\nCommands:\n  lint\n  ci-reproducibility-check\n  ci-deploy\n  gcp-bake-image\n  baremetal-bake-image\n  gcp-nodectl\n  hash-admin-password"
+        "Usage: cargo run -p ee-ops -- <command> [args...]\n\nCommands:\n  lint\n  ci-reproducibility-check\n  ci-deploy\n  baremetal-bake-image\n  gcp-nodectl\n  hash-admin-password"
     );
 }
 
@@ -31,10 +31,6 @@ fn resolve_op(name: &str) -> Option<Op> {
         "ci-deploy" | "ci_deploy" => Some(Op::Script {
             program: "bash",
             script_rel: "crates/ee-ops/assets/ci-deploy.sh",
-        }),
-        "gcp-bake-image" | "gcp_bake_image" => Some(Op::Script {
-            program: "bash",
-            script_rel: "crates/ee-ops/assets/gcp-bake-image.sh",
         }),
         "baremetal-bake-image" | "baremetal_bake_image" => Some(Op::Script {
             program: "bash",
