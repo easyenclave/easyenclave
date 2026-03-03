@@ -166,13 +166,15 @@
       ansible.builtin.set_fact:
         control_plane_config: "{{ control_plane_config_all | dict2items | rejectattr('value', 'equalto', '') | rejectattr('value', 'equalto', none) | items2dict }}"
 
-    - name: Generate control-plane VM name
+    - name: Generate control-plane VM name components
       ansible.builtin.set_fact:
         cp_name_seed_raw: "{{ resolved_network_name if (resolved_network_name | length > 0) else lookup('pipe', 'cat /proc/sys/kernel/random/uuid | tr -d - | cut -c1-8') }}"
         cp_name_seed_label: "{{ ((cp_name_seed_raw | lower) | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) or 'default' }}"
         cp_name_candidate: "ee-cp-{{ env_label }}-{{ cp_name_seed_label }}-{{ lookup('pipe', 'date +%s') }}"
-        cp_name: "{{ (((cp_name_candidate | lower | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) | truncate(63, true, '')) | regex_replace('-+$', '')) or ('ee-cp-' ~ lookup('pipe', 'date +%s')) }}"
 
+    - name: Finalize control-plane VM name
+      ansible.builtin.set_fact:
+        cp_name: "{{ (((cp_name_candidate | lower | regex_replace('[^a-z0-9-]+', '-') | regex_replace('-+', '-') | regex_replace('^-+', '') | regex_replace('-+$', '')) | truncate(63, true, '')) | regex_replace('-+$', '')) or ('ee-cp-' ~ lookup('pipe', 'date +%s')) }}"
     - name: Allocate startup script file
       ansible.builtin.tempfile:
         state: file
