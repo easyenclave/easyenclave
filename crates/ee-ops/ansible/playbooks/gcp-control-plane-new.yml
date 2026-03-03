@@ -1,0 +1,29 @@
+---
+- name: Launch GCP control plane
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cp_port: 8080
+    cp_wait: true
+    cp_timeout_seconds: 600
+    output_json_path: /tmp/ee-gcp-control-plane.json
+  tasks:
+    - name: Launch control plane via gcp-nodectl
+      ansible.builtin.command: >-
+        bash crates/ee-ops/assets/gcp-nodectl.sh control-plane new
+        --port {{ cp_port | int }}
+        --timeout {{ cp_timeout_seconds | int }}
+        {% if cp_wait | bool %}--wait{% endif %}
+      register: cp_boot_cmd
+      changed_when: true
+
+    - name: Parse control-plane JSON
+      ansible.builtin.set_fact:
+        cp_boot_json: "{{ cp_boot_cmd.stdout | from_json }}"
+
+    - name: Write control-plane JSON output file
+      ansible.builtin.copy:
+        dest: "{{ output_json_path }}"
+        content: "{{ cp_boot_json | to_nice_json }}\n"
+        mode: "0600"

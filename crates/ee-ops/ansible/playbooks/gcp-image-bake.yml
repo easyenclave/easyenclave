@@ -1,0 +1,53 @@
+---
+- name: Bake GCP image via packer
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    source_image_project: ""
+    source_image_name: ""
+    source_image_family: ""
+    target_image_name: ""
+    target_image_family: ""
+    target_image_description: "EasyEnclave image bake"
+    target_image_labels: ""
+    source_sha: ""
+    ee_agent_binary_path: ""
+    packer_template_path: ""
+    build_zone: ""
+    build_machine_type: ""
+    build_boot_disk_gb: ""
+    bake_metadata_path: ""
+  tasks:
+    - name: Validate required vars
+      ansible.builtin.assert:
+        that:
+          - source_image_project | length > 0
+          - target_image_name | length > 0
+          - (source_image_name | length > 0) or (source_image_family | length > 0)
+        fail_msg: "source_image_project, target_image_name, and one of source_image_name/source_image_family are required"
+
+    - name: Run GCP image bake script
+      ansible.builtin.command: bash crates/ee-ops/assets/gcp-bake-image.sh
+      environment:
+        GCP_PROJECT_ID: "{{ lookup('env', 'GCP_PROJECT_ID') }}"
+        SOURCE_IMAGE_PROJECT: "{{ source_image_project }}"
+        SOURCE_IMAGE_NAME: "{{ source_image_name }}"
+        SOURCE_IMAGE_FAMILY: "{{ source_image_family }}"
+        TARGET_IMAGE_NAME: "{{ target_image_name }}"
+        TARGET_IMAGE_FAMILY: "{{ target_image_family }}"
+        TARGET_IMAGE_DESCRIPTION: "{{ target_image_description }}"
+        TARGET_IMAGE_LABELS: "{{ target_image_labels }}"
+        SOURCE_SHA: "{{ source_sha }}"
+        EE_AGENT_BINARY_PATH: "{{ ee_agent_binary_path }}"
+        PACKER_TEMPLATE_PATH: "{{ packer_template_path }}"
+        BUILD_ZONE: "{{ build_zone }}"
+        BUILD_MACHINE_TYPE: "{{ build_machine_type }}"
+        BUILD_BOOT_DISK_GB: "{{ build_boot_disk_gb }}"
+        BAKE_METADATA_PATH: "{{ bake_metadata_path }}"
+      register: bake_cmd
+      changed_when: "'Image already exists' not in bake_cmd.stdout"
+
+    - name: Print bake summary
+      ansible.builtin.debug:
+        var: bake_cmd.stdout_lines

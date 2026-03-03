@@ -9,6 +9,7 @@
 #
 # Optional env vars:
 #   CP_URL      - control plane URL (default: https://app.easyenclave.com)
+#   ORCHESTRATION_PROVIDER - `gcp` (default) or `baremetal`
 #   NUM_TINY_AGENTS    - number of additional tiny agents to launch (default: 1)
 #   NUM_STANDARD_AGENTS - number of additional standard agents to launch (default: 0)
 #   NUM_LLM_AGENTS     - number of additional LLM-sized agents to launch (default: 0)
@@ -18,6 +19,8 @@
 #   AGENT_DATACENTER_REGION - optional region label for placement metadata
 #   AGENT_VERIFY_WAIT_ATTEMPTS - polling attempts while waiting for agent verification (default: 90)
 #   AGENT_VERIFY_WAIT_SECONDS - sleep between verification polls (default: 10)
+#   TDX_RUNNER_COMMAND - baremetal launch command for ansible baremetal playbook (default: `tdx-runner vm new`)
+#   TDX_RUNNER_EXTRA_ARGS - extra args appended to the baremetal runner command
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -26,6 +29,7 @@ CP_URL="${CP_URL:-https://app.easyenclave.com}"
 NUM_TINY_AGENTS="${NUM_TINY_AGENTS:-1}"
 NUM_STANDARD_AGENTS="${NUM_STANDARD_AGENTS:-0}"
 NUM_LLM_AGENTS="${NUM_LLM_AGENTS:-0}"
+ORCHESTRATION_PROVIDER="$(echo "${ORCHESTRATION_PROVIDER:-gcp}" | tr '[:upper:]' '[:lower:]')"
 AGENT_DATACENTER="${AGENT_DATACENTER:-}"
 AGENT_DATACENTER_AZ="${AGENT_DATACENTER_AZ:-us-central1-f}"
 AGENT_DATACENTER_REGION="${AGENT_DATACENTER_REGION:-}"
@@ -37,6 +41,7 @@ CURL_API_ARGS=(--connect-timeout 3 --max-time 10)
 CP_TUNNEL_PORT="${CP_TUNNEL_PORT:-18080}"
 CP_TUNNEL_PID=""
 CP_TUNNEL_LOG=""
+ANSIBLE_DIR="crates/ee-ops/ansible"
 
 # ===================================================================
 # Helpers
@@ -53,6 +58,62 @@ cleanup_cp_tunnel() {
 }
 
 trap cleanup_cp_tunnel EXIT
+
+require_cmd() {
+  local cmd="$1"
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "::error::Required command not found: $cmd"
+    exit 1
+  fi
+}
+
+run_ansible_playbook() {
+  local playbook="$1"
+  shift
+  ANSIBLE_CONFIG="$ANSIBLE_DIR/ansible.cfg" ansible-playbook "$playbook" "$@"
+}
+
+launch_additional_agents() {
+  local cp_agent_url="$1"
+  local output_json_path="$2"
+
+  if [ "$ORCHESTRATION_PROVIDER" = "gcp" ]; then
+    run_ansible_playbook "$ANSIBLE_DIR/playbooks/gcp-vm-fleet-new.yml" \
+      -e "cp_url=$cp_agent_url" \
+      -e "ita_api_key=${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
+      -e "num_tiny=$NUM_TINY_AGENTS" \
+      -e "num_standard=$NUM_STANDARD_AGENTS" \
+      -e "num_llm=$NUM_LLM_AGENTS" \
+      -e "vm_wait=true" \
+      -e "vm_timeout_seconds=$CP_BOOTSTRAP_TIMEOUT" \
+      -e "agent_zone=$AGENT_DATACENTER_AZ" \
+      -e "agent_region=$AGENT_DATACENTER_REGION" \
+      -e "agent_datacenter=$AGENT_DATACENTER" \
+      -e "output_json_path=$output_json_path"
+    return 0
+  fi
+
+  if [ "$ORCHESTRATION_PROVIDER" = "baremetal" ]; then
+    run_ansible_playbook "$ANSIBLE_DIR/playbooks/baremetal-vm-fleet-new.yml" \
+      -e "cp_url=$cp_agent_url" \
+      -e "ita_api_key=${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
+      -e "num_tiny=$NUM_TINY_AGENTS" \
+      -e "num_standard=$NUM_STANDARD_AGENTS" \
+      -e "num_llm=$NUM_LLM_AGENTS" \
+      -e "vm_wait=true" \
+      -e "vm_timeout_seconds=$CP_BOOTSTRAP_TIMEOUT" \
+      -e "agent_zone=$AGENT_DATACENTER_AZ" \
+      -e "agent_region=$AGENT_DATACENTER_REGION" \
+      -e "agent_datacenter=$AGENT_DATACENTER" \
+      -e "tdx_runner_command=${TDX_RUNNER_COMMAND:-tdx-runner vm new}" \
+      -e "tdx_runner_extra_args=${TDX_RUNNER_EXTRA_ARGS:-}" \
+      -e "output_json_path=$output_json_path"
+    return 0
+  fi
+
+  echo "::error::Unsupported ORCHESTRATION_PROVIDER='$ORCHESTRATION_PROVIDER' (expected gcp|baremetal)"
+  return 1
+}
 
 start_cp_local_tunnel() {
   local cp_name="$1"
@@ -108,16 +169,20 @@ start_cp_local_tunnel() {
   return 1
 }
 
+require_cmd ansible-playbook
+
 # ===================================================================
 # 1. Deploy control plane (GCP-only path)
 # ===================================================================
 echo "==> Deploying control plane on GCP..."
-CP_BOOT_JSON="$(
-  bash crates/ee-ops/assets/gcp-nodectl.sh control-plane new \
-    --wait \
-    --port 8080 \
-    --timeout "$CP_BOOTSTRAP_TIMEOUT"
-)"
+CP_BOOT_JSON_FILE="$(mktemp -t ee-cp-boot.XXXXXX.json)"
+run_ansible_playbook "$ANSIBLE_DIR/playbooks/gcp-control-plane-new.yml" \
+  -e "cp_port=8080" \
+  -e "cp_wait=true" \
+  -e "cp_timeout_seconds=$CP_BOOTSTRAP_TIMEOUT" \
+  -e "output_json_path=$CP_BOOT_JSON_FILE"
+CP_BOOT_JSON="$(cat "$CP_BOOT_JSON_FILE")"
+rm -f "$CP_BOOT_JSON_FILE" || true
 
 CP_BOOTSTRAP_URL="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_url // ""')"
 CP_PUBLIC_HOSTNAME="$(echo "$CP_BOOT_JSON" | jq -r '.control_plane_hostname // ""')"
@@ -262,53 +327,22 @@ if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ] && [ -z "${ITA_API_KEY:-}" ] && [ -z "${
   exit 1
 fi
 echo "Bootstrap agents already launched by control-plane new: $BOOTSTRAP_AGENT_COUNT"
-echo "==> Launching $TOTAL_ADDITIONAL_AGENTS additional agents ($NUM_TINY_AGENTS tiny, $NUM_STANDARD_AGENTS standard, $NUM_LLM_AGENTS LLM)..."
-
-AGENT_LOCATION_ARGS=()
+echo "==> Launching $TOTAL_ADDITIONAL_AGENTS additional agents via ansible ($ORCHESTRATION_PROVIDER)"
 if [ -n "$AGENT_DATACENTER" ]; then
-  AGENT_LOCATION_ARGS+=(--datacenter "$AGENT_DATACENTER")
   echo "Using explicit agent datacenter label: $AGENT_DATACENTER"
 else
-  if [ -n "$AGENT_DATACENTER_AZ" ]; then
-    AGENT_LOCATION_ARGS+=(--zone "$AGENT_DATACENTER_AZ")
-  fi
-  if [ -n "$AGENT_DATACENTER_REGION" ]; then
-    AGENT_LOCATION_ARGS+=(--region "$AGENT_DATACENTER_REGION")
-  fi
   echo "Using agent placement metadata: az=$AGENT_DATACENTER_AZ region=${AGENT_DATACENTER_REGION:-none}"
 fi
 
-AGENT_LAUNCH_PIDS=()
+AGENT_LAUNCH_JSON_FILE="$(mktemp -t ee-agent-launch.XXXXXX.json)"
 if [ "$TOTAL_ADDITIONAL_AGENTS" -gt 0 ]; then
-  for _i in $(seq 1 "$NUM_TINY_AGENTS"); do
-    bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size tiny \
-      "${AGENT_LOCATION_ARGS[@]}" \
-      --cp-url "$CP_AGENT_URL" \
-      --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
-      --wait &
-    AGENT_LAUNCH_PIDS+=("$!")
-  done
-  for _i in $(seq 1 "$NUM_STANDARD_AGENTS"); do
-    bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size standard \
-      "${AGENT_LOCATION_ARGS[@]}" \
-      --cp-url "$CP_AGENT_URL" \
-      --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
-      --wait &
-    AGENT_LAUNCH_PIDS+=("$!")
-  done
-  for _i in $(seq 1 "$NUM_LLM_AGENTS"); do
-    bash crates/ee-ops/assets/gcp-nodectl.sh vm new --size llm \
-      "${AGENT_LOCATION_ARGS[@]}" \
-      --cp-url "$CP_AGENT_URL" \
-      --ita-api-key "${ITA_API_KEY:-${INTEL_API_KEY:-}}" \
-      --wait &
-    AGENT_LAUNCH_PIDS+=("$!")
-  done
+  launch_additional_agents "$CP_AGENT_URL" "$AGENT_LAUNCH_JSON_FILE"
+  if [ -s "$AGENT_LAUNCH_JSON_FILE" ]; then
+    echo "Agent launch records:"
+    jq . "$AGENT_LAUNCH_JSON_FILE" || true
+  fi
 fi
-
-for pid in "${AGENT_LAUNCH_PIDS[@]}"; do
-  wait "$pid"
-done
+rm -f "$AGENT_LAUNCH_JSON_FILE" || true
 echo "Additional agent launches complete; expected verified total: $TOTAL_AGENTS"
 
 # ===================================================================

@@ -75,6 +75,13 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
+      - name: Install Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
       - name: Build and push control plane image
         id: cp_image
         shell: bash
@@ -92,15 +99,17 @@ jobs:
       - name: Bake production GCP image for commit
         shell: bash
         env:
-          SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
-          SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
+          ANSIBLE_CONFIG: crates/ee-ops/ansible/ansible.cfg
         run: |
           set -euo pipefail
-          export TARGET_IMAGE_NAME="easyenclave-agent-main-${{ steps.vars.outputs.sha12 }}"
-          export TARGET_IMAGE_FAMILY="easyenclave-agent-main"
-          export TARGET_IMAGE_DESCRIPTION="EasyEnclave production commit ${SOURCE_SHA}"
-          export TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=production,gitsha=${{ steps.vars.outputs.sha12 }}"
-          cargo run -p ee-ops -- gcp-bake-image
+          ansible-playbook crates/ee-ops/ansible/playbooks/gcp-image-bake.yml \
+            -e "source_image_project=ubuntu-os-cloud" \
+            -e "source_image_family=ubuntu-2404-lts-amd64" \
+            -e "target_image_name=easyenclave-agent-main-${{ steps.vars.outputs.sha12 }}" \
+            -e "target_image_family=easyenclave-agent-main" \
+            -e "target_image_description=EasyEnclave production commit ${SOURCE_SHA}" \
+            -e "target_image_labels=easyenclave=managed,easyenclave_env=production,gitsha=${{ steps.vars.outputs.sha12 }}" \
+            -e "source_sha=${SOURCE_SHA}"
 
       - name: Deploy production control plane and agent
         id: deploy

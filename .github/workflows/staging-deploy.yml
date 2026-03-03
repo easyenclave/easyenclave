@@ -164,6 +164,13 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
 
+      - name: Install Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
       - name: Download ee-agent binary artifact
         uses: actions/download-artifact@v4
         with:
@@ -186,17 +193,19 @@ jobs:
       - name: Bake staging GCP image for commit
         shell: bash
         env:
-          SOURCE_IMAGE_PROJECT: ubuntu-os-cloud
-          SOURCE_IMAGE_FAMILY: ubuntu-2404-lts-amd64
-          EE_AGENT_BINARY_PATH: /tmp/staging-ee-agent-bin/ee-agent
+          ANSIBLE_CONFIG: crates/ee-ops/ansible/ansible.cfg
         run: |
           set -euo pipefail
-          export TARGET_IMAGE_NAME="easyenclave-agent-main-${{ needs.prep.outputs.sha12 }}"
-          export TARGET_IMAGE_FAMILY="easyenclave-agent-main"
-          export TARGET_IMAGE_DESCRIPTION="EasyEnclave staging commit ${SOURCE_SHA}"
-          export TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=staging,gitsha=${{ needs.prep.outputs.sha12 }}"
-          chmod 0755 "${EE_AGENT_BINARY_PATH}"
-          bash crates/ee-ops/assets/gcp-bake-image.sh
+          chmod 0755 "/tmp/staging-ee-agent-bin/ee-agent"
+          ansible-playbook crates/ee-ops/ansible/playbooks/gcp-image-bake.yml \
+            -e "source_image_project=ubuntu-os-cloud" \
+            -e "source_image_family=ubuntu-2404-lts-amd64" \
+            -e "target_image_name=easyenclave-agent-main-${{ needs.prep.outputs.sha12 }}" \
+            -e "target_image_family=easyenclave-agent-main" \
+            -e "target_image_description=EasyEnclave staging commit ${SOURCE_SHA}" \
+            -e "target_image_labels=easyenclave=managed,easyenclave_env=staging,gitsha=${{ needs.prep.outputs.sha12 }}" \
+            -e "source_sha=${SOURCE_SHA}" \
+            -e "ee_agent_binary_path=/tmp/staging-ee-agent-bin/ee-agent"
 
   deploy:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
@@ -214,6 +223,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
+
+      - name: Install Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ansible
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

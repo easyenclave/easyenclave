@@ -5,6 +5,7 @@ This directory is the runtime infra surface for EasyEnclave.
 ## Scope
 
 - GCP orchestration for control plane and agent VMs.
+- Ansible playbooks for GCP image/node orchestration and baremetal node orchestration via `tdx-runner`.
 - Bare-metal-ready image baking via Packer QEMU.
 - Real Intel TDX VMs via Google Confidential VM (`--confidential-compute-type=TDX`) and local TDX-capable workers.
 
@@ -13,6 +14,7 @@ This directory is the runtime infra surface for EasyEnclave.
 - `crates/ee-ops/assets/gcp-nodectl.sh`: CLI used by CI/workflows to create, list, delete, and measure GCP TDX VMs.
 - `crates/ee-ops/assets/gcp-bake-image.sh`: Image build entrypoint used by staging/production workflows.
 - `crates/ee-ops/assets/baremetal-bake-image.sh`: Packer QEMU image build entrypoint for bare-metal/worker-hosted image outputs.
+- `crates/ee-ops/ansible/playbooks/*.yml`: Ansible orchestration layer for GCP control-plane/VM/image operations and baremetal VM launches.
 - `crates/ee-ops/assets/packer/baremetal-agent-image.pkr.hcl`: Bare-metal Packer template.
 - `crates/ee-ops/assets/packer/templates/*`: Cloud-init templates used by bare-metal image baking.
 - `crates/ee-agent`: Rust in-VM runtime used for agent/control-plane/measure modes.
