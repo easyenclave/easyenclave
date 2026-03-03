@@ -1,4 +1,4 @@
-use crate::common::api::{
+use crate::cp_api::{
     AgentChallengeResponse, AgentCheckIngestRequest, AgentCheckIngestResponse,
     AgentRegisterRequest, AgentRegisterResponse, ApiErrorResponse,
 };

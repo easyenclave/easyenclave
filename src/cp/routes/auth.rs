@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::env;
 
-use crate::common::api::{AdminLoginRequest, AdminLoginResponse, ApiErrorResponse, AuthMeResponse};
+use crate::cp_api::{AdminLoginRequest, AdminLoginResponse, ApiErrorResponse, AuthMeResponse};
 use axum::extract::{Query, State};
 use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};

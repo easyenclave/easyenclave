@@ -1,4 +1,4 @@
-use crate::common::api::HealthResponse;
+use crate::cp_api::HealthResponse;
 use axum::extract::State;
 use axum::Json;
 

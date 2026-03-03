@@ -6,6 +6,8 @@ pub mod attestation;
 
 #[path = "cp/config.rs"]
 pub mod config;
+#[path = "cp/api.rs"]
+pub mod cp_api;
 #[path = "cp/types.rs"]
 pub mod types;
 

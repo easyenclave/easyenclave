@@ -1,4 +1,4 @@
-use crate::common::api::{ApiErrorResponse, DeployRequest, DeployResponse};
+use crate::cp_api::{ApiErrorResponse, DeployRequest, DeployResponse};
 use crate::types::{AgentStatus, DeploymentStatus};
 use axum::extract::{Path, Query, State};
 use axum::http::header::AUTHORIZATION;

@@ -1,4 +1,5 @@
 mod config;
+mod cp_client_api;
 mod measure;
 mod oci;
 
@@ -8,9 +9,9 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
 use std::time::Duration;
 
+use crate::cp_client_api::{AgentChallengeResponse, AgentRegisterResponse};
 use config::{AgentMode, AgentRuntimeConfig, ProvidedApp};
 use easyenclave::attestation::tsm::generate_tdx_quote_base64;
-use easyenclave::common::api::{AgentChallengeResponse, AgentRegisterResponse};
 use easyenclave::common::error::{AppError, AppResult};
 use oci::{DockerOciRuntime, LaunchRequest, OciRuntimeEngine, PortMapping};
 use reqwest::blocking::Client;

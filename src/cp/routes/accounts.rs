@@ -1,4 +1,4 @@
-use crate::common::api::{ApiErrorResponse, CreateAccountRequest, CreateAccountResponse};
+use crate::cp_api::{ApiErrorResponse, CreateAccountRequest, CreateAccountResponse};
 use crate::types::AccountType;
 use axum::extract::{Path, State};
 use axum::http::header::AUTHORIZATION;

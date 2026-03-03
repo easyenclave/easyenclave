@@ -1,4 +1,4 @@
-use crate::common::api::{RecentAgentStatsResponse, RecentAppStatsResponse};
+use crate::cp_api::{RecentAgentStatsResponse, RecentAppStatsResponse};
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
