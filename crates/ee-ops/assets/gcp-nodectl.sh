@@ -52,6 +52,11 @@ normalize_name() {
   printf '%s' "$cleaned"
 }
 
+random_suffix() {
+  local chars="${1:-8}"
+  cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-"$chars"
+}
+
 project_id="$(env_first GCP_PROJECT_ID STAGING_GCP_PROJECT_ID PRODUCTION_GCP_PROJECT_ID)"
 [ -n "$project_id" ] || fatal "Missing GCP_PROJECT_ID"
 
@@ -272,6 +277,14 @@ serial_tail() {
     --port 1 2>/dev/null | tail -n "$lines"
 }
 
+managed_vm_rows() {
+  local filter="$1"
+  gcloud compute instances list \
+    --project "$project_id" \
+    --filter "$filter" \
+    --format "value(name,zone.basename())" 2>/dev/null || true
+}
+
 control_plane_alias_host() {
   local env_name="$1" domain="$2"
   if [ "$env_name" = "staging" ]; then
@@ -437,7 +450,7 @@ cmd_control_plane_new() {
   cp_url_for_agents="https://${alias_host}"
 
   local seed name machine_type disk_gib disk_type zone_pref startup_script cfg_json labels
-  seed="${network_name:-$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-8)}"
+  seed="${network_name:-$(random_suffix 8)}"
   name="$(normalize_name "ee-cp-${env_name}-${seed}-$(date +%s)" 63)"
   machine_type="$(machine_type_for_size "$cp_size")"
   disk_gib="$(disk_gib_for_size "$cp_size")"
@@ -581,7 +594,7 @@ cmd_vm_new() {
   env_name="$(env_first EASYENCLAVE_ENV)"
   [ -n "$env_name" ] || env_name="staging"
   network_name="$(env_first EASYENCLAVE_NETWORK_NAME)"
-  vm_name="$(normalize_name "tdx-agent-$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-10)" 63)"
+  vm_name="$(normalize_name "tdx-agent-$(random_suffix 10)" 63)"
 
   datacenter_label="$datacenter"
   [ -n "$datacenter_label" ] || datacenter_label="gcp:${zone}"
@@ -671,15 +684,11 @@ cleanup_terminated_measure_vms() {
   local filter rows row vm zone
   filter="labels.easyenclave=managed AND labels.ee_role=measure AND status=TERMINATED"
 
-  mapfile -t rows < <(gcloud compute instances list \
-    --project "$project_id" \
-    --filter "$filter" \
-    --format "value(name,zone.basename())" 2>/dev/null || true)
+  mapfile -t rows < <(managed_vm_rows "$filter")
 
   for row in "${rows[@]}"; do
     [ -n "${row:-}" ] || continue
-    vm="$(echo "$row" | awk '{print $1}')"
-    zone="$(echo "$row" | awk '{print $2}')"
+    read -r vm zone <<<"$row"
     [ -n "${vm:-}" ] || continue
     [ -n "${zone:-}" ] || continue
     warn "Deleting stale terminated measure VM '$vm' in zone '$zone'"
@@ -708,7 +717,7 @@ cmd_vm_measure() {
   zone="$(env_first GCP_ZONE AGENT_DATACENTER_AZ)"
   [ -n "$zone" ] || zone="us-central1-a"
 
-  vm_name="$(normalize_name "ee-measure-${size}-$(cat /proc/sys/kernel/random/uuid | tr -d '-' | cut -c1-8)" 63)"
+  vm_name="$(normalize_name "ee-measure-${size}-$(random_suffix 8)" 63)"
   env_name="$(env_first EASYENCLAVE_ENV)"
   [ -n "$env_name" ] || env_name="staging"
   cleanup_terminated_measure_vms
@@ -785,15 +794,11 @@ cmd_vm_delete() {
 
   local name="$1"
   if [ "$name" = "all" ]; then
-    mapfile -t rows < <(gcloud compute instances list \
-      --project "$project_id" \
-      --filter "labels.easyenclave=managed" \
-      --format "value(name,zone.basename())")
+    mapfile -t rows < <(managed_vm_rows "labels.easyenclave=managed")
     for row in "${rows[@]}"; do
       [ -n "$row" ] || continue
       local vm zone
-      vm="$(echo "$row" | awk '{print $1}')"
-      zone="$(echo "$row" | awk '{print $2}')"
+      read -r vm zone <<<"$row"
       [ -n "$vm" ] || continue
       [ -n "$zone" ] || continue
       gcloud compute instances delete "$vm" --project "$project_id" --zone "$zone" --quiet || true

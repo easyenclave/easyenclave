@@ -104,6 +104,9 @@ jobs:
           docker push "${image}"
           echo "image=${image}" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Packer
+        uses: hashicorp/setup-packer@v3
+
       - name: Bake production GCP image for commit
         shell: bash
         env:
