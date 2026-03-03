@@ -217,6 +217,7 @@
         echo "Image bake completed: ${GCP_PROJECT_ID}/${TARGET_IMAGE_NAME}"
       args:
         executable: /bin/bash
+        chdir: "{{ playbook_dir }}/../.."
       environment:
         GCP_PROJECT_ID: "{{ lookup('env', 'GCP_PROJECT_ID') }}"
         SOURCE_IMAGE_PROJECT: "{{ source_image_project }}"
