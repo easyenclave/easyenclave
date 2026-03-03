@@ -51,8 +51,8 @@ These defaults are now used by the v2 scaffold unless environment overrides are 
 
 ## Locked Machine Type Default
 
-- Staging default machine type: `c3-standard-4`
-- Production default machine type: `c3-standard-4`
+- Staging default machine type: `c3-standard-2`
+- Production default machine type: `c3-standard-2`
 
 ## Current Network Default
 

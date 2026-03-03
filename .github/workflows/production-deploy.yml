@@ -75,24 +75,6 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Cleanup terminated production measure VMs
-        shell: bash
-        run: |
-          set -euo pipefail
-          gcloud compute instances list --project "${GCP_PROJECT_ID}" \
-            --filter "labels.easyenclave=managed AND labels.ee_env=production AND labels.ee_role=measure AND status=TERMINATED" \
-            --format "value(name,zone.basename())" > /tmp/production-measure-gc.txt || true
-          if [ ! -s /tmp/production-measure-gc.txt ]; then
-            echo "No terminated production measure VMs found."
-            exit 0
-          fi
-          while read -r name zone; do
-            [ -n "${name:-}" ] || continue
-            [ -n "${zone:-}" ] || continue
-            echo "Deleting ${name} (${zone})"
-            gcloud compute instances delete "${name}" --project "${GCP_PROJECT_ID}" --zone "${zone}" --quiet || true
-          done < /tmp/production-measure-gc.txt
-
       - name: Build and push control plane image
         id: cp_image
         shell: bash
@@ -120,14 +102,6 @@ jobs:
           export TARGET_IMAGE_LABELS="easyenclave=managed,easyenclave_env=production,gitsha=${{ steps.vars.outputs.sha12 }}"
           cargo run -p ee-ops -- gcp-bake-image
 
-      - name: Measure trusted values
-        id: measure
-        env:
-          MEASURE_SIZES: tiny
-          MEASURE_ATTEMPTS: "3"
-          MEASURE_TIMEOUT_SECONDS: "420"
-        run: cargo run -p ee-ops -- ci-build-measure
-
       - name: Deploy production control plane and agent
         id: deploy
         shell: bash
@@ -148,10 +122,6 @@ jobs:
           NUM_TINY_AGENTS: "1"
           NUM_STANDARD_AGENTS: "0"
           NUM_LLM_AGENTS: "0"
-          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
           TCB_ENFORCEMENT_MODE: strict
           ALLOWED_TCB_STATUSES: UpToDate,OutOfDate
           NONCE_ENFORCEMENT_MODE: optional

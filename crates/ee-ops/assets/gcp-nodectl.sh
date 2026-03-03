@@ -103,8 +103,8 @@ zone_candidates() {
 
 machine_type_for_size() {
   case "$1" in
-    tiny) echo "c3-standard-4" ;;
-    standard) echo "c3-standard-8" ;;
+    tiny) echo "c3-standard-2" ;;
+    standard) echo "c3-standard-4" ;;
     llm) echo "c3-standard-22" ;;
     *) fatal "Unsupported size '$1' (expected tiny|standard|llm)" ;;
   esac

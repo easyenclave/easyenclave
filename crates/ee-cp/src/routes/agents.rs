@@ -49,7 +49,7 @@ pub async fn register(
         }
     }
 
-    let _verified = state
+    let verified = state
         .attestation
         .verify_registration_token(&payload.intel_ta_token)
         .map_err(|err| {
@@ -65,6 +65,11 @@ pub async fn register(
         })?;
 
     let store = AgentStore::new(state.db_pool.clone());
+    let rtmrs_json = verified
+        .rtmrs
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok());
+
     let created = store
         .create(
             &payload.vm_name,
@@ -74,6 +79,9 @@ pub async fn register(
             payload.datacenter.as_deref(),
             payload.github_owner.as_deref(),
             None,
+            verified.mrtd.as_deref(),
+            rtmrs_json.as_deref(),
+            verified.tcb_status.as_deref(),
         )
         .await
         .map_err(|e| {

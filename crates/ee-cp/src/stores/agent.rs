@@ -17,6 +17,18 @@ pub struct AgentRecord {
     pub account_id: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgentMeasurementRecord {
+    pub agent_id: Uuid,
+    pub vm_name: String,
+    pub node_size: Option<String>,
+    pub datacenter: Option<String>,
+    pub mrtd: String,
+    pub rtmrs: Option<serde_json::Value>,
+    pub tcb_status: Option<String>,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentTunnelInfo {
     pub tunnel_id: String,
@@ -50,13 +62,16 @@ impl AgentStore {
         datacenter: Option<&str>,
         github_owner: Option<&str>,
         account_id: Option<Uuid>,
+        mrtd: Option<&str>,
+        rtmrs: Option<&str>,
+        tcb_status: Option<&str>,
     ) -> AppResult<AgentRecord> {
         let agent_id = Uuid::new_v4();
         let status_text = status_to_db(status);
 
         sqlx::query(
-            "INSERT INTO agents (agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO agents (agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id, mrtd, rtmrs, tcb_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
         .bind(agent_id.to_string())
         .bind(vm_name)
@@ -66,6 +81,9 @@ impl AgentStore {
         .bind(datacenter)
         .bind(github_owner)
         .bind(account_id.map(|v| v.to_string()))
+        .bind(mrtd)
+        .bind(rtmrs)
+        .bind(tcb_status)
         .execute(&self.pool)
         .await
         .map_err(|e| AppError::External(format!("failed to create agent: {e}")))?;
@@ -107,6 +125,41 @@ impl AgentStore {
         };
 
         rows.into_iter().map(row_to_agent).collect()
+    }
+
+    pub async fn list_observed_measurements(
+        &self,
+        node_size: Option<&str>,
+        limit: u32,
+    ) -> AppResult<Vec<AgentMeasurementRecord>> {
+        let rows = if let Some(node_size) = node_size {
+            sqlx::query(
+                "SELECT agent_id, vm_name, node_size, datacenter, mrtd, rtmrs, tcb_status, updated_at \
+                 FROM agents \
+                 WHERE mrtd IS NOT NULL AND mrtd <> '' AND lower(node_size) = lower(?1) \
+                 ORDER BY updated_at DESC \
+                 LIMIT ?2",
+            )
+            .bind(node_size)
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AppError::External(format!("failed to list observed measurements: {e}")))?
+        } else {
+            sqlx::query(
+                "SELECT agent_id, vm_name, node_size, datacenter, mrtd, rtmrs, tcb_status, updated_at \
+                 FROM agents \
+                 WHERE mrtd IS NOT NULL AND mrtd <> '' \
+                 ORDER BY updated_at DESC \
+                 LIMIT ?1",
+            )
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| AppError::External(format!("failed to list observed measurements: {e}")))?
+        };
+
+        rows.into_iter().map(row_to_measurement).collect()
     }
 
     pub async fn update_status(&self, agent_id: Uuid, status: AgentStatus) -> AppResult<()> {
@@ -344,6 +397,47 @@ fn row_to_agent(row: sqlx::sqlite::SqliteRow) -> AppResult<AgentRecord> {
     })
 }
 
+fn row_to_measurement(row: sqlx::sqlite::SqliteRow) -> AppResult<AgentMeasurementRecord> {
+    let agent_id: String = row
+        .try_get("agent_id")
+        .map_err(|e| AppError::External(format!("read agent_id failed: {e}")))?;
+    let vm_name: String = row
+        .try_get("vm_name")
+        .map_err(|e| AppError::External(format!("read vm_name failed: {e}")))?;
+    let node_size: Option<String> = row
+        .try_get("node_size")
+        .map_err(|e| AppError::External(format!("read node_size failed: {e}")))?;
+    let datacenter: Option<String> = row
+        .try_get("datacenter")
+        .map_err(|e| AppError::External(format!("read datacenter failed: {e}")))?;
+    let mrtd: String = row
+        .try_get("mrtd")
+        .map_err(|e| AppError::External(format!("read mrtd failed: {e}")))?;
+    let rtmrs_raw: Option<String> = row
+        .try_get("rtmrs")
+        .map_err(|e| AppError::External(format!("read rtmrs failed: {e}")))?;
+    let tcb_status: Option<String> = row
+        .try_get("tcb_status")
+        .map_err(|e| AppError::External(format!("read tcb_status failed: {e}")))?;
+    let updated_at: String = row
+        .try_get("updated_at")
+        .map_err(|e| AppError::External(format!("read updated_at failed: {e}")))?;
+
+    let rtmrs = rtmrs_raw.and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+
+    Ok(AgentMeasurementRecord {
+        agent_id: Uuid::parse_str(&agent_id)
+            .map_err(|e| AppError::External(format!("invalid agent_id uuid: {e}")))?,
+        vm_name,
+        node_size,
+        datacenter,
+        mrtd,
+        rtmrs,
+        tcb_status,
+        updated_at,
+    })
+}
+
 fn status_to_db(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Undeployed => "undeployed",
@@ -390,6 +484,9 @@ mod tests {
                 false,
                 Some("standard"),
                 Some("gcp:us-central1-a"),
+                None,
+                None,
+                None,
                 None,
                 None,
             )

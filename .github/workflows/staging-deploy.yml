@@ -231,14 +231,6 @@ jobs:
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
 
-      - name: Measure trusted values
-        id: measure
-        env:
-          MEASURE_SIZES: tiny
-          MEASURE_ATTEMPTS: "3"
-          MEASURE_TIMEOUT_SECONDS: "420"
-        run: cargo run -p ee-ops -- ci-build-measure
-
       - name: Deploy staging control plane and agent
         id: deploy
         shell: bash
@@ -259,10 +251,6 @@ jobs:
           NUM_TINY_AGENTS: "1"
           NUM_STANDARD_AGENTS: "0"
           NUM_LLM_AGENTS: "0"
-          TRUSTED_AGENT_MRTDS: ${{ steps.measure.outputs.mrtds }}
-          TRUSTED_AGENT_MRTDS_BY_SIZE: ${{ steps.measure.outputs.mrtds_by_size }}
-          TRUSTED_AGENT_RTMRS: ${{ steps.measure.outputs.rtmrs }}
-          TRUSTED_AGENT_RTMRS_BY_SIZE: ${{ steps.measure.outputs.rtmrs_by_size }}
           TCB_ENFORCEMENT_MODE: warn
           ALLOWED_TCB_STATUSES: UpToDate
           NONCE_ENFORCEMENT_MODE: optional

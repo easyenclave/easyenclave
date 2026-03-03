@@ -1,4 +1,5 @@
 pub mod accounts;
+pub mod admin;
 pub mod agents;
 pub mod auth;
 pub mod deploy;
@@ -60,6 +61,15 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/accounts/{account_id}",
             axum::routing::get(accounts::get_account),
+        )
+        .route(
+            "/api/admin/measurements/agents",
+            axum::routing::get(admin::list_observed_agent_measurements),
+        )
+        .route(
+            "/api/admin/trusted-measurements/agent",
+            axum::routing::get(admin::get_trusted_agent_measurements)
+                .post(admin::upsert_trusted_agent_measurement),
         )
         .route("/admin/login", axum::routing::post(auth::admin_login))
         .route("/admin/logout", axum::routing::post(auth::admin_logout))

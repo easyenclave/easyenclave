@@ -14,6 +14,7 @@ This directory is the runtime infra surface for EasyEnclave.
 - `crates/ee-ops/assets/gcp-bake-image.sh`: Image build entrypoint used by staging/production workflows.
 - `crates/ee-ops/assets/baremetal-bake-image.sh`: Packer QEMU image build entrypoint for bare-metal/worker-hosted image outputs.
 - `crates/ee-ops/assets/packer/baremetal-agent-image.pkr.hcl`: Bare-metal Packer template.
+- `crates/ee-ops/assets/packer/templates/*`: Cloud-init templates used by bare-metal image baking.
 - `crates/ee-agent`: Rust in-VM runtime used for agent/control-plane/measure modes.
 
 ## Required environment

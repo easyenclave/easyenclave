@@ -243,6 +243,9 @@ mod tests {
                 Some("gcp:test"),
                 None,
                 None,
+                None,
+                None,
+                None,
             )
             .await
             .expect("create agent");
@@ -327,6 +330,9 @@ mod tests {
                 true,
                 Some("standard"),
                 Some("gcp:test"),
+                None,
+                None,
+                None,
                 None,
                 None,
             )

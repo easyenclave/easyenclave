@@ -45,9 +45,8 @@ variable "ssh_username" {
   type = string
 }
 
-variable "ssh_password" {
-  type      = string
-  sensitive = true
+variable "ssh_private_key_file" {
+  type = string
 }
 
 variable "ssh_timeout" {
@@ -55,7 +54,11 @@ variable "ssh_timeout" {
   default = "20m"
 }
 
-variable "cloud_init_seed_path" {
+variable "cloud_init_user_data_path" {
+  type = string
+}
+
+variable "cloud_init_meta_data_path" {
   type = string
 }
 
@@ -64,28 +67,26 @@ variable "agent_binary_path" {
 }
 
 source "qemu" "baremetal" {
-  accelerator      = var.accelerator
-  headless         = true
-  output_directory = var.output_directory
-  vm_name          = var.vm_name
-  format           = "qcow2"
-  disk_size        = var.disk_size
-  disk_image       = true
-  iso_url          = var.base_image_url
-  iso_checksum     = var.base_image_checksum
-  disk_interface   = "virtio"
-  net_device       = "virtio-net"
-  cpus             = var.cpus
-  memory           = var.memory_mb
-  boot_wait        = "5s"
-  ssh_username     = var.ssh_username
-  ssh_password     = var.ssh_password
-  ssh_timeout      = var.ssh_timeout
-  shutdown_command = "echo '${var.ssh_password}' | sudo -S shutdown -P now"
-
-  qemuargs = [
-    ["-drive", "file=${var.cloud_init_seed_path},if=virtio,format=raw,media=cdrom,readonly=on"]
-  ]
+  accelerator          = var.accelerator
+  headless             = true
+  output_directory     = var.output_directory
+  vm_name              = var.vm_name
+  format               = "qcow2"
+  disk_size            = var.disk_size
+  disk_image           = true
+  iso_url              = var.base_image_url
+  iso_checksum         = var.base_image_checksum
+  disk_interface       = "virtio"
+  net_device           = "virtio-net"
+  cpus                 = var.cpus
+  memory               = var.memory_mb
+  boot_wait            = "5s"
+  ssh_username         = var.ssh_username
+  ssh_private_key_file = var.ssh_private_key_file
+  ssh_timeout          = var.ssh_timeout
+  shutdown_command     = "sudo shutdown -P now"
+  cd_files             = [var.cloud_init_user_data_path, var.cloud_init_meta_data_path]
+  cd_label             = "cidata"
 }
 
 build {

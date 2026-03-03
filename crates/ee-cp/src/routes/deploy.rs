@@ -359,6 +359,9 @@ mod tests {
                 Some("gcp:us-central1-a"),
                 agent_owner,
                 None,
+                None,
+                None,
+                None,
             )
             .await
             .expect("seed agent");
