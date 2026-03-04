@@ -31,6 +31,8 @@ The following secrets should already be set:
 - `CLOUDFLARE_API_TOKEN` - Cloudflare API token for tunnel management
 - `CLOUDFLARE_ACCOUNT_ID` - Cloudflare account ID
 - `CLOUDFLARE_ZONE_ID` - Cloudflare zone ID
+- `CP_MEASUREMENTS_SIGNING_KEY` - Base fallback signing key for CP measurement bundle signing
+- `STAGING_CP_MEASUREMENTS_SIGNING_KEY` / `PRODUCTION_CP_MEASUREMENTS_SIGNING_KEY` - Env-specific overrides (recommended)
 - `INTEL_API_KEY` - Intel Trust Authority API key
 - `CONTROL_PLANE_ADMIN_PASSWORD` - Plaintext admin password (for login testing)
 
