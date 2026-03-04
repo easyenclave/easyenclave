@@ -195,7 +195,7 @@
       vars:
         control_plane_config_json: "{{ control_plane_config | to_nice_json }}"
 
-    - name: Create control-plane VM
+    - name: Create control-plane VM (primary size)
       ansible.builtin.command:
         argv:
           - gcloud
@@ -231,7 +231,86 @@
           - "{{ source_image_project }}"
           - --image
           - "{{ source_image_name }}"
+      register: cp_create_primary
+      failed_when: false
+      changed_when: cp_create_primary.rc == 0
 
+    - name: Evaluate control-plane quota fallback condition
+      ansible.builtin.set_fact:
+        cp_create_error_text: "{{ (cp_create_primary.stderr | default('')) ~ '\n' ~ (cp_create_primary.stdout | default('')) }}"
+        cp_needs_quota_fallback: >-
+          {{
+            (cp_create_primary.rc | int != 0)
+            and (resolved_cp_size == 'standard')
+            and (((cp_create_primary.stderr | default('')) ~ '\n' ~ (cp_create_primary.stdout | default('')))
+              | regex_search('C3_CPUS|CONCURRENT_OPERATIONS_QUOTA_EXCEEDED'))
+          }}
+
+    - name: Log control-plane quota fallback to tiny profile
+      ansible.builtin.debug:
+        msg: >-
+          control-plane create failed for size='{{ resolved_cp_size }}' in zone='{{ resolved_cp_zone }}';
+          retrying with tiny profile machine_type='{{ cp_size_profiles['tiny'].machine_type }}'.
+      when: cp_needs_quota_fallback
+
+    - name: Apply tiny profile fallback values
+      ansible.builtin.set_fact:
+        cp_profile: "{{ cp_size_profiles['tiny'] }}"
+        cp_boot_disk_gib: "{{ [cp_size_profiles['tiny'].disk_gib | int, source_image_disk_gib | int] | max }}"
+      when: cp_needs_quota_fallback
+
+    - name: Create control-plane VM (tiny fallback)
+      ansible.builtin.command:
+        argv:
+          - gcloud
+          - compute
+          - instances
+          - create
+          - "{{ cp_name }}"
+          - --project
+          - "{{ lookup('env', 'GCP_PROJECT_ID') }}"
+          - --zone
+          - "{{ resolved_cp_zone }}"
+          - --machine-type
+          - "{{ cp_profile.machine_type }}"
+          - --boot-disk-size
+          - "{{ cp_boot_disk_gib }}GB"
+          - --boot-disk-type
+          - pd-balanced
+          - --maintenance-policy
+          - TERMINATE
+          - --provisioning-model
+          - STANDARD
+          - --confidential-compute-type
+          - TDX
+          - --labels
+          - "easyenclave=managed,ee_role=control-plane,ee_env={{ env_label }},ee_network={{ network_label }}"
+          - --metadata
+          - serial-port-enable=1,enable-oslogin=FALSE
+          - --metadata-from-file
+          - "startup-script={{ cp_startup_script_file.path }}"
+          - --scopes
+          - https://www.googleapis.com/auth/cloud-platform
+          - --image-project
+          - "{{ source_image_project }}"
+          - --image
+          - "{{ source_image_name }}"
+      register: cp_create_fallback
+      failed_when: false
+      changed_when: cp_create_fallback.rc == 0
+      when: cp_needs_quota_fallback
+
+    - name: Fail when control-plane VM creation did not succeed
+      ansible.builtin.fail:
+        msg: >-
+          control-plane VM creation failed.
+          primary_rc={{ cp_create_primary.rc }}
+          fallback_attempted={{ cp_needs_quota_fallback | bool }}
+          fallback_rc={{ cp_create_fallback.rc | default('n/a') }}
+          error={{ cp_create_error_text | trim }}
+      when:
+        - cp_create_primary.rc | int != 0
+        - not (cp_needs_quota_fallback and (cp_create_fallback is defined) and (cp_create_fallback.rc | int == 0))
     - name: Remove temporary startup script
       ansible.builtin.file:
         path: "{{ cp_startup_script_file.path }}"
