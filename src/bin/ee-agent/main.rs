@@ -275,6 +275,12 @@ fn build_control_plane_env(cfg: &AgentRuntimeConfig) -> Vec<(String, String)> {
     insert_mapped(
         &mut env,
         &cfg.raw_kv,
+        "cp_measurements_signing_key",
+        "CP_MEASUREMENTS_SIGNING_KEY",
+    );
+    insert_mapped(
+        &mut env,
+        &cfg.raw_kv,
         "stripe_secret_key",
         "STRIPE_SECRET_KEY",
     );

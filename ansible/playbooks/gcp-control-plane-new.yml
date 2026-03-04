@@ -130,6 +130,7 @@
           cloudflare_api_token: "{{ lookup('env', 'CLOUDFLARE_API_TOKEN') | default('', true) }}"
           cloudflare_account_id: "{{ lookup('env', 'CLOUDFLARE_ACCOUNT_ID') | default('', true) }}"
           cloudflare_zone_id: "{{ lookup('env', 'CLOUDFLARE_ZONE_ID') | default('', true) }}"
+          cp_measurements_signing_key: "{{ lookup('env', 'CP_MEASUREMENTS_SIGNING_KEY') | default('', true) }}"
           admin_password: "{{ admin_password_env }}"
           admin_github_logins: "{{ lookup('env', 'ADMIN_GITHUB_LOGINS') | default('', true) }}"
           admin_password_hash: "{{ lookup('env', 'ADMIN_PASSWORD_HASH') | default('', true) }}"
