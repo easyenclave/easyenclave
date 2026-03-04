@@ -242,8 +242,8 @@
           {{
             (cp_create_primary.rc | int != 0)
             and (resolved_cp_size == 'standard')
-            and (((cp_create_primary.stderr | default('')) ~ '\n' ~ (cp_create_primary.stdout | default('')))
-              | regex_search('C3_CPUS|CONCURRENT_OPERATIONS_QUOTA_EXCEEDED'))
+            and ((((cp_create_primary.stderr | default('')) ~ '\n' ~ (cp_create_primary.stdout | default('')))
+              | regex_search('C3_CPUS|CONCURRENT_OPERATIONS_QUOTA_EXCEEDED')) is not none)
           }}
 
     - name: Log control-plane quota fallback to tiny profile
