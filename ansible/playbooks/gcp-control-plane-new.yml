@@ -33,7 +33,7 @@
 
     - name: Resolve control-plane size
       ansible.builtin.set_fact:
-        resolved_cp_size: "{{ cp_size | lower if (cp_size | length > 0) else ('tiny' if resolved_env_name == 'staging' else 'standard') }}"
+        resolved_cp_size: "{{ cp_size | lower if (cp_size | length > 0) else 'tiny' }}"
 
     - name: Validate control-plane size
       ansible.builtin.assert:
