@@ -74,7 +74,7 @@ pub async fn register(
         .create(
             &payload.vm_name,
             AgentStatus::Undeployed,
-            true,
+            false,
             payload.node_size.as_deref(),
             payload.datacenter.as_deref(),
             payload.github_owner.as_deref(),
@@ -107,7 +107,11 @@ pub async fn register(
         .await
     {
         Ok(tunnel) => tunnel,
-        Err(_) => {
+        Err(err) => {
+            eprintln!(
+                "ee-cp: agent tunnel provision failed vm_name={} agent_id={} error={}",
+                payload.vm_name, created.agent_id, err
+            );
             let _ = store.delete(created.agent_id).await;
             return Err(error_response(
                 StatusCode::BAD_GATEWAY,
@@ -126,6 +130,10 @@ pub async fn register(
         .await
         .is_err()
     {
+        eprintln!(
+            "ee-cp: failed to persist agent tunnel data vm_name={} agent_id={}",
+            payload.vm_name, created.agent_id
+        );
         let _ = state
             .tunnel
             .delete_tunnel_for_agent(&tunnel.tunnel_id, &tunnel.hostname)
@@ -138,6 +146,22 @@ pub async fn register(
         ));
     }
 
+    if let Err(err) = store.set_verified(created.agent_id, true).await {
+        eprintln!(
+            "ee-cp: failed to mark agent verified vm_name={} agent_id={} error={}",
+            payload.vm_name, created.agent_id, err
+        );
+        let _ = state
+            .tunnel
+            .delete_tunnel_for_agent(&tunnel.tunnel_id, &tunnel.hostname)
+            .await;
+        let _ = store.delete(created.agent_id).await;
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "registration_failed",
+            "failed to finalize agent registration",
+        ));
+    }
     Ok(Json(AgentRegisterResponse {
         agent_id: created.agent_id,
         tunnel_token: tunnel.tunnel_token,

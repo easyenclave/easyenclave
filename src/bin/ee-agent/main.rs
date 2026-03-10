@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::cp_client_api::{AgentChallengeResponse, AgentRegisterResponse};
 use config::{AgentMode, AgentRuntimeConfig, ProvidedApp};
@@ -18,6 +18,7 @@ use easyenclave::common::error::{AppError, AppResult};
 use oci::{DockerOciRuntime, LaunchRequest, OciRuntimeEngine, PortMapping};
 use reqwest::blocking::Client;
 use reqwest::StatusCode;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -59,26 +60,92 @@ fn run_agent_mode(cfg: &AgentRuntimeConfig) -> AppResult<()> {
         cfg.intel_api_key.is_some(),
     );
 
+    let reconcile_interval_seconds = std::env::var("AGENT_CP_RECONCILE_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30)
+        .max(5);
+    let probe_failures_before_reregister =
+        std::env::var("AGENT_CP_RECONCILE_FAILURES_BEFORE_REREGISTER")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(3)
+            .max(1);
+
+    eprintln!(
+        "ee-agent: cp reconcile interval={}s failures_before_reregister={}",
+        reconcile_interval_seconds, probe_failures_before_reregister
+    );
+
     let mut registered = register_with_retries(cfg, &cp_url, &vm_name)?;
     let mut tunnel = start_cloudflared(&registered.tunnel_token)?;
+    let mut consecutive_probe_failures: u32 = 0;
+    let mut next_reconcile = Instant::now() + Duration::from_secs(reconcile_interval_seconds);
 
     if let Some(app) = cfg.provided_app {
         run_provided_app(cfg, &runtime, app)?;
     }
 
     loop {
+        let mut cloudflared_exited = false;
         if let Some(child) = &mut tunnel {
             let maybe_status = child.try_wait().map_err(command_err)?;
             if let Some(status) = maybe_status {
                 eprintln!("ee-agent: cloudflared exited with status={status}; re-registering");
-                registered = register_with_retries(cfg, &cp_url, &vm_name)?;
-                tunnel = start_cloudflared(&registered.tunnel_token)?;
+                cloudflared_exited = true;
             }
         }
+
+        if cloudflared_exited {
+            registered = register_with_retries(cfg, &cp_url, &vm_name)?;
+            tunnel = restart_cloudflared(tunnel, &registered.tunnel_token)?;
+            consecutive_probe_failures = 0;
+        }
+
+        let now = Instant::now();
+        if now >= next_reconcile {
+            next_reconcile = now + Duration::from_secs(reconcile_interval_seconds);
+            match is_vm_registered_on_cp(&cp_url, &vm_name) {
+                Ok(true) => {
+                    if consecutive_probe_failures > 0 {
+                        eprintln!(
+                            "ee-agent: cp registration probe recovered after {} failures",
+                            consecutive_probe_failures
+                        );
+                    }
+                    consecutive_probe_failures = 0;
+                }
+                Ok(false) => {
+                    eprintln!(
+                        "ee-agent: vm_name={} missing from cp agent list; re-registering",
+                        vm_name
+                    );
+                    registered = register_with_retries(cfg, &cp_url, &vm_name)?;
+                    tunnel = restart_cloudflared(tunnel, &registered.tunnel_token)?;
+                    consecutive_probe_failures = 0;
+                }
+                Err(err) => {
+                    consecutive_probe_failures = consecutive_probe_failures.saturating_add(1);
+                    eprintln!(
+                        "ee-agent: cp registration probe failed attempt={} error={}",
+                        consecutive_probe_failures, err
+                    );
+                    if consecutive_probe_failures >= probe_failures_before_reregister {
+                        eprintln!(
+                            "ee-agent: cp probe failures reached {}; forcing re-registration",
+                            probe_failures_before_reregister
+                        );
+                        registered = register_with_retries(cfg, &cp_url, &vm_name)?;
+                        tunnel = restart_cloudflared(tunnel, &registered.tunnel_token)?;
+                        consecutive_probe_failures = 0;
+                    }
+                }
+            }
+        }
+
         thread::sleep(Duration::from_secs(10));
     }
 }
-
 fn run_control_plane_mode(cfg: &AgentRuntimeConfig) -> AppResult<()> {
     let image = cfg.control_plane_image.as_ref().ok_or_else(|| {
         AppError::Config("control-plane mode requires control_plane_image".to_string())
@@ -624,6 +691,49 @@ fn start_cloudflared(token: &str) -> AppResult<Option<Child>> {
     Ok(Some(child))
 }
 
+fn stop_cloudflared(mut child: Child) -> AppResult<()> {
+    if child.try_wait().map_err(command_err)?.is_some() {
+        return Ok(());
+    }
+
+    child.kill().map_err(command_err)?;
+    let _ = child.wait().map_err(command_err)?;
+    Ok(())
+}
+
+fn restart_cloudflared(current: Option<Child>, token: &str) -> AppResult<Option<Child>> {
+    if let Some(child) = current {
+        stop_cloudflared(child)?;
+    }
+    start_cloudflared(token)
+}
+
+fn is_vm_registered_on_cp(cp_url: &str, vm_name: &str) -> AppResult<bool> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| AppError::External(format!("http client init failed: {e}")))?;
+
+    let url = format!("{}/api/agents", cp_url.trim_end_matches('/'));
+    let resp = client
+        .get(url)
+        .send()
+        .map_err(|e| AppError::External(format!("agents list request failed: {e}")))?;
+    let status = resp.status();
+    if status != StatusCode::OK {
+        let body = resp.text().unwrap_or_default();
+        return Err(AppError::External(format!(
+            "agents list failed status={} body={}",
+            status, body
+        )));
+    }
+
+    let payload: Vec<CpAgentListItem> = resp
+        .json()
+        .map_err(|e| AppError::External(format!("agents list parse failed: {e}")))?;
+    Ok(payload.iter().any(|item| item.vm_name == vm_name))
+}
+
 fn gcp_metadata_get(path: &str) -> AppResult<String> {
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
@@ -656,4 +766,9 @@ fn command_err(err: std::io::Error) -> AppError {
 
 struct RegisteredAgent {
     tunnel_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CpAgentListItem {
+    vm_name: String,
 }

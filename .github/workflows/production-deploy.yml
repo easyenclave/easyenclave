@@ -116,6 +116,19 @@ jobs:
             -e "target_image_labels=easyenclave=managed,easyenclave_env=production,gitsha=${{ steps.vars.outputs.sha12 }}" \
             -e "source_sha=${SOURCE_SHA}"
 
+      - name: Cleanup managed production VMs via Ansible
+        shell: bash
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          EASYENCLAVE_DOMAIN: ${{ env.EASYENCLAVE_DOMAIN }}
+        run: |
+          set -euo pipefail
+          ansible-playbook ansible/playbooks/gcp-cleanup-managed-vms.yml \
+            -e "ee_env_name=production"
+
       - name: Deploy production control plane and agent
         id: deploy
         shell: bash
