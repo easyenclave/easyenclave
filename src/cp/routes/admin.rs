@@ -361,7 +361,7 @@ fn error_response(
 mod tests {
     use std::time::Duration;
 
-    use crate::types::AgentStatus;
+    use crate::types::{AgentRegistrationState, AgentStatus};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use serde_json::{json, Value};
@@ -394,6 +394,7 @@ mod tests {
                 .create(
                     "admin-observed-agent-1",
                     AgentStatus::Undeployed,
+                    AgentRegistrationState::Ready,
                     true,
                     Some("tiny"),
                     Some("gcp:test"),

@@ -136,8 +136,22 @@
         method: DELETE
         headers:
           Authorization: "Bearer {{ cf_api_token }}"
-        status_code: 200
+        status_code: [200, 400, 404]
+        return_content: true
       loop: "{{ cf_tunnel_ids | default([]) }}"
+      register: cf_tunnel_delete
+      retries: 6
+      delay: 10
+      until: (cf_tunnel_delete.status | int) in [200, 404]
+      failed_when: >-
+        (cf_tunnel_delete.status | int == 400)
+        and
+        (
+          (
+            cf_tunnel_delete.json.errors | default([]) | map(attribute='code') | list
+            | select('ne', 1022) | list | length
+          ) > 0
+        )
       when:
         - cf_cleanup_enabled | bool
         - (cf_tunnel_ids | default([]) | length) > 0
