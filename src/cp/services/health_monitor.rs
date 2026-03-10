@@ -198,7 +198,7 @@ mod tests {
     use crate::stores::deployment::{DeploymentStore, NewDeployment};
     use crate::stores::health::HealthStore;
     use crate::stores::setting::SettingsStore;
-    use crate::types::{AgentStatus, DeploymentStatus};
+    use crate::types::{AgentRegistrationState, AgentStatus, DeploymentStatus};
 
     #[tokio::test]
     async fn run_once_marks_stale_running_target_as_failed_check() {
@@ -238,6 +238,7 @@ mod tests {
             .create(
                 "monitor-agent",
                 AgentStatus::Deployed,
+                AgentRegistrationState::Ready,
                 true,
                 Some("standard"),
                 Some("gcp:test"),
@@ -327,6 +328,7 @@ mod tests {
             .create(
                 "probe-agent",
                 AgentStatus::Deployed,
+                AgentRegistrationState::Ready,
                 true,
                 Some("standard"),
                 Some("gcp:test"),

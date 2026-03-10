@@ -181,7 +181,7 @@
       </section>
       <section class="card">
         <h2>Agents</h2>
-        <p class="metric"><span id="agentCount">0</span> total / <span id="verifiedCount">0</span> verified</p>
+        <p class="metric"><span id="agentCount">0</span> total / <span id="readyCount">0</span> ready / <span id="attestedCount">0</span> attested</p>
       </section>
     </div>
 
@@ -347,9 +347,11 @@
       byId("gitSha").textContent = health?.git_sha || "-";
 
       const agentRows = Array.isArray(agents) ? agents : (agents?.agents || []);
-      const verified = agentRows.filter((a) => a?.verified === true).length;
+      const ready = agentRows.filter((a) => a?.registration_state === "ready").length;
+      const attested = agentRows.filter((a) => a?.attestation_verified === true).length;
       byId("agentCount").textContent = String(agentRows.length);
-      byId("verifiedCount").textContent = String(verified);
+      byId("readyCount").textContent = String(ready);
+      byId("attestedCount").textContent = String(attested);
       byId("deploymentCount").textContent = Array.isArray(deployments) ? String(deployments.length) : "0";
 
       renderAgents(agentRows);

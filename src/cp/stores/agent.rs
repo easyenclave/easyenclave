@@ -1,5 +1,5 @@
 use crate::common::error::{AppError, AppResult};
-use crate::types::AgentStatus;
+use crate::types::{AgentRegistrationState, AgentStatus};
 use serde::Deserialize;
 use serde::Serialize;
 use sqlx::{Row, SqlitePool};
@@ -10,7 +10,8 @@ pub struct AgentRecord {
     pub agent_id: Uuid,
     pub vm_name: String,
     pub status: AgentStatus,
-    pub verified: bool,
+    pub registration_state: AgentRegistrationState,
+    pub attestation_verified: bool,
     pub node_size: Option<String>,
     pub datacenter: Option<String>,
     pub github_owner: Option<String>,
@@ -57,7 +58,8 @@ impl AgentStore {
         &self,
         vm_name: &str,
         status: AgentStatus,
-        verified: bool,
+        registration_state: AgentRegistrationState,
+        attestation_verified: bool,
         node_size: Option<&str>,
         datacenter: Option<&str>,
         github_owner: Option<&str>,
@@ -70,13 +72,14 @@ impl AgentStore {
         let status_text = status_to_db(status);
 
         sqlx::query(
-            "INSERT INTO agents (agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id, mrtd, rtmrs, tcb_status) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO agents (agent_id, vm_name, status, registration_state, attestation_verified, node_size, datacenter, github_owner, account_id, mrtd, rtmrs, tcb_status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )
         .bind(agent_id.to_string())
         .bind(vm_name)
         .bind(status_text)
-        .bind(if verified { 1_i64 } else { 0_i64 })
+        .bind(registration_state_to_db(registration_state))
+        .bind(if attestation_verified { 1_i64 } else { 0_i64 })
         .bind(node_size)
         .bind(datacenter)
         .bind(github_owner)
@@ -93,7 +96,7 @@ impl AgentStore {
 
     pub async fn get(&self, agent_id: Uuid) -> AppResult<Option<AgentRecord>> {
         let row = sqlx::query(
-            "SELECT agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id \
+            "SELECT agent_id, vm_name, status, registration_state, attestation_verified, node_size, datacenter, github_owner, account_id \
              FROM agents WHERE agent_id = ?1",
         )
         .bind(agent_id.to_string())
@@ -107,7 +110,7 @@ impl AgentStore {
     pub async fn list(&self, status: Option<AgentStatus>) -> AppResult<Vec<AgentRecord>> {
         let rows = if let Some(status) = status {
             sqlx::query(
-                "SELECT agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id \
+                "SELECT agent_id, vm_name, status, registration_state, attestation_verified, node_size, datacenter, github_owner, account_id \
                  FROM agents WHERE status = ?1 ORDER BY created_at DESC",
             )
             .bind(status_to_db(status))
@@ -116,7 +119,7 @@ impl AgentStore {
             .map_err(|e| AppError::External(format!("failed to list agents: {e}")))?
         } else {
             sqlx::query(
-                "SELECT agent_id, vm_name, status, verified, node_size, datacenter, github_owner, account_id \
+                "SELECT agent_id, vm_name, status, registration_state, attestation_verified, node_size, datacenter, github_owner, account_id \
                  FROM agents ORDER BY created_at DESC",
             )
             .fetch_all(&self.pool)
@@ -174,15 +177,19 @@ impl AgentStore {
         Ok(())
     }
 
-    pub async fn set_verified(&self, agent_id: Uuid, verified: bool) -> AppResult<()> {
+    pub async fn set_registration_state(
+        &self,
+        agent_id: Uuid,
+        registration_state: AgentRegistrationState,
+    ) -> AppResult<()> {
         sqlx::query(
-            "UPDATE agents SET verified = ?1, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?2",
+            "UPDATE agents SET registration_state = ?1, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?2",
         )
-        .bind(if verified { 1_i64 } else { 0_i64 })
+        .bind(registration_state_to_db(registration_state))
         .bind(agent_id.to_string())
         .execute(&self.pool)
         .await
-        .map_err(|e| AppError::External(format!("failed to update agent verified flag: {e}")))?;
+        .map_err(|e| AppError::External(format!("failed to update agent registration state: {e}")))?;
         Ok(())
     }
 
@@ -374,9 +381,12 @@ fn row_to_agent(row: sqlx::sqlite::SqliteRow) -> AppResult<AgentRecord> {
     let status_text: String = row
         .try_get("status")
         .map_err(|e| AppError::External(format!("read status failed: {e}")))?;
-    let verified: i64 = row
-        .try_get("verified")
-        .map_err(|e| AppError::External(format!("read verified failed: {e}")))?;
+    let registration_state_text: String = row
+        .try_get("registration_state")
+        .map_err(|e| AppError::External(format!("read registration_state failed: {e}")))?;
+    let attestation_verified: i64 = row
+        .try_get("attestation_verified")
+        .map_err(|e| AppError::External(format!("read attestation_verified failed: {e}")))?;
     let node_size: Option<String> = row
         .try_get("node_size")
         .map_err(|e| AppError::External(format!("read node_size failed: {e}")))?;
@@ -401,7 +411,8 @@ fn row_to_agent(row: sqlx::sqlite::SqliteRow) -> AppResult<AgentRecord> {
             .map_err(|e| AppError::External(format!("invalid agent_id uuid: {e}")))?,
         vm_name,
         status: status_from_db(&status_text)?,
-        verified: verified != 0,
+        registration_state: registration_state_from_db(&registration_state_text)?,
+        attestation_verified: attestation_verified != 0,
         node_size,
         datacenter,
         github_owner,
@@ -467,9 +478,28 @@ fn status_from_db(raw: &str) -> AppResult<AgentStatus> {
     }
 }
 
+fn registration_state_to_db(state: AgentRegistrationState) -> &'static str {
+    match state {
+        AgentRegistrationState::Pending => "pending",
+        AgentRegistrationState::Ready => "ready",
+        AgentRegistrationState::Failed => "failed",
+    }
+}
+
+fn registration_state_from_db(raw: &str) -> AppResult<AgentRegistrationState> {
+    match raw {
+        "pending" => Ok(AgentRegistrationState::Pending),
+        "ready" => Ok(AgentRegistrationState::Ready),
+        "failed" => Ok(AgentRegistrationState::Failed),
+        _ => Err(AppError::External(format!(
+            "invalid agent registration_state: {raw}"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::types::AgentStatus;
+    use crate::types::{AgentRegistrationState, AgentStatus};
     use sqlx::sqlite::SqlitePoolOptions;
     use sqlx::Row;
     use uuid::Uuid;
@@ -493,7 +523,8 @@ mod tests {
             .create(
                 "tdx-agent-001",
                 AgentStatus::Undeployed,
-                false,
+                AgentRegistrationState::Pending,
+                true,
                 Some("standard"),
                 Some("gcp:us-central1-a"),
                 None,
@@ -512,6 +543,8 @@ mod tests {
             .expect("exists");
         assert_eq!(fetched.vm_name, "tdx-agent-001");
         assert_eq!(fetched.status, AgentStatus::Undeployed);
+        assert_eq!(fetched.registration_state, AgentRegistrationState::Pending);
+        assert!(fetched.attestation_verified);
 
         store
             .update_status(created.agent_id, AgentStatus::Deploying)

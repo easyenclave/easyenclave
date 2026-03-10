@@ -1,5 +1,5 @@
 use crate::cp_api::{ApiErrorResponse, DeployRequest, DeployResponse};
-use crate::types::{AgentStatus, DeploymentStatus};
+use crate::types::{AgentRegistrationState, AgentStatus, DeploymentStatus};
 use axum::extract::{Path, Query, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;
@@ -68,6 +68,8 @@ pub async fn deploy(
                     .as_deref()
                     .map(|dc| a.datacenter.as_deref() == Some(dc))
                     .unwrap_or(true)
+                && a.registration_state == AgentRegistrationState::Ready
+                && a.attestation_verified
         })
         .ok_or_else(|| {
             error_response(
@@ -333,7 +335,7 @@ mod tests {
     use crate::state::AppState;
     use crate::stores::agent::AgentStore;
     use crate::stores::setting::SettingsStore;
-    use crate::types::AgentStatus;
+    use crate::types::{AgentRegistrationState, AgentStatus};
 
     async fn test_app_with_oidc(
         github_oidc: GithubOidcService,
@@ -354,6 +356,7 @@ mod tests {
             .create(
                 "tdx-agent-deploy-1",
                 AgentStatus::Undeployed,
+                AgentRegistrationState::Ready,
                 true,
                 Some("standard"),
                 Some("gcp:us-central1-a"),

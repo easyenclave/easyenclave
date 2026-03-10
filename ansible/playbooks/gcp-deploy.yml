@@ -247,11 +247,11 @@
           - agents_api_path != '__missing__'
         fail_msg: "Neither /api/agents nor /api/v1/agents is available on the control plane"
 
-    - name: Print agent verification wait settings
+    - name: Print agent readiness wait settings
       ansible.builtin.debug:
-        msg: "waiting for verified agents expected={{ total_agents }} attempts={{ agent_verify_wait_attempts }} delay={{ agent_verify_wait_seconds }}s endpoint={{ agents_api_path }}"
+        msg: "waiting for ready agents expected={{ total_agents }} attempts={{ agent_verify_wait_attempts }} delay={{ agent_verify_wait_seconds }}s endpoint={{ agents_api_path }}"
 
-    - name: Wait for all requested agents to verify
+    - name: Wait for all requested agents to become ready
       ansible.builtin.uri:
         url: "{{ cp_bootstrap_url }}{{ agents_api_path }}"
         method: GET
@@ -267,7 +267,7 @@
             if ((agents_poll.json | default({})) is mapping)
             else (agents_poll.json | default([]))
           )
-          | selectattr('verified', 'equalto', true)
+          | selectattr('registration_state', 'equalto', 'ready')
           | list
           | length
         ) >= (total_agents | int)
@@ -282,32 +282,32 @@
             else (agents_poll.json | default([]))
           }}
 
-    - name: Compute verified agent count
+    - name: Compute ready agent count
       ansible.builtin.set_fact:
-        verified_agents: "{{ final_agents_list | selectattr('verified', 'equalto', true) | list | length }}"
+        ready_agents: "{{ final_agents_list | selectattr('registration_state', 'equalto', 'ready') | list | length }}"
 
-    - name: Print verified agent count
+    - name: Print ready agent count
       ansible.builtin.debug:
-        msg: "verified agents={{ verified_agents }} expected={{ total_agents }}"
+        msg: "ready agents={{ ready_agents }} expected={{ total_agents }}"
 
-    - name: Print unverified agents when verification target is missed
+    - name: Print non-ready agents when verification target is missed
       ansible.builtin.debug:
         msg: >-
           {{ item }}
       loop: >-
         {{
           final_agents_list
-          | rejectattr('verified', 'equalto', true)
+          | rejectattr('registration_state', 'equalto', 'ready')
           | map('to_json')
           | list
         }}
-      when: verified_agents | int < total_agents | int
+      when: ready_agents | int < total_agents | int
 
-    - name: Fail when not all agents verified
+    - name: Fail when not all agents are ready
       ansible.builtin.fail:
         msg: >-
-          Not all agents verified ({{ verified_agents }}/{{ total_agents }}).
-      when: verified_agents | int < total_agents | int
+          Not all agents ready ({{ ready_agents }}/{{ total_agents }}).
+      when: ready_agents | int < total_agents | int
 
     - name: Ensure admin password is configured for measurement approval
       ansible.builtin.assert:
@@ -341,7 +341,8 @@
         approval_sizes: >-
           {{
             final_agents_list
-            | selectattr('verified', 'equalto', true)
+            | selectattr('registration_state', 'equalto', 'ready')
+            | selectattr('attestation_verified', 'equalto', true)
             | map(attribute='node_size')
             | map('string')
             | map('lower')
@@ -350,13 +351,13 @@
             | list
           }}
 
-    - name: Ensure there are verified node sizes to approve
+    - name: Ensure there are attested ready node sizes to approve
       ansible.builtin.assert:
         that:
           - approval_sizes | length > 0
-        fail_msg: "No verified node sizes found; cannot auto-approve trusted measurements"
+        fail_msg: "No attested ready node sizes found; cannot auto-approve trusted measurements"
 
-    - name: Fetch observed measurements for each verified node size
+    - name: Fetch observed measurements for each attested ready node size
       ansible.builtin.uri:
         url: "{{ cp_bootstrap_url }}/api/admin/measurements/agents?node_size={{ item }}&limit=20"
         method: GET
@@ -375,7 +376,7 @@
         fail_msg: "No observed measurement with mrtd for node_size='{{ item.item }}'"
       loop: "{{ observed_measurements.results }}"
 
-    - name: Approve trusted measurement for each verified node size
+    - name: Approve trusted measurement for each attested ready node size
       ansible.builtin.uri:
         url: "{{ cp_bootstrap_url }}/api/admin/trusted-measurements/agent"
         method: POST
@@ -417,7 +418,7 @@
               'control_plane_name': (cp_boot_json.name | default('')),
               'control_plane_zone': (cp_boot_json.zone | default('')),
               'total_agents': (total_agents | int),
-              'verified_agents': (verified_agents | int)
+              'ready_agents': (ready_agents | int)
             }
             | to_nice_json
           }}
