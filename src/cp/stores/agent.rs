@@ -174,6 +174,18 @@ impl AgentStore {
         Ok(())
     }
 
+    pub async fn set_verified(&self, agent_id: Uuid, verified: bool) -> AppResult<()> {
+        sqlx::query(
+            "UPDATE agents SET verified = ?1, updated_at = CURRENT_TIMESTAMP WHERE agent_id = ?2",
+        )
+        .bind(if verified { 1_i64 } else { 0_i64 })
+        .bind(agent_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AppError::External(format!("failed to update agent verified flag: {e}")))?;
+        Ok(())
+    }
+
     pub async fn set_tunnel(
         &self,
         agent_id: Uuid,
