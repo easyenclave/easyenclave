@@ -2,7 +2,7 @@ use crate::cp_api::{
     AgentChallengeResponse, AgentCheckIngestRequest, AgentCheckIngestResponse,
     AgentRegisterRequest, AgentRegisterResponse, ApiErrorResponse,
 };
-use crate::types::AgentStatus;
+use crate::types::{AgentRegistrationState, AgentStatus};
 use axum::extract::{Path, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::HeaderMap;
@@ -49,7 +49,7 @@ pub async fn register(
         }
     }
 
-    let verified = state
+    let attestation = state
         .attestation
         .verify_registration_token(&payload.intel_ta_token)
         .map_err(|err| {
@@ -65,7 +65,7 @@ pub async fn register(
         })?;
 
     let store = AgentStore::new(state.db_pool.clone());
-    let rtmrs_json = verified
+    let rtmrs_json = attestation
         .rtmrs
         .as_ref()
         .and_then(|value| serde_json::to_string(value).ok());
@@ -74,14 +74,15 @@ pub async fn register(
         .create(
             &payload.vm_name,
             AgentStatus::Undeployed,
-            false,
+            AgentRegistrationState::Pending,
+            true,
             payload.node_size.as_deref(),
             payload.datacenter.as_deref(),
             payload.github_owner.as_deref(),
             None,
-            verified.mrtd.as_deref(),
+            attestation.mrtd.as_deref(),
             rtmrs_json.as_deref(),
-            verified.tcb_status.as_deref(),
+            attestation.tcb_status.as_deref(),
         )
         .await
         .map_err(|e| {
@@ -146,9 +147,12 @@ pub async fn register(
         ));
     }
 
-    if let Err(err) = store.set_verified(created.agent_id, true).await {
+    if let Err(err) = store
+        .set_registration_state(created.agent_id, AgentRegistrationState::Ready)
+        .await
+    {
         eprintln!(
-            "ee-cp: failed to mark agent verified vm_name={} agent_id={} error={}",
+            "ee-cp: failed to mark agent registration_state=ready vm_name={} agent_id={} error={}",
             payload.vm_name, created.agent_id, err
         );
         let _ = state
