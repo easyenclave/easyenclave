@@ -1,0 +1,6 @@
+# DHCP on all Ethernet interfaces
+[Match]
+Name=en* eth*
+
+[Network]
+DHCP=yes

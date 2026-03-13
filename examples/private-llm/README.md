@@ -11,6 +11,9 @@ Run a private Ollama model inside a TDX enclave.
 
 - `docker-compose.yml`: base CPU-safe stack (works in staging)
 - `docker-compose.h100.yml`: production H100 profile (self-contained compose)
+- `docker-compose.cp.yml`: control-plane-friendly stack with `/health` and a simple chat UI
+- `Caddyfile`: ingress for the control-plane profile
+- `ui/`: static chat UI served by the control-plane profile
 - `test.py`: smoke test for direct + proxy + OpenAI-compatible paths
 
 ## Start In Staging (No GPU)
@@ -25,6 +28,16 @@ OLLAMA_MODEL=smollm2:135m \
 ```bash
 OLLAMA_MODEL=qwen2.5:32b \
   docker compose -f docker-compose.h100.yml up -d
+```
+
+## Start With Chat UI
+
+This profile keeps `/health` stable for the control plane, serves a browser UI at `/`,
+and proxies `/api/*` to Ollama.
+
+```bash
+OLLAMA_MODEL=smollm2:135m \
+  docker compose -f docker-compose.cp.yml up -d
 ```
 
 ## Query

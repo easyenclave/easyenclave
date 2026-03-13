@@ -1,0 +1,5 @@
+PRETTY_NAME="EasyEnclave TDX VM"
+NAME="EasyEnclave"
+ID=easyenclave
+ID_LIKE=ubuntu
+VERSION_ID="1.0"

@@ -1,0 +1,15 @@
+[Unit]
+Description=Format and mount data disk
+DefaultDependencies=no
+Before=docker.service containerd.service tdx-launcher.service local-fs.target
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/setup-data-disk.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=local-fs.target
