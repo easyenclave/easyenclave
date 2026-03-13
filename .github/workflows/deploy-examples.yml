@@ -1,6 +1,31 @@
 name: Deploy Examples
 
 on:
+  workflow_call:
+    inputs:
+      target_env:
+        description: "Deployment profile"
+        required: false
+        default: staging
+        type: string
+      cp_url:
+        description: "Override control-plane URL (optional)"
+        required: false
+        type: string
+      model:
+        description: "Override Ollama model tag (optional)"
+        required: false
+        type: string
+      node_size:
+        description: "Override node size (optional)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Submit deploy as dry-run"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       target_env:
@@ -77,7 +102,7 @@ jobs:
             default_model="qwen2.5:32b"
             default_node_size="llm"
           else
-            compose_file="examples/private-llm/docker-compose.yml"
+            compose_file="examples/private-llm/docker-compose.cp.yml"
             default_model="smollm2:135m"
             default_node_size="tiny"
           fi
