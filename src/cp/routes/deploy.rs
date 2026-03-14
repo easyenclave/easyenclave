@@ -80,7 +80,11 @@ pub async fn deploy(
         })?;
 
     let claimed = agent_store
-        .claim_owner(selected.agent_id, deployer.account_id)
+        .claim_owner_with_github_owner(
+            selected.agent_id,
+            deployer.account_id,
+            deployer.github_owner.as_deref(),
+        )
         .await
         .map_err(|_| {
             error_response(
@@ -219,10 +223,28 @@ async fn authenticate_deployer_account(
             "invalid api key",
         ));
     }
+    let account = accounts
+        .get(account_id)
+        .await
+        .map_err(|_| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "auth_lookup_failed",
+                "failed to load deployer account",
+            )
+        })?
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                "invalid_api_key",
+                "unknown api key",
+            )
+        })?;
+
     Ok(AuthenticatedDeployer {
         account_id,
         auth_method: "api_key",
-        github_owner: None,
+        github_owner: account.preferred_github_owner().map(ToOwned::to_owned),
     })
 }
 
@@ -586,6 +608,128 @@ mod tests {
             .await
             .expect("second deploy");
         assert_eq!(second.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn deploy_with_api_key_can_target_matching_owner_tagged_agent() {
+        let app = test_app_with_oidc(GithubOidcService::disabled_for_tests(), Some("example-org"))
+            .await;
+
+        let account_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "deployer-api-owner-match",
+                            "account_type": "deployer",
+                            "github_org": "example-org"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("account response");
+        assert_eq!(account_response.status(), StatusCode::OK);
+        let account_body = axum::body::to_bytes(account_response.into_body(), usize::MAX)
+            .await
+            .expect("account body");
+        let account_json: Value = serde_json::from_slice(&account_body).expect("account json");
+        let api_key = account_json["api_key"].as_str().expect("api_key");
+
+        let payload = json!({
+            "compose": "services: {}",
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "dry_run": true
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy response");
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dry_run_persists_github_owner_from_api_key_account() {
+        let app = test_app().await;
+
+        let account_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/accounts")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "deployer-api-owner-fill",
+                            "account_type": "deployer",
+                            "github_org": "example-org"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request"),
+            )
+            .await
+            .expect("account response");
+        assert_eq!(account_response.status(), StatusCode::OK);
+        let account_body = axum::body::to_bytes(account_response.into_body(), usize::MAX)
+            .await
+            .expect("account body");
+        let account_json: Value = serde_json::from_slice(&account_body).expect("account json");
+        let api_key = account_json["api_key"].as_str().expect("api_key");
+
+        let payload = json!({
+            "compose": "services: {}",
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "dry_run": true
+        });
+        let deploy_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy response");
+        assert_eq!(deploy_response.status(), StatusCode::OK);
+
+        let agents_response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("agents response");
+        assert_eq!(agents_response.status(), StatusCode::OK);
+        let agents_body = axum::body::to_bytes(agents_response.into_body(), usize::MAX)
+            .await
+            .expect("agents body");
+        let agents_json: Value = serde_json::from_slice(&agents_body).expect("agents json");
+        assert_eq!(agents_json[0]["github_owner"].as_str(), Some("example-org"));
     }
 
     #[tokio::test]

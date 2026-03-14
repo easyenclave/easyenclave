@@ -219,12 +219,38 @@ impl AgentStore {
     }
 
     pub async fn claim_owner(&self, agent_id: Uuid, account_id: Uuid) -> AppResult<bool> {
+        self.claim_owner_with_github_owner(agent_id, account_id, None)
+            .await
+    }
+
+    pub async fn claim_owner_with_github_owner(
+        &self,
+        agent_id: Uuid,
+        account_id: Uuid,
+        github_owner: Option<&str>,
+    ) -> AppResult<bool> {
+        let github_owner = github_owner.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
         let result = sqlx::query(
             "UPDATE agents
-             SET account_id = ?1, updated_at = CURRENT_TIMESTAMP
-             WHERE agent_id = ?2 AND (account_id IS NULL OR account_id = ?1)",
+             SET account_id = ?,
+                 github_owner = CASE
+                     WHEN (github_owner IS NULL OR trim(github_owner) = '') AND ? IS NOT NULL
+                         THEN ?
+                     ELSE github_owner
+                 END,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE agent_id = ? AND (account_id IS NULL OR account_id = ?)",
         )
         .bind(account_id.to_string())
+        .bind(github_owner)
+        .bind(github_owner)
         .bind(agent_id.to_string())
         .bind(account_id.to_string())
         .execute(&self.pool)
@@ -565,10 +591,16 @@ mod tests {
 
         let owner_id = Uuid::new_v4();
         let claimed = store
-            .claim_owner(created.agent_id, owner_id)
+            .claim_owner_with_github_owner(created.agent_id, owner_id, Some("example-org"))
             .await
             .expect("claim owner");
         assert!(claimed);
+        let owner_filled = store
+            .get(created.agent_id)
+            .await
+            .expect("get")
+            .expect("exists");
+        assert_eq!(owner_filled.github_owner.as_deref(), Some("example-org"));
         let same_owner_claim = store
             .claim_owner(created.agent_id, owner_id)
             .await

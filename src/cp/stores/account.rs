@@ -13,6 +13,19 @@ pub struct AccountRecord {
     pub github_org: Option<String>,
 }
 
+impl AccountRecord {
+    pub fn preferred_github_owner(&self) -> Option<&str> {
+        self.github_org
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                self.github_login
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+            })
+    }
+}
+
 #[derive(Clone)]
 pub struct AccountStore {
     pool: SqlitePool,
