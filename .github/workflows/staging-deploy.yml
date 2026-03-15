@@ -395,6 +395,7 @@ jobs:
           INPUT_REGION: ${{ vars.STAGING_BAREMETAL_AGENT_REGION || '' }}
           INPUT_DATACENTER: ${{ vars.STAGING_BAREMETAL_AGENT_DATACENTER || '' }}
           INPUT_REPO_DIR: ${{ vars.STAGING_BAREMETAL_REPO_DIR || '' }}
+          INPUT_IMAGE_DIR: ${{ vars.STAGING_BAREMETAL_IMAGE_DIR || '' }}
           INPUT_GPU_PCI_BDF: ${{ vars.STAGING_BAREMETAL_GPU_PCI_BDF || '' }}
           INPUT_TDX_RUNNER_COMMAND: ${{ vars.STAGING_BAREMETAL_TDX_RUNNER_COMMAND || '' }}
           INPUT_TDX_RUNNER_EXTRA_ARGS: ${{ vars.STAGING_BAREMETAL_TDX_RUNNER_EXTRA_ARGS || '' }}
@@ -420,8 +421,12 @@ jobs:
           region="${INPUT_REGION:-}"
           datacenter="${INPUT_DATACENTER:-baremetal:${runner_slug}}"
           remote_repo_dir="${INPUT_REPO_DIR:-/tmp/easyenclave-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          image_dir="${INPUT_IMAGE_DIR:-}"
           gpu_pci_bdf="${INPUT_GPU_PCI_BDF:-}"
           tdx_runner_command="${INPUT_TDX_RUNNER_COMMAND:-python3 ${remote_repo_dir}/infra/tdx_cli.py vm new}"
+          if [ -z "${INPUT_TDX_RUNNER_COMMAND}" ] && [ -n "${image_dir}" ]; then
+            tdx_runner_command="${tdx_runner_command} --image ${image_dir}"
+          fi
           tdx_runner_extra_args="${INPUT_TDX_RUNNER_EXTRA_ARGS:-}"
           if [ -z "${tdx_runner_extra_args}" ] && [ -n "${gpu_pci_bdf}" ]; then
             tdx_runner_extra_args="--hostdev-pci ${gpu_pci_bdf}"
