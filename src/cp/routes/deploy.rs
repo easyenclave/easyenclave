@@ -161,8 +161,8 @@ async fn authenticate_deployer_account(
                 "invalid GitHub Actions OIDC token",
             )
         })?;
-        let account_id = accounts
-            .lookup_account_id_by_github_owner(&identity.owner)
+        let account = accounts
+            .ensure_deployer_for_github_owner(&identity.owner)
             .await
             .map_err(|_| {
                 error_response(
@@ -170,18 +170,11 @@ async fn authenticate_deployer_account(
                     "auth_lookup_failed",
                     "failed to resolve GitHub owner",
                 )
-            })?
-            .ok_or_else(|| {
-                error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unknown_github_owner",
-                    "GitHub owner is not linked to an account",
-                )
             })?;
         return Ok(AuthenticatedDeployer {
-            account_id,
+            account_id: account.account_id,
             auth_method: "github_oidc",
-            github_owner: Some(identity.owner),
+            github_owner: account.preferred_github_owner().map(ToOwned::to_owned),
         });
     }
 
@@ -753,33 +746,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deploy_accepts_oidc_owner_tagged_agent_via_route() {
+    async fn deploy_autoprovisions_oidc_owner_account_via_route() {
         let app = test_app_with_oidc(
             GithubOidcService::with_forced_owner_for_tests("example-org"),
             Some("example-org"),
         )
         .await;
-
-        let account_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/accounts")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        json!({
-                            "name": "deployer-oidc",
-                            "account_type": "deployer",
-                            "github_org": "example-org"
-                        })
-                        .to_string(),
-                    ))
-                    .expect("request"),
-            )
-            .await
-            .expect("account response");
-        assert_eq!(account_response.status(), StatusCode::OK);
 
         let payload = json!({
             "compose": "services: {}",

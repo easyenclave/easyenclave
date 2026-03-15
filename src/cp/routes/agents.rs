@@ -491,8 +491,8 @@ async fn authenticate_owner_account(
                 "invalid GitHub Actions OIDC token",
             )
         })?;
-        let account_id = accounts
-            .lookup_account_id_by_github_owner(&identity.owner)
+        let account = accounts
+            .ensure_deployer_for_github_owner(&identity.owner)
             .await
             .map_err(|_| {
                 error_response(
@@ -500,15 +500,10 @@ async fn authenticate_owner_account(
                     "auth_lookup_failed",
                     "failed to resolve GitHub owner",
                 )
-            })?
-            .ok_or_else(|| {
-                error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unknown_github_owner",
-                    "GitHub owner is not linked to an account",
-                )
             })?;
-        return Ok(AuthenticatedOwner { account_id });
+        return Ok(AuthenticatedOwner {
+            account_id: account.account_id,
+        });
     }
 
     let key_prefix = key_prefix_from_raw(token).ok_or_else(|| {
@@ -1252,5 +1247,116 @@ mod tests {
             Value::Bool(true),
             "unexpected agent stats row: {matched}"
         );
+    }
+
+    #[tokio::test]
+    async fn oidc_owner_can_reset_agent_without_precreated_account() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+
+        let settings = SettingsStore::new_with_ttl(pool.clone(), Duration::from_secs(5));
+        let nonce = NonceService::new(Duration::from_secs(300));
+        let attestation = AttestationService::insecure_for_tests();
+        let github_oidc = GithubOidcService::with_forced_owner_for_tests("example-org");
+        let tunnel = TunnelService::disabled_for_tests();
+        let state = AppState::new(
+            "boot-test".to_string(),
+            None,
+            None,
+            pool,
+            settings,
+            nonce,
+            attestation,
+            github_oidc,
+            tunnel,
+        );
+        let app = build_router(state);
+
+        let challenge_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents/challenge")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("challenge response");
+        let challenge_body = axum::body::to_bytes(challenge_response.into_body(), usize::MAX)
+            .await
+            .expect("challenge body");
+        let challenge_payload: Value =
+            serde_json::from_slice(&challenge_body).expect("challenge json");
+        let nonce = challenge_payload["nonce"]
+            .as_str()
+            .expect("nonce str")
+            .to_string();
+
+        let register_payload = json!({
+            "intel_ta_token": "fake.jwt.token",
+            "vm_name": "tdx-agent-oidc-owner",
+            "nonce": nonce,
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "github_owner": "example-org"
+        });
+        let register_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(register_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("register response");
+        assert_eq!(register_response.status(), StatusCode::OK);
+        let register_body = axum::body::to_bytes(register_response.into_body(), usize::MAX)
+            .await
+            .expect("register body");
+        let register_json: Value = serde_json::from_slice(&register_body).expect("register json");
+        let agent_id = register_json["agent_id"].as_str().expect("agent_id");
+
+        let deploy_payload = json!({
+            "compose": "services: {}",
+            "agent_name": "tdx-agent-oidc-owner",
+            "dry_run": true
+        });
+        let deploy_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", "Bearer aaa.bbb.ccc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(deploy_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy");
+        assert_eq!(deploy_response.status(), StatusCode::OK);
+
+        let reset_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/{agent_id}/reset"))
+                    .header("authorization", "Bearer aaa.bbb.ccc")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("reset");
+        assert_eq!(reset_response.status(), StatusCode::NO_CONTENT);
     }
 }
