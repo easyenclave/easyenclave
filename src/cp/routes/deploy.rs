@@ -631,8 +631,8 @@ mod tests {
 
     #[tokio::test]
     async fn deploy_with_api_key_can_target_matching_owner_tagged_agent() {
-        let app = test_app_with_oidc(GithubOidcService::disabled_for_tests(), Some("example-org"))
-            .await;
+        let app =
+            test_app_with_oidc(GithubOidcService::disabled_for_tests(), Some("example-org")).await;
 
         let account_response = app
             .clone()
@@ -685,8 +685,8 @@ mod tests {
 
     #[tokio::test]
     async fn dry_run_preserves_github_owner_for_api_key_account() {
-        let app = test_app_with_oidc(GithubOidcService::disabled_for_tests(), Some("example-org"))
-            .await;
+        let app =
+            test_app_with_oidc(GithubOidcService::disabled_for_tests(), Some("example-org")).await;
 
         let account_response = app
             .clone()
