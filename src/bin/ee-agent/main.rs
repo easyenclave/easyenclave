@@ -329,6 +329,30 @@ fn build_control_plane_env(cfg: &AgentRuntimeConfig) -> Vec<(String, String)> {
     insert_mapped(
         &mut env,
         &cfg.raw_kv,
+        "cp_github_oidc_audience",
+        "CP_GITHUB_OIDC_AUDIENCE",
+    );
+    insert_mapped(
+        &mut env,
+        &cfg.raw_kv,
+        "cp_github_oidc_jwks_url",
+        "CP_GITHUB_OIDC_JWKS_URL",
+    );
+    insert_mapped(
+        &mut env,
+        &cfg.raw_kv,
+        "cp_github_oidc_issuer",
+        "CP_GITHUB_OIDC_ISSUER",
+    );
+    insert_mapped(
+        &mut env,
+        &cfg.raw_kv,
+        "cp_github_oidc_jwks_ttl_seconds",
+        "CP_GITHUB_OIDC_JWKS_TTL_SECONDS",
+    );
+    insert_mapped(
+        &mut env,
+        &cfg.raw_kv,
         "admin_github_logins",
         "ADMIN_GITHUB_LOGINS",
     );
@@ -771,4 +795,65 @@ struct RegisteredAgent {
 #[derive(Debug, Deserialize)]
 struct CpAgentListItem {
     vm_name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::build_control_plane_env;
+    use crate::config::{AgentMode, AgentRuntimeConfig};
+
+    #[test]
+    fn control_plane_env_includes_github_oidc_settings() {
+        let mut raw_kv = HashMap::new();
+        raw_kv.insert(
+            "cp_github_oidc_audience".to_string(),
+            "easyenclave".to_string(),
+        );
+        raw_kv.insert(
+            "cp_github_oidc_jwks_url".to_string(),
+            "https://token.actions.githubusercontent.com/.well-known/jwks".to_string(),
+        );
+        raw_kv.insert(
+            "cp_github_oidc_issuer".to_string(),
+            "https://token.actions.githubusercontent.com".to_string(),
+        );
+        raw_kv.insert(
+            "cp_github_oidc_jwks_ttl_seconds".to_string(),
+            "300".to_string(),
+        );
+
+        let cfg = AgentRuntimeConfig {
+            mode: AgentMode::ControlPlane,
+            control_plane_url: None,
+            node_size: "tiny".to_string(),
+            datacenter: "gcp:test".to_string(),
+            intel_api_key: None,
+            control_plane_image: Some("ghcr.io/example/control-plane:latest".to_string()),
+            measure_app_image: None,
+            provided_app: None,
+            port: 8080,
+            raw_kv,
+        };
+
+        let env: HashMap<String, String> = build_control_plane_env(&cfg).into_iter().collect();
+        assert_eq!(
+            env.get("CP_GITHUB_OIDC_AUDIENCE").map(String::as_str),
+            Some("easyenclave")
+        );
+        assert_eq!(
+            env.get("CP_GITHUB_OIDC_JWKS_URL").map(String::as_str),
+            Some("https://token.actions.githubusercontent.com/.well-known/jwks")
+        );
+        assert_eq!(
+            env.get("CP_GITHUB_OIDC_ISSUER").map(String::as_str),
+            Some("https://token.actions.githubusercontent.com")
+        );
+        assert_eq!(
+            env.get("CP_GITHUB_OIDC_JWKS_TTL_SECONDS")
+                .map(String::as_str),
+            Some("300")
+        );
+    }
 }

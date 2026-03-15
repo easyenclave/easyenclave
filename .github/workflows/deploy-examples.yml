@@ -144,7 +144,18 @@ jobs:
             exit 0
           fi
 
-          oidc_token="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}" | jq -r '.value')"
+          request_url="${ACTIONS_ID_TOKEN_REQUEST_URL}"
+          separator='?'
+          if [[ "${request_url}" == *\?* ]]; then
+            separator='&'
+          fi
+          request_url="${request_url}${separator}audience=${OIDC_AUDIENCE}"
+
+          oidc_response="$(curl -fsS \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            -H "Accept: application/json; api-version=2.0" \
+            "${request_url}")"
+          oidc_token="$(echo "${oidc_response}" | jq -r '.value // empty')"
           if [ -z "${oidc_token}" ] || [ "${oidc_token}" = "null" ]; then
             echo "::error::Failed to mint GitHub OIDC token and no deployer API key secret is configured"
             exit 1
