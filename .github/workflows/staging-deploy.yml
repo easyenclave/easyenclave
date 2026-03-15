@@ -338,7 +338,7 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs:
       - deploy
-    runs-on: [self-hosted, tdx-worker]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -349,28 +349,52 @@ jobs:
         with:
           ref: ${{ env.SOURCE_SHA }}
 
-      - name: Install Ansible
+      - name: Configure SSH access to bare-metal host
+        id: ssh
         shell: bash
+        env:
+          SSH_HOST: ${{ vars.STAGING_BAREMETAL_SSH_HOST || '' }}
+          SSH_PORT: ${{ vars.STAGING_BAREMETAL_SSH_PORT || '22' }}
+          SSH_USER: ${{ vars.STAGING_BAREMETAL_SSH_USER || '' }}
+          SSH_PRIVATE_KEY: ${{ secrets.STAGING_BAREMETAL_SSH_PRIVATE_KEY || '' }}
         run: |
           set -euo pipefail
-          if command -v ansible-playbook >/dev/null 2>&1; then
-            exit 0
-          fi
-          if command -v sudo >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ansible
-          else
-            python3 -m pip install --user ansible
-            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          fi
 
-      - name: Resolve bare-metal runner config
+          for required_var in SSH_HOST SSH_USER SSH_PRIVATE_KEY; do
+            if [ -z "${!required_var}" ]; then
+              echo "::error::Set ${required_var} for staging bare-metal SSH access"
+              exit 1
+            fi
+          done
+
+          mkdir -p "$HOME/.ssh"
+          chmod 700 "$HOME/.ssh"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "$HOME/.ssh/staging_baremetal_key"
+          chmod 600 "$HOME/.ssh/staging_baremetal_key"
+          ssh-keyscan -p "${SSH_PORT}" -H "${SSH_HOST}" >> "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+          ssh_target="${SSH_USER}@${SSH_HOST}"
+          ssh -i "$HOME/.ssh/staging_baremetal_key" -p "${SSH_PORT}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "${ssh_target}" "hostname -s >/dev/null || hostname >/dev/null"
+
+          {
+            echo "ssh_target=${ssh_target}"
+            echo "ssh_port=${SSH_PORT}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve bare-metal SSH config
         id: cfg
         shell: bash
         env:
+          SSH_TARGET: ${{ steps.ssh.outputs.ssh_target }}
+          SSH_PORT: ${{ steps.ssh.outputs.ssh_port }}
           INPUT_ZONE: ${{ vars.STAGING_BAREMETAL_AGENT_ZONE || '' }}
           INPUT_REGION: ${{ vars.STAGING_BAREMETAL_AGENT_REGION || '' }}
           INPUT_DATACENTER: ${{ vars.STAGING_BAREMETAL_AGENT_DATACENTER || '' }}
+          INPUT_REPO_DIR: ${{ vars.STAGING_BAREMETAL_REPO_DIR || '' }}
           INPUT_GPU_PCI_BDF: ${{ vars.STAGING_BAREMETAL_GPU_PCI_BDF || '' }}
           INPUT_TDX_RUNNER_COMMAND: ${{ vars.STAGING_BAREMETAL_TDX_RUNNER_COMMAND || '' }}
           INPUT_TDX_RUNNER_EXTRA_ARGS: ${{ vars.STAGING_BAREMETAL_TDX_RUNNER_EXTRA_ARGS || '' }}
@@ -387,19 +411,24 @@ jobs:
             printf '%s' "${value}"
           }
 
-          runner_slug="$(slugify "${RUNNER_NAME:-tdx-worker}")"
+          remote_host_name="$(ssh -i "$HOME/.ssh/staging_baremetal_key" -p "${SSH_PORT}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "${SSH_TARGET}" "hostname -s || hostname")"
+          runner_slug="$(slugify "${remote_host_name:-${SSH_TARGET}}")"
           zone="${INPUT_ZONE:-${runner_slug}}"
           region="${INPUT_REGION:-}"
           datacenter="${INPUT_DATACENTER:-baremetal:${runner_slug}}"
-          gpu_pci_bdf="${INPUT_GPU_PCI_BDF:-${H100_PCI_BDF:-}}"
-          tdx_runner_command="${INPUT_TDX_RUNNER_COMMAND:-tdx-runner vm new}"
+          remote_repo_dir="${INPUT_REPO_DIR:-/tmp/easyenclave-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
+          gpu_pci_bdf="${INPUT_GPU_PCI_BDF:-}"
+          tdx_runner_command="${INPUT_TDX_RUNNER_COMMAND:-python3 infra/tdx_cli.py vm new}"
           tdx_runner_extra_args="${INPUT_TDX_RUNNER_EXTRA_ARGS:-}"
           if [ -z "${tdx_runner_extra_args}" ] && [ -n "${gpu_pci_bdf}" ]; then
             tdx_runner_extra_args="--hostdev-pci ${gpu_pci_bdf}"
           fi
 
           if [ -z "${tdx_runner_extra_args}" ]; then
-            echo "::error::Set STAGING_BAREMETAL_TDX_RUNNER_EXTRA_ARGS or STAGING_BAREMETAL_GPU_PCI_BDF on the self-hosted H100 runner"
+            echo "::error::Set STAGING_BAREMETAL_TDX_RUNNER_EXTRA_ARGS or STAGING_BAREMETAL_GPU_PCI_BDF for the bare-metal SSH target"
             exit 1
           fi
 
@@ -407,11 +436,12 @@ jobs:
             echo "zone=${zone}"
             echo "region=${region}"
             echo "datacenter=${datacenter}"
+            echo "remote_repo_dir=${remote_repo_dir}"
             echo "tdx_runner_command=${tdx_runner_command}"
             echo "tdx_runner_extra_args=${tdx_runner_extra_args}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Check H100 llm capacity on this runner
+      - name: Check H100 llm capacity in target datacenter
         id: capacity
         shell: bash
         env:
@@ -454,17 +484,49 @@ jobs:
           fi
 
           if [ "${busy_count}" -gt 0 ]; then
-            echo "::error::Runner datacenter ${DATACENTER} already has a busy llm agent; free it before launching another H100 VM"
+            echo "::error::Datacenter ${DATACENTER} already has a busy llm agent; free it before launching another H100 VM"
             exit 1
           fi
 
           echo "launch=true" >> "$GITHUB_OUTPUT"
 
-      - name: Launch bare-metal H100 llm agent via Ansible
+      - name: Sync repo checkout to bare-metal host
         if: steps.capacity.outputs.launch == 'true'
         shell: bash
         env:
-          ANSIBLE_CONFIG: ansible/ansible.cfg
+          SSH_TARGET: ${{ steps.ssh.outputs.ssh_target }}
+          SSH_PORT: ${{ steps.ssh.outputs.ssh_port }}
+          REMOTE_REPO_DIR: ${{ steps.cfg.outputs.remote_repo_dir }}
+        run: |
+          set -euo pipefail
+
+          case "${REMOTE_REPO_DIR}" in
+            ""|"/")
+              echo "::error::Unsafe STAGING_BAREMETAL_REPO_DIR value: ${REMOTE_REPO_DIR}"
+              exit 1
+              ;;
+          esac
+
+          remote_repo_dir_q="$(printf '%q' "${REMOTE_REPO_DIR}")"
+
+          ssh -i "$HOME/.ssh/staging_baremetal_key" -p "${SSH_PORT}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "${SSH_TARGET}" "bash -lc 'rm -rf -- ${remote_repo_dir_q} && mkdir -p -- ${remote_repo_dir_q}'"
+
+          tar --exclude=.git --exclude=target -czf - . | \
+            ssh -i "$HOME/.ssh/staging_baremetal_key" -p "${SSH_PORT}" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              "${SSH_TARGET}" "bash -lc 'tar -xzf - -C ${remote_repo_dir_q}'"
+
+      - name: Launch bare-metal H100 llm agent via remote Ansible
+        if: steps.capacity.outputs.launch == 'true'
+        shell: bash
+        env:
+          SSH_TARGET: ${{ steps.ssh.outputs.ssh_target }}
+          SSH_PORT: ${{ steps.ssh.outputs.ssh_port }}
+          REMOTE_REPO_DIR: ${{ steps.cfg.outputs.remote_repo_dir }}
           CP_URL: ${{ env.STAGING_CP_URL }}
           ITA_API_KEY: ${{ secrets.ITA_API_KEY || secrets.INTEL_API_KEY }}
           ZONE: ${{ steps.cfg.outputs.zone }}
@@ -474,6 +536,34 @@ jobs:
           TDX_RUNNER_EXTRA_ARGS: ${{ steps.cfg.outputs.tdx_runner_extra_args }}
         run: |
           set -euo pipefail
+          ssh -i "$HOME/.ssh/staging_baremetal_key" -p "${SSH_PORT}" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "${SSH_TARGET}" "\
+              REMOTE_REPO_DIR=$(printf '%q' "${REMOTE_REPO_DIR}") \
+              CP_URL=$(printf '%q' "${CP_URL}") \
+              ITA_API_KEY=$(printf '%q' "${ITA_API_KEY}") \
+              ZONE=$(printf '%q' "${ZONE}") \
+              REGION=$(printf '%q' "${REGION}") \
+              DATACENTER=$(printf '%q' "${DATACENTER}") \
+              TDX_RUNNER_COMMAND=$(printf '%q' "${TDX_RUNNER_COMMAND}") \
+              TDX_RUNNER_EXTRA_ARGS=$(printf '%q' "${TDX_RUNNER_EXTRA_ARGS}") \
+              bash -s" <<'REMOTE'
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if ! command -v ansible-playbook >/dev/null 2>&1; then
+            if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y ansible
+            else
+              python3 -m pip install --user ansible
+            fi
+          fi
+
+          cd "${REMOTE_REPO_DIR}"
+          export ANSIBLE_CONFIG=ansible/ansible.cfg
+
           timeout 1200 ansible-playbook ansible/playbooks/baremetal-vm-fleet-new.yml \
             -e "cp_url=${CP_URL}" \
             -e "ita_api_key=${ITA_API_KEY}" \
@@ -484,6 +574,7 @@ jobs:
             -e "agent_datacenter=${DATACENTER}" \
             -e "tdx_runner_command=${TDX_RUNNER_COMMAND}" \
             -e "tdx_runner_extra_args=${TDX_RUNNER_EXTRA_ARGS}"
+          REMOTE
 
       - name: Wait for ready undeployed H100 llm agent
         shell: bash

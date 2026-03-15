@@ -15,6 +15,10 @@
     agent_region: ""
     agent_datacenter: ""
     tdx_runner_command: "tdx-runner vm new"
+    tdx_runner_cp_url_flag: ""
+    tdx_runner_ita_api_key_flag: ""
+    tdx_runner_zone_flag: ""
+    tdx_runner_timeout_flag: ""
     tdx_runner_extra_args: ""
     output_json_path: /tmp/ee-baremetal-vm-fleet.json
   tasks:
@@ -33,13 +37,39 @@
     - name: Start baremetal VMs asynchronously via tdx-runner
       ansible.builtin.shell: |
         set -euo pipefail
+        runner_cmd="{{ tdx_runner_command }}"
+        cp_url_flag="{{ tdx_runner_cp_url_flag }}"
+        ita_api_key_flag="{{ tdx_runner_ita_api_key_flag }}"
+        zone_flag="{{ tdx_runner_zone_flag }}"
+        timeout_flag="{{ tdx_runner_timeout_flag }}"
+
+        if [ -z "${cp_url_flag}" ] || [ -z "${ita_api_key_flag}" ] || [ -z "${zone_flag}" ] || [ -z "${timeout_flag}" ]; then
+          case "${runner_cmd}" in
+            *tdx_cli.py*|*infra/tdx_cli.py*)
+              : "${cp_url_flag:=--easyenclave-url}"
+              : "${ita_api_key_flag:=--intel-api-key}"
+              : "${zone_flag:=--availability-zone}"
+              : "${timeout_flag:=}"
+              ;;
+            *)
+              : "${cp_url_flag:=--cp-url}"
+              : "${ita_api_key_flag:=--ita-api-key}"
+              : "${zone_flag:=--zone}"
+              : "${timeout_flag:=--timeout}"
+              ;;
+          esac
+        fi
+
         cmd=( {{ tdx_runner_command }} )
-        cmd+=(--size "{{ item }}" --cp-url "{{ cp_url }}" --ita-api-key "{{ ita_api_key }}")
+        cmd+=(--size "{{ item }}" "${cp_url_flag}" "{{ cp_url }}" "${ita_api_key_flag}" "{{ ita_api_key }}")
         if [ "{{ vm_wait | bool | ternary('true','false') }}" = "true" ]; then
-          cmd+=(--wait --timeout "{{ vm_timeout_seconds | int }}")
+          cmd+=(--wait)
+          if [ -n "${timeout_flag}" ]; then
+            cmd+=("${timeout_flag}" "{{ vm_timeout_seconds | int }}")
+          fi
         fi
         if [ -n "{{ agent_zone }}" ]; then
-          cmd+=(--zone "{{ agent_zone }}")
+          cmd+=("${zone_flag}" "{{ agent_zone }}")
         fi
         if [ -n "{{ agent_region }}" ]; then
           cmd+=(--region "{{ agent_region }}")
