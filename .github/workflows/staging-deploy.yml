@@ -421,7 +421,7 @@ jobs:
           datacenter="${INPUT_DATACENTER:-baremetal:${runner_slug}}"
           remote_repo_dir="${INPUT_REPO_DIR:-/tmp/easyenclave-staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
           gpu_pci_bdf="${INPUT_GPU_PCI_BDF:-}"
-          tdx_runner_command="${INPUT_TDX_RUNNER_COMMAND:-python3 infra/tdx_cli.py vm new}"
+          tdx_runner_command="${INPUT_TDX_RUNNER_COMMAND:-python3 ${remote_repo_dir}/infra/tdx_cli.py vm new}"
           tdx_runner_extra_args="${INPUT_TDX_RUNNER_EXTRA_ARGS:-}"
           if [ -z "${tdx_runner_extra_args}" ] && [ -n "${gpu_pci_bdf}" ]; then
             tdx_runner_extra_args="--hostdev-pci ${gpu_pci_bdf}"
