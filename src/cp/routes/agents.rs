@@ -666,7 +666,7 @@ mod tests {
         test_app_with_check_token(None).await
     }
 
-    async fn create_account(app: &axum::Router, name: &str) -> String {
+    async fn create_account(app: &axum::Router, name: &str, github_org: &str) -> String {
         let response = app
             .clone()
             .oneshot(
@@ -675,7 +675,12 @@ mod tests {
                     .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"name": name, "account_type": "deployer"}).to_string(),
+                        json!({
+                            "name": name,
+                            "account_type": "deployer",
+                            "github_org": github_org
+                        })
+                        .to_string(),
                     ))
                     .expect("request"),
             )
@@ -1006,8 +1011,8 @@ mod tests {
     #[tokio::test]
     async fn reset_requires_owner_account() {
         let app = test_app().await;
-        let owner_key = create_account(&app, "owner-acct").await;
-        let other_key = create_account(&app, "other-acct").await;
+        let owner_key = create_account(&app, "owner-acct", "easyenclave").await;
+        let other_key = create_account(&app, "other-acct", "other-org").await;
         let agent_id = register_agent(&app, "tdx-agent-reset-owner").await;
 
         let deploy_payload = json!({
@@ -1061,7 +1066,7 @@ mod tests {
     #[tokio::test]
     async fn delete_allows_owner_and_removes_agent() {
         let app = test_app().await;
-        let owner_key = create_account(&app, "owner-acct-delete").await;
+        let owner_key = create_account(&app, "owner-acct-delete", "easyenclave").await;
         let agent_id = register_agent(&app, "tdx-agent-delete-owner").await;
 
         let deploy_payload = json!({
@@ -1135,7 +1140,7 @@ mod tests {
     #[tokio::test]
     async fn failed_check_is_exempt_during_deploying() {
         let app = test_app_with_check_token(Some("check-secret")).await;
-        let owner_key = create_account(&app, "owner-acct-checks").await;
+        let owner_key = create_account(&app, "owner-acct-checks", "easyenclave").await;
         let agent_name = "tdx-agent-deploying-exempt";
         let agent_id = register_agent(&app, agent_name).await;
 
@@ -1170,7 +1175,7 @@ mod tests {
     #[tokio::test]
     async fn successful_check_promotes_deploying_and_updates_recent_stats() {
         let app = test_app_with_check_token(Some("check-secret")).await;
-        let owner_key = create_account(&app, "owner-acct-checks-2").await;
+        let owner_key = create_account(&app, "owner-acct-checks-2", "easyenclave").await;
         let agent_name = "tdx-agent-promote-running";
         let agent_id = register_agent(&app, agent_name).await;
 

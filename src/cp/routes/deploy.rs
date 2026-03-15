@@ -599,7 +599,7 @@ mod tests {
                         json!({
                             "name": "deployer-b",
                             "account_type": "deployer",
-                            "github_org": "easyenclave"
+                            "github_org": "other-org"
                         })
                         .to_string(),
                     ))
