@@ -18,6 +18,8 @@ use crate::stores::health::HealthStore;
 use crate::{auth::api_key::key_prefix_from_raw, auth::api_key::verify_api_key};
 use uuid::Uuid;
 
+const DEFAULT_AGENT_GITHUB_OWNER: &str = "easyenclave";
+
 pub async fn challenge(State(state): State<AppState>) -> Json<AgentChallengeResponse> {
     let nonce = state.nonce.issue();
     Json(AgentChallengeResponse {
@@ -69,6 +71,12 @@ pub async fn register(
         .rtmrs
         .as_ref()
         .and_then(|value| serde_json::to_string(value).ok());
+    let github_owner = payload
+        .github_owner
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_AGENT_GITHUB_OWNER);
 
     let created = store
         .create(
@@ -78,7 +86,7 @@ pub async fn register(
             true,
             payload.node_size.as_deref(),
             payload.datacenter.as_deref(),
-            payload.github_owner.as_deref(),
+            Some(github_owner),
             None,
             attestation.mrtd.as_deref(),
             rtmrs_json.as_deref(),
@@ -919,6 +927,80 @@ mod tests {
             .await
             .expect("get response");
         assert_eq!(get_response.status(), StatusCode::OK);
+        let get_body = axum::body::to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .expect("get body");
+        let get_json: Value = serde_json::from_slice(&get_body).expect("get json");
+        assert_eq!(get_json["github_owner"].as_str(), Some("easyenclave"));
+    }
+
+    #[tokio::test]
+    async fn register_preserves_explicit_github_owner() {
+        let app = test_app().await;
+
+        let challenge_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents/challenge")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("challenge response");
+        let challenge_body = axum::body::to_bytes(challenge_response.into_body(), usize::MAX)
+            .await
+            .expect("challenge body");
+        let challenge_payload: Value =
+            serde_json::from_slice(&challenge_body).expect("challenge json");
+        let nonce = challenge_payload["nonce"]
+            .as_str()
+            .expect("nonce str")
+            .to_string();
+
+        let register_payload = json!({
+            "intel_ta_token": "fake.jwt.token",
+            "vm_name": "tdx-agent-explicit-owner",
+            "nonce": nonce,
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "github_owner": "example-org"
+        });
+
+        let register_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(register_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("register response");
+        assert_eq!(register_response.status(), StatusCode::OK);
+        let register_body = axum::body::to_bytes(register_response.into_body(), usize::MAX)
+            .await
+            .expect("register body");
+        let register_json: Value = serde_json::from_slice(&register_body).expect("register json");
+        let agent_id = register_json["agent_id"].as_str().expect("agent_id");
+
+        let get_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("get response");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let get_body = axum::body::to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .expect("get body");
+        let get_json: Value = serde_json::from_slice(&get_body).expect("get json");
+        assert_eq!(get_json["github_owner"].as_str(), Some("example-org"));
     }
 
     #[tokio::test]
