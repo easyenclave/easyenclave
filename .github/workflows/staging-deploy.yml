@@ -553,6 +553,7 @@ jobs:
 
           if ! command -v ansible-playbook >/dev/null 2>&1; then
             if command -v sudo >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+              export DEBIAN_FRONTEND=noninteractive
               sudo apt-get update
               sudo apt-get install -y ansible
             else
@@ -562,17 +563,31 @@ jobs:
 
           cd "${REMOTE_REPO_DIR}"
           export ANSIBLE_CONFIG=ansible/ansible.cfg
+          extra_vars_json="$(mktemp)"
+          python3 - <<'PY' > "${extra_vars_json}"
+          import json
+          import os
 
-          timeout 1200 ansible-playbook ansible/playbooks/baremetal-vm-fleet-new.yml \
-            -e "cp_url=${CP_URL}" \
-            -e "ita_api_key=${ITA_API_KEY}" \
-            -e "num_llm=1" \
-            -e "vm_timeout_seconds=900" \
-            -e "agent_zone=${ZONE}" \
-            -e "agent_region=${REGION}" \
-            -e "agent_datacenter=${DATACENTER}" \
-            -e "tdx_runner_command=${TDX_RUNNER_COMMAND}" \
-            -e "tdx_runner_extra_args=${TDX_RUNNER_EXTRA_ARGS}"
+          payload = {
+              "cp_url": os.environ["CP_URL"],
+              "ita_api_key": os.environ["ITA_API_KEY"],
+              "num_llm": 1,
+              "vm_timeout_seconds": 900,
+              "agent_zone": os.environ["ZONE"],
+              "agent_region": os.environ["REGION"],
+              "agent_datacenter": os.environ["DATACENTER"],
+              "tdx_runner_command": os.environ["TDX_RUNNER_COMMAND"],
+              "tdx_runner_extra_args": os.environ["TDX_RUNNER_EXTRA_ARGS"],
+          }
+          print(json.dumps(payload))
+          PY
+
+          cleanup() {
+            rm -f "${extra_vars_json}"
+          }
+          trap cleanup EXIT
+
+          timeout 1200 ansible-playbook ansible/playbooks/baremetal-vm-fleet-new.yml -e @"${extra_vars_json}"
           REMOTE
 
       - name: Wait for ready undeployed H100 llm agent
