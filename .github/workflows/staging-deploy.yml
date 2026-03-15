@@ -451,13 +451,12 @@ jobs:
           set -euo pipefail
 
           agents="$(curl -fsS "${CP_URL}/api/agents")"
-          counts="$(printf '%s' "${agents}" | python3 - <<'PY'
+          counts="$(AGENTS_JSON="${agents}" python3 - <<'PY'
           import json
           import os
-          import sys
 
           datacenter = os.environ["DATACENTER"]
-          items = json.load(sys.stdin)
+          items = json.loads(os.environ["AGENTS_JSON"])
           ready = 0
           busy = 0
           for item in items:
@@ -586,13 +585,12 @@ jobs:
 
           for _ in $(seq 1 60); do
             agents="$(curl -fsS "${CP_URL}/api/agents")"
-            ready_undeployed="$(printf '%s' "${agents}" | python3 - <<'PY'
+            ready_undeployed="$(AGENTS_JSON="${agents}" python3 - <<'PY'
             import json
             import os
-            import sys
 
             datacenter = os.environ["DATACENTER"]
-            items = json.load(sys.stdin)
+            items = json.loads(os.environ["AGENTS_JSON"])
             ready = 0
             for item in items:
                 if (item.get("node_size") or "") != "llm":
