@@ -334,15 +334,212 @@ jobs:
           path: /tmp/ci-deploy.log
           if-no-files-found: ignore
 
+  ensure_baremetal_llm_agent:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs:
+      - deploy
+    runs-on: [self-hosted, tdx-worker]
+    permissions:
+      contents: read
+    outputs:
+      datacenter: ${{ steps.cfg.outputs.datacenter }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Install Ansible
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v ansible-playbook >/dev/null 2>&1; then
+            exit 0
+          fi
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ansible
+          else
+            python3 -m pip install --user ansible
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Resolve bare-metal runner config
+        id: cfg
+        shell: bash
+        env:
+          INPUT_ZONE: ${{ vars.STAGING_BAREMETAL_AGENT_ZONE || '' }}
+          INPUT_REGION: ${{ vars.STAGING_BAREMETAL_AGENT_REGION || '' }}
+          INPUT_DATACENTER: ${{ vars.STAGING_BAREMETAL_AGENT_DATACENTER || '' }}
+          INPUT_GPU_PCI_BDF: ${{ vars.STAGING_BAREMETAL_GPU_PCI_BDF || '' }}
+          INPUT_TDX_RUNNER_COMMAND: ${{ vars.STAGING_BAREMETAL_TDX_RUNNER_COMMAND || '' }}
+          INPUT_TDX_RUNNER_EXTRA_ARGS: ${{ vars.STAGING_BAREMETAL_TDX_RUNNER_EXTRA_ARGS || '' }}
+        run: |
+          set -euo pipefail
+
+          slugify() {
+            local value="$1"
+            value="$(printf '%s' "${value}" | tr '[:upper:]' '[:lower:]')"
+            value="$(printf '%s' "${value}" | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g')"
+            if [ -z "${value}" ]; then
+              value="tdx-worker"
+            fi
+            printf '%s' "${value}"
+          }
+
+          runner_slug="$(slugify "${RUNNER_NAME:-tdx-worker}")"
+          zone="${INPUT_ZONE:-${runner_slug}}"
+          region="${INPUT_REGION:-}"
+          datacenter="${INPUT_DATACENTER:-baremetal:${runner_slug}}"
+          gpu_pci_bdf="${INPUT_GPU_PCI_BDF:-${H100_PCI_BDF:-}}"
+          tdx_runner_command="${INPUT_TDX_RUNNER_COMMAND:-tdx-runner vm new}"
+          tdx_runner_extra_args="${INPUT_TDX_RUNNER_EXTRA_ARGS:-}"
+          if [ -z "${tdx_runner_extra_args}" ] && [ -n "${gpu_pci_bdf}" ]; then
+            tdx_runner_extra_args="--hostdev-pci ${gpu_pci_bdf}"
+          fi
+
+          if [ -z "${tdx_runner_extra_args}" ]; then
+            echo "::error::Set STAGING_BAREMETAL_TDX_RUNNER_EXTRA_ARGS or STAGING_BAREMETAL_GPU_PCI_BDF on the self-hosted H100 runner"
+            exit 1
+          fi
+
+          {
+            echo "zone=${zone}"
+            echo "region=${region}"
+            echo "datacenter=${datacenter}"
+            echo "tdx_runner_command=${tdx_runner_command}"
+            echo "tdx_runner_extra_args=${tdx_runner_extra_args}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check H100 llm capacity on this runner
+        id: capacity
+        shell: bash
+        env:
+          CP_URL: ${{ env.STAGING_CP_URL }}
+          DATACENTER: ${{ steps.cfg.outputs.datacenter }}
+        run: |
+          set -euo pipefail
+
+          agents="$(curl -fsS "${CP_URL}/api/agents")"
+          counts="$(printf '%s' "${agents}" | python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          datacenter = os.environ["DATACENTER"]
+          items = json.load(sys.stdin)
+          ready = 0
+          busy = 0
+          for item in items:
+              if (item.get("node_size") or "") != "llm":
+                  continue
+              if (item.get("datacenter") or "") != datacenter:
+                  continue
+              if (item.get("registration_state") or "") != "ready":
+                  continue
+              if item.get("attestation_verified") is not True:
+                  continue
+              if (item.get("status") or "") == "undeployed":
+                  ready += 1
+              else:
+                  busy += 1
+          print(f"{ready} {busy}")
+          PY
+          )"
+          read -r ready_undeployed busy_count <<<"${counts}"
+
+          if [ "${ready_undeployed}" -gt 0 ]; then
+            echo "launch=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${busy_count}" -gt 0 ]; then
+            echo "::error::Runner datacenter ${DATACENTER} already has a busy llm agent; free it before launching another H100 VM"
+            exit 1
+          fi
+
+          echo "launch=true" >> "$GITHUB_OUTPUT"
+
+      - name: Launch bare-metal H100 llm agent via Ansible
+        if: steps.capacity.outputs.launch == 'true'
+        shell: bash
+        env:
+          ANSIBLE_CONFIG: ansible/ansible.cfg
+          CP_URL: ${{ env.STAGING_CP_URL }}
+          ITA_API_KEY: ${{ secrets.ITA_API_KEY || secrets.INTEL_API_KEY }}
+          ZONE: ${{ steps.cfg.outputs.zone }}
+          REGION: ${{ steps.cfg.outputs.region }}
+          DATACENTER: ${{ steps.cfg.outputs.datacenter }}
+          TDX_RUNNER_COMMAND: ${{ steps.cfg.outputs.tdx_runner_command }}
+          TDX_RUNNER_EXTRA_ARGS: ${{ steps.cfg.outputs.tdx_runner_extra_args }}
+        run: |
+          set -euo pipefail
+          timeout 1200 ansible-playbook ansible/playbooks/baremetal-vm-fleet-new.yml \
+            -e "cp_url=${CP_URL}" \
+            -e "ita_api_key=${ITA_API_KEY}" \
+            -e "num_llm=1" \
+            -e "vm_timeout_seconds=900" \
+            -e "agent_zone=${ZONE}" \
+            -e "agent_region=${REGION}" \
+            -e "agent_datacenter=${DATACENTER}" \
+            -e "tdx_runner_command=${TDX_RUNNER_COMMAND}" \
+            -e "tdx_runner_extra_args=${TDX_RUNNER_EXTRA_ARGS}"
+
+      - name: Wait for ready undeployed H100 llm agent
+        shell: bash
+        env:
+          CP_URL: ${{ env.STAGING_CP_URL }}
+          DATACENTER: ${{ steps.cfg.outputs.datacenter }}
+        run: |
+          set -euo pipefail
+
+          for _ in $(seq 1 60); do
+            agents="$(curl -fsS "${CP_URL}/api/agents")"
+            ready_undeployed="$(printf '%s' "${agents}" | python3 - <<'PY'
+            import json
+            import os
+            import sys
+
+            datacenter = os.environ["DATACENTER"]
+            items = json.load(sys.stdin)
+            ready = 0
+            for item in items:
+                if (item.get("node_size") or "") != "llm":
+                    continue
+                if (item.get("datacenter") or "") != datacenter:
+                    continue
+                if (item.get("registration_state") or "") != "ready":
+                    continue
+                if item.get("attestation_verified") is not True:
+                    continue
+                if (item.get("status") or "") == "undeployed":
+                    ready += 1
+            print(ready)
+            PY
+            )"
+            if [ "${ready_undeployed}" -gt 0 ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+
+          echo "::error::No ready undeployed llm agent appeared in ${DATACENTER}"
+          exit 1
+
   deploy_private_llm:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs:
       - deploy
+      - ensure_baremetal_llm_agent
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/deploy-examples.yml
     with:
       target_env: staging
+      compose_file: examples/private-llm/docker-compose.cp.h100.yml
+      model: qwen2.5:32b
+      node_size: llm
+      datacenter: ${{ needs.ensure_baremetal_llm_agent.outputs.datacenter }}
       dry_run: false
     secrets: inherit

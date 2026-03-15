@@ -12,12 +12,21 @@ on:
         description: "Override control-plane URL (optional)"
         required: false
         type: string
+      compose_file:
+        description: "Override compose file path (optional)"
+        required: false
+        type: string
       model:
         description: "Override Ollama model tag (optional)"
         required: false
         type: string
       node_size:
         description: "Override node size (optional)"
+        required: false
+        default: ""
+        type: string
+      datacenter:
+        description: "Override datacenter (optional)"
         required: false
         default: ""
         type: string
@@ -40,6 +49,10 @@ on:
         description: "Override control-plane URL (optional)"
         required: false
         type: string
+      compose_file:
+        description: "Override compose file path (optional)"
+        required: false
+        type: string
       model:
         description: "Override Ollama model tag (optional)"
         required: false
@@ -53,6 +66,10 @@ on:
           - tiny
           - standard
           - llm
+      datacenter:
+        description: "Override datacenter (optional)"
+        required: false
+        type: string
       dry_run:
         description: "Submit deploy as dry-run"
         required: true
@@ -82,8 +99,10 @@ jobs:
         env:
           TARGET_ENV: ${{ inputs.target_env }}
           INPUT_CP_URL: ${{ inputs.cp_url }}
+          INPUT_COMPOSE_FILE: ${{ inputs.compose_file }}
           INPUT_MODEL: ${{ inputs.model }}
           INPUT_NODE_SIZE: ${{ inputs.node_size }}
+          INPUT_DATACENTER: ${{ inputs.datacenter }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
@@ -97,8 +116,10 @@ jobs:
             cp_url="${DEFAULT_STAGING_CP_URL}"
           fi
 
-          if [ "${target_env}" = "production" ]; then
-            compose_file="examples/private-llm/docker-compose.h100.yml"
+          if [ -n "${INPUT_COMPOSE_FILE}" ]; then
+            compose_file="${INPUT_COMPOSE_FILE}"
+          elif [ "${target_env}" = "production" ]; then
+            compose_file="examples/private-llm/docker-compose.cp.h100.yml"
             default_model="qwen2.5:32b"
             default_node_size="llm"
           else
@@ -109,6 +130,7 @@ jobs:
 
           model="${INPUT_MODEL:-${default_model}}"
           node_size="${INPUT_NODE_SIZE:-${default_node_size}}"
+          datacenter="${INPUT_DATACENTER:-}"
           dry_run="false"
           if [ "${INPUT_DRY_RUN}" = "true" ]; then
             dry_run="true"
@@ -119,6 +141,7 @@ jobs:
             echo "compose_file=${compose_file}"
             echo "model=${model}"
             echo "node_size=${node_size}"
+            echo "datacenter=${datacenter}"
             echo "target_env=${target_env}"
             echo "dry_run=${dry_run}"
           } >> "$GITHUB_OUTPUT"
@@ -172,6 +195,7 @@ jobs:
           COMPOSE_FILE: ${{ steps.cfg.outputs.compose_file }}
           MODEL: ${{ steps.cfg.outputs.model }}
           NODE_SIZE: ${{ steps.cfg.outputs.node_size }}
+          DATACENTER: ${{ steps.cfg.outputs.datacenter }}
           DRY_RUN: ${{ steps.cfg.outputs.dry_run }}
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
@@ -185,8 +209,9 @@ jobs:
             --arg compose "${compose}" \
             --arg app_name "private-llm" \
             --arg node_size "${NODE_SIZE}" \
+            --arg datacenter "${DATACENTER}" \
             --arg dry_run "${DRY_RUN}" \
-            '{compose: $compose, app_name: $app_name, node_size: $node_size, dry_run: ($dry_run == "true")}')"
+            '{compose: $compose, app_name: $app_name, node_size: $node_size, datacenter: ($datacenter | select(length > 0)), dry_run: ($dry_run == "true")}')"
 
           response="$(curl -sS -X POST "${CP_URL}/api/deploy" \
             -H "Authorization: Bearer ${AUTH_TOKEN}" \
@@ -225,4 +250,4 @@ jobs:
         run: |
           echo "Submitted deployment_id=${{ steps.deploy.outputs.deployment_id }} agent_id=${{ steps.deploy.outputs.agent_id }}"
           echo "Auth mode: ${{ steps.auth.outputs.auth_mode }}"
-          echo "Profile: ${{ steps.cfg.outputs.target_env }} model=${{ steps.cfg.outputs.model }} node_size=${{ steps.cfg.outputs.node_size }} dry_run=${{ steps.cfg.outputs.dry_run }}"
+          echo "Profile: ${{ steps.cfg.outputs.target_env }} model=${{ steps.cfg.outputs.model }} node_size=${{ steps.cfg.outputs.node_size }} datacenter=${{ steps.cfg.outputs.datacenter }} dry_run=${{ steps.cfg.outputs.dry_run }}"
