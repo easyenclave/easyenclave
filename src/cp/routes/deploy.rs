@@ -312,8 +312,7 @@ fn github_owner_visible(agent_owner: Option<&str>, requester_owner: Option<&str>
         (Some(agent_owner), Some(requester_owner)) => {
             agent_owner.eq_ignore_ascii_case(requester_owner)
         }
-        (Some(_), None) => false,
-        (None, _) => true,
+        _ => false,
     }
 }
 
@@ -410,7 +409,7 @@ mod tests {
     }
 
     async fn test_app() -> axum::Router {
-        test_app_with_oidc(GithubOidcService::disabled_for_tests(), None).await
+        test_app_with_oidc(GithubOidcService::disabled_for_tests(), Some("easyenclave")).await
     }
 
     #[tokio::test]
@@ -425,7 +424,12 @@ mod tests {
                     .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"name": "deployer-1", "account_type": "deployer"}).to_string(),
+                        json!({
+                            "name": "deployer-1",
+                            "account_type": "deployer",
+                            "github_org": "easyenclave"
+                        })
+                        .to_string(),
                     ))
                     .expect("request"),
             )
@@ -491,7 +495,12 @@ mod tests {
                     .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"name": "deployer-2", "account_type": "deployer"}).to_string(),
+                        json!({
+                            "name": "deployer-2",
+                            "account_type": "deployer",
+                            "github_org": "easyenclave"
+                        })
+                        .to_string(),
                     ))
                     .expect("request"),
             )
@@ -540,7 +549,12 @@ mod tests {
                     .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"name": "deployer-a", "account_type": "deployer"}).to_string(),
+                        json!({
+                            "name": "deployer-a",
+                            "account_type": "deployer",
+                            "github_org": "easyenclave"
+                        })
+                        .to_string(),
                     ))
                     .expect("request"),
             )
@@ -582,7 +596,12 @@ mod tests {
                     .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"name": "deployer-b", "account_type": "deployer"}).to_string(),
+                        json!({
+                            "name": "deployer-b",
+                            "account_type": "deployer",
+                            "github_org": "easyenclave"
+                        })
+                        .to_string(),
                     ))
                     .expect("request"),
             )
@@ -665,8 +684,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dry_run_persists_github_owner_from_api_key_account() {
-        let app = test_app().await;
+    async fn dry_run_preserves_github_owner_for_api_key_account() {
+        let app = test_app_with_oidc(GithubOidcService::disabled_for_tests(), Some("example-org"))
+            .await;
 
         let account_response = app
             .clone()
@@ -677,7 +697,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
-                            "name": "deployer-api-owner-fill",
+                            "name": "deployer-api-owner-preserve",
                             "account_type": "deployer",
                             "github_org": "example-org"
                         })
@@ -783,7 +803,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deploy_accepts_oidc_on_open_pool_agent_when_owner_unset() {
+    async fn deploy_rejects_oidc_when_agent_owner_is_unset() {
         let app = test_app_with_oidc(
             GithubOidcService::with_forced_owner_for_tests("example-org"),
             None,
@@ -799,7 +819,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
-                            "name": "deployer-open-pool",
+                            "name": "deployer-owner-unset",
                             "account_type": "deployer",
                             "github_org": "example-org"
                         })
@@ -829,7 +849,7 @@ mod tests {
             )
             .await
             .expect("deploy response");
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]

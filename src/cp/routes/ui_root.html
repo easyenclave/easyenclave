@@ -317,7 +317,7 @@
       if (item?.account_id) {
         return state.accountsById.get(item.account_id) || "claimed";
       }
-      return "open";
+      return "unowned";
     }
 
     function renderAgents(rows) {
