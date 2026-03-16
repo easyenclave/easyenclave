@@ -1,6 +1,40 @@
 name: Deploy Examples
 
 on:
+  workflow_call:
+    inputs:
+      target_env:
+        description: "Deployment profile"
+        required: false
+        default: staging
+        type: string
+      cp_url:
+        description: "Override control-plane URL (optional)"
+        required: false
+        type: string
+      compose_file:
+        description: "Override compose file path (optional)"
+        required: false
+        type: string
+      model:
+        description: "Override Ollama model tag (optional)"
+        required: false
+        type: string
+      node_size:
+        description: "Override node size (optional)"
+        required: false
+        default: ""
+        type: string
+      datacenter:
+        description: "Override datacenter (optional)"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "Submit deploy as dry-run"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       target_env:
@@ -13,6 +47,10 @@ on:
           - production
       cp_url:
         description: "Override control-plane URL (optional)"
+        required: false
+        type: string
+      compose_file:
+        description: "Override compose file path (optional)"
         required: false
         type: string
       model:
@@ -28,6 +66,10 @@ on:
           - tiny
           - standard
           - llm
+      datacenter:
+        description: "Override datacenter (optional)"
+        required: false
+        type: string
       dry_run:
         description: "Submit deploy as dry-run"
         required: true
@@ -57,8 +99,10 @@ jobs:
         env:
           TARGET_ENV: ${{ inputs.target_env }}
           INPUT_CP_URL: ${{ inputs.cp_url }}
+          INPUT_COMPOSE_FILE: ${{ inputs.compose_file }}
           INPUT_MODEL: ${{ inputs.model }}
           INPUT_NODE_SIZE: ${{ inputs.node_size }}
+          INPUT_DATACENTER: ${{ inputs.datacenter }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
@@ -72,18 +116,21 @@ jobs:
             cp_url="${DEFAULT_STAGING_CP_URL}"
           fi
 
-          if [ "${target_env}" = "production" ]; then
-            compose_file="examples/private-llm/docker-compose.h100.yml"
+          if [ -n "${INPUT_COMPOSE_FILE}" ]; then
+            compose_file="${INPUT_COMPOSE_FILE}"
+          elif [ "${target_env}" = "production" ]; then
+            compose_file="examples/private-llm/docker-compose.cp.h100.yml"
             default_model="qwen2.5:32b"
             default_node_size="llm"
           else
-            compose_file="examples/private-llm/docker-compose.yml"
+            compose_file="examples/private-llm/docker-compose.cp.yml"
             default_model="smollm2:135m"
             default_node_size="tiny"
           fi
 
           model="${INPUT_MODEL:-${default_model}}"
           node_size="${INPUT_NODE_SIZE:-${default_node_size}}"
+          datacenter="${INPUT_DATACENTER:-}"
           dry_run="false"
           if [ "${INPUT_DRY_RUN}" = "true" ]; then
             dry_run="true"
@@ -94,6 +141,7 @@ jobs:
             echo "compose_file=${compose_file}"
             echo "model=${model}"
             echo "node_size=${node_size}"
+            echo "datacenter=${datacenter}"
             echo "target_env=${target_env}"
             echo "dry_run=${dry_run}"
           } >> "$GITHUB_OUTPUT"
@@ -119,7 +167,18 @@ jobs:
             exit 0
           fi
 
-          oidc_token="$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${OIDC_AUDIENCE}" | jq -r '.value')"
+          request_url="${ACTIONS_ID_TOKEN_REQUEST_URL}"
+          separator='?'
+          if [[ "${request_url}" == *\?* ]]; then
+            separator='&'
+          fi
+          request_url="${request_url}${separator}audience=${OIDC_AUDIENCE}"
+
+          oidc_response="$(curl -fsS \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            -H "Accept: application/json; api-version=2.0" \
+            "${request_url}")"
+          oidc_token="$(echo "${oidc_response}" | jq -r '.value // empty')"
           if [ -z "${oidc_token}" ] || [ "${oidc_token}" = "null" ]; then
             echo "::error::Failed to mint GitHub OIDC token and no deployer API key secret is configured"
             exit 1
@@ -136,6 +195,7 @@ jobs:
           COMPOSE_FILE: ${{ steps.cfg.outputs.compose_file }}
           MODEL: ${{ steps.cfg.outputs.model }}
           NODE_SIZE: ${{ steps.cfg.outputs.node_size }}
+          DATACENTER: ${{ steps.cfg.outputs.datacenter }}
           DRY_RUN: ${{ steps.cfg.outputs.dry_run }}
           AUTH_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
@@ -149,18 +209,49 @@ jobs:
             --arg compose "${compose}" \
             --arg app_name "private-llm" \
             --arg node_size "${NODE_SIZE}" \
+            --arg datacenter "${DATACENTER}" \
             --arg dry_run "${DRY_RUN}" \
-            '{compose: $compose, app_name: $app_name, node_size: $node_size, dry_run: ($dry_run == "true")}')"
+            '{
+              compose: $compose,
+              app_name: $app_name,
+              node_size: $node_size,
+              dry_run: ($dry_run == "true")
+            } + if $datacenter | length > 0 then {datacenter: $datacenter} else {} end')"
 
-          response="$(curl -sS -X POST "${CP_URL}/api/deploy" \
+          response_headers="$(mktemp)"
+          response_body="$(mktemp)"
+          cleanup() {
+            rm -f "${response_headers}" "${response_body}"
+          }
+          trap cleanup EXIT
+
+          http_status="$(curl -sS -X POST "${CP_URL}/api/deploy" \
             -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -H "Accept: application/json" \
             -H "Content-Type: application/json" \
+            -D "${response_headers}" \
+            -o "${response_body}" \
+            -w '%{http_code}' \
             -d "${payload}")"
 
-          echo "${response}" | jq .
+          content_type="$(awk 'BEGIN { IGNORECASE = 1 } /^content-type:/ { sub(/\r$/, "", $0); print $2; exit }' "${response_headers}")"
 
-          deployment_id="$(echo "${response}" | jq -r '.deployment_id // empty')"
-          agent_id="$(echo "${response}" | jq -r '.agent_id // empty')"
+          if ! jq . "${response_body}"; then
+            echo "::error::Deploy API returned a non-JSON response"
+            echo "HTTP status: ${http_status}"
+            echo "Content-Type: ${content_type:-unknown}"
+            echo "Response body:"
+            cat "${response_body}"
+            exit 1
+          fi
+
+          if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
+            echo "::error::Deploy API returned HTTP ${http_status}"
+            exit 1
+          fi
+
+          deployment_id="$(jq -r '.deployment_id // empty' "${response_body}")"
+          agent_id="$(jq -r '.agent_id // empty' "${response_body}")"
 
           if [ -z "${deployment_id}" ] || [ -z "${agent_id}" ]; then
             echo "::error::Deployment failed"
@@ -189,4 +280,4 @@ jobs:
         run: |
           echo "Submitted deployment_id=${{ steps.deploy.outputs.deployment_id }} agent_id=${{ steps.deploy.outputs.agent_id }}"
           echo "Auth mode: ${{ steps.auth.outputs.auth_mode }}"
-          echo "Profile: ${{ steps.cfg.outputs.target_env }} model=${{ steps.cfg.outputs.model }} node_size=${{ steps.cfg.outputs.node_size }} dry_run=${{ steps.cfg.outputs.dry_run }}"
+          echo "Profile: ${{ steps.cfg.outputs.target_env }} model=${{ steps.cfg.outputs.model }} node_size=${{ steps.cfg.outputs.node_size }} datacenter=${{ steps.cfg.outputs.datacenter }} dry_run=${{ steps.cfg.outputs.dry_run }}"

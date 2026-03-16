@@ -1,0 +1,42 @@
+services:
+  private-llm:
+    image: ollama/ollama@sha256:006ad593108a705eafc8ea8496a30765222bdab17b1a1b0bbe3d50ff2e70fbf4
+    expose:
+      - "11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ingress:
+    image: caddy:2.8.4-alpine
+    ports:
+      - "8080:8080"
+    depends_on:
+      private-llm:
+        condition: service_healthy
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./ui:/srv:ro
+
+  model-loader:
+    image: curlimages/curl@sha256:d94d07ba9e7d6de898b6d96c1a072f6f8266c687af78a74f380087a0addf5d17
+    depends_on:
+      private-llm:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        curl -sf -X POST http://private-llm:11434/api/pull
+        -H "Content-Type: application/json"
+        -d "{\"name\":\"${OLLAMA_MODEL:-smollm2:135m}\"}"
+
+volumes:
+  ollama_data:

@@ -13,6 +13,19 @@ pub struct AccountRecord {
     pub github_org: Option<String>,
 }
 
+impl AccountRecord {
+    pub fn preferred_github_owner(&self) -> Option<&str> {
+        self.github_org
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                self.github_login
+                    .as_deref()
+                    .filter(|value| !value.trim().is_empty())
+            })
+    }
+}
+
 #[derive(Clone)]
 pub struct AccountStore {
     pool: SqlitePool,
@@ -160,6 +173,40 @@ impl AccountStore {
                 .map_err(|e| AppError::External(format!("invalid account_id uuid: {e}")))
         })
         .transpose()
+    }
+
+    pub async fn ensure_deployer_for_github_owner(&self, owner: &str) -> AppResult<AccountRecord> {
+        let owner = owner.trim();
+        if owner.is_empty() {
+            return Err(AppError::External(
+                "github owner must not be empty".to_string(),
+            ));
+        }
+
+        if let Some(account_id) = self.lookup_account_id_by_github_owner(owner).await? {
+            return self.get(account_id).await?.ok_or(AppError::NotFound);
+        }
+
+        let account_name = format!("github-oidc:{owner}");
+        match self
+            .create_with_api_key(
+                &account_name,
+                AccountType::Deployer,
+                None,
+                None,
+                Some(owner),
+                Some(owner),
+            )
+            .await
+        {
+            Ok(account) => Ok(account),
+            Err(err) => {
+                if let Some(account_id) = self.lookup_account_id_by_github_owner(owner).await? {
+                    return self.get(account_id).await?.ok_or(AppError::NotFound);
+                }
+                Err(err)
+            }
+        }
     }
 }
 
@@ -344,5 +391,34 @@ mod tests {
             )
             .await;
         assert!(dup_org.is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_deployer_for_github_owner_creates_and_reuses_account() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+
+        let store = AccountStore::new(pool);
+
+        let created = store
+            .ensure_deployer_for_github_owner("EasyEnclave")
+            .await
+            .expect("create");
+        assert_eq!(created.account_type, AccountType::Deployer);
+        assert_eq!(created.github_login.as_deref(), Some("EasyEnclave"));
+        assert_eq!(created.github_org.as_deref(), Some("EasyEnclave"));
+
+        let reused = store
+            .ensure_deployer_for_github_owner("easyenclave")
+            .await
+            .expect("reuse");
+        assert_eq!(reused.account_id, created.account_id);
     }
 }

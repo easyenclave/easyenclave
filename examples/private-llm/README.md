@@ -5,12 +5,16 @@ Run a private Ollama model inside a TDX enclave.
 ## Model Profiles
 
 - Staging (CPU/no GPU): `smollm2:135m` (default)
-- Production (single H100): `qwen2.5:32b` (via dedicated H100 compose profile)
+- Bare-metal / single H100: `qwen2.5:32b` (via dedicated H100 compose profiles)
 
 ## Files
 
 - `docker-compose.yml`: base CPU-safe stack (works in staging)
-- `docker-compose.h100.yml`: production H100 profile (self-contained compose)
+- `docker-compose.h100.yml`: raw H100 profile (self-contained compose)
+- `docker-compose.cp.yml`: control-plane-friendly stack with `/health` and a simple chat UI
+- `docker-compose.cp.h100.yml`: control-plane-friendly H100 stack with `/health`, chat UI, and GPU access
+- `Caddyfile`: ingress for the control-plane profile
+- `ui/`: static chat UI served by the control-plane profile
 - `test.py`: smoke test for direct + proxy + OpenAI-compatible paths
 
 ## Start In Staging (No GPU)
@@ -25,6 +29,26 @@ OLLAMA_MODEL=smollm2:135m \
 ```bash
 OLLAMA_MODEL=qwen2.5:32b \
   docker compose -f docker-compose.h100.yml up -d
+```
+
+## Start With Chat UI
+
+This profile keeps `/health` stable for the control plane, serves a browser UI at `/`,
+and proxies `/api/*` to Ollama.
+
+```bash
+OLLAMA_MODEL=smollm2:135m \
+  docker compose -f docker-compose.cp.yml up -d
+```
+
+## Start With Chat UI On H100
+
+This profile keeps `/health` stable for the control plane, serves a browser UI at `/`,
+and enables NVIDIA GPU access for the model container.
+
+```bash
+OLLAMA_MODEL=qwen2.5:32b \
+  docker compose -f docker-compose.cp.h100.yml up -d
 ```
 
 ## Query

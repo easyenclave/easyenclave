@@ -18,6 +18,8 @@ use crate::stores::health::HealthStore;
 use crate::{auth::api_key::key_prefix_from_raw, auth::api_key::verify_api_key};
 use uuid::Uuid;
 
+const DEFAULT_AGENT_GITHUB_OWNER: &str = "easyenclave";
+
 pub async fn challenge(State(state): State<AppState>) -> Json<AgentChallengeResponse> {
     let nonce = state.nonce.issue();
     Json(AgentChallengeResponse {
@@ -69,6 +71,12 @@ pub async fn register(
         .rtmrs
         .as_ref()
         .and_then(|value| serde_json::to_string(value).ok());
+    let github_owner = payload
+        .github_owner
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_AGENT_GITHUB_OWNER);
 
     let created = store
         .create(
@@ -78,7 +86,7 @@ pub async fn register(
             true,
             payload.node_size.as_deref(),
             payload.datacenter.as_deref(),
-            payload.github_owner.as_deref(),
+            Some(github_owner),
             None,
             attestation.mrtd.as_deref(),
             rtmrs_json.as_deref(),
@@ -483,8 +491,8 @@ async fn authenticate_owner_account(
                 "invalid GitHub Actions OIDC token",
             )
         })?;
-        let account_id = accounts
-            .lookup_account_id_by_github_owner(&identity.owner)
+        let account = accounts
+            .ensure_deployer_for_github_owner(&identity.owner)
             .await
             .map_err(|_| {
                 error_response(
@@ -492,15 +500,10 @@ async fn authenticate_owner_account(
                     "auth_lookup_failed",
                     "failed to resolve GitHub owner",
                 )
-            })?
-            .ok_or_else(|| {
-                error_response(
-                    StatusCode::UNAUTHORIZED,
-                    "unknown_github_owner",
-                    "GitHub owner is not linked to an account",
-                )
             })?;
-        return Ok(AuthenticatedOwner { account_id });
+        return Ok(AuthenticatedOwner {
+            account_id: account.account_id,
+        });
     }
 
     let key_prefix = key_prefix_from_raw(token).ok_or_else(|| {
@@ -658,7 +661,7 @@ mod tests {
         test_app_with_check_token(None).await
     }
 
-    async fn create_account(app: &axum::Router, name: &str) -> String {
+    async fn create_account(app: &axum::Router, name: &str, github_org: &str) -> String {
         let response = app
             .clone()
             .oneshot(
@@ -667,7 +670,12 @@ mod tests {
                     .uri("/api/accounts")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        json!({"name": name, "account_type": "deployer"}).to_string(),
+                        json!({
+                            "name": name,
+                            "account_type": "deployer",
+                            "github_org": github_org
+                        })
+                        .to_string(),
                     ))
                     .expect("request"),
             )
@@ -919,13 +927,87 @@ mod tests {
             .await
             .expect("get response");
         assert_eq!(get_response.status(), StatusCode::OK);
+        let get_body = axum::body::to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .expect("get body");
+        let get_json: Value = serde_json::from_slice(&get_body).expect("get json");
+        assert_eq!(get_json["github_owner"].as_str(), Some("easyenclave"));
+    }
+
+    #[tokio::test]
+    async fn register_preserves_explicit_github_owner() {
+        let app = test_app().await;
+
+        let challenge_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents/challenge")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("challenge response");
+        let challenge_body = axum::body::to_bytes(challenge_response.into_body(), usize::MAX)
+            .await
+            .expect("challenge body");
+        let challenge_payload: Value =
+            serde_json::from_slice(&challenge_body).expect("challenge json");
+        let nonce = challenge_payload["nonce"]
+            .as_str()
+            .expect("nonce str")
+            .to_string();
+
+        let register_payload = json!({
+            "intel_ta_token": "fake.jwt.token",
+            "vm_name": "tdx-agent-explicit-owner",
+            "nonce": nonce,
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "github_owner": "example-org"
+        });
+
+        let register_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(register_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("register response");
+        assert_eq!(register_response.status(), StatusCode::OK);
+        let register_body = axum::body::to_bytes(register_response.into_body(), usize::MAX)
+            .await
+            .expect("register body");
+        let register_json: Value = serde_json::from_slice(&register_body).expect("register json");
+        let agent_id = register_json["agent_id"].as_str().expect("agent_id");
+
+        let get_response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}"))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("get response");
+        assert_eq!(get_response.status(), StatusCode::OK);
+        let get_body = axum::body::to_bytes(get_response.into_body(), usize::MAX)
+            .await
+            .expect("get body");
+        let get_json: Value = serde_json::from_slice(&get_body).expect("get json");
+        assert_eq!(get_json["github_owner"].as_str(), Some("example-org"));
     }
 
     #[tokio::test]
     async fn reset_requires_owner_account() {
         let app = test_app().await;
-        let owner_key = create_account(&app, "owner-acct").await;
-        let other_key = create_account(&app, "other-acct").await;
+        let owner_key = create_account(&app, "owner-acct", "easyenclave").await;
+        let other_key = create_account(&app, "other-acct", "other-org").await;
         let agent_id = register_agent(&app, "tdx-agent-reset-owner").await;
 
         let deploy_payload = json!({
@@ -979,7 +1061,7 @@ mod tests {
     #[tokio::test]
     async fn delete_allows_owner_and_removes_agent() {
         let app = test_app().await;
-        let owner_key = create_account(&app, "owner-acct-delete").await;
+        let owner_key = create_account(&app, "owner-acct-delete", "easyenclave").await;
         let agent_id = register_agent(&app, "tdx-agent-delete-owner").await;
 
         let deploy_payload = json!({
@@ -1053,7 +1135,7 @@ mod tests {
     #[tokio::test]
     async fn failed_check_is_exempt_during_deploying() {
         let app = test_app_with_check_token(Some("check-secret")).await;
-        let owner_key = create_account(&app, "owner-acct-checks").await;
+        let owner_key = create_account(&app, "owner-acct-checks", "easyenclave").await;
         let agent_name = "tdx-agent-deploying-exempt";
         let agent_id = register_agent(&app, agent_name).await;
 
@@ -1088,7 +1170,7 @@ mod tests {
     #[tokio::test]
     async fn successful_check_promotes_deploying_and_updates_recent_stats() {
         let app = test_app_with_check_token(Some("check-secret")).await;
-        let owner_key = create_account(&app, "owner-acct-checks-2").await;
+        let owner_key = create_account(&app, "owner-acct-checks-2", "easyenclave").await;
         let agent_name = "tdx-agent-promote-running";
         let agent_id = register_agent(&app, agent_name).await;
 
@@ -1165,5 +1247,116 @@ mod tests {
             Value::Bool(true),
             "unexpected agent stats row: {matched}"
         );
+    }
+
+    #[tokio::test]
+    async fn oidc_owner_can_reset_agent_without_precreated_account() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("migrate");
+
+        let settings = SettingsStore::new_with_ttl(pool.clone(), Duration::from_secs(5));
+        let nonce = NonceService::new(Duration::from_secs(300));
+        let attestation = AttestationService::insecure_for_tests();
+        let github_oidc = GithubOidcService::with_forced_owner_for_tests("example-org");
+        let tunnel = TunnelService::disabled_for_tests();
+        let state = AppState::new(
+            "boot-test".to_string(),
+            None,
+            None,
+            pool,
+            settings,
+            nonce,
+            attestation,
+            github_oidc,
+            tunnel,
+        );
+        let app = build_router(state);
+
+        let challenge_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agents/challenge")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("challenge response");
+        let challenge_body = axum::body::to_bytes(challenge_response.into_body(), usize::MAX)
+            .await
+            .expect("challenge body");
+        let challenge_payload: Value =
+            serde_json::from_slice(&challenge_body).expect("challenge json");
+        let nonce = challenge_payload["nonce"]
+            .as_str()
+            .expect("nonce str")
+            .to_string();
+
+        let register_payload = json!({
+            "intel_ta_token": "fake.jwt.token",
+            "vm_name": "tdx-agent-oidc-owner",
+            "nonce": nonce,
+            "node_size": "standard",
+            "datacenter": "gcp:us-central1-a",
+            "github_owner": "example-org"
+        });
+        let register_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/agents/register")
+                    .header("content-type", "application/json")
+                    .body(Body::from(register_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("register response");
+        assert_eq!(register_response.status(), StatusCode::OK);
+        let register_body = axum::body::to_bytes(register_response.into_body(), usize::MAX)
+            .await
+            .expect("register body");
+        let register_json: Value = serde_json::from_slice(&register_body).expect("register json");
+        let agent_id = register_json["agent_id"].as_str().expect("agent_id");
+
+        let deploy_payload = json!({
+            "compose": "services: {}",
+            "agent_name": "tdx-agent-oidc-owner",
+            "dry_run": true
+        });
+        let deploy_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/deploy")
+                    .header("authorization", "Bearer aaa.bbb.ccc")
+                    .header("content-type", "application/json")
+                    .body(Body::from(deploy_payload.to_string()))
+                    .expect("request"),
+            )
+            .await
+            .expect("deploy");
+        assert_eq!(deploy_response.status(), StatusCode::OK);
+
+        let reset_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/agents/{agent_id}/reset"))
+                    .header("authorization", "Bearer aaa.bbb.ccc")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("reset");
+        assert_eq!(reset_response.status(), StatusCode::NO_CONTENT);
     }
 }

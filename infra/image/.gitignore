@@ -1,0 +1,7 @@
+mkosi.output/
+mkosi.extra/
+output/
+easyenclave
+easyenclave.*
+/initrd
+/initrd.*

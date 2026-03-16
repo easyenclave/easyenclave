@@ -8,6 +8,7 @@ on:
       - "src/**"
       - "migrations/**"
       - "tests/**"
+      - "examples/private-llm/**"
       - "infra/**"
       - "ansible/**"
       - "packer/**"
@@ -252,6 +253,7 @@ jobs:
           AUTH_REQUIRE_GITHUB_OAUTH_IN_PRODUCTION: "false"
           PASSWORD_LOGIN_ENABLED: "true"
           AUTH_ALLOW_PASSWORD_LOGIN_IN_PRODUCTION: "true"
+          CP_GITHUB_OIDC_AUDIENCE: easyenclave
           BILLING_ENABLED: "false"
           BILLING_CAPACITY_REQUEST_DEV_SIMULATION: "true"
           GITHUB_OAUTH_CLIENT_ID: ${{ secrets.STAGING_EE_GITHUB_OAUTH_CLIENT_ID }}
@@ -331,3 +333,16 @@ jobs:
           name: staging-deploy-log-${{ github.run_id }}
           path: /tmp/ci-deploy.log
           if-no-files-found: ignore
+
+  deploy_private_llm:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs:
+      - deploy
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy-examples.yml
+    with:
+      target_env: staging
+      dry_run: false
+    secrets: inherit

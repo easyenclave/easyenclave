@@ -218,10 +218,10 @@
         <h2 class="panel-title">Agents</h2>
         <table>
           <thead>
-            <tr><th>VM</th><th>Status</th><th>Datacenter</th></tr>
+            <tr><th>VM</th><th>Status</th><th>Datacenter</th><th>Owner</th></tr>
           </thead>
           <tbody id="agentsBody">
-            <tr><td colspan="3" class="muted">Loading...</td></tr>
+            <tr><td colspan="4" class="muted">Loading...</td></tr>
           </tbody>
         </table>
       </section>
@@ -303,10 +303,27 @@
       `).join("");
     }
 
+    const state = {
+      agents: [],
+      accountsById: new Map(),
+    };
+
+    function ownerLabelForAccount(item) {
+      return item?.github_org || item?.github_login || item?.name || item?.account_id || "-";
+    }
+
+    function ownerLabelForAgent(item) {
+      if (item?.github_owner) return item.github_owner;
+      if (item?.account_id) {
+        return state.accountsById.get(item.account_id) || "claimed";
+      }
+      return "unowned";
+    }
+
     function renderAgents(rows) {
       const body = byId("agentsBody");
       if (!Array.isArray(rows) || rows.length === 0) {
-        body.innerHTML = '<tr><td colspan="3" class="muted">No agents yet.</td></tr>';
+        body.innerHTML = '<tr><td colspan="4" class="muted">No agents yet.</td></tr>';
         return;
       }
       body.innerHTML = rows.slice(0, 12).map((item) => `
@@ -314,6 +331,7 @@
           <td><code>${item.vm_name || "-"}</code></td>
           <td>${item.status || "-"}</td>
           <td>${item.datacenter || "-"}</td>
+          <td>${ownerLabelForAgent(item)}</td>
         </tr>
       `).join("");
     }
@@ -323,9 +341,14 @@
       if (!Array.isArray(rows) || rows.length === 0) {
         body.innerHTML = '<tr><td colspan="3" class="muted">No accounts found.</td></tr>';
         byId("accountCount").textContent = "0";
+        state.accountsById = new Map();
+        renderAgents(state.agents);
         return;
       }
       byId("accountCount").textContent = String(rows.length);
+      state.accountsById = new Map(
+        rows.map((item) => [item.account_id, ownerLabelForAccount(item)])
+      );
       body.innerHTML = rows.slice(0, 25).map((item) => `
         <tr>
           <td><code>${item.name || item.account_id || "-"}</code></td>
@@ -333,6 +356,7 @@
           <td>${item.github_login || item.github_org || "-"}</td>
         </tr>
       `).join("");
+      renderAgents(state.agents);
     }
 
     async function loadPublicData() {
@@ -354,6 +378,7 @@
       byId("attestedCount").textContent = String(attested);
       byId("deploymentCount").textContent = Array.isArray(deployments) ? String(deployments.length) : "0";
 
+      state.agents = agentRows;
       renderAgents(agentRows);
       renderDeployments(Array.isArray(deployments) ? deployments : []);
     }
