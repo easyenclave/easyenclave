@@ -213,15 +213,40 @@ jobs:
             --arg dry_run "${DRY_RUN}" \
             '{compose: $compose, app_name: $app_name, node_size: $node_size, datacenter: ($datacenter | select(length > 0)), dry_run: ($dry_run == "true")}')"
 
-          response="$(curl -sS -X POST "${CP_URL}/api/deploy" \
+          response_headers="$(mktemp)"
+          response_body="$(mktemp)"
+          cleanup() {
+            rm -f "${response_headers}" "${response_body}"
+          }
+          trap cleanup EXIT
+
+          http_status="$(curl -sS -X POST "${CP_URL}/api/deploy" \
             -H "Authorization: Bearer ${AUTH_TOKEN}" \
+            -H "Accept: application/json" \
             -H "Content-Type: application/json" \
+            -D "${response_headers}" \
+            -o "${response_body}" \
+            -w '%{http_code}' \
             -d "${payload}")"
 
-          echo "${response}" | jq .
+          content_type="$(awk 'BEGIN { IGNORECASE = 1 } /^content-type:/ { sub(/\r$/, "", $0); print $2; exit }' "${response_headers}")"
 
-          deployment_id="$(echo "${response}" | jq -r '.deployment_id // empty')"
-          agent_id="$(echo "${response}" | jq -r '.agent_id // empty')"
+          if ! jq . "${response_body}"; then
+            echo "::error::Deploy API returned a non-JSON response"
+            echo "HTTP status: ${http_status}"
+            echo "Content-Type: ${content_type:-unknown}"
+            echo "Response body:"
+            cat "${response_body}"
+            exit 1
+          fi
+
+          if [ "${http_status}" -lt 200 ] || [ "${http_status}" -ge 300 ]; then
+            echo "::error::Deploy API returned HTTP ${http_status}"
+            exit 1
+          fi
+
+          deployment_id="$(jq -r '.deployment_id // empty' "${response_body}")"
+          agent_id="$(jq -r '.agent_id // empty' "${response_body}")"
 
           if [ -z "${deployment_id}" ] || [ -z "${agent_id}" ]; then
             echo "::error::Deployment failed"
