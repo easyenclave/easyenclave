@@ -211,7 +211,12 @@ jobs:
             --arg node_size "${NODE_SIZE}" \
             --arg datacenter "${DATACENTER}" \
             --arg dry_run "${DRY_RUN}" \
-            '{compose: $compose, app_name: $app_name, node_size: $node_size, datacenter: ($datacenter | select(length > 0)), dry_run: ($dry_run == "true")}')"
+            '{
+              compose: $compose,
+              app_name: $app_name,
+              node_size: $node_size,
+              dry_run: ($dry_run == "true")
+            } + if $datacenter | length > 0 then {datacenter: $datacenter} else {} end')"
 
           response_headers="$(mktemp)"
           response_body="$(mktemp)"
