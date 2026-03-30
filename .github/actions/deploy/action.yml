@@ -1,0 +1,215 @@
+name: 'Deploy to DevOps Defender'
+description: 'Deploy a Docker image to DevOps Defender — hardware-encrypted compute, no API keys needed'
+
+inputs:
+  image:
+    description: 'Docker image to deploy (e.g. ghcr.io/org/app:latest)'
+    required: false
+    default: ''
+  app_name:
+    description: 'App name for the deployment'
+    required: true
+  ports:
+    description: 'Port mappings, comma-separated (e.g. "8000:8000" or "8000:8000,443:443")'
+    required: false
+    default: ''
+  compose_file:
+    description: 'Path to a docker-compose file (use this instead of image/ports for advanced setups)'
+    required: false
+    default: ''
+  api_url:
+    description: 'DevOps Defender API URL'
+    required: false
+    default: 'https://app.devopsdefender.com'
+  oidc_audience:
+    description: 'OIDC audience for token minting'
+    required: false
+    default: 'devopsdefender.com'
+  wait:
+    description: 'Wait for deployment to reach running state'
+    required: false
+    default: 'true'
+  wait_timeout:
+    description: 'Max seconds to wait for deployment (default 300)'
+    required: false
+    default: '300'
+  node_size:
+    description: 'Node size filter (tiny, standard, llm)'
+    required: false
+    default: ''
+  datacenter:
+    description: 'Datacenter filter'
+    required: false
+    default: ''
+
+outputs:
+  deployment_id:
+    description: 'The deployment ID'
+    value: ${{ steps.deploy.outputs.deployment_id }}
+  deployment_url:
+    description: 'The public URL of the deployed app'
+    value: ${{ steps.url.outputs.deployment_url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Validate inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.compose_file }}" ] && [ -z "${{ inputs.image }}" ]; then
+          echo "::error::Either 'image' or 'compose_file' input is required"
+          exit 1
+        fi
+        if [ -n "${{ inputs.image }}" ] && [ -z "${{ inputs.ports }}" ]; then
+          echo "::error::'ports' input is required when using 'image'"
+          exit 1
+        fi
+
+    - name: Mint OIDC token
+      id: oidc
+      shell: bash
+      env:
+        OIDC_AUDIENCE: ${{ inputs.oidc_audience }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::OIDC token unavailable. Add 'permissions: id-token: write' to your workflow"
+          exit 1
+        fi
+        request_url="${ACTIONS_ID_TOKEN_REQUEST_URL}"
+        separator='?'
+        if [[ "${request_url}" == *\?* ]]; then
+          separator='&'
+        fi
+        request_url="${request_url}${separator}audience=${OIDC_AUDIENCE}"
+
+        token="$(curl -fsS \
+          -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+          -H "Accept: application/json; api-version=2.0" \
+          "${request_url}" | jq -r '.value // empty')"
+
+        if [ -z "${token}" ]; then
+          echo "::error::Failed to mint GitHub OIDC token"
+          exit 1
+        fi
+        echo "::add-mask::${token}"
+        echo "token=${token}" >> "$GITHUB_OUTPUT"
+
+    - name: Build compose YAML
+      id: compose
+      shell: bash
+      env:
+        INPUT_IMAGE: ${{ inputs.image }}
+        INPUT_PORTS: ${{ inputs.ports }}
+        INPUT_COMPOSE_FILE: ${{ inputs.compose_file }}
+      run: |
+        set -euo pipefail
+        if [ -n "${INPUT_COMPOSE_FILE}" ]; then
+          compose="$(cat "${INPUT_COMPOSE_FILE}")"
+        else
+          # Build port mappings array
+          port_yaml=""
+          IFS=',' read -ra PORT_ARRAY <<< "${INPUT_PORTS}"
+          for p in "${PORT_ARRAY[@]}"; do
+            p="$(echo "${p}" | xargs)"  # trim whitespace
+            port_yaml="${port_yaml}
+          - \"${p}\""
+          done
+
+          compose="services:
+        app:
+          image: ${INPUT_IMAGE}
+          ports:${port_yaml}"
+        fi
+
+        # Write to temp file so we don't lose it in multi-line output
+        tmpfile="$(mktemp)"
+        echo "${compose}" > "${tmpfile}"
+        echo "compose_file=${tmpfile}" >> "$GITHUB_OUTPUT"
+
+    - name: Deploy
+      id: deploy
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api_url }}
+        AUTH_TOKEN: ${{ steps.oidc.outputs.token }}
+        APP_NAME: ${{ inputs.app_name }}
+        NODE_SIZE: ${{ inputs.node_size }}
+        DATACENTER: ${{ inputs.datacenter }}
+        COMPOSE_FILE: ${{ steps.compose.outputs.compose_file }}
+      run: |
+        set -euo pipefail
+        compose="$(cat "${COMPOSE_FILE}")"
+
+        payload="$(jq -n \
+          --arg compose "${compose}" \
+          --arg app_name "${APP_NAME}" \
+          --arg node_size "${NODE_SIZE}" \
+          --arg datacenter "${DATACENTER}" \
+          '{compose: $compose, app_name: $app_name}
+          + if $node_size | length > 0 then {node_size: $node_size} else {} end
+          + if $datacenter | length > 0 then {datacenter: $datacenter} else {} end')"
+
+        response="$(curl -fsS -X POST "${API_URL}/api/deploy" \
+          -H "Authorization: Bearer ${AUTH_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "${payload}")"
+
+        echo "${response}" | jq .
+
+        deployment_id="$(echo "${response}" | jq -r '.deployment_id // empty')"
+        agent_id="$(echo "${response}" | jq -r '.agent_id // empty')"
+
+        if [ -z "${deployment_id}" ]; then
+          echo "::error::Deploy failed — no deployment_id in response"
+          exit 1
+        fi
+
+        echo "deployment_id=${deployment_id}" >> "$GITHUB_OUTPUT"
+        echo "agent_id=${agent_id}" >> "$GITHUB_OUTPUT"
+
+    - name: Wait for deployment
+      if: inputs.wait == 'true'
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api_url }}
+        DEPLOYMENT_ID: ${{ steps.deploy.outputs.deployment_id }}
+        TIMEOUT: ${{ inputs.wait_timeout }}
+      run: |
+        set -euo pipefail
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        attempt=0
+        while [ "$(date +%s)" -lt "${deadline}" ]; do
+          attempt=$(( attempt + 1 ))
+          status="$(curl -fsS "${API_URL}/api/deployments/${DEPLOYMENT_ID}" | jq -r '.status // empty')"
+          echo "  attempt ${attempt}: status=${status}"
+          if [ "${status}" = "running" ]; then
+            echo "Deployment is running!"
+            exit 0
+          fi
+          if [ "${status}" = "failed" ]; then
+            echo "::error::Deployment failed"
+            exit 1
+          fi
+          sleep 10
+        done
+        echo "::error::Timed out after ${TIMEOUT}s waiting for deployment"
+        exit 1
+
+    - name: Resolve deployment URL
+      id: url
+      if: steps.deploy.outputs.agent_id != ''
+      shell: bash
+      env:
+        API_URL: ${{ inputs.api_url }}
+        AGENT_ID: ${{ steps.deploy.outputs.agent_id }}
+      run: |
+        set -euo pipefail
+        hostname="$(curl -fsS "${API_URL}/api/agents/${AGENT_ID}" | jq -r '.hostname // empty')"
+        if [ -n "${hostname}" ]; then
+          echo "deployment_url=https://${hostname}" >> "$GITHUB_OUTPUT"
+          echo "Deployed to: https://${hostname}"
+        else
+          echo "deployment_url=" >> "$GITHUB_OUTPUT"
+          echo "No hostname assigned yet"
+        fi
