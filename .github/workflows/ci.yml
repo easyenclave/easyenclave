@@ -5,30 +5,11 @@ on:
     branches: [main]
     paths:
       - "src/**"
-      - "migrations/**"
-      - "tests/**"
-      - "infra/**"
-      - "ansible/**"
-      - "packer/**"
-      - "scripts/**"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
-      - "Dockerfile.ee-cp"
   pull_request:
     branches: [main]
-    paths:
-      - "src/**"
-      - "migrations/**"
-      - "tests/**"
-      - "infra/**"
-      - "ansible/**"
-      - "packer/**"
-      - "scripts/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/**"
-      - "Dockerfile.ee-cp"
   workflow_dispatch:
 
 concurrency:
@@ -39,22 +20,11 @@ jobs:
   lint-test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Rust fmt
-        run: cargo fmt --check
-
-      - name: Rust clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Rust test
-        run: cargo test --workspace
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
