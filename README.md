@@ -1,88 +1,79 @@
 # EasyEnclave
 
-EasyEnclave is a Rust control plane + agent system for confidential compute workloads on Intel TDX VMs.
+Generic enclave runtime for Intel TDX confidential VMs. Runs as PID 1 inside a sealed VM and exposes a unix socket API for workload management.
 
-## Components
+No HTTP server. No networking. No database. Minimal attack surface.
 
-- `ee-cp`: control-plane API server (Axum + SQLite/SQLx).
-- `ee-agent`: node runtime for agent/control-plane bootstrap/measure modes.
-- `ee-admin`: small operator CLI (currently admin password hashing).
-
-## Repository Layout
-
-- `src/`: Rust code for control plane, agent, attestation, and shared modules.
-- `migrations/`: SQLite schema migrations used by `ee-cp` at startup.
-- `ansible/`: orchestration playbooks for deploy, image bake, and VM lifecycle.
-- `packer/`: image templates consumed by Ansible workflows.
-- `.github/workflows/`: CI/CD entry points (the canonical deployment flows).
-- `Dockerfile.ee-cp`: control-plane container build.
-
-## Local Development
-
-Prerequisites:
-
-- Rust stable toolchain
-- `sqlite3` (optional but useful for inspection)
-- Docker (only if you need local OCI runtime behavior)
-
-Run checks:
+## Quick start
 
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo build --release
+# Run inside a TDX VM as PID 1
+./target/release/easyenclave
 ```
 
-Run control plane locally:
+Requires Intel TDX hardware — refuses to start without it.
 
-```bash
-CP_BIND_ADDR=0.0.0.0:8080 \
-CP_DATABASE_URL='sqlite://easyenclave.db?mode=rwc' \
-CP_ADMIN_PASSWORD='dev-password' \
-cargo run --bin ee-cp
+## Architecture
+
+```
+TDX VM (hardware-sealed memory)
+  └── easyenclave (PID 1)
+        ├── unix socket: /var/lib/easyenclave/agent.sock
+        ├── workloads (containers via podman, or bare processes)
+        └── TDX attestation (configfs-tsm)
 ```
 
-Health check:
+## Socket API
 
-```bash
-curl -fsS http://127.0.0.1:8080/health | jq .
-```
+Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 
-Run agent locally (example):
-
-```bash
-cat >/tmp/agent.json <<'JSON'
-{
-  "mode": "agent",
-  "control_plane_url": "http://127.0.0.1:8080",
-  "node_size": "tiny",
-  "datacenter": "local:dev"
-}
-JSON
-
-EASYENCLAVE_CONFIG=/tmp/agent.json cargo run --bin ee-agent
-```
-
-## Deployment and Infra
-
-Deployments are workflow-driven and use Ansible/Packer directly.
-
-- Staging: [`.github/workflows/staging-deploy.yml`](.github/workflows/staging-deploy.yml)
-- Production: [`.github/workflows/production-deploy.yml`](.github/workflows/production-deploy.yml)
-- Baremetal image flow: [`.github/workflows/baremetal-image.yml`](.github/workflows/baremetal-image.yml)
-
-Infra orchestration overview: [`ansible/README.md`](ansible/README.md)
+| Method | Request | Response |
+|--------|---------|----------|
+| health | `{"method":"health"}` | `{"ok":true,"attestation_type":"tdx","workloads":2}` |
+| deploy | `{"method":"deploy","image":"...","app_name":"myapp"}` | `{"ok":true,"id":"...","status":"deploying"}` |
+| attest | `{"method":"attest","nonce":"..."}` | `{"ok":true,"quote_b64":"..."}` |
+| list | `{"method":"list"}` | `{"ok":true,"deployments":[...]}` |
+| stop | `{"method":"stop","id":"..."}` | `{"ok":true}` |
+| exec | `{"method":"exec","cmd":["uname","-a"]}` | `{"ok":true,"exit_code":0,"stdout":"..."}` |
+| logs | `{"method":"logs","id":"..."}` | `{"ok":true,"logs":["..."]}` |
 
 ## Configuration
 
-Control plane config is env-driven. Key vars:
+`/etc/easyenclave/config.json` (optional, env vars override):
 
-- `CP_BIND_ADDR` (default `0.0.0.0:8080`)
-- `CP_DATABASE_URL` (default `sqlite://easyenclave.db?mode=rwc`)
-- `CP_ADMIN_PASSWORD` (optional but required for admin password login flows)
+```json
+{
+  "socket_path": "/var/lib/easyenclave/agent.sock",
+  "data_dir": "/var/lib/easyenclave",
+  "boot_workloads": [
+    {"app_name": "my-client", "cmd": ["/usr/local/bin/my-client"]}
+  ]
+}
+```
 
-`ee-agent` reads env + JSON config (default path `/etc/easyenclave/agent.json`, override with `EASYENCLAVE_CONFIG`).
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `EE_SOCKET_PATH` | `/var/lib/easyenclave/agent.sock` | Unix socket path |
+| `EE_DATA_DIR` | `/var/lib/easyenclave` | Data directory |
+| `EE_BOOT_WORKLOADS` | (none) | JSON array of boot workloads |
 
-## Current State
+## Source
 
-This repo is a single Rust crate with multiple binaries. CI enforces `fmt`, `clippy`, and `test` on each PR.
+```
+src/
+├── main.rs           Entry: init, config, boot workloads, socket server
+├── init.rs           PID 1: mount, configfs, kernel cmdline, zombie reaper
+├── config.rs         Config from file + env overlays
+├── socket.rs         Unix socket server (7 methods)
+├── workload.rs       Deploy/stop/list, container + process lifecycle
+├── container.rs      Bollard Docker/Podman management
+├── process.rs        Spawn, kill, liveness
+└── attestation/
+    ├── mod.rs         Backend trait + TDX detection (no insecure fallback)
+    └── tsm.rs         TDX configfs-tsm implementation
+```
+
+## License
+
+MIT
