@@ -1,0 +1,2 @@
+# Root is mounted read-only via dm-verity by the initrd.
+# No other mounts — easyenclave's init.rs handles /proc /sys /dev /run /tmp.

@@ -1,0 +1,6 @@
+#!/bin/bash
+# Cleanup for reproducible rootfs.
+set -euo pipefail
+ROOT="${1:-${BUILDROOT:-/buildroot}}"
+rm -f "$ROOT/var/cache/ldconfig/aux-cache"
+find "$ROOT/var/log" -type f -delete 2>/dev/null || true
