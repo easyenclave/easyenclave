@@ -138,7 +138,7 @@ jobs:
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           SHA12: ${{ needs.build.outputs.sha12 }}
         run: |
-          gsutil cp "image/output/easyenclave-${SHA12}-gcp.tar.gz" \
+          gcloud storage cp "image/output/easyenclave-${SHA12}-gcp.tar.gz" \
             "gs://${GCS_BUCKET}/easyenclave-${SHA12}-gcp.tar.gz"
 
       - name: Create GCP image
