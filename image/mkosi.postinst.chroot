@@ -1,0 +1,13 @@
+#!/bin/bash
+# Post-install: symlink easyenclave as PID 1, set up dirs.
+# No kernel or modules in the rootfs — kernel lives in the UKI, and
+# easyenclave doesn't load modules post-boot.
+set -euo pipefail
+
+# easyenclave as PID 1
+ln -sf /usr/local/bin/easyenclave /sbin/init
+
+# Required dirs
+mkdir -p /etc/easyenclave /var/lib/easyenclave /mnt/config
+
+echo "[mkosi.postinst] Done."

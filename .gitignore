@@ -11,6 +11,18 @@ target/
 
 # VM images and build outputs
 infra/output/
+image/output/
+image/mkosi.extra/
+image/easyenclave
+image/easyenclave.raw
+image/easyenclave.root-*.raw
+image/easyenclave.vmlinuz
+image/easyenclave.initrd
+image/easyenclave.efi
+image/easyenclave.manifest
+image/easyenclave-uki.tar.gz
+image/initrd-minimal.cpio.gz
+image/disk.raw
 *.qcow2
 *.iso
 
