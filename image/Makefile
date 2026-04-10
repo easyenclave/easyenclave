@@ -60,6 +60,12 @@ build: $(EXTRA_BIN)/easyenclave
 		--output $(OUTPUT_DIR)/easyenclave.efi
 	# 7. Assemble bootable GPT disk: ESP (with UKI) + rootfs
 	bash assemble-disk.sh $(OUTPUT_DIR)
+	# 8. Convert raw disk to compressed qcow2 for QEMU/libvirt users.
+	#    qcow2 is the standard QEMU format: smaller on disk, supports
+	#    snapshots, copy-on-write, etc.
+	qemu-img convert -f raw -O qcow2 -c \
+		$(OUTPUT_DIR)/easyenclave.root.raw \
+		$(OUTPUT_DIR)/easyenclave.qcow2
 	@echo ""
 	@echo "Build complete:"
 	@ls -lh $(OUTPUT_DIR)/ 2>/dev/null || true

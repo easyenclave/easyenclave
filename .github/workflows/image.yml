@@ -1,13 +1,26 @@
 name: Build & Release VM Image
 
 # Build the sealed TDX VM image on every PR (artifact only, no release).
-# On pushes to main, additionally create a GCP image, a GitHub Release
-# (with UKI + raw disk + measurements), and smoke-test the GCP image by
-# booting a real TDX VM and waiting for easyenclave's "listening" marker.
+#
+# Two release channels:
+#   - STAGING: push to main → pre-release GitHub release + rolling GCP
+#              image easyenclave-${sha12}. Rotation keeps 5 newest staging
+#              images.
+#   - STABLE:  push tag v* (e.g. v1.2.3) → full GitHub release + GCP image
+#              easyenclave-v1-2-3. Never rotated — kept forever for
+#              rollback history.
+#
+# Each release ships:
+#   - easyenclave-<ver>.efi         UKI (boot measurement = sha256 of this)
+#   - easyenclave-<ver>.raw         Bootable GPT disk for QEMU (raw format)
+#   - easyenclave-<ver>.qcow2       Compressed QEMU/libvirt format (~6x smaller)
+#   - easyenclave-<ver>-gcp.tar.gz  GCP image import format
+#   - MEASUREMENTS.txt              Full SHA256 manifest
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths:
       - "image/**"
       - "src/**"
@@ -37,6 +50,7 @@ jobs:
       sha12: ${{ steps.meta.outputs.sha12 }}
       uki_sha256: ${{ steps.meta.outputs.uki_sha256 }}
       root_sha256: ${{ steps.meta.outputs.root_sha256 }}
+      qcow2_sha256: ${{ steps.meta.outputs.qcow2_sha256 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,6 +65,7 @@ jobs:
             busybox-static \
             e2fsprogs \
             dosfstools \
+            qemu-utils \
             python3-pip
           sudo pip install --break-system-packages mkosi
 
@@ -70,30 +85,37 @@ jobs:
           SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
           UKI_SHA256=$(sha256sum easyenclave.efi | cut -d' ' -f1)
           ROOT_SHA256=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
+          QCOW2_SHA256=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
           KERNEL_VER=$(strings easyenclave.vmlinuz | grep -oP '\d+\.\d+\.\d+-\d+-generic' | head -1 || echo unknown)
 
-          echo "sha12=${SHA12}" >> "$GITHUB_OUTPUT"
-          echo "uki_sha256=${UKI_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "sha12=${SHA12}"             >> "$GITHUB_OUTPUT"
+          echo "uki_sha256=${UKI_SHA256}"   >> "$GITHUB_OUTPUT"
           echo "root_sha256=${ROOT_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "qcow2_sha256=${QCOW2_SHA256}" >> "$GITHUB_OUTPUT"
 
           cat > MEASUREMENTS.txt <<EOF
           easyenclave image measurements
           commit: ${{ github.sha }}
+          ref:    ${{ github.ref }}
           built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
 
           UKI (boot measurement — this is what TDX RTMRs verify against):
             sha256: ${UKI_SHA256}
 
-          GPT disk (bootable on GCP TDX or QEMU):
+          GPT disk (raw, bootable on GCP TDX or QEMU):
             sha256: ${ROOT_SHA256}
+
+          QEMU qcow2 (compressed):
+            sha256: ${QCOW2_SHA256}
 
           Kernel:
             version: ${KERNEL_VER}
           EOF
 
           # Rename artifacts with sha12 suffix for unambiguous release assets
-          mv easyenclave.efi "easyenclave-${SHA12}.efi"
-          mv easyenclave.root.raw "easyenclave-${SHA12}.raw"
+          mv easyenclave.efi       "easyenclave-${SHA12}.efi"
+          mv easyenclave.root.raw  "easyenclave-${SHA12}.raw"
+          mv easyenclave.qcow2     "easyenclave-${SHA12}.qcow2"
 
           # GCP image import needs a gzipped tarball of the raw disk
           cp "easyenclave-${SHA12}.raw" disk.raw
@@ -108,6 +130,7 @@ jobs:
           path: |
             image/output/easyenclave-*.efi
             image/output/easyenclave-*.raw
+            image/output/easyenclave-*.qcow2
             image/output/easyenclave-*-gcp.tar.gz
             image/output/MEASUREMENTS.txt
           retention-days: 7
@@ -133,33 +156,78 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Determine release channel
+        id: channel
+        env:
+          SHA12: ${{ needs.build.outputs.sha12 }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            # GCP image names: lowercase, digits, hyphens only — replace dots
+            GCP_NAME="easyenclave-${TAG//./-}"
+            {
+              echo "channel=stable"
+              echo "gh_tag=${TAG}"
+              echo "gcp_name=${GCP_NAME}"
+              echo "asset_base=easyenclave-${TAG}"
+              echo "prerelease_flag="
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "channel=staging"
+              echo "gh_tag=image-${SHA12}"
+              echo "gcp_name=easyenclave-${SHA12}"
+              echo "asset_base=easyenclave-${SHA12}"
+              echo "prerelease_flag=--prerelease"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rename assets to match channel (tag releases)
+        if: steps.channel.outputs.channel == 'stable'
+        env:
+          SHA12: ${{ needs.build.outputs.sha12 }}
+          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
+        run: |
+          cd image/output
+          # Build job named everything with sha12 — rename to tag-based for stable
+          for ext in efi raw qcow2; do
+            mv "easyenclave-${SHA12}.${ext}" "${ASSET_BASE}.${ext}"
+          done
+          mv "easyenclave-${SHA12}-gcp.tar.gz" "${ASSET_BASE}-gcp.tar.gz"
+
       - name: Upload GCP tarball to GCS
         env:
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
+          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
         run: |
-          gcloud storage cp "image/output/easyenclave-${SHA12}-gcp.tar.gz" \
-            "gs://${GCS_BUCKET}/easyenclave-${SHA12}-gcp.tar.gz"
+          gcloud storage cp "image/output/${ASSET_BASE}-gcp.tar.gz" \
+            "gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz"
 
       - name: Create GCP image
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          GCP_NAME: ${{ steps.channel.outputs.gcp_name }}
+          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
           SHA12: ${{ needs.build.outputs.sha12 }}
         run: |
-          gcloud compute images create "easyenclave-${SHA12}" \
+          gcloud compute images create "${GCP_NAME}" \
             --project="${GCP_PROJECT}" \
-            --source-uri="gs://${GCS_BUCKET}/easyenclave-${SHA12}-gcp.tar.gz" \
+            --source-uri="gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz" \
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
-            --labels=easyenclave=image,commit=${SHA12}
+            --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
 
-      - name: Rotate old GCP images (keep 5 newest)
+      - name: Rotate old staging images (keep 5 newest)
+        if: steps.channel.outputs.channel == 'staging'
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
+          # Only rotate staging images. Stable images (v*) are kept forever
+          # for rollback history.
           gcloud compute images list \
             --project="${GCP_PROJECT}" \
-            --filter="labels.easyenclave=image" \
+            --filter="labels.easyenclave=image AND labels.channel=staging" \
             --format="value(name)" \
             --sort-by="~creationTimestamp" \
             | tail -n +6 \
@@ -170,46 +238,64 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
+          GH_TAG: ${{ steps.channel.outputs.gh_tag }}
+          GCP_NAME: ${{ steps.channel.outputs.gcp_name }}
+          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+          PRERELEASE_FLAG: ${{ steps.channel.outputs.prerelease_flag }}
           UKI_SHA256: ${{ needs.build.outputs.uki_sha256 }}
           ROOT_SHA256: ${{ needs.build.outputs.root_sha256 }}
+          QCOW2_SHA256: ${{ needs.build.outputs.qcow2_sha256 }}
         run: |
           cd image/output
+
+          if [[ "${CHANNEL}" == "stable" ]]; then
+            TITLE="EasyEnclave ${GH_TAG}"
+            CHANNEL_BLURB="**Stable release** — pinnable for production deployments. Kept forever."
+          else
+            TITLE="Staging ${GH_TAG}"
+            CHANNEL_BLURB="**Staging pre-release** — latest main, rotates on every push. For stable use, pin a \`v*\` tag instead."
+          fi
+
           NOTES=$(cat <<RELEASE
+          ${CHANNEL_BLURB}
+
           ### Boot measurement (UKI SHA256)
 
           \`${UKI_SHA256}\`
 
           This is the cryptographic identity of this image — the single
-          hash that TDX attestation will verify against. It covers the
-          kernel, initrd, and kernel command line as one sealed unit.
-
-          GPT disk sha256: \`${ROOT_SHA256}\`
+          hash covering kernel, initrd, and kernel command line as one
+          sealed unit. TDX attestation will verify RTMR values against
+          this.
 
           ### Assets
 
-          - **\`easyenclave-${SHA12}.efi\`** — Unified Kernel Image (kernel + initrd + cmdline)
-          - **\`easyenclave-${SHA12}.raw\`** — Bootable GPT disk for local QEMU
-          - **\`easyenclave-${SHA12}-gcp.tar.gz\`** — Gzipped disk for GCP image import
-          - **\`MEASUREMENTS.txt\`** — Full manifest
+          | File | Format | SHA256 |
+          |---|---|---|
+          | \`${ASSET_BASE}.efi\` | Unified Kernel Image | \`${UKI_SHA256}\` |
+          | \`${ASSET_BASE}.raw\` | GPT disk (raw, for GCP or QEMU -drive format=raw) | \`${ROOT_SHA256}\` |
+          | \`${ASSET_BASE}.qcow2\` | QEMU/libvirt qcow2 (compressed) | \`${QCOW2_SHA256}\` |
+          | \`${ASSET_BASE}-gcp.tar.gz\` | GCP image import tarball | — |
+          | \`MEASUREMENTS.txt\` | Full manifest | — |
 
-          ### Boot locally with QEMU + OVMF
+          ### Boot locally with QEMU (qcow2, recommended)
 
           \`\`\`bash
           qemu-system-x86_64 \\
             -enable-kvm -cpu host -m 4G -smp 2 \\
             -bios /usr/share/OVMF/OVMF_CODE.fd \\
-            -drive file=easyenclave-${SHA12}.raw,format=raw,if=virtio \\
+            -drive file=${ASSET_BASE}.qcow2,if=virtio \\
             -nographic
           \`\`\`
 
-          (easyenclave's attestation backend requires configfs-tsm, which is only
-          present in a real TDX guest. On plain QEMU the binary will log
-          "no attestation backend found" — that's expected.)
+          easyenclave's attestation backend requires configfs-tsm (present
+          only in real TDX guests). On plain QEMU you'll see
+          \`no attestation backend found\` — that's expected for local dev.
 
           ### Boot on GCP TDX
 
-          Pre-built image: \`projects/${GCP_PROJECT}/global/images/easyenclave-${SHA12}\`
+          Pre-built image: \`projects/${GCP_PROJECT}/global/images/${GCP_NAME}\`
 
           \`\`\`bash
           gcloud compute instances create my-enclave \\
@@ -217,18 +303,20 @@ jobs:
             --machine-type=c3-standard-4 \\
             --confidential-compute-type=TDX \\
             --maintenance-policy=TERMINATE \\
-            --image=easyenclave-${SHA12} \\
+            --image=${GCP_NAME} \\
             --image-project=${GCP_PROJECT}
           \`\`\`
           RELEASE
           )
 
-          gh release create "image-${SHA12}" \
-            --title "Image ${SHA12}" \
+          gh release create "${GH_TAG}" \
+            ${PRERELEASE_FLAG} \
+            --title "${TITLE}" \
             --notes "${NOTES}" \
-            "easyenclave-${SHA12}.efi" \
-            "easyenclave-${SHA12}.raw" \
-            "easyenclave-${SHA12}-gcp.tar.gz" \
+            "${ASSET_BASE}.efi" \
+            "${ASSET_BASE}.raw" \
+            "${ASSET_BASE}.qcow2" \
+            "${ASSET_BASE}-gcp.tar.gz" \
             "MEASUREMENTS.txt"
 
   smoke-test:
@@ -243,19 +331,34 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      - name: Determine image to smoke-test
+        id: target
+        env:
+          SHA12: ${{ needs.build.outputs.sha12 }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            echo "gcp_name=easyenclave-${TAG//./-}" >> "$GITHUB_OUTPUT"
+            echo "label=${TAG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "gcp_name=easyenclave-${SHA12}" >> "$GITHUB_OUTPUT"
+            echo "label=${SHA12}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Boot TDX VM from new image and verify
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
+          GCP_NAME: ${{ steps.target.outputs.gcp_name }}
+          LABEL: ${{ steps.target.outputs.label }}
         run: |
-          VM_NAME="ee-smoke-${SHA12}-$(date +%s)"
+          VM_NAME="ee-smoke-$(date +%s)"
           gcloud compute instances create "$VM_NAME" \
             --project="$GCP_PROJECT" \
             --zone=us-central1-c \
             --machine-type=c3-standard-4 \
             --confidential-compute-type=TDX \
             --maintenance-policy=TERMINATE \
-            --image="easyenclave-${SHA12}" \
+            --image="${GCP_NAME}" \
             --image-project="$GCP_PROJECT" \
             --boot-disk-size=10GB
 
@@ -269,13 +372,13 @@ jobs:
               --project="$GCP_PROJECT" --zone=us-central1-c 2>/dev/null || true)
 
             if echo "$out" | grep -q "easyenclave: listening on"; then
-              echo "✓ image ${SHA12} booted and easyenclave is listening"
+              echo "✓ image ${LABEL} booted and easyenclave is listening"
               cleanup
               exit 0
             fi
 
             if echo "$out" | grep -qE "FATAL|Kernel panic|switch_root: can"; then
-              echo "::error::boot failed for image ${SHA12}"
+              echo "::error::boot failed for image ${LABEL}"
               echo "$out" | tail -60
               cleanup
               exit 1
@@ -285,7 +388,7 @@ jobs:
             sleep 10
           done
 
-          echo "::error::image ${SHA12} did not become ready within 5 min"
+          echo "::error::image ${LABEL} did not become ready within 5 min"
           gcloud compute instances get-serial-port-output "$VM_NAME" \
             --project="$GCP_PROJECT" --zone=us-central1-c | tail -60 || true
           cleanup
