@@ -32,7 +32,7 @@ src/
 ├── config.rs         Config from JSON file + env overlays
 ├── socket.rs         Unix socket server, newline-delimited JSON (7 methods)
 ├── workload.rs       Deploy/stop/list — container + process lifecycle
-├── container.rs      Bollard Docker/Podman (pull, run, exec, stop, logs)
+├── container.rs      Rust-native OCI runtime (libcontainer + oci-distribution): pull, run, exec, stop, logs
 ├── process.rs        Spawn, kill, liveness
 └── attestation/
     ├── mod.rs         AttestationBackend trait + detect() — errors if no TDX
