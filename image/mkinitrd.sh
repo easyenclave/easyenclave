@@ -43,39 +43,69 @@ done
 # finit_module(..., MODULE_INIT_COMPRESSED_FILE) to let the kernel
 # decompress, but we deliberately don't ship kmod in the initrd. So
 # decompress once at build time and let busybox load plain .ko files.
+#
+# Some modules may be compiled into the kernel (CONFIG_*=y) instead of
+# shipped as .ko files. In that case `modprobe --show-depends` returns
+# nothing and we must skip silently, not abort — the driver is still
+# in the kernel, just not separately loadable.
 MODDIR="$WORKDIR/lib/modules/$KVER"
 mkdir -p "$MODDIR"
+
+# Copy one module file from MOD_SRC into MODDIR, decompressing Zstd/xz/gz
+# on the way so busybox's insmod (which only handles plain ELF .ko) can
+# load it. Tolerates missing source files — modprobe's dep tree can
+# reference stale entries on zombie/partial kernel installs, and we
+# don't want the whole build to die for one missing dep.
+copy_mod() {
+    local src="$1"
+    [ -z "$src" ] && return 0
+    if [ ! -f "$src" ]; then
+        echo "  skip (missing): $src"
+        return 0
+    fi
+    local rel="${src#"$MOD_SRC/"}"
+    local dst="$MODDIR/$rel"
+    mkdir -p "$(dirname "$dst")"
+    case "$src" in
+        *.ko.zst) zstd -d -q -f -o "${dst%.zst}" "$src" || return 0 ;;
+        *.ko.xz)  xz -d -c "$src" > "${dst%.xz}"       || return 0 ;;
+        *.ko.gz)  gzip -d -c "$src" > "${dst%.gz}"     || return 0 ;;
+        *)        cp --update=none "$src" "$dst"       || return 0 ;;
+    esac
+}
+
 for top in dm-verity nvme tdx-guest tsm-report; do
-    modprobe --show-depends --set-version "$KVER" "$top" 2>/dev/null \
-        | awk '/^insmod/ { print $2 }' \
-        | while read -r src; do
-            [ -z "$src" ] && continue
-            rel=${src#"$MOD_SRC/"}
-            dst="$MODDIR/$rel"
-            mkdir -p "$(dirname "$dst")"
-            case "$src" in
-                *.ko.zst)
-                    # Strip .zst suffix from the destination so the
-                    # regenerated modules.dep references plain .ko.
-                    zstd -d -q -f -o "${dst%.zst}" "$src"
-                    ;;
-                *.ko.xz)
-                    xz -d -c "$src" > "${dst%.xz}"
-                    ;;
-                *.ko.gz)
-                    gzip -d -c "$src" > "${dst%.gz}"
-                    ;;
-                *)
-                    cp --update=none "$src" "$dst"
-                    ;;
-            esac
-        done
+    deps=$(modprobe --show-depends --set-version "$KVER" "$top" 2>&1 || true)
+    if ! echo "$deps" | grep -q '^insmod'; then
+        echo "  $top: not available as a module on $KVER (built-in or absent)"
+        continue
+    fi
+    count=0
+    # shellcheck disable=SC2034
+    while read -r line; do
+        src=$(echo "$line" | awk '/^insmod/ { print $2 }')
+        [ -z "$src" ] && continue
+        copy_mod "$src"
+        count=$((count + 1))
+    done <<<"$deps"
+    echo "  $top: $count files processed"
 done
 
 # Regenerate modules.dep from the decompressed tree. depmod scans the
 # files it finds and writes fresh entries, so the paths will reference
 # plain .ko (matching what busybox modprobe can actually load).
 depmod -b "$WORKDIR" "$KVER"
+
+# Diagnostic: list what ended up in the initrd module tree so build
+# logs show whether tdx-guest/nvme/etc. landed as .ko files or fell
+# through to "built-in" status. If modules.dep is empty, the init
+# script's modprobe calls will all no-op, which is fine as long as
+# the corresponding drivers are compiled into the kernel.
+echo "=== initrd module tree for $KVER ==="
+find "$MODDIR" -type f -name '*.ko' 2>/dev/null | sort | sed "s|$MODDIR/||" || true
+echo "=== modules.dep ==="
+cat "$MODDIR/modules.dep" 2>/dev/null || echo "(missing)"
+echo "==="
 
 # veritysetup for dm-verity (from cryptsetup-bin)
 if command -v veritysetup >/dev/null 2>&1; then
@@ -111,17 +141,16 @@ for param in $(cat /proc/cmdline); do
 done
 
 # Load kernel modules via modprobe — uses modules.dep to resolve transitive
-# deps automatically. Kernel built-ins (ext4, dm-mod, virtio_blk, crc32c) are
-# already present.
-modprobe dm-verity
-modprobe nvme
-# TDX attestation: tdx_guest provides the /dev/tdx_guest ioctl, tsm_report
-# provides the configfs-tsm interface at /sys/kernel/config/tsm/report.
-# Both are kernel modules (CONFIG_TDX_GUEST_DRIVER=m, CONFIG_TSM_REPORTS=m).
-# Fast-fail if either won't load — an easyenclave VM with no attestation
-# path is useless, so crash early rather than booting into a useless state.
-modprobe tdx_guest || { echo "FATAL: tdx_guest modprobe failed — not a TDX guest?"; exec /bin/sh; }
-modprobe tsm_report || { echo "FATAL: tsm_report modprobe failed"; exec /bin/sh; }
+# deps automatically. Kernel built-ins (ext4, dm-mod, virtio_blk, crc32c)
+# are already present. If a target module is compiled in rather than
+# shipped as .ko (e.g. Ubuntu's stock kernels with CONFIG_TDX_GUEST_DRIVER=y),
+# busybox modprobe returns "not found"; we tolerate that because the
+# driver is still in the kernel. If it's genuinely missing, easyenclave's
+# attestation backend detection will fail later with a clearer error.
+modprobe dm-verity 2>/dev/null || echo "note: dm-verity not loaded (may be built-in)"
+modprobe nvme 2>/dev/null     || echo "note: nvme not loaded (may be built-in or N/A)"
+modprobe tdx_guest 2>/dev/null || echo "note: tdx_guest not loaded (may be built-in)"
+modprobe tsm_report 2>/dev/null || echo "note: tsm_report not loaded (may be built-in)"
 
 # Resolve LABEL=/UUID= to a device path. The cmdline uses
 # `root=LABEL=root` so one UKI boots on both GCP (nvme0n1p2) and
