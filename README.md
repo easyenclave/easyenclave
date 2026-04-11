@@ -58,6 +58,34 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 | `EE_DATA_DIR` | `/var/lib/easyenclave` | Data directory |
 | `EE_BOOT_WORKLOADS` | (none) | JSON array of boot workloads |
 
+## Run locally in TDX (libvirt)
+
+On a TDX-capable host (check `cat /sys/module/kvm_intel/parameters/tdx` → `Y`), boot the sealed image locally with real attestation:
+
+```bash
+# Fetch the latest qcow2 (or use a local `make build` output)
+gh release download -R easyenclave/easyenclave image-<sha> \
+    --pattern '*.qcow2'
+
+# Write a per-VM agent.env (KEY=VALUE per line)
+cat > /tmp/agent.env <<'EOF'
+EE_OWNER=devopsdefender
+EE_BOOT_WORKLOADS=[{"image":"docker.io/library/busybox","app_name":"smoke","cmd":["sh","-c","echo hello; sleep 3600"]}]
+EOF
+
+# Boot: builds an iso9660 config disk with /agent.env, copies the qcow2
+# and iso into /var/lib/libvirt/images/, launches via virt-install with
+# --launchSecurity type=tdx, and attaches the serial console.
+bash image/run-local.sh easyenclave-<sha>.qcow2 /tmp/agent.env
+
+# Tear down when done (Ctrl-] detaches from the serial first)
+bash image/run-local.sh --destroy
+```
+
+Host dependencies: `libvirt-clients`, `virtinst`, `qemu-system-x86`, `ovmf`, `genisoimage`. The user running this must be in the `libvirt` group.
+
+Networking is libvirt's default `virbr0` NAT bridge — the sealed VM's `dhclient` acquires a 192.168.122.x lease automatically. GCE metadata fetch silently skips (no metadata server locally), so per-VM config comes from `/agent.env` on the iso9660 secondary disk.
+
 ## Source
 
 ```

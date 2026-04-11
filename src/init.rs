@@ -73,8 +73,11 @@ pub fn maybe_init() {
     let config_mounted = {
         let mut mounted = false;
         std::thread::sleep(std::time::Duration::from_secs(1));
+        // iso9660 first because it's the simplest to build offline
+        // (genisoimage — no mkfs needed, no mtools). ext4/vfat/ext2
+        // remain as fallbacks for other tooling.
         for dev in ["/dev/vdb", "/dev/sdb"] {
-            for fstype in ["ext4", "vfat", "ext2"] {
+            for fstype in ["iso9660", "ext4", "vfat", "ext2"] {
                 if nix_mount_ro(dev, config_dir, fstype).is_ok() {
                     eprintln!("easyenclave: init: mounted config disk ({dev}, {fstype})");
                     mounted = true;
@@ -106,14 +109,9 @@ pub fn maybe_init() {
             .status();
     }
 
-    // GCE instance metadata: fetch the `ee-config` attribute and apply
-    // each key as an env var. This is the per-VM boot-config path for
-    // easyenclave VMs on GCP — gcloud passes it via
-    //   --metadata-from-file=ee-config=<path to JSON>
-    // Non-GCE hosts fail silently (no metadata server reachable).
-    fetch_gce_metadata_config();
-
-    // Set up networking
+    // Set up networking FIRST — the GCE metadata fetch below depends
+    // on having an IP and a route to 169.254.169.254, both of which
+    // come from the DHCP lease (option 121 classless static routes).
     let ip_bin = "/sbin/ip";
     let _ = std::process::Command::new(ip_bin)
         .args(["link", "set", "lo", "up"])
@@ -135,23 +133,58 @@ pub fn maybe_init() {
             .status();
 
         if let Ok(ee_ip) = std::env::var("EE_IP") {
-            eprintln!("easyenclave: init: setting {iface} ip={ee_ip}");
+            // Static IP path: EE_IP set via cmdline or secondary disk.
+            // Used for locked-down deployments that don't want DHCP.
+            eprintln!("easyenclave: init: setting {iface} ip={ee_ip} (static)");
             let _ = std::process::Command::new(ip_bin)
                 .args(["addr", "add", &ee_ip, "dev", iface])
                 .status();
-        }
-        if let Ok(gw) = std::env::var("EE_GATEWAY") {
-            eprintln!("easyenclave: init: default route via {gw}");
-            let _ = std::process::Command::new(ip_bin)
-                .args(["route", "add", "default", "via", &gw, "dev", iface])
-                .status();
+            if let Ok(gw) = std::env::var("EE_GATEWAY") {
+                eprintln!("easyenclave: init: default route via {gw}");
+                let _ = std::process::Command::new(ip_bin)
+                    .args(["route", "add", "default", "via", &gw, "dev", iface])
+                    .status();
+            }
+        } else {
+            // DHCP path: fetch IP + routes + DNS + GCE metadata route
+            // from the DHCP server. dhclient -1 runs once, installs
+            // the lease (incl. classless static routes via option 121
+            // on GCE), and exits (non-daemon mode). Time out after 30s
+            // so we don't block boot forever if there's no DHCP server.
+            eprintln!("easyenclave: init: running dhclient on {iface}");
+            match std::process::Command::new("/sbin/dhclient")
+                .args(["-1", "-v", "-timeout", "30", iface])
+                .status()
+            {
+                Ok(s) if s.success() => {
+                    eprintln!("easyenclave: init: dhcp lease acquired");
+                }
+                Ok(s) => {
+                    eprintln!("easyenclave: init: dhclient exited with {s}");
+                }
+                Err(e) => {
+                    eprintln!("easyenclave: init: dhclient failed: {e}");
+                }
+            }
         }
     }
     if let Ok(dns) = std::env::var("EE_DNS") {
-        eprintln!("easyenclave: init: dns={dns}");
+        eprintln!("easyenclave: init: dns={dns} (static override)");
         let _ = std::fs::write("/tmp/resolv.conf", format!("nameserver {dns}\n"));
         let _ = nix_mount_flags("/tmp/resolv.conf", "/etc/resolv.conf", "", libc::MS_BIND);
     }
+
+    // GCE instance metadata: fetch the `ee-config` attribute and apply
+    // each key as an env var. This is the per-VM boot-config path for
+    // easyenclave VMs on GCP — gcloud passes it via
+    //   --metadata-from-file=ee-config=<path to JSON>
+    // Non-GCE hosts (local QEMU, non-cloud) fail silently here and get
+    // their config from the secondary disk `/agent.env` or from the
+    // kernel cmdline `ee.*` params.
+    //
+    // Runs AFTER networking is configured — dhclient installs the
+    // classless static route to 169.254.169.254 on GCE.
+    fetch_gce_metadata_config();
 
     // Start zombie reaper thread (PID 1 must reap children)
     std::thread::spawn(|| loop {
