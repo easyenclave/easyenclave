@@ -44,8 +44,10 @@ build: $(EXTRA_BIN)/easyenclave
 	rm -f $(OUTPUT_DIR)/rootfs.img
 	dd if=/dev/zero of=$(OUTPUT_DIR)/rootfs.img bs=1M count=256 status=none
 	sudo mkfs.ext4 -F -L root -d easyenclave $(OUTPUT_DIR)/rootfs.img 2>&1 | tail -3
-	# 3. Kernel cmdline: direct-mount root, no dm-verity yet.
-	echo "root=/dev/nvme0n1p2 console=ttyS0,115200" > $(OUTPUT_DIR)/easyenclave.cmdline
+	# 3. Kernel cmdline: resolve root by label so the same UKI works on
+	#    GCP (nvme0n1p2) and local libvirt (vda2) — the initrd calls
+	#    `findfs LABEL=root` to get the device path at runtime.
+	echo "root=LABEL=root console=ttyS0,115200" > $(OUTPUT_DIR)/easyenclave.cmdline
 	# 4. Minimal initrd (nvme + dm-verity + deps via modprobe)
 	sudo bash mkinitrd.sh $(OUTPUT_DIR)/easyenclave.initrd $(KVER)
 	# 5. Host kernel
@@ -79,5 +81,9 @@ $(EXTRA_BIN)/easyenclave: $(EE_BIN)
 	chmod 0755 $(EXTRA_BIN)/easyenclave
 
 clean:
-	sudo rm -rf mkosi.extra $(OUTPUT_DIR) easyenclave easyenclave.raw easyenclave.root-*.raw easyenclave.vmlinuz easyenclave.initrd easyenclave.efi easyenclave.manifest easyenclave-image.tar.gz disk.raw
+	# Only remove generated staging binaries inside mkosi.extra — the
+	# rest of mkosi.extra (e.g. usr/share/udhcpc/default.script) is
+	# tracked content and must survive `make clean`.
+	sudo rm -f $(EXTRA_BIN)/easyenclave
+	sudo rm -rf $(OUTPUT_DIR) easyenclave easyenclave.raw easyenclave.root-*.raw easyenclave.vmlinuz easyenclave.initrd easyenclave.efi easyenclave.manifest easyenclave-image.tar.gz disk.raw
 	sudo mkosi clean 2>/dev/null || true
