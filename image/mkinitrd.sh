@@ -27,7 +27,7 @@ fi
 chmod +x "$WORKDIR/bin/busybox"
 
 # Symlink essential commands
-for cmd in sh mount umount switch_root mkdir cat echo sleep modprobe insmod; do
+for cmd in sh mount umount switch_root mkdir cat echo sleep modprobe insmod findfs ls; do
     ln -s busybox "$WORKDIR/bin/$cmd"
 done
 
@@ -93,24 +93,33 @@ modprobe nvme
 # TDX attestation: tdx_guest provides the /dev/tdx_guest ioctl, tsm_report
 # provides the configfs-tsm interface at /sys/kernel/config/tsm/report.
 # Both are kernel modules (CONFIG_TDX_GUEST_DRIVER=m, CONFIG_TSM_REPORTS=m).
-modprobe tdx_guest 2>/dev/null || true
-modprobe tsm_report 2>/dev/null || true
+# Fast-fail if either won't load — an easyenclave VM with no attestation
+# path is useless, so crash early rather than booting into a useless state.
+modprobe tdx_guest || { echo "FATAL: tdx_guest modprobe failed — not a TDX guest?"; exec /bin/sh; }
+modprobe tsm_report || { echo "FATAL: tsm_report modprobe failed"; exec /bin/sh; }
 
-# Try NVMe naming if virtio paths don't exist
-if [ ! -e "$ROOT_DATA" ]; then
-    ROOT_DATA=$(echo "$ROOT_DATA" | sed 's|/dev/vda|/dev/nvme0n1p|')
-    ROOT_HASH=$(echo "$ROOT_HASH" | sed 's|/dev/vda|/dev/nvme0n1p|')
-fi
-
-# Wait for block devices (NVMe needs time to probe after module load)
-echo "Waiting for $ROOT_DATA${ROOT_HASH:+ and $ROOT_HASH}..."
-for i in $(seq 1 30); do
-    if [ -e "$ROOT_DATA" ]; then
-        [ -z "$ROOT_HASH" ] || [ -e "$ROOT_HASH" ] && break
-    fi
-    sleep 1
-done
-[ -e "$ROOT_DATA" ] || { echo "FATAL: $ROOT_DATA not found after 30s"; ls /dev/nvme* /dev/vd* 2>/dev/null; exec /bin/sh; }
+# Resolve LABEL=/UUID= to a device path. The cmdline uses
+# `root=LABEL=root` so one UKI boots on both GCP (nvme0n1p2) and
+# libvirt/qemu (vda2) — the kernel labels the ext4 rootfs with
+# "root" at build time (see image/Makefile mkfs.ext4 -L root).
+case "$ROOT_DATA" in
+    LABEL=*|UUID=*)
+        for i in $(seq 1 30); do
+            RESOLVED=$(findfs "$ROOT_DATA" 2>/dev/null || true)
+            [ -n "$RESOLVED" ] && [ -e "$RESOLVED" ] && { ROOT_DATA="$RESOLVED"; break; }
+            sleep 1
+        done
+        ;;
+    *)
+        # Explicit device path — just wait for it.
+        for i in $(seq 1 30); do
+            [ -e "$ROOT_DATA" ] && break
+            sleep 1
+        done
+        ;;
+esac
+echo "Resolved root to $ROOT_DATA"
+[ -e "$ROOT_DATA" ] || { echo "FATAL: $ROOT_DATA not found after 30s"; ls /dev/nvme* /dev/vd* /dev/sd* 2>/dev/null; exec /bin/sh; }
 
 if [ -n "$ROOTHASH" ] && [ -n "$ROOT_DATA" ] && [ -n "$ROOT_HASH" ] && command -v veritysetup >/dev/null; then
     # dm-verity: cryptographically verified root

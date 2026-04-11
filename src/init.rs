@@ -112,8 +112,12 @@ pub fn maybe_init() {
     // Set up networking FIRST — the GCE metadata fetch below depends
     // on having an IP and a route to 169.254.169.254, both of which
     // come from the DHCP lease (option 121 classless static routes).
-    let ip_bin = "/sbin/ip";
-    let _ = std::process::Command::new(ip_bin)
+    //
+    // All commands below resolve via PATH to busybox applet symlinks
+    // installed at /usr/local/bin/ by `busybox --install -s` in
+    // mkosi.postinst.chroot. Full busybox runtime — no iproute2,
+    // no kmod, no systemd. Keeps the sealed rootfs tiny.
+    let _ = std::process::Command::new("ip")
         .args(["link", "set", "lo", "up"])
         .status();
 
@@ -128,7 +132,7 @@ pub fn maybe_init() {
         });
 
     if let Some(ref iface) = iface {
-        let _ = std::process::Command::new(ip_bin)
+        let _ = std::process::Command::new("ip")
             .args(["link", "set", iface, "up"])
             .status();
 
@@ -136,34 +140,35 @@ pub fn maybe_init() {
             // Static IP path: EE_IP set via cmdline or secondary disk.
             // Used for locked-down deployments that don't want DHCP.
             eprintln!("easyenclave: init: setting {iface} ip={ee_ip} (static)");
-            let _ = std::process::Command::new(ip_bin)
+            let _ = std::process::Command::new("ip")
                 .args(["addr", "add", &ee_ip, "dev", iface])
                 .status();
             if let Ok(gw) = std::env::var("EE_GATEWAY") {
                 eprintln!("easyenclave: init: default route via {gw}");
-                let _ = std::process::Command::new(ip_bin)
+                let _ = std::process::Command::new("ip")
                     .args(["route", "add", "default", "via", &gw, "dev", iface])
                     .status();
             }
         } else {
-            // DHCP path: fetch IP + routes + DNS + GCE metadata route
-            // from the DHCP server. dhclient -1 runs once, installs
-            // the lease (incl. classless static routes via option 121
-            // on GCE), and exits (non-daemon mode). Time out after 30s
-            // so we don't block boot forever if there's no DHCP server.
-            eprintln!("easyenclave: init: running dhclient on {iface}");
-            match std::process::Command::new("/sbin/dhclient")
-                .args(["-1", "-v", "-timeout", "30", iface])
+            // DHCP path: fetch IP + routes + DNS + classless static
+            // routes from the DHCP server. busybox udhcpc in one-shot
+            // mode (-n: exit if no lease, -q: quit after obtaining
+            // lease, -t 10: retry 10× = ~30s timeout). The default
+            // hook script at /usr/share/udhcpc/default.script is
+            // provided by mkosi.extra and applies the IP/routes/DNS.
+            eprintln!("easyenclave: init: running udhcpc on {iface}");
+            match std::process::Command::new("udhcpc")
+                .args(["-i", iface, "-q", "-n", "-t", "10"])
                 .status()
             {
                 Ok(s) if s.success() => {
                     eprintln!("easyenclave: init: dhcp lease acquired");
                 }
                 Ok(s) => {
-                    eprintln!("easyenclave: init: dhclient exited with {s}");
+                    eprintln!("easyenclave: init: udhcpc exited with {s}");
                 }
                 Err(e) => {
-                    eprintln!("easyenclave: init: dhclient failed: {e}");
+                    eprintln!("easyenclave: init: udhcpc failed: {e}");
                 }
             }
         }

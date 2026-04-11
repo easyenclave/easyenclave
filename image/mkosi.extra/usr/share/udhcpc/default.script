@@ -1,0 +1,60 @@
+#!/bin/sh
+# Minimal udhcpc hook script. Invoked by busybox udhcpc after events
+# (deconfig / bound / renew / nak). Applies IP + default route +
+# classless static routes (RFC 3442 — this is how GCE's metadata
+# server 169.254.169.254 becomes reachable) + DNS from the lease.
+#
+# Env vars set by busybox udhcpc for bound/renew:
+#   interface, ip, subnet, mask, router, dns, hostname, domain,
+#   staticroutes (RFC 3442), msstaticroutes (MS variant), mtu
+
+set -e
+
+export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+IP=ip
+RESOLV=/etc/resolv.conf
+
+case "$1" in
+  deconfig)
+    $IP addr flush dev "$interface" 2>/dev/null || true
+    ;;
+
+  bound|renew)
+    $IP addr flush dev "$interface" 2>/dev/null || true
+    $IP addr add "$ip/$mask" dev "$interface"
+    $IP link set "$interface" up
+
+    # Default gateway
+    if [ -n "$router" ]; then
+      for gw in $router; do
+        $IP route add default via "$gw" dev "$interface" 2>/dev/null || true
+      done
+    fi
+
+    # Classless static routes (DHCP option 121). GCE uses this to
+    # install the 169.254.169.254/32 metadata route.
+    # Format: "dest1/prefix1 gateway1 dest2/prefix2 gateway2 ..."
+    if [ -n "$staticroutes" ]; then
+      set -- $staticroutes
+      while [ "$#" -ge 2 ]; do
+        $IP route add "$1" via "$2" dev "$interface" 2>/dev/null || true
+        shift 2
+      done
+    fi
+
+    # DNS — write /etc/resolv.conf
+    if [ -n "$dns" ]; then
+      : > "$RESOLV"
+      [ -n "$domain" ] && echo "search $domain" >> "$RESOLV"
+      for d in $dns; do
+        echo "nameserver $d" >> "$RESOLV"
+      done
+    fi
+    ;;
+
+  nak)
+    echo "udhcpc: DHCP NAK on $interface" >&2
+    ;;
+esac
+
+exit 0

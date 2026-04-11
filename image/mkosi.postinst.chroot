@@ -1,11 +1,22 @@
 #!/bin/bash
-# Post-install: symlink easyenclave as PID 1, set up dirs.
-# No kernel or modules in the rootfs — kernel lives in the UKI, and
-# easyenclave doesn't load modules post-boot.
+# Post-install: symlink easyenclave as PID 1, install busybox applets,
+# set up dirs. No kernel or modules in the rootfs — kernel lives in
+# the UKI, and easyenclave doesn't load modules post-boot.
 set -euo pipefail
 
 # easyenclave as PID 1
 ln -sf /usr/local/bin/easyenclave /sbin/init
+
+# Install busybox applet symlinks. busybox-static ships /bin/busybox
+# but no per-applet symlinks. `busybox --install -s` creates symlinks
+# like `/usr/local/bin/ip -> /bin/busybox` for every applet busybox
+# supports. /usr/local/bin is earliest in PATH so these take
+# precedence over anything in /bin or /sbin from the base packages.
+#
+# This is what gives us `ip`, `udhcpc`, `findfs`, `mount`, `route`,
+# etc. in the rootfs without installing iproute2 or util-linux.
+mkdir -p /usr/local/bin
+/bin/busybox --install -s /usr/local/bin
 
 # Required dirs
 mkdir -p /etc/easyenclave /var/lib/easyenclave /mnt/config
