@@ -67,7 +67,7 @@ src/
 ├── config.rs         Config from file + env overlays
 ├── socket.rs         Unix socket server (7 methods)
 ├── workload.rs       Deploy/stop/list, container + process lifecycle
-├── container.rs      Bollard Docker/Podman management
+├── container.rs      Rust-native OCI runtime (libcontainer + oci-distribution)
 ├── process.rs        Spawn, kill, liveness
 └── attestation/
     ├── mod.rs         Backend trait + TDX detection (no insecure fallback)
