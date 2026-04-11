@@ -75,9 +75,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install mkosi v26 from GitHub
+      - name: Install mkosi v26 + ukify deps
         run: |
+          # mkosi from git (only distribution channel)
           pip install 'git+https://github.com/systemd/mkosi.git@v26'
+          # /usr/bin/ukify (apt's systemd-ukify) has #!/usr/bin/env python3,
+          # which now resolves to setup-python's interpreter. apt's
+          # python3-pefile installed into system python's site-packages,
+          # not ours — so install pefile here too.
+          pip install pefile
           # The Makefile invokes `sudo mkosi build`. sudo uses secure_path
           # and won't see setup-python's bin dir, so symlink the wrapper
           # into /usr/local/bin where sudo will find it. The wrapper's
