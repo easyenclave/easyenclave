@@ -106,6 +106,13 @@ pub fn maybe_init() {
             .status();
     }
 
+    // GCE instance metadata: fetch the `ee-config` attribute and apply
+    // each key as an env var. This is the per-VM boot-config path for
+    // easyenclave VMs on GCP — gcloud passes it via
+    //   --metadata-from-file=ee-config=<path to JSON>
+    // Non-GCE hosts fail silently (no metadata server reachable).
+    fetch_gce_metadata_config();
+
     // Set up networking
     let ip_bin = "/sbin/ip";
     let _ = std::process::Command::new(ip_bin)
@@ -170,6 +177,50 @@ fn nix_mount(src: &str, target: &str, fstype: &str) -> Result<(), String> {
 
 fn nix_mount_ro(src: &str, target: &str, fstype: &str) -> Result<(), String> {
     nix_mount_flags(src, target, fstype, libc::MS_RDONLY)
+}
+
+/// Fetch `ee-config` from GCE instance metadata and apply each entry
+/// as an env var. Expected body is a JSON object of `{ "KEY": "VALUE", ... }`.
+/// In particular, setting `"EE_BOOT_WORKLOADS"` here (as a stringified
+/// JSON array) is how you get easyenclave to deploy workloads at boot
+/// on a GCE VM — no secondary disk needed.
+///
+/// On non-GCE hosts, or if the attribute isn't set, fail silently.
+fn fetch_gce_metadata_config() {
+    const URL: &str = "http://169.254.169.254/computeMetadata/v1/instance/attributes/ee-config";
+    let body = match ureq::get(URL)
+        .set("Metadata-Flavor", "Google")
+        .timeout(std::time::Duration::from_secs(2))
+        .call()
+    {
+        Ok(resp) => match resp.into_string() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("easyenclave: init: gce-meta read body: {e}");
+                return;
+            }
+        },
+        Err(_) => {
+            // Not on GCE (connection refused / timeout), or attribute
+            // not set (404). Nothing to do.
+            return;
+        }
+    };
+
+    let map: std::collections::HashMap<String, String> = match serde_json::from_str(&body) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("easyenclave: init: gce-meta ee-config parse error: {e}");
+            return;
+        }
+    };
+
+    for k in map.keys() {
+        eprintln!("easyenclave: init: gce-meta env {k}=<redacted>");
+    }
+    for (k, v) in map {
+        std::env::set_var(k, v);
+    }
 }
 
 fn nix_mount_flags(
