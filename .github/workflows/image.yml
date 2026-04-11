@@ -164,6 +164,7 @@ jobs:
     environment: release
     permissions:
       contents: write
+      id-token: write   # mint GitHub OIDC token for GCP WIF
     steps:
       - uses: actions/checkout@v4
 
@@ -172,9 +173,15 @@ jobs:
           name: easyenclave-image
           path: image/output
 
+      # GCP Workload Identity Federation — no stored SA key. The GH OIDC
+      # token is traded for a short-lived GCP access token via the pool
+      # at projects/779946350556/.../github-actions-pool, which impersonates
+      # easyenclave-github-provisioner. Principal is constrained by the
+      # provider's attribute condition (assertion.repository == this repo).
       - uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
 
       - uses: google-github-actions/setup-gcloud@v2
 
@@ -346,10 +353,14 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: release
+    permissions:
+      contents: read
+      id-token: write   # mint GitHub OIDC token for GCP WIF
     steps:
       - uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
 
       - uses: google-github-actions/setup-gcloud@v2
 
