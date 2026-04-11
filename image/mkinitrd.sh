@@ -74,7 +74,7 @@ copy_mod() {
     esac
 }
 
-for top in dm-verity nvme tdx-guest tsm-report; do
+for top in dm-verity nvme tdx-guest tsm-report gve virtio_net; do
     deps=$(modprobe --show-depends --set-version "$KVER" "$top" 2>&1 || true)
     if ! echo "$deps" | grep -q '^insmod'; then
         echo "  $top: not available as a module on $KVER (built-in or absent)"
@@ -148,9 +148,18 @@ done
 # driver is still in the kernel. If it's genuinely missing, easyenclave's
 # attestation backend detection will fail later with a clearer error.
 modprobe dm-verity 2>/dev/null || echo "note: dm-verity not loaded (may be built-in)"
-modprobe nvme 2>/dev/null     || echo "note: nvme not loaded (may be built-in or N/A)"
+modprobe nvme 2>/dev/null      || echo "note: nvme not loaded (may be built-in or N/A)"
 modprobe tdx_guest 2>/dev/null || echo "note: tdx_guest not loaded (may be built-in)"
 modprobe tsm_report 2>/dev/null || echo "note: tsm_report not loaded (may be built-in)"
+# Network drivers — needed BEFORE switch_root so /sys/class/net has a
+# non-lo interface by the time easyenclave's init.rs reads it to decide
+# which interface to DHCP. Without this, easyenclave sees only "lo",
+# skips the entire `if let Some(iface)` block, never runs udhcpc, never
+# fetches GCE metadata, never deploys workloads — the VM silently
+# reaches "listening on" with no network. GCP c3 machines use gVNIC
+# (gve driver); other types use virtio-net.
+modprobe gve 2>/dev/null       || echo "note: gve not loaded (not a c3/gvnic host?)"
+modprobe virtio_net 2>/dev/null || echo "note: virtio_net not loaded (not a virtio host?)"
 
 # Resolve LABEL=/UUID= to a device path. The cmdline uses
 # `root=LABEL=root` so one UKI boots on both GCP (nvme0n1p2) and
