@@ -12,7 +12,9 @@ target/
 # VM images and build outputs
 infra/output/
 image/output/
-image/mkosi.extra/
+# The easyenclave binary is copied into mkosi.extra/usr/local/bin/ at
+# build time (see image/Makefile); the rest of mkosi.extra/ is tracked.
+image/mkosi.extra/usr/local/bin/easyenclave
 image/easyenclave
 image/easyenclave.raw
 image/easyenclave.root-*.raw
