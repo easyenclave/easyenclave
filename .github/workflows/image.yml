@@ -201,6 +201,7 @@ jobs:
               echo "channel=stable"
               echo "gh_tag=${TAG}"
               echo "gcp_name=${GCP_NAME}"
+              echo "gcp_family=easyenclave-stable"
               echo "asset_base=easyenclave-${TAG}"
               echo "prerelease_flag="
             } >> "$GITHUB_OUTPUT"
@@ -209,6 +210,7 @@ jobs:
               echo "channel=staging"
               echo "gh_tag=image-${SHA12}"
               echo "gcp_name=easyenclave-${SHA12}"
+              echo "gcp_family=easyenclave-staging"
               echo "asset_base=easyenclave-${SHA12}"
               echo "prerelease_flag=--prerelease"
             } >> "$GITHUB_OUTPUT"
@@ -240,13 +242,20 @@ jobs:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           GCP_NAME: ${{ steps.channel.outputs.gcp_name }}
+          GCP_FAMILY: ${{ steps.channel.outputs.gcp_family }}
           ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
           CHANNEL: ${{ steps.channel.outputs.channel }}
           SHA12: ${{ needs.build.outputs.sha12 }}
         run: |
+          # --family joins the image into an image family so downstream
+          # consumers can resolve "latest staging" or "latest stable" via
+          # `--image-family=easyenclave-staging` at deploy time, without
+          # hardcoding a sha12 pin. GCP's image-family selector picks the
+          # newest non-deprecated image in the family automatically.
           gcloud compute images create "${GCP_NAME}" \
             --project="${GCP_PROJECT}" \
             --source-uri="gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz" \
+            --family="${GCP_FAMILY}" \
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
             --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
 
