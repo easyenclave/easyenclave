@@ -54,7 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Install apt build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -65,9 +65,24 @@ jobs:
             busybox-static \
             e2fsprogs \
             dosfstools \
-            qemu-utils \
-            python3-pip
-          sudo pip install --break-system-packages mkosi
+            qemu-utils
+
+      # mkosi 25+ requires Python ≥ 3.12 and is pip-only (Ubuntu's apt
+      # version is too old). Pin the interpreter via setup-python so the
+      # workflow doesn't break when upstream mkosi bumps its minimum.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install mkosi
+        run: |
+          pip install mkosi
+          # The Makefile invokes `sudo mkosi build`. sudo uses secure_path
+          # and won't see setup-python's bin dir, so symlink the wrapper
+          # into /usr/local/bin where sudo will find it. The wrapper's
+          # shebang still points at the setup-python interpreter.
+          sudo ln -sf "$(which mkosi)" /usr/local/bin/mkosi
+          sudo mkosi --version
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
