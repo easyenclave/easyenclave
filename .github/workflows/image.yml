@@ -67,16 +67,17 @@ jobs:
             dosfstools \
             qemu-utils
 
-      # mkosi 25+ requires Python ≥ 3.12 and is pip-only (Ubuntu's apt
-      # version is too old). Pin the interpreter via setup-python so the
-      # workflow doesn't break when upstream mkosi bumps its minimum.
+      # mkosi is NOT published on PyPI — it ships only from systemd/mkosi
+      # on GitHub. Ubuntu's apt mkosi is too old for Format=directory.
+      # Install from a pinned git tag against Python 3.12 (mkosi v26's
+      # minimum). v26 is what built the original working image locally.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install mkosi
+      - name: Install mkosi v26 from GitHub
         run: |
-          pip install mkosi
+          pip install 'git+https://github.com/systemd/mkosi.git@v26'
           # The Makefile invokes `sudo mkosi build`. sudo uses secure_path
           # and won't see setup-python's bin dir, so symlink the wrapper
           # into /usr/local/bin where sudo will find it. The wrapper's
