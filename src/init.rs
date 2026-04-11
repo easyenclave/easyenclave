@@ -153,13 +153,6 @@ pub fn maybe_init() {
         let _ = nix_mount_flags("/tmp/resolv.conf", "/etc/resolv.conf", "", libc::MS_BIND);
     }
 
-    // Enable podman socket (systemd-less activation)
-    let _ = std::process::Command::new("podman")
-        .args(["system", "service", "--time=0"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-
     // Start zombie reaper thread (PID 1 must reap children)
     std::thread::spawn(|| loop {
         unsafe {

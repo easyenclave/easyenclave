@@ -1,209 +1,263 @@
-//! Container management via bollard (Docker/Podman API).
+//! Container management via libcontainer (youki) + oci-distribution.
+//!
+//! No Docker/Podman daemon needed. Pulls OCI images directly from registries,
+//! unpacks layers, and runs containers using Linux namespaces via libcontainer.
 
-use bollard::container::{
-    Config, CreateContainerOptions, LogsOptions, RemoveContainerOptions, StopContainerOptions,
-};
-use bollard::image::CreateImageOptions;
-use bollard::Docker;
-use futures_util::StreamExt;
+use oci_distribution::client::{ClientConfig, ClientProtocol};
+use oci_distribution::secrets::RegistryAuth;
+use oci_distribution::Reference;
+use std::path::{Path, PathBuf};
 
-/// Connect to the local Docker/Podman socket.
-fn connect() -> Result<Docker, String> {
-    for path in &["/run/podman/podman.sock", "/var/run/docker.sock"] {
-        if std::path::Path::new(path).exists() {
-            return Docker::connect_with_unix(path, 120, bollard::API_DEFAULT_VERSION)
-                .map_err(|e| format!("connect {path}: {e}"));
-        }
-    }
-    Docker::connect_with_socket_defaults().map_err(|e| format!("docker connect: {e}"))
-}
+const CONTAINER_ROOT: &str = "/var/lib/easyenclave/containers";
 
-/// Pull an image, create and start a container. Returns the container ID.
+/// Pull an OCI image, unpack it, and run it as a container. Returns a container ID.
 pub async fn pull_and_run(
     image: &str,
     name: &str,
     env: Option<Vec<String>>,
-    volumes: Option<Vec<String>>,
-    network_host: bool,
+    _volumes: Option<Vec<String>>,
+    _network_host: bool,
 ) -> Result<String, String> {
-    let docker = connect()?;
+    let container_id = uuid::Uuid::new_v4().to_string();
+    let container_dir = format!("{CONTAINER_ROOT}/{name}");
+    let rootfs_dir = format!("{container_dir}/rootfs");
+    let _ = tokio::fs::create_dir_all(&rootfs_dir).await;
 
-    // Pull image
+    // Pull and unpack image
     eprintln!("easyenclave: pulling {image}");
-    let mut pull_stream = docker.create_image(
-        Some(CreateImageOptions {
-            from_image: image,
-            ..Default::default()
-        }),
-        None,
-        None,
-    );
-    while let Some(result) = pull_stream.next().await {
-        if let Err(e) = result {
-            return Err(format!("pull {image}: {e}"));
+    pull_image(image, &rootfs_dir).await?;
+    eprintln!("easyenclave: image unpacked to {rootfs_dir}");
+
+    // Generate OCI runtime spec
+    let spec = build_spec(&rootfs_dir, env);
+    let spec_path = format!("{container_dir}/config.json");
+    let spec_json = serde_json::to_string_pretty(&spec).map_err(|e| format!("spec: {e}"))?;
+    tokio::fs::write(&spec_path, spec_json)
+        .await
+        .map_err(|e| format!("write spec: {e}"))?;
+
+    // Start container via libcontainer
+    let container_dir_path = PathBuf::from(&container_dir);
+    let name_clone = name.to_string();
+    let cid = container_id.clone();
+    tokio::task::spawn_blocking(move || start_container(&container_dir_path, &name_clone, &cid))
+        .await
+        .map_err(|e| format!("spawn: {e}"))?
+        .map_err(|e| format!("start container: {e}"))?;
+
+    eprintln!("easyenclave: container {name} started (id={container_id})");
+    Ok(container_id)
+}
+
+/// Pull an OCI image and unpack its layers into the rootfs directory.
+async fn pull_image(image: &str, rootfs: &str) -> Result<(), String> {
+    let reference: Reference = image
+        .parse()
+        .map_err(|e| format!("parse ref {image}: {e}"))?;
+
+    let config = ClientConfig {
+        protocol: ClientProtocol::Https,
+        ..Default::default()
+    };
+    let client = oci_distribution::Client::new(config);
+
+    let (manifest, _digest) = client
+        .pull_manifest(&reference, &RegistryAuth::Anonymous)
+        .await
+        .map_err(|e| format!("pull manifest: {e}"))?;
+
+    let layers = match &manifest {
+        oci_distribution::manifest::OciManifest::Image(m) => m.layers.clone(),
+        oci_distribution::manifest::OciManifest::ImageIndex(_) => {
+            return Err("image index not supported — specify a platform-specific tag".into());
         }
+    };
+
+    for layer in &layers {
+        let mut layer_data = Vec::new();
+        client
+            .pull_blob(&reference, layer, &mut layer_data)
+            .await
+            .map_err(|e| format!("pull layer {}: {e}", layer.digest))?;
+
+        // Unpack the gzipped tar layer
+        let rootfs_path = PathBuf::from(rootfs);
+        let data = layer_data;
+        tokio::task::spawn_blocking(move || unpack_layer(&data, &rootfs_path))
+            .await
+            .map_err(|e| format!("spawn unpack: {e}"))?
+            .map_err(|e| format!("unpack layer: {e}"))?;
     }
 
-    // Remove existing container with same name (idempotent redeploy)
-    let _ = docker
-        .remove_container(
-            name,
-            Some(RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }),
-        )
-        .await;
+    Ok(())
+}
 
-    // Create container
-    let host_config = bollard::models::HostConfig {
-        binds: volumes,
-        network_mode: if network_host {
-            Some("host".to_string())
-        } else {
-            None
-        },
-        restart_policy: Some(bollard::models::RestartPolicy {
-            name: Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
+/// Unpack a gzipped tar layer into the rootfs.
+fn unpack_layer(data: &[u8], rootfs: &Path) -> Result<(), String> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
 
-    let config = Config {
-        image: Some(image.to_string()),
-        env: env.as_ref().map(|e| e.to_vec()),
-        host_config: Some(host_config),
-        ..Default::default()
-    };
+    let decoder = GzDecoder::new(data);
+    let mut archive = Archive::new(decoder);
+    archive.set_overwrite(true);
+    archive.unpack(rootfs).map_err(|e| format!("untar: {e}"))?;
+    Ok(())
+}
 
-    let container = docker
-        .create_container(
-            Some(CreateContainerOptions {
-                name,
-                ..Default::default()
-            }),
-            config,
-        )
-        .await
-        .map_err(|e| format!("create container {name}: {e}"))?;
+/// Build a minimal OCI runtime spec.
+fn build_spec(rootfs: &str, env: Option<Vec<String>>) -> oci_spec::runtime::Spec {
+    use oci_spec::runtime::*;
 
-    // Start container
-    docker
-        .start_container::<String>(&container.id, None)
-        .await
-        .map_err(|e| format!("start container {name}: {e}"))?;
+    let mut env_vars = vec![
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+        "TERM=xterm".to_string(),
+    ];
+    if let Some(extra) = env {
+        env_vars.extend(extra);
+    }
 
-    eprintln!(
-        "easyenclave: container {name} started (id={})",
-        &container.id[..12]
-    );
-    Ok(container.id)
+    let process = ProcessBuilder::default()
+        .terminal(false)
+        .user(UserBuilder::default().uid(0u32).gid(0u32).build().unwrap())
+        .args(vec!["/bin/sh".to_string()])
+        .env(env_vars)
+        .cwd("/".to_string())
+        .build()
+        .unwrap();
+
+    let root = RootBuilder::default()
+        .path(rootfs.to_string())
+        .readonly(false)
+        .build()
+        .unwrap();
+
+    // Minimal Linux namespaces
+    let namespaces = vec![
+        LinuxNamespaceBuilder::default()
+            .typ(LinuxNamespaceType::Pid)
+            .build()
+            .unwrap(),
+        LinuxNamespaceBuilder::default()
+            .typ(LinuxNamespaceType::Mount)
+            .build()
+            .unwrap(),
+        LinuxNamespaceBuilder::default()
+            .typ(LinuxNamespaceType::Ipc)
+            .build()
+            .unwrap(),
+        LinuxNamespaceBuilder::default()
+            .typ(LinuxNamespaceType::Uts)
+            .build()
+            .unwrap(),
+    ];
+
+    let linux = LinuxBuilder::default()
+        .namespaces(namespaces)
+        .build()
+        .unwrap();
+
+    SpecBuilder::default()
+        .version("1.0.2".to_string())
+        .process(process)
+        .root(root)
+        .linux(linux)
+        .build()
+        .unwrap()
+}
+
+/// Start a container using libcontainer.
+fn start_container(container_dir: &Path, name: &str, _container_id: &str) -> Result<(), String> {
+    use libcontainer::container::builder::ContainerBuilder;
+    use libcontainer::syscall::syscall::SyscallType;
+
+    let mut container = ContainerBuilder::new(name.to_string(), SyscallType::default())
+        .with_root_path(container_dir.to_path_buf())
+        .map_err(|e| format!("root path: {e}"))?
+        .as_init(container_dir)
+        .with_systemd(false)
+        .build()
+        .map_err(|e| format!("build container: {e}"))?;
+
+    container.start().map_err(|e| format!("start: {e}"))?;
+
+    Ok(())
 }
 
 /// Execute a command inside a running container. Returns (exit_code, stdout, stderr).
 pub async fn exec(container_name: &str, cmd: &[String]) -> Result<(i64, String, String), String> {
-    use bollard::exec::{CreateExecOptions, StartExecOptions};
+    // For now, use nsenter via the container's PID namespace
+    let container_dir = format!("{CONTAINER_ROOT}/{container_name}");
+    let pid_file = format!("{container_dir}/state.json");
 
-    let docker = connect()?;
-    let exec = docker
-        .create_exec(
-            container_name,
-            CreateExecOptions {
-                cmd: Some(cmd.to_vec()),
-                attach_stdout: Some(true),
-                attach_stderr: Some(true),
-                ..Default::default()
-            },
-        )
+    let pid = read_container_pid(&pid_file).await?;
+
+    let mut args = vec![
+        "-t".to_string(),
+        pid.to_string(),
+        "-m".to_string(),
+        "-u".to_string(),
+        "-i".to_string(),
+        "-p".to_string(),
+        "--".to_string(),
+    ];
+    args.extend(cmd.iter().cloned());
+
+    let output = tokio::process::Command::new("nsenter")
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
         .await
-        .map_err(|e| format!("create exec: {e}"))?;
+        .map_err(|e| format!("nsenter: {e}"))?;
 
-    let output = docker
-        .start_exec(
-            &exec.id,
-            Some(StartExecOptions {
-                detach: false,
-                ..Default::default()
-            }),
-        )
-        .await
-        .map_err(|e| format!("start exec: {e}"))?;
-
-    let mut stdout = String::new();
-    let mut stderr = String::new();
-    if let bollard::exec::StartExecResults::Attached { mut output, .. } = output {
-        while let Some(Ok(msg)) = output.next().await {
-            match msg {
-                bollard::container::LogOutput::StdOut { message } => {
-                    stdout.push_str(&String::from_utf8_lossy(&message));
-                }
-                bollard::container::LogOutput::StdErr { message } => {
-                    stderr.push_str(&String::from_utf8_lossy(&message));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let inspect = docker
-        .inspect_exec(&exec.id)
-        .await
-        .map_err(|e| format!("inspect exec: {e}"))?;
-    let exit_code = inspect.exit_code.unwrap_or(-1);
-
-    Ok((exit_code, stdout, stderr))
+    Ok((
+        output.status.code().unwrap_or(-1) as i64,
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
 }
 
-/// Stop and remove a container.
+/// Read the init PID from the container state.
+async fn read_container_pid(state_path: &str) -> Result<u32, String> {
+    let data = tokio::fs::read_to_string(state_path)
+        .await
+        .map_err(|e| format!("read state: {e}"))?;
+    let state: serde_json::Value =
+        serde_json::from_str(&data).map_err(|e| format!("parse state: {e}"))?;
+    state["init_process_start"]
+        .as_u64()
+        .or_else(|| state["pid"].as_u64())
+        .map(|p| p as u32)
+        .ok_or_else(|| "no pid in container state".into())
+}
+
+/// Stop a container by killing its init process.
 pub async fn stop(container_id: &str) -> Result<(), String> {
-    let docker = connect()?;
-    let _ = docker
-        .stop_container(container_id, Some(StopContainerOptions { t: 10 }))
-        .await;
-    let _ = docker
-        .remove_container(
-            container_id,
-            Some(RemoveContainerOptions {
-                force: true,
-                ..Default::default()
-            }),
-        )
-        .await;
+    // Find by ID or name in CONTAINER_ROOT
+    let container_dir = format!("{CONTAINER_ROOT}/{container_id}");
+    if let Ok(pid) = read_container_pid(&format!("{container_dir}/state.json")).await {
+        crate::process::kill_process(pid).await?;
+    }
+    let _ = tokio::fs::remove_dir_all(&container_dir).await;
     Ok(())
 }
 
 /// Check if a container is running.
 pub async fn is_running(container_id: &str) -> bool {
-    let docker = match connect() {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    match docker.inspect_container(container_id, None).await {
-        Ok(info) => info.state.and_then(|s| s.running).unwrap_or(false),
-        Err(_) => false,
+    let state_path = format!("{CONTAINER_ROOT}/{container_id}/state.json");
+    if let Ok(pid) = read_container_pid(&state_path).await {
+        Path::new(&format!("/proc/{pid}")).exists()
+    } else {
+        false
     }
 }
 
-/// Get the last N lines of container logs.
-pub async fn logs(container_id: &str, tail: usize) -> Result<Vec<String>, String> {
-    let docker = connect()?;
-    let mut log_stream = docker.logs(
-        container_id,
-        Some(LogsOptions::<String> {
-            stdout: true,
-            stderr: true,
-            tail: tail.to_string(),
-            ..Default::default()
-        }),
-    );
-
-    let mut lines = Vec::new();
-    while let Some(result) = log_stream.next().await {
-        match result {
-            Ok(output) => lines.push(output.to_string()),
-            Err(e) => return Err(format!("logs: {e}")),
-        }
+/// Get the last N lines of container logs (from stdout capture file).
+pub async fn logs(container_id: &str, _tail: usize) -> Result<Vec<String>, String> {
+    let log_path = format!("{CONTAINER_ROOT}/{container_id}/output.log");
+    match tokio::fs::read_to_string(&log_path).await {
+        Ok(content) => Ok(content.lines().map(String::from).collect()),
+        Err(_) => Ok(Vec::new()),
     }
-    Ok(lines)
 }

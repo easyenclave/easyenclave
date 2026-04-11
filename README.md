@@ -20,7 +20,7 @@ Requires Intel TDX hardware — refuses to start without it.
 TDX VM (hardware-sealed memory)
   └── easyenclave (PID 1)
         ├── unix socket: /var/lib/easyenclave/agent.sock
-        ├── workloads (containers via podman, or bare processes)
+        ├── workloads (OCI containers via libcontainer, or bare processes)
         └── TDX attestation (configfs-tsm)
 ```
 

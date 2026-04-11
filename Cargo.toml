@@ -11,19 +11,20 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = "0.22"
-bollard = "0.18"
 chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1"
 futures-util = "0.3"
 libc = "0.2"
+libcontainer = "0.6"
+oci-distribution = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+oci-spec = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "net", "io-util"] }
 # ureq: tiny synchronous HTTP client for GCE metadata fetch at boot
 # (called from maybe_init, which is sync). No TLS features — GCE
 # metadata endpoint is plain HTTP at 169.254.169.254.
 ureq = { version = "2", default-features = false }
 uuid = { version = "1", features = ["serde", "v4"] }
-
-[build-dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"

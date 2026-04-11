@@ -43,6 +43,6 @@ src/
 
 - No insecure attestation fallback — detect() returns error without TDX
 - Unix socket only — clients (like dd-client) handle networking
-- Workloads are containers (bollard/podman) or bare processes
+- Workloads are OCI containers (libcontainer + oci-distribution, Rust-native, no daemon) or bare processes
 - post_deploy: sequential exec commands inside containers after start
 - Config from JSON + env, not database — stateless runtime
