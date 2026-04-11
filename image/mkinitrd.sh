@@ -35,6 +35,14 @@ done
 # modprobe --show-depends is the source of truth — don't hand-list deps.
 # Preserve the kernel/... path structure so modules.dep entries still resolve
 # in the initrd.
+#
+# Modules are decompressed as we go. Ubuntu kernels ship Zstd-compressed
+# modules (.ko.zst) and busybox's insmod/modprobe applets use the legacy
+# init_module() syscall, which cannot handle Zstd — the kernel would see
+# raw Zstd bytes and print "Invalid ELF header magic". Real kmod uses
+# finit_module(..., MODULE_INIT_COMPRESSED_FILE) to let the kernel
+# decompress, but we deliberately don't ship kmod in the initrd. So
+# decompress once at build time and let busybox load plain .ko files.
 MODDIR="$WORKDIR/lib/modules/$KVER"
 mkdir -p "$MODDIR"
 for top in dm-verity nvme tdx-guest tsm-report; do
@@ -45,11 +53,28 @@ for top in dm-verity nvme tdx-guest tsm-report; do
             rel=${src#"$MOD_SRC/"}
             dst="$MODDIR/$rel"
             mkdir -p "$(dirname "$dst")"
-            cp --update=none "$src" "$dst"
+            case "$src" in
+                *.ko.zst)
+                    # Strip .zst suffix from the destination so the
+                    # regenerated modules.dep references plain .ko.
+                    zstd -d -q -f -o "${dst%.zst}" "$src"
+                    ;;
+                *.ko.xz)
+                    xz -d -c "$src" > "${dst%.xz}"
+                    ;;
+                *.ko.gz)
+                    gzip -d -c "$src" > "${dst%.gz}"
+                    ;;
+                *)
+                    cp --update=none "$src" "$dst"
+                    ;;
+            esac
         done
 done
 
-# Generate modules.dep inside the initrd so `modprobe` works at runtime
+# Regenerate modules.dep from the decompressed tree. depmod scans the
+# files it finds and writes fresh entries, so the paths will reference
+# plain .ko (matching what busybox modprobe can actually load).
 depmod -b "$WORKDIR" "$KVER"
 
 # veritysetup for dm-verity (from cryptsetup-bin)
