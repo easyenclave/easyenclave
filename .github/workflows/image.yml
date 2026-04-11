@@ -65,7 +65,10 @@ jobs:
             busybox-static \
             e2fsprogs \
             dosfstools \
-            qemu-utils
+            qemu-utils \
+            libseccomp-dev
+          # libseccomp-dev is needed to link libcontainer (youki) —
+          # easyenclave's Rust-native container runtime depends on it.
 
       # mkosi is NOT published on PyPI — it ships only from systemd/mkosi
       # on GitHub. Ubuntu's apt mkosi is too old for Format=directory.
