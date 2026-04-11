@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # libseccomp-dev: required to link libcontainer (youki) — the
+      # Rust-native container runtime. Same apt dep as image.yml.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libseccomp-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
