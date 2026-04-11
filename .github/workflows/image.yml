@@ -67,11 +67,32 @@ jobs:
             dosfstools \
             qemu-utils \
             libseccomp-dev \
-            zstd
+            zstd \
+            linux-image-generic
           # libseccomp-dev is needed to link libcontainer (youki) —
           # easyenclave's Rust-native container runtime depends on it.
           # zstd is used by mkinitrd.sh to decompress kernel modules so
           # busybox's insmod can load them (see mkinitrd.sh comment).
+          # linux-image-generic: GitHub Actions runners boot an Azure-
+          # flavored kernel (e.g. 6.17.0-1010-azure) that doesn't ship
+          # nvme, tdx-guest, or tsm_report as modules. The generic
+          # Ubuntu kernel has them. We install it here purely to pull
+          # its module tree + vmlinuz into /lib/modules + /boot so
+          # mkinitrd.sh can resolve deps and the UKI can bundle the
+          # right kernel. The runner itself keeps booting azure — we
+          # just pass KVER explicitly to the build step.
+
+      - name: Resolve target kernel version
+        id: kver
+        run: |
+          # Prefer the latest generic kernel (installed above). Falls
+          # back to uname -r so local `make build` on a generic-kernel
+          # host still works without manual KVER plumbing.
+          KVER=$(ls -1 /boot/vmlinuz-*-generic 2>/dev/null \
+            | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
+          [ -z "$KVER" ] && KVER=$(uname -r)
+          echo "Using KVER=$KVER (runner uname -r=$(uname -r))"
+          echo "kver=$KVER" >> "$GITHUB_OUTPUT"
 
       # mkosi is NOT published on PyPI — it ships only from systemd/mkosi
       # on GitHub. Ubuntu's apt mkosi is too old for Format=directory.
@@ -104,7 +125,9 @@ jobs:
         run: cargo build --release
 
       - name: Build VM image
-        run: cd image && make build
+        env:
+          KVER: ${{ steps.kver.outputs.kver }}
+        run: cd image && make build KVER="$KVER"
 
       - name: Compute measurements and rename artifacts
         id: meta
