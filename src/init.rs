@@ -22,6 +22,7 @@ pub fn maybe_init() {
         ("devtmpfs", "/dev", "devtmpfs"),
         ("tmpfs", "/tmp", "tmpfs"),
         ("tmpfs", "/run", "tmpfs"),
+        ("cgroup2", "/sys/fs/cgroup", "cgroup2"),
     ] {
         match nix_mount(src, target, fstype) {
             Ok(()) => eprintln!("easyenclave: init: mounted {target}"),
@@ -209,6 +210,19 @@ pub fn maybe_init() {
             "",
             libc::MS_BIND,
         );
+    }
+
+    // Force glibc to re-read /etc/resolv.conf. glibc caches the resolver
+    // config at process start — when /etc/resolv.conf was empty (the rootfs
+    // ships an empty placeholder for the bind-mount target). After the
+    // bind-mount above puts real nameservers in place, __res_init() forces
+    // glibc to pick them up. Without this, all DNS queries fail with
+    // "Temporary failure in name resolution".
+    extern "C" {
+        fn __res_init() -> libc::c_int;
+    }
+    unsafe {
+        __res_init();
     }
 
     // GCE instance metadata: fetch the `ee-config` attribute and apply
