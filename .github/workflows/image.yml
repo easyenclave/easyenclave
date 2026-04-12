@@ -1,14 +1,20 @@
 name: Build & Release VM Image
 
-# Build the sealed TDX VM image on every PR (artifact only, no release).
+# Build the sealed TDX VM image, create a staging GCP image, and run
+# the boot-chain smoke test on EVERY push and PR. The staging image is
+# available for anyone to test against immediately.
 #
-# Two release channels:
-#   - STAGING: push to main → pre-release GitHub release + rolling GCP
-#              image easyenclave-${sha12}. Rotation keeps 5 newest staging
-#              images.
-#   - STABLE:  push tag v* (e.g. v1.2.3) → full GitHub release + GCP image
-#              easyenclave-v1-2-3. Never rotated — kept forever for
-#              rollback history.
+# Three channels:
+#   - PR:      every PR → staging GCP image easyenclave-<sha12> (no family,
+#              labeled channel=pr). Boot-chain checklist runs. Image usable
+#              for parallel testing — point `--image=easyenclave-<sha12>
+#              --image-project=<project>` at it. Rotated: keep 10 newest.
+#   - STAGING: push to main → same staging image, promoted into the
+#              easyenclave-staging family + GitHub pre-release. Rotation
+#              keeps 5 newest in the family.
+#   - STABLE:  push tag v* → GCP image easyenclave-v1-2-3 in
+#              easyenclave-stable family + full GitHub release. Never
+#              rotated — kept forever for rollback history.
 #
 # Each release ships:
 #   - easyenclave-<ver>.efi         UKI (boot measurement = sha256 of this)
@@ -186,214 +192,87 @@ jobs:
             image/output/MEASUREMENTS.txt
           retention-days: 7
 
-  release:
+  # ── Staging image ───────────────────────────────────────────────────
+  # Create a GCP image from the build artifact on EVERY push and PR.
+  # PRs get a testable staging image immediately — point
+  # `--image=easyenclave-<sha12> --image-project=<project>` at it.
+  # On merge, the same image gets promoted into the staging family
+  # by the release job below.
+  staging-image:
     needs: build
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: release
+    outputs:
+      gcp_name: ${{ steps.create.outputs.gcp_name }}
     permissions:
-      contents: write
-      id-token: write   # mint GitHub OIDC token for GCP WIF
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
+
+      - uses: google-github-actions/setup-gcloud@v2
 
       - uses: actions/download-artifact@v4
         with:
           name: easyenclave-image
           path: image/output
 
-      # GCP Workload Identity Federation — no stored SA key. The GH OIDC
-      # token is traded for a short-lived GCP access token via the pool
-      # at projects/779946350556/.../github-actions-pool, which impersonates
-      # easyenclave-github-provisioner. Principal is constrained by the
-      # provider's attribute condition (assertion.repository == this repo).
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
-          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Determine release channel
-        id: channel
+      - name: Upload to GCS and create GCP image
+        id: create
         env:
-          SHA12: ${{ needs.build.outputs.sha12 }}
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            # GCP image names: lowercase, digits, hyphens only — replace dots
-            GCP_NAME="easyenclave-${TAG//./-}"
-            {
-              echo "channel=stable"
-              echo "gh_tag=${TAG}"
-              echo "gcp_name=${GCP_NAME}"
-              echo "gcp_family=easyenclave-stable"
-              echo "asset_base=easyenclave-${TAG}"
-              echo "prerelease_flag="
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "channel=staging"
-              echo "gh_tag=image-${SHA12}"
-              echo "gcp_name=easyenclave-${SHA12}"
-              echo "gcp_family=easyenclave-staging"
-              echo "asset_base=easyenclave-${SHA12}"
-              echo "prerelease_flag=--prerelease"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Rename assets to match channel (tag releases)
-        if: steps.channel.outputs.channel == 'stable'
-        env:
-          SHA12: ${{ needs.build.outputs.sha12 }}
-          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
-        run: |
-          cd image/output
-          # Build job named everything with sha12 — rename to tag-based for stable
-          for ext in efi raw qcow2; do
-            mv "easyenclave-${SHA12}.${ext}" "${ASSET_BASE}.${ext}"
-          done
-          mv "easyenclave-${SHA12}-gcp.tar.gz" "${ASSET_BASE}-gcp.tar.gz"
-
-      - name: Upload GCP tarball to GCS
-        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
+          SHA12: ${{ needs.build.outputs.sha12 }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
+          GCP_NAME="easyenclave-${SHA12}"
+          ASSET_BASE="easyenclave-${SHA12}"
+
+          # Upload tarball to GCS
           gcloud storage cp "image/output/${ASSET_BASE}-gcp.tar.gz" \
             "gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz"
 
-      - name: Create GCP image
-        env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          GCP_NAME: ${{ steps.channel.outputs.gcp_name }}
-          GCP_FAMILY: ${{ steps.channel.outputs.gcp_family }}
-          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
-          CHANNEL: ${{ steps.channel.outputs.channel }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
-        run: |
-          # --family joins the image into an image family so downstream
-          # consumers can resolve "latest staging" or "latest stable" via
-          # `--image-family=easyenclave-staging` at deploy time, without
-          # hardcoding a sha12 pin. GCP's image-family selector picks the
-          # newest non-deprecated image in the family automatically.
+          # Determine channel label (pr vs staging vs stable)
+          if [ "$IS_PR" = "true" ]; then
+            CHANNEL="pr"
+            FAMILY_FLAG=""
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            GCP_NAME="easyenclave-${TAG//./-}"
+            CHANNEL="stable"
+            FAMILY_FLAG="--family=easyenclave-stable"
+          else
+            CHANNEL="staging"
+            FAMILY_FLAG="--family=easyenclave-staging"
+          fi
+
+          # Create the GCP image. On merge, --family joins it into
+          # the staging/stable family for auto-resolution. On PR,
+          # no family — but the image is still usable by name.
           gcloud compute images create "${GCP_NAME}" \
             --project="${GCP_PROJECT}" \
             --source-uri="gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz" \
-            --family="${GCP_FAMILY}" \
+            ${FAMILY_FLAG} \
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
             --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
 
-      - name: Rotate old staging images (keep 5 newest)
-        if: steps.channel.outputs.channel == 'staging'
-        env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-        run: |
-          # Only rotate staging images. Stable images (v*) are kept forever
-          # for rollback history.
-          gcloud compute images list \
-            --project="${GCP_PROJECT}" \
-            --filter="labels.easyenclave=image AND labels.channel=staging" \
-            --format="value(name)" \
-            --sort-by="~creationTimestamp" \
-            | tail -n +6 \
-            | xargs -rI{} gcloud compute images delete {} \
-                --project="${GCP_PROJECT}" --quiet
+          echo "gcp_name=${GCP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Created GCP image: ${GCP_NAME} (channel=${CHANNEL})"
 
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GH_TAG: ${{ steps.channel.outputs.gh_tag }}
-          GCP_NAME: ${{ steps.channel.outputs.gcp_name }}
-          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
-          CHANNEL: ${{ steps.channel.outputs.channel }}
-          PRERELEASE_FLAG: ${{ steps.channel.outputs.prerelease_flag }}
-          UKI_SHA256: ${{ needs.build.outputs.uki_sha256 }}
-          ROOT_SHA256: ${{ needs.build.outputs.root_sha256 }}
-          QCOW2_SHA256: ${{ needs.build.outputs.qcow2_sha256 }}
-        run: |
-          cd image/output
-
-          if [[ "${CHANNEL}" == "stable" ]]; then
-            TITLE="EasyEnclave ${GH_TAG}"
-            CHANNEL_BLURB="**Stable release** — pinnable for production deployments. Kept forever."
-          else
-            TITLE="Staging ${GH_TAG}"
-            CHANNEL_BLURB="**Staging pre-release** — latest main, rotates on every push. For stable use, pin a \`v*\` tag instead."
-          fi
-
-          NOTES=$(cat <<RELEASE
-          ${CHANNEL_BLURB}
-
-          ### Boot measurement (UKI SHA256)
-
-          \`${UKI_SHA256}\`
-
-          This is the cryptographic identity of this image — the single
-          hash covering kernel, initrd, and kernel command line as one
-          sealed unit. TDX attestation will verify RTMR values against
-          this.
-
-          ### Assets
-
-          | File | Format | SHA256 |
-          |---|---|---|
-          | \`${ASSET_BASE}.efi\` | Unified Kernel Image | \`${UKI_SHA256}\` |
-          | \`${ASSET_BASE}.raw\` | GPT disk (raw, for GCP or QEMU -drive format=raw) | \`${ROOT_SHA256}\` |
-          | \`${ASSET_BASE}.qcow2\` | QEMU/libvirt qcow2 (compressed) | \`${QCOW2_SHA256}\` |
-          | \`${ASSET_BASE}-gcp.tar.gz\` | GCP image import tarball | — |
-          | \`MEASUREMENTS.txt\` | Full manifest | — |
-
-          ### Boot locally with QEMU (qcow2, recommended)
-
-          \`\`\`bash
-          qemu-system-x86_64 \\
-            -enable-kvm -cpu host -m 4G -smp 2 \\
-            -bios /usr/share/OVMF/OVMF_CODE.fd \\
-            -drive file=${ASSET_BASE}.qcow2,if=virtio \\
-            -nographic
-          \`\`\`
-
-          easyenclave's attestation backend requires configfs-tsm (present
-          only in real TDX guests). On plain QEMU you'll see
-          \`no attestation backend found\` — that's expected for local dev.
-
-          ### Boot on GCP TDX
-
-          Pre-built image: \`projects/${GCP_PROJECT}/global/images/${GCP_NAME}\`
-
-          \`\`\`bash
-          gcloud compute instances create my-enclave \\
-            --zone=us-central1-c \\
-            --machine-type=c3-standard-4 \\
-            --confidential-compute-type=TDX \\
-            --maintenance-policy=TERMINATE \\
-            --image=${GCP_NAME} \\
-            --image-project=${GCP_PROJECT}
-          \`\`\`
-          RELEASE
-          )
-
-          gh release create "${GH_TAG}" \
-            ${PRERELEASE_FLAG} \
-            --title "${TITLE}" \
-            --notes "${NOTES}" \
-            "${ASSET_BASE}.efi" \
-            "${ASSET_BASE}.raw" \
-            "${ASSET_BASE}.qcow2" \
-            "${ASSET_BASE}-gcp.tar.gz" \
-            "MEASUREMENTS.txt"
-
+  # ── Smoke test (boot-chain checklist) ───────────────────────────────
+  # Runs on EVERY push and PR. Boots a TDX VM from the staging image
+  # and validates 10 stages of the boot chain. Streams serial output
+  # to the Action log.
   smoke-test:
-    needs: [build, release]
-    if: github.event_name != 'pull_request'
+    needs: [build, staging-image]
     runs-on: ubuntu-latest
     environment: release
     permissions:
       contents: read
-      id-token: write   # mint GitHub OIDC token for GCP WIF
+      id-token: write
     steps:
       - uses: google-github-actions/auth@v2
         with:
@@ -402,25 +281,11 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
-      - name: Determine image to smoke-test
-        id: target
-        env:
-          SHA12: ${{ needs.build.outputs.sha12 }}
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            echo "gcp_name=easyenclave-${TAG//./-}" >> "$GITHUB_OUTPUT"
-            echo "label=${TAG}" >> "$GITHUB_OUTPUT"
-          else
-            echo "gcp_name=easyenclave-${SHA12}" >> "$GITHUB_OUTPUT"
-            echo "label=${SHA12}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Boot TDX VM and validate boot chain
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ steps.target.outputs.gcp_name }}
-          LABEL: ${{ steps.target.outputs.label }}
+          GCP_NAME: ${{ needs.staging-image.outputs.gcp_name }}
+          SHA12: ${{ needs.build.outputs.sha12 }}
         run: |
           # ── Boot chain checklist ──────────────────────────────────────
           # Each marker validates a stage of the sealed VM boot. Required
@@ -448,6 +313,7 @@ jobs:
             "listening:easyenclave: listening on:1"
           )
 
+          LABEL="${SHA12}"
           VM_NAME="ee-smoke-$(date +%s)"
           gcloud compute instances create "$VM_NAME" \
             --project="$GCP_PROJECT" \
@@ -551,3 +417,163 @@ jobs:
             cleanup
             exit 1
           fi
+
+  # ── Release (merge/tag only) ────────────────────────────────────────
+  # Creates the GitHub Release with downloadable assets. The GCP image
+  # and smoke test already ran in the staging-image + smoke-test jobs.
+  # This job only gates on merge/tag to avoid publishing pre-releases
+  # from PRs.
+  release:
+    needs: [build, staging-image, smoke-test]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: easyenclave-image
+          path: image/output
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Determine release channel
+        id: channel
+        env:
+          SHA12: ${{ needs.build.outputs.sha12 }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            {
+              echo "channel=stable"
+              echo "gh_tag=${TAG}"
+              echo "asset_base=easyenclave-${TAG}"
+              echo "prerelease_flag="
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "channel=staging"
+              echo "gh_tag=image-${SHA12}"
+              echo "asset_base=easyenclave-${SHA12}"
+              echo "prerelease_flag=--prerelease"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rename assets to match channel (tag releases)
+        if: steps.channel.outputs.channel == 'stable'
+        env:
+          SHA12: ${{ needs.build.outputs.sha12 }}
+          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
+        run: |
+          cd image/output
+          for ext in efi raw qcow2; do
+            mv "easyenclave-${SHA12}.${ext}" "${ASSET_BASE}.${ext}"
+          done
+          mv "easyenclave-${SHA12}-gcp.tar.gz" "${ASSET_BASE}-gcp.tar.gz"
+
+      - name: Rotate old staging images (keep 5 newest)
+        if: steps.channel.outputs.channel == 'staging'
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          gcloud compute images list \
+            --project="${GCP_PROJECT}" \
+            --filter="labels.easyenclave=image AND labels.channel=staging" \
+            --format="value(name)" \
+            --sort-by="~creationTimestamp" \
+            | tail -n +6 \
+            | xargs -rI{} gcloud compute images delete {} \
+                --project="${GCP_PROJECT}" --quiet
+
+      - name: Rotate old PR images (keep 10 newest)
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          gcloud compute images list \
+            --project="${GCP_PROJECT}" \
+            --filter="labels.easyenclave=image AND labels.channel=pr" \
+            --format="value(name)" \
+            --sort-by="~creationTimestamp" \
+            | tail -n +11 \
+            | xargs -rI{} gcloud compute images delete {} \
+                --project="${GCP_PROJECT}" --quiet
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_NAME: ${{ needs.staging-image.outputs.gcp_name }}
+          GH_TAG: ${{ steps.channel.outputs.gh_tag }}
+          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+          PRERELEASE_FLAG: ${{ steps.channel.outputs.prerelease_flag }}
+          UKI_SHA256: ${{ needs.build.outputs.uki_sha256 }}
+          ROOT_SHA256: ${{ needs.build.outputs.root_sha256 }}
+          QCOW2_SHA256: ${{ needs.build.outputs.qcow2_sha256 }}
+        run: |
+          cd image/output
+
+          if [[ "${CHANNEL}" == "stable" ]]; then
+            TITLE="EasyEnclave ${GH_TAG}"
+            CHANNEL_BLURB="**Stable release** — pinnable for production deployments. Kept forever."
+          else
+            TITLE="Staging ${GH_TAG}"
+            CHANNEL_BLURB="**Staging pre-release** — latest main, rotates on every push. For stable use, pin a \`v*\` tag instead."
+          fi
+
+          NOTES=$(cat <<RELEASE
+          ${CHANNEL_BLURB}
+
+          ### Boot measurement (UKI SHA256)
+
+          \`${UKI_SHA256}\`
+
+          This is the cryptographic identity of this image — the single
+          hash covering kernel, initrd, and kernel command line as one
+          sealed unit. TDX attestation will verify RTMR values against
+          this.
+
+          ### Assets
+
+          | File | Format | SHA256 |
+          |---|---|---|
+          | \`${ASSET_BASE}.efi\` | Unified Kernel Image | \`${UKI_SHA256}\` |
+          | \`${ASSET_BASE}.raw\` | GPT disk (raw, for GCP or QEMU -drive format=raw) | \`${ROOT_SHA256}\` |
+          | \`${ASSET_BASE}.qcow2\` | QEMU/libvirt qcow2 (compressed) | \`${QCOW2_SHA256}\` |
+          | \`${ASSET_BASE}-gcp.tar.gz\` | GCP image import tarball | — |
+          | \`MEASUREMENTS.txt\` | Full manifest | — |
+
+          ### Boot on GCP TDX
+
+          Pre-built image: \`projects/${GCP_PROJECT}/global/images/${GCP_NAME}\`
+
+          \`\`\`bash
+          gcloud compute instances create my-enclave \\
+            --zone=us-central1-c \\
+            --machine-type=c3-standard-4 \\
+            --confidential-compute-type=TDX \\
+            --maintenance-policy=TERMINATE \\
+            --image=${GCP_NAME} \\
+            --image-project=${GCP_PROJECT}
+          \`\`\`
+          RELEASE
+          )
+
+          gh release create "${GH_TAG}" \
+            ${PRERELEASE_FLAG} \
+            --title "${TITLE}" \
+            --notes "${NOTES}" \
+            "${ASSET_BASE}.efi" \
+            "${ASSET_BASE}.raw" \
+            "${ASSET_BASE}.qcow2" \
+            "${ASSET_BASE}-gcp.tar.gz" \
+            "MEASUREMENTS.txt"
