@@ -211,6 +211,17 @@ pub fn maybe_init() {
         );
     }
 
+    // DNS connectivity test — uses glibc getaddrinfo (same path as
+    // reqwest/oci-distribution). If this fails, ghcr.io pulls will too.
+    use std::net::ToSocketAddrs;
+    match ("ghcr.io", 443).to_socket_addrs() {
+        Ok(addrs) => {
+            let ips: Vec<_> = addrs.map(|a| a.ip()).collect();
+            eprintln!("easyenclave: init: dns ghcr.io -> {ips:?}");
+        }
+        Err(e) => eprintln!("easyenclave: init: dns ghcr.io FAILED: {e}"),
+    }
+
     // GCE instance metadata: fetch the `ee-config` attribute and apply
     // each key as an env var. This is the per-VM boot-config path for
     // easyenclave VMs on GCP — gcloud passes it via
