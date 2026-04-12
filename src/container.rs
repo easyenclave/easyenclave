@@ -61,17 +61,15 @@ async fn pull_image(image: &str, rootfs: &str) -> Result<(), String> {
     };
     let client = oci_distribution::Client::new(config);
 
+    // pull_image_manifest auto-resolves multi-arch image indexes to
+    // the linux/amd64 platform manifest via the client's built-in
+    // platform_resolver. No manual matching needed.
     let (manifest, _digest) = client
-        .pull_manifest(&reference, &RegistryAuth::Anonymous)
+        .pull_image_manifest(&reference, &RegistryAuth::Anonymous)
         .await
         .map_err(|e| format!("pull manifest: {e}"))?;
 
-    let layers = match &manifest {
-        oci_distribution::manifest::OciManifest::Image(m) => m.layers.clone(),
-        oci_distribution::manifest::OciManifest::ImageIndex(_) => {
-            return Err("image index not supported — specify a platform-specific tag".into());
-        }
-    };
+    let layers = manifest.layers.clone();
 
     for layer in &layers {
         let mut layer_data = Vec::new();
