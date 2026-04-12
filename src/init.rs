@@ -153,14 +153,17 @@ pub fn maybe_init() {
             // DHCP path: fetch IP + routes + DNS + classless static
             // routes from the DHCP server. busybox udhcpc in one-shot
             // mode (-n: exit if no lease, -q: quit after obtaining
-            // lease, -t 10: retry 10× = ~30s timeout, -s: hook script
-            // path). busybox udhcpc's compiled-in default is
-            // /etc/udhcpc/default.script, but we ship our hook at
-            // /usr/share/udhcpc/default.script (via mkosi.extra), so
-            // -s is required. The hook applies IP + gateway + DNS +
-            // RFC 3442 classless static routes (option 121) from the
-            // lease — the classless-route handling is what makes GCE's
-            // metadata server at 169.254.169.254 reachable.
+            // lease, -t 10: retry 10× = ~30s timeout).
+            //
+            // -s: hook script path. busybox default is /etc/udhcpc/
+            //     default.script; ours is at /usr/share/udhcpc/.
+            // -O staticroutes: request DHCP option 121 (RFC 3442
+            //     classless static routes). busybox does NOT request
+            //     this by default — without -O, GCE's DHCP server
+            //     won't include it, the hook's $staticroutes is empty,
+            //     and the 169.254.169.254/32 metadata route is never
+            //     installed. This is what makes the GCE metadata
+            //     server reachable after DHCP.
             eprintln!("easyenclave: init: running udhcpc on {iface}");
             match std::process::Command::new("udhcpc")
                 .args([
@@ -172,6 +175,8 @@ pub fn maybe_init() {
                     "10",
                     "-s",
                     "/usr/share/udhcpc/default.script",
+                    "-O",
+                    "staticroutes",
                 ])
                 .status()
             {

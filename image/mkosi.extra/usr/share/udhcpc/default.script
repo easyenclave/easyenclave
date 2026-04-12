@@ -42,13 +42,18 @@ case "$1" in
       done
     fi
 
-    # DNS — write /etc/resolv.conf
+    # DNS — write /etc/resolv.conf. The rootfs may be read-only
+    # (dm-verity or just mounted ro), so write to /tmp first and
+    # bind-mount over /etc/resolv.conf. If even that fails, skip
+    # DNS — routes are more critical than resolver config, and
+    # easyenclave's init.rs has an EE_DNS static override path.
     if [ -n "$dns" ]; then
-      : > "$RESOLV"
-      [ -n "$domain" ] && echo "search $domain" >> "$RESOLV"
+      : > /tmp/resolv.conf.udhcpc
+      [ -n "$domain" ] && echo "search $domain" >> /tmp/resolv.conf.udhcpc
       for d in $dns; do
-        echo "nameserver $d" >> "$RESOLV"
+        echo "nameserver $d" >> /tmp/resolv.conf.udhcpc
       done
+      cp /tmp/resolv.conf.udhcpc "$RESOLV" 2>/dev/null || true
     fi
     ;;
 
