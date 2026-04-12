@@ -416,12 +416,38 @@ jobs:
             echo "label=${SHA12}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Boot TDX VM from new image and verify
+      - name: Boot TDX VM and validate boot chain
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_NAME: ${{ steps.target.outputs.gcp_name }}
           LABEL: ${{ steps.target.outputs.label }}
         run: |
+          # ── Boot chain checklist ──────────────────────────────────────
+          # Each marker validates a stage of the sealed VM boot. Required
+          # markers must all appear for the smoke test to pass. Optional
+          # markers are informational (e.g. gce-meta requires ee-config
+          # metadata, which the smoke VM doesn't have).
+          #
+          # This checklist exists because we spent PRs #50-#61 debugging
+          # 11 layers of boot failures that the old "grep for listening"
+          # test couldn't catch: missing network driver, DHCP failure,
+          # wrong route scope, DNS misconfiguration, etc.
+
+          # name:pattern:required (1=yes, 0=optional)
+          CHECKS=(
+            "kernel_boot:Run /init as init process:1"
+            "root_resolved:Resolved root to /dev/:1"
+            "easyenclave_pid1:easyenclave: running as PID 1:1"
+            "tmpfs_mounted:mounted /var/lib/easyenclave:1"
+            "tdx_attestation:attestation backend: tdx:1"
+            "network_up:Device link is up:1"
+            "dhcp_lease:lease of .* obtained:1"
+            "default_route:default via .* dev:1"
+            "dns_configured:dns from dhcp lease:1"
+            "gce_metadata:gce-meta env:0"
+            "listening:easyenclave: listening on:1"
+          )
+
           VM_NAME="ee-smoke-$(date +%s)"
           gcloud compute instances create "$VM_NAME" \
             --project="$GCP_PROJECT" \
@@ -438,29 +464,90 @@ jobs:
               --project="$GCP_PROJECT" --zone=us-central1-c --quiet || true
           }
 
+          # Track which checks have passed
+          declare -A PASSED
+          LAST_LINES=0
+          ALL_REQUIRED_DONE=false
+
           for i in $(seq 1 30); do
             out=$(gcloud compute instances get-serial-port-output "$VM_NAME" \
               --project="$GCP_PROJECT" --zone=us-central1-c 2>/dev/null || true)
 
-            if echo "$out" | grep -q "easyenclave: listening on"; then
-              echo "✓ image ${LABEL} booted and easyenclave is listening"
-              cleanup
-              exit 0
+            # Stream new serial lines
+            TOTAL_LINES=$(echo "$out" | wc -l)
+            if [ "$TOTAL_LINES" -gt "$LAST_LINES" ]; then
+              echo "$out" | tail -n +$((LAST_LINES + 1)) | sed 's/^/[serial] /'
+              LAST_LINES=$TOTAL_LINES
             fi
 
-            if echo "$out" | grep -qE "FATAL|Kernel panic|switch_root: can"; then
-              echo "::error::boot failed for image ${LABEL}"
-              echo "$out" | tail -60
-              cleanup
-              exit 1
+            # Fast-fail on fatal patterns
+            if echo "$out" | grep -qE "FATAL|Kernel panic|switch_root: can|Invalid ELF header"; then
+              echo ""
+              echo "::error::boot failed for image ${LABEL} — fatal pattern in serial"
+              break
             fi
 
-            echo "  waiting for listening marker... (${i}/30)"
+            # Check each marker
+            for check in "${CHECKS[@]}"; do
+              IFS=: read -r name pattern required <<< "$check"
+              [ -n "${PASSED[$name]:-}" ] && continue
+              if echo "$out" | grep -qE "$pattern"; then
+                PASSED[$name]=1
+                echo "  ✓ $name"
+              fi
+            done
+
+            # Are all required checks done?
+            ALL_REQUIRED_DONE=true
+            for check in "${CHECKS[@]}"; do
+              IFS=: read -r name pattern required <<< "$check"
+              [ "$required" = "0" ] && continue
+              [ -z "${PASSED[$name]:-}" ] && ALL_REQUIRED_DONE=false && break
+            done
+
+            if $ALL_REQUIRED_DONE; then
+              break
+            fi
+
+            echo "  waiting... (${i}/30)"
             sleep 10
           done
 
-          echo "::error::image ${LABEL} did not become ready within 5 min"
-          gcloud compute instances get-serial-port-output "$VM_NAME" \
-            --project="$GCP_PROJECT" --zone=us-central1-c | tail -60 || true
-          cleanup
-          exit 1
+          # ── Print checklist summary ─────────────────────────────────
+          echo ""
+          echo "=== easyenclave smoke test results (${LABEL}) ==="
+          REQUIRED_PASS=0
+          REQUIRED_TOTAL=0
+          OPTIONAL_PASS=0
+          for check in "${CHECKS[@]}"; do
+            IFS=: read -r name pattern required <<< "$check"
+            if [ -n "${PASSED[$name]:-}" ]; then
+              echo "  ✓ $name"
+              [ "$required" = "1" ] && REQUIRED_PASS=$((REQUIRED_PASS + 1))
+              [ "$required" = "0" ] && OPTIONAL_PASS=$((OPTIONAL_PASS + 1))
+            else
+              if [ "$required" = "1" ]; then
+                echo "  ✗ $name  (REQUIRED)"
+              else
+                echo "  - $name  (optional, not expected on smoke VM)"
+              fi
+            fi
+            [ "$required" = "1" ] && REQUIRED_TOTAL=$((REQUIRED_TOTAL + 1))
+          done
+          echo ""
+          echo "${REQUIRED_PASS}/${REQUIRED_TOTAL} required checks passed"
+          echo "==="
+
+          if $ALL_REQUIRED_DONE; then
+            echo ""
+            echo "✓ image ${LABEL} passed all required smoke checks"
+            cleanup
+            exit 0
+          else
+            echo ""
+            echo "::error::image ${LABEL} failed smoke test (${REQUIRED_PASS}/${REQUIRED_TOTAL} required)"
+            echo "--- final serial tail ---"
+            echo "$out" | tail -80
+            cleanup
+            exit 1
+          fi

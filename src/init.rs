@@ -182,14 +182,6 @@ pub fn maybe_init() {
             {
                 Ok(s) if s.success() => {
                     eprintln!("easyenclave: init: dhcp lease acquired");
-                    // Diagnostic: dump routing table so serial shows
-                    // whether the default route + on-link gateway landed.
-                    let _ = std::process::Command::new("ip")
-                        .args(["route", "show"])
-                        .status();
-                    let _ = std::process::Command::new("ip")
-                        .args(["addr", "show", "dev", iface])
-                        .status();
                 }
                 Ok(s) => {
                     eprintln!("easyenclave: init: udhcpc exited with {s}");

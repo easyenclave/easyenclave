@@ -20,8 +20,6 @@ case "$1" in
     ;;
 
   bound|renew)
-    echo "udhcpc-hook: $1 ip=$ip mask=$mask router=$router dns=$dns"
-    echo "udhcpc-hook: staticroutes='$staticroutes' msstaticroutes='$msstaticroutes'"
     $IP addr flush dev "$interface" 2>/dev/null || true
     $IP addr add "$ip/$mask" dev "$interface"
     $IP link set "$interface" up
