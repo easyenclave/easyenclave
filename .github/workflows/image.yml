@@ -181,6 +181,43 @@ jobs:
 
           ls -lh
 
+          # Job summary — visible on the run page without expanding logs
+          UKI_SIZE=$(du -h "easyenclave-${SHA12}.efi" | cut -f1)
+          RAW_SIZE=$(du -h "easyenclave-${SHA12}.raw" | cut -f1)
+          QCOW2_SIZE=$(du -h "easyenclave-${SHA12}.qcow2" | cut -f1)
+          cat >> "$GITHUB_STEP_SUMMARY" <<SUMMARY
+          ### easyenclave image \`${SHA12}\`
+
+          | | |
+          |---|---|
+          | **Commit** | \`${{ github.sha }}\` |
+          | **Ref** | \`${{ github.ref }}\` |
+          | **Kernel** | \`${KERNEL_VER}\` |
+          | **GCP image** | \`easyenclave-${SHA12}\` |
+
+          #### Boot measurement (UKI SHA256)
+          \`\`\`
+          ${UKI_SHA256}
+          \`\`\`
+
+          #### Artifacts
+          | File | Size | SHA256 |
+          |---|---|---|
+          | \`easyenclave-${SHA12}.efi\` (UKI) | ${UKI_SIZE} | \`${UKI_SHA256}\` |
+          | \`easyenclave-${SHA12}.raw\` (GPT disk) | ${RAW_SIZE} | \`${ROOT_SHA256}\` |
+          | \`easyenclave-${SHA12}.qcow2\` (QEMU) | ${QCOW2_SIZE} | \`${QCOW2_SHA256}\` |
+
+          #### Quick test
+          \`\`\`bash
+          gcloud compute instances create my-test \\
+            --machine-type=c3-standard-4 \\
+            --confidential-compute-type=TDX \\
+            --maintenance-policy=TERMINATE \\
+            --image=easyenclave-${SHA12} \\
+            --image-project=\$GCP_PROJECT
+          \`\`\`
+          SUMMARY
+
       - uses: actions/upload-artifact@v4
         with:
           name: easyenclave-image
@@ -204,11 +241,31 @@ jobs:
     runs-on: ubuntu-latest
     environment: release
     outputs:
-      gcp_name: ${{ steps.create.outputs.gcp_name }}
+      gcp_name: ${{ steps.name.outputs.gcp_name }}
     permissions:
       contents: read
       id-token: write
     steps:
+      # Compute the GCP image name in a step with NO secrets in env.
+      # GitHub Actions blocks cross-job outputs from steps that have
+      # secrets ("Skip output since it may contain secret"). Keeping
+      # this step secret-free lets the output propagate to smoke-test
+      # and release jobs.
+      - name: Determine image name
+        id: name
+        env:
+          SHA12: ${{ needs.build.outputs.sha12 }}
+          IS_PR: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            GCP_NAME="easyenclave-${TAG//./-}"
+          else
+            GCP_NAME="easyenclave-${SHA12}"
+          fi
+          echo "gcp_name=${GCP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Image name: ${GCP_NAME}"
+
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
@@ -222,14 +279,13 @@ jobs:
           path: image/output
 
       - name: Upload to GCS and create GCP image
-        id: create
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           SHA12: ${{ needs.build.outputs.sha12 }}
+          GCP_NAME: ${{ steps.name.outputs.gcp_name }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
-          GCP_NAME="easyenclave-${SHA12}"
           ASSET_BASE="easyenclave-${SHA12}"
 
           # Upload tarball to GCS
@@ -241,9 +297,8 @@ jobs:
           # becomes what `--image-family=easyenclave-staging` resolves
           # to. This lets you test a PR on dd staging without merging.
           # Tags get their own easyenclave-stable family.
+          # GCP_NAME comes from the "Determine image name" step.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            GCP_NAME="easyenclave-${TAG//./-}"
             CHANNEL="stable"
             FAMILY_FLAG="--family=easyenclave-stable"
           elif [ "$IS_PR" = "true" ]; then
