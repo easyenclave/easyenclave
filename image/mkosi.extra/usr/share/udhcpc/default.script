@@ -33,13 +33,26 @@ case "$1" in
       done
     fi
 
-    # Classless static routes (DHCP option 121). GCE uses this to
-    # install the 169.254.169.254/32 metadata route.
-    # Format: "dest1/prefix1 gateway1 dest2/prefix2 gateway2 ..."
+    # Classless static routes (DHCP option 121). GCE sends two:
+    #   10.128.0.1/32 0.0.0.0   — gateway reachable on-link
+    #   0.0.0.0/0 10.128.0.1    — default route via gateway
+    # Format: "dest/prefix gateway dest/prefix gateway ..."
+    #
+    # Gateway 0.0.0.0 means "on-link" per RFC 3442. MUST use
+    # `ip route add <dest> dev <iface>`, NOT `via 0.0.0.0`.
+    # The `via 0.0.0.0` form creates a route without scope link,
+    # and the kernel then rejects it as a valid next-hop for other
+    # routes (RTNETLINK: Network is unreachable). This was the bug
+    # that prevented the default route from landing on GCE.
     if [ -n "$staticroutes" ]; then
       set -- $staticroutes
       while [ "$#" -ge 2 ]; do
-        $IP route add "$1" via "$2" dev "$interface" 2>/dev/null || true
+        if [ "$2" = "0.0.0.0" ]; then
+          # On-link: gateway 0.0.0.0 means directly connected
+          $IP route add "$1" dev "$interface" 2>/dev/null || true
+        else
+          $IP route add "$1" via "$2" dev "$interface" 2>/dev/null || true
+        fi
         shift 2
       done
     fi
