@@ -182,6 +182,14 @@ pub fn maybe_init() {
             {
                 Ok(s) if s.success() => {
                     eprintln!("easyenclave: init: dhcp lease acquired");
+                    // Diagnostic: dump routing table so serial shows
+                    // whether the default route + on-link gateway landed.
+                    let _ = std::process::Command::new("ip")
+                        .args(["route", "show"])
+                        .status();
+                    let _ = std::process::Command::new("ip")
+                        .args(["addr", "show", "dev", iface])
+                        .status();
                 }
                 Ok(s) => {
                     eprintln!("easyenclave: init: udhcpc exited with {s}");
@@ -250,9 +258,11 @@ fn fetch_gce_metadata_config() {
                 return;
             }
         },
-        Err(_) => {
-            // Not on GCE (connection refused / timeout), or attribute
-            // not set (404). Nothing to do.
+        Err(e) => {
+            // Log the actual error so serial output shows WHY the
+            // metadata fetch failed (timeout? network unreachable?
+            // connection refused? DNS?). Previously this was silent.
+            eprintln!("easyenclave: init: gce-meta fetch failed: {e}");
             return;
         }
     };
