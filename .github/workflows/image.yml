@@ -416,38 +416,56 @@ jobs:
             echo "label=${SHA12}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Boot TDX VM and validate boot chain
+      - name: Integration test — boot TDX VM, deploy workload, curl HTTP
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_NAME: ${{ steps.target.outputs.gcp_name }}
           LABEL: ${{ steps.target.outputs.label }}
         run: |
-          # ── Boot chain checklist ──────────────────────────────────────
-          # Each marker validates a stage of the sealed VM boot. Required
-          # markers must all appear for the smoke test to pass. Optional
-          # markers are informational (e.g. gce-meta requires ee-config
-          # metadata, which the smoke VM doesn't have).
-          #
-          # This checklist exists because we spent PRs #50-#61 debugging
-          # 11 layers of boot failures that the old "grep for listening"
-          # test couldn't catch: missing network driver, DHCP failure,
-          # wrong route scope, DNS misconfiguration, etc.
+          # ── Integration test ─────────────────────────────────────────
+          # Boots a TDX VM with a test workload (traefik/whoami on port
+          # 80), verifies every stage of the boot chain via serial
+          # markers, then curls the VM's external IP to prove the
+          # workload is actually serving HTTP. This catches everything
+          # from initrd module loading to DNS to OCI pull to container
+          # entrypoint.
 
-          # name:pattern:required (1=yes, 0=optional)
+          # name:pattern:required
           CHECKS=(
             "kernel_boot:Run /init as init process:1"
             "root_resolved:Resolved root to /dev/:1"
             "easyenclave_pid1:easyenclave: running as PID 1:1"
             "tmpfs_mounted:mounted /var/lib/easyenclave:1"
+            "cgroup_mounted:mounted /sys/fs/cgroup:1"
             "tdx_attestation:attestation backend: tdx:1"
             "network_up:Device link is up:1"
             "dhcp_lease:lease of .* obtained:1"
-            "default_route:default via .* dev:1"
             "dns_configured:dns from dhcp lease:1"
-            "gce_metadata:gce-meta env:0"
+            "gce_metadata:gce-meta env:1"
             "listening:easyenclave: listening on:1"
+            "container_started:container .* started:1"
+            "deployment_running:deployment .* running:1"
           )
 
+          # ── Create test workload config ──────────────────────────────
+          cat > /tmp/ee-config.json <<'EECONF'
+          {
+            "EE_OWNER": "smoke-test",
+            "EE_BOOT_WORKLOADS": "[{\"image\":\"docker.io/traefik/whoami:latest\",\"app_name\":\"whoami\",\"env\":[]}]"
+          }
+          EECONF
+
+          # ── Firewall (idempotent, tag-scoped) ────────────────────────
+          gcloud compute firewall-rules describe ee-smoke-allow-http \
+            --project="$GCP_PROJECT" >/dev/null 2>&1 || \
+          gcloud compute firewall-rules create ee-smoke-allow-http \
+            --project="$GCP_PROJECT" \
+            --allow=tcp:80 \
+            --target-tags=ee-smoke-test \
+            --source-ranges=0.0.0.0/0 \
+            --quiet
+
+          # ─��� Boot VM with test workload ───────────────────────────────
           VM_NAME="ee-smoke-$(date +%s)"
           gcloud compute instances create "$VM_NAME" \
             --project="$GCP_PROJECT" \
@@ -457,37 +475,35 @@ jobs:
             --maintenance-policy=TERMINATE \
             --image="${GCP_NAME}" \
             --image-project="$GCP_PROJECT" \
-            --boot-disk-size=10GB
+            --boot-disk-size=10GB \
+            --metadata-from-file=ee-config=/tmp/ee-config.json \
+            --tags=ee-smoke-test
 
           cleanup() {
             gcloud compute instances delete "$VM_NAME" \
               --project="$GCP_PROJECT" --zone=us-central1-c --quiet || true
           }
 
-          # Track which checks have passed
+          # ── Serial streaming + checklist ─────────────────────────────
           declare -A PASSED
           LAST_LINES=0
           ALL_REQUIRED_DONE=false
 
-          for i in $(seq 1 30); do
+          for i in $(seq 1 36); do
             out=$(gcloud compute instances get-serial-port-output "$VM_NAME" \
               --project="$GCP_PROJECT" --zone=us-central1-c 2>/dev/null || true)
 
-            # Stream new serial lines
             TOTAL_LINES=$(echo "$out" | wc -l)
             if [ "$TOTAL_LINES" -gt "$LAST_LINES" ]; then
               echo "$out" | tail -n +$((LAST_LINES + 1)) | sed 's/^/[serial] /'
               LAST_LINES=$TOTAL_LINES
             fi
 
-            # Fast-fail on fatal patterns
             if echo "$out" | grep -qE "FATAL|Kernel panic|switch_root: can|Invalid ELF header"; then
-              echo ""
-              echo "::error::boot failed for image ${LABEL} — fatal pattern in serial"
+              echo "::error::boot failed — fatal pattern in serial"
               break
             fi
 
-            # Check each marker
             for check in "${CHECKS[@]}"; do
               IFS=: read -r name pattern required <<< "$check"
               [ -n "${PASSED[$name]:-}" ] && continue
@@ -497,55 +513,71 @@ jobs:
               fi
             done
 
-            # Are all required checks done?
             ALL_REQUIRED_DONE=true
             for check in "${CHECKS[@]}"; do
               IFS=: read -r name pattern required <<< "$check"
               [ "$required" = "0" ] && continue
               [ -z "${PASSED[$name]:-}" ] && ALL_REQUIRED_DONE=false && break
             done
+            $ALL_REQUIRED_DONE && break
 
-            if $ALL_REQUIRED_DONE; then
-              break
-            fi
-
-            echo "  waiting... (${i}/30)"
+            echo "  waiting... (${i}/36)"
             sleep 10
           done
 
-          # ── Print checklist summary ─────────────────────────────────
+          # ── Workload HTTP test ───────────────────────────────────────
+          HTTP_OK=false
+          if $ALL_REQUIRED_DONE; then
+            VM_IP=$(gcloud compute instances describe "$VM_NAME" \
+              --project="$GCP_PROJECT" --zone=us-central1-c \
+              --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
+            echo ""
+            echo "Testing workload HTTP on $VM_IP:80..."
+            for i in $(seq 1 12); do
+              HTTP_CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
+                --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo "000")
+              if [ "$HTTP_CODE" = "200" ]; then
+                echo "  ✓ workload_http (200 on $VM_IP:80)"
+                HTTP_OK=true
+                break
+              fi
+              echo "  waiting for workload HTTP... ${HTTP_CODE} (${i}/12)"
+              sleep 5
+            done
+          fi
+
+          # ── Summary ──────────────────────────────────────────────────
           echo ""
-          echo "=== easyenclave smoke test results (${LABEL}) ==="
+          echo "=== easyenclave integration test (${LABEL}) ==="
           REQUIRED_PASS=0
           REQUIRED_TOTAL=0
-          OPTIONAL_PASS=0
           for check in "${CHECKS[@]}"; do
             IFS=: read -r name pattern required <<< "$check"
+            [ "$required" = "1" ] && REQUIRED_TOTAL=$((REQUIRED_TOTAL + 1))
             if [ -n "${PASSED[$name]:-}" ]; then
               echo "  ✓ $name"
               [ "$required" = "1" ] && REQUIRED_PASS=$((REQUIRED_PASS + 1))
-              [ "$required" = "0" ] && OPTIONAL_PASS=$((OPTIONAL_PASS + 1))
             else
-              if [ "$required" = "1" ]; then
-                echo "  ✗ $name  (REQUIRED)"
-              else
-                echo "  - $name  (optional, not expected on smoke VM)"
-              fi
+              echo "  ✗ $name"
             fi
-            [ "$required" = "1" ] && REQUIRED_TOTAL=$((REQUIRED_TOTAL + 1))
           done
+          if $HTTP_OK; then
+            echo "  ✓ workload_http"
+            REQUIRED_PASS=$((REQUIRED_PASS + 1))
+          else
+            echo "  ✗ workload_http"
+          fi
+          REQUIRED_TOTAL=$((REQUIRED_TOTAL + 1))
           echo ""
-          echo "${REQUIRED_PASS}/${REQUIRED_TOTAL} required checks passed"
+          echo "${REQUIRED_PASS}/${REQUIRED_TOTAL} checks passed"
           echo "==="
 
-          if $ALL_REQUIRED_DONE; then
-            echo ""
-            echo "✓ image ${LABEL} passed all required smoke checks"
+          if $ALL_REQUIRED_DONE && $HTTP_OK; then
+            echo "✓ Integration test passed"
             cleanup
             exit 0
           else
-            echo ""
-            echo "::error::image ${LABEL} failed smoke test (${REQUIRED_PASS}/${REQUIRED_TOTAL} required)"
+            echo "::error::Integration test failed (${REQUIRED_PASS}/${REQUIRED_TOTAL})"
             echo "--- final serial tail ---"
             echo "$out" | tail -80
             cleanup

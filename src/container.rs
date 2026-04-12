@@ -23,13 +23,13 @@ pub async fn pull_and_run(
     let rootfs_dir = format!("{container_dir}/rootfs");
     let _ = tokio::fs::create_dir_all(&rootfs_dir).await;
 
-    // Pull and unpack image
+    // Pull and unpack image, extract entrypoint/cmd from image config
     eprintln!("easyenclave: pulling {image}");
-    pull_image(image, &rootfs_dir).await?;
+    let image_config = pull_image(image, &rootfs_dir).await?;
     eprintln!("easyenclave: image unpacked to {rootfs_dir}");
 
-    // Generate OCI runtime spec
-    let spec = build_spec(&rootfs_dir, env);
+    // Generate OCI runtime spec using the image's entrypoint/cmd/env
+    let spec = build_spec(&rootfs_dir, env, &image_config);
     let spec_path = format!("{container_dir}/config.json");
     let spec_json = serde_json::to_string_pretty(&spec).map_err(|e| format!("spec: {e}"))?;
     tokio::fs::write(&spec_path, spec_json)
@@ -49,25 +49,59 @@ pub async fn pull_and_run(
     Ok(container_id)
 }
 
-/// Pull an OCI image and unpack its layers into the rootfs directory.
-async fn pull_image(image: &str, rootfs: &str) -> Result<(), String> {
+/// OCI image config — extracted from the registry for building the runtime spec.
+#[derive(Default)]
+struct ImageConfig {
+    entrypoint: Vec<String>,
+    cmd: Vec<String>,
+    env: Vec<String>,
+    working_dir: String,
+}
+
+/// Extract a JSON array of strings, or empty vec if null/missing.
+fn json_string_array(val: Option<&serde_json::Value>) -> Vec<String> {
+    val.and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Pull an OCI image, unpack its layers, and return the image config.
+async fn pull_image(image: &str, rootfs: &str) -> Result<ImageConfig, String> {
     let reference: Reference = image
         .parse()
         .map_err(|e| format!("parse ref {image}: {e}"))?;
 
-    let config = ClientConfig {
+    let client_config = ClientConfig {
         protocol: ClientProtocol::Https,
         ..Default::default()
     };
-    let client = oci_distribution::Client::new(config);
+    let client = oci_distribution::Client::new(client_config);
 
-    // pull_image_manifest auto-resolves multi-arch image indexes to
-    // the linux/amd64 platform manifest via the client's built-in
-    // platform_resolver. No manual matching needed.
-    let (manifest, _digest) = client
-        .pull_image_manifest(&reference, &RegistryAuth::Anonymous)
+    // pull_manifest_and_config resolves multi-arch indexes and returns
+    // both the manifest (for layers) and the config JSON (for
+    // entrypoint/cmd/env/workdir).
+    let (manifest, _digest, config_json) = client
+        .pull_manifest_and_config(&reference, &RegistryAuth::Anonymous)
         .await
         .map_err(|e| format!("pull manifest: {e}"))?;
+
+    let config_val: serde_json::Value =
+        serde_json::from_str(&config_json).map_err(|e| format!("parse image config: {e}"))?;
+    let c = &config_val["config"];
+    let image_config = ImageConfig {
+        entrypoint: json_string_array(c.get("Entrypoint")),
+        cmd: json_string_array(c.get("Cmd")),
+        env: json_string_array(c.get("Env")),
+        working_dir: c
+            .get("WorkingDir")
+            .and_then(|v| v.as_str())
+            .unwrap_or("/")
+            .to_string(),
+    };
 
     let layers = manifest.layers.clone();
 
@@ -87,7 +121,7 @@ async fn pull_image(image: &str, rootfs: &str) -> Result<(), String> {
             .map_err(|e| format!("unpack layer: {e}"))?;
     }
 
-    Ok(())
+    Ok(image_config)
 }
 
 /// Unpack a gzipped tar layer into the rootfs.
@@ -102,24 +136,50 @@ fn unpack_layer(data: &[u8], rootfs: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Build a minimal OCI runtime spec.
-fn build_spec(rootfs: &str, env: Option<Vec<String>>) -> oci_spec::runtime::Spec {
+/// Build an OCI runtime spec using the image's config.
+fn build_spec(
+    rootfs: &str,
+    env: Option<Vec<String>>,
+    image_config: &ImageConfig,
+) -> oci_spec::runtime::Spec {
     use oci_spec::runtime::*;
 
-    let mut env_vars = vec![
-        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
-        "TERM=xterm".to_string(),
-    ];
+    // Env: image defaults → workload overrides (later entries win)
+    let mut env_vars = image_config.env.clone();
+    if env_vars.iter().all(|e| !e.starts_with("PATH=")) {
+        env_vars.insert(
+            0,
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+        );
+    }
+    env_vars.push("TERM=xterm".to_string());
     if let Some(extra) = env {
         env_vars.extend(extra);
     }
 
+    // Args: entrypoint + cmd (per OCI spec). Fallback to /bin/sh.
+    let args = if !image_config.entrypoint.is_empty() {
+        let mut a = image_config.entrypoint.clone();
+        a.extend(image_config.cmd.clone());
+        a
+    } else if !image_config.cmd.is_empty() {
+        image_config.cmd.clone()
+    } else {
+        vec!["/bin/sh".to_string()]
+    };
+
+    let cwd = if image_config.working_dir.is_empty() {
+        "/".to_string()
+    } else {
+        image_config.working_dir.clone()
+    };
+
     let process = ProcessBuilder::default()
         .terminal(false)
         .user(UserBuilder::default().uid(0u32).gid(0u32).build().unwrap())
-        .args(vec!["/bin/sh".to_string()])
+        .args(args)
         .env(env_vars)
-        .cwd("/".to_string())
+        .cwd(cwd)
         .build()
         .unwrap();
 
