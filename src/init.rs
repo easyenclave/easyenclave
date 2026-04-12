@@ -153,12 +153,26 @@ pub fn maybe_init() {
             // DHCP path: fetch IP + routes + DNS + classless static
             // routes from the DHCP server. busybox udhcpc in one-shot
             // mode (-n: exit if no lease, -q: quit after obtaining
-            // lease, -t 10: retry 10× = ~30s timeout). The default
-            // hook script at /usr/share/udhcpc/default.script is
-            // provided by mkosi.extra and applies the IP/routes/DNS.
+            // lease, -t 10: retry 10× = ~30s timeout, -s: hook script
+            // path). busybox udhcpc's compiled-in default is
+            // /etc/udhcpc/default.script, but we ship our hook at
+            // /usr/share/udhcpc/default.script (via mkosi.extra), so
+            // -s is required. The hook applies IP + gateway + DNS +
+            // RFC 3442 classless static routes (option 121) from the
+            // lease — the classless-route handling is what makes GCE's
+            // metadata server at 169.254.169.254 reachable.
             eprintln!("easyenclave: init: running udhcpc on {iface}");
             match std::process::Command::new("udhcpc")
-                .args(["-i", iface, "-q", "-n", "-t", "10"])
+                .args([
+                    "-i",
+                    iface,
+                    "-q",
+                    "-n",
+                    "-t",
+                    "10",
+                    "-s",
+                    "/usr/share/udhcpc/default.script",
+                ])
                 .status()
             {
                 Ok(s) if s.success() => {
