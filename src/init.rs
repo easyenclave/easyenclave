@@ -200,10 +200,23 @@ pub fn maybe_init() {
             }
         }
     }
+    // DNS: the udhcpc hook writes the DHCP-provided nameservers to
+    // /tmp/resolv.conf.udhcpc (because the rootfs is read-only and
+    // direct writes to /etc/resolv.conf fail). Bind-mount it over
+    // /etc/resolv.conf so ureq/libcontainer/curl can resolve hostnames
+    // like ghcr.io. EE_DNS overrides the DHCP-provided DNS if set.
     if let Ok(dns) = std::env::var("EE_DNS") {
         eprintln!("easyenclave: init: dns={dns} (static override)");
         let _ = std::fs::write("/tmp/resolv.conf", format!("nameserver {dns}\n"));
         let _ = nix_mount_flags("/tmp/resolv.conf", "/etc/resolv.conf", "", libc::MS_BIND);
+    } else if std::path::Path::new("/tmp/resolv.conf.udhcpc").exists() {
+        eprintln!("easyenclave: init: dns from dhcp lease");
+        let _ = nix_mount_flags(
+            "/tmp/resolv.conf.udhcpc",
+            "/etc/resolv.conf",
+            "",
+            libc::MS_BIND,
+        );
     }
 
     // GCE instance metadata: fetch the `ee-config` attribute and apply
