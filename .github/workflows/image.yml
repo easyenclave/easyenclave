@@ -1,16 +1,10 @@
 name: Build & Release VM Image
 
 # Build the sealed TDX VM image and run a full integration test on
-# EVERY push and PR. The test deploys a real workload container and
-# verifies HTTP from outside the VM.
+# EVERY push and PR. PRs auto-promote into the staging family.
 #
-# Pipeline:
-#   build (always) → staging-image (always) → integration-test (always)
-#     → release (merge/tag only)
-#
-# PRs get the full test treatment — the staging image auto-promotes
-# into the easyenclave-staging family so you can test on dd staging
-# without merging. On merge, a GitHub Release is also created.
+# Pipeline: build → deploy-and-test (staging image + integration
+#           test + release on merge)
 
 on:
   push:
@@ -39,7 +33,6 @@ permissions:
   contents: write
 
 jobs:
-  # ── Build ─────────────────────────────────────────────────────────
   build:
     runs-on: ubuntu-latest
     outputs:
@@ -55,17 +48,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            systemd-boot-efi \
-            systemd-ukify \
-            mtools \
-            cryptsetup-bin \
-            busybox-static \
-            e2fsprogs \
-            dosfstools \
-            qemu-utils \
-            libseccomp-dev \
-            zstd \
-            linux-image-generic
+            systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
+            busybox-static e2fsprogs dosfstools qemu-utils \
+            libseccomp-dev zstd linux-image-generic
 
       - name: Resolve target kernel version
         id: kver
@@ -73,78 +58,59 @@ jobs:
           KVER=$(ls -1 /boot/vmlinuz-*-generic 2>/dev/null \
             | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
           [ -z "$KVER" ] && KVER=$(uname -r)
-          echo "Using KVER=$KVER (runner uname -r=$(uname -r))"
           echo "kver=$KVER" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install mkosi v26 + ukify deps
+      - name: Install mkosi v26
         run: |
-          pip install 'git+https://github.com/systemd/mkosi.git@v26'
-          pip install pefile
+          pip install 'git+https://github.com/systemd/mkosi.git@v26' pefile
           sudo ln -sf "$(which mkosi)" /usr/local/bin/mkosi
-          sudo mkosi --version
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build easyenclave binary
-        run: cargo build --release
-
-      - name: Build VM image
+      - name: Build
         env:
           KVER: ${{ steps.kver.outputs.kver }}
-        run: cd image && make build KVER="$KVER"
+        run: |
+          cargo build --release
+          cd image && make build KVER="$KVER"
 
-      - name: Compute measurements and rename artifacts
+      - name: Compute measurements
         id: meta
         run: |
           cd image/output
           SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
-
-          # GCP image name — computed here (build job has no secrets/
-          # environment) so the output propagates cleanly. Jobs with
-          # `environment: release` get outputs masked by GitHub.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
             GCP_NAME="easyenclave-${TAG//./-}"
           else
             GCP_NAME="easyenclave-${SHA12}"
           fi
-
           UKI_SHA256=$(sha256sum easyenclave.efi | cut -d' ' -f1)
           ROOT_SHA256=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
           QCOW2_SHA256=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
-          KERNEL_VER=$(strings easyenclave.vmlinuz | grep -oP '\d+\.\d+\.\d+-\d+-generic' | head -1 || echo unknown)
-
-          echo "sha12=${SHA12}"             >> "$GITHUB_OUTPUT"
-          echo "gcp_name=${GCP_NAME}"       >> "$GITHUB_OUTPUT"
-          echo "uki_sha256=${UKI_SHA256}"   >> "$GITHUB_OUTPUT"
-          echo "root_sha256=${ROOT_SHA256}" >> "$GITHUB_OUTPUT"
-          echo "qcow2_sha256=${QCOW2_SHA256}" >> "$GITHUB_OUTPUT"
-
-          cat > MEASUREMENTS.txt <<EOF
-          easyenclave image measurements
-          commit: ${{ github.sha }}
-          ref:    ${{ github.ref }}
-          built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)
-          UKI sha256: ${UKI_SHA256}
-          GPT disk sha256: ${ROOT_SHA256}
-          QCOW2 sha256: ${QCOW2_SHA256}
-          Kernel: ${KERNEL_VER}
-          EOF
-
-          mv easyenclave.efi       "easyenclave-${SHA12}.efi"
-          mv easyenclave.root.raw  "easyenclave-${SHA12}.raw"
-          mv easyenclave.qcow2     "easyenclave-${SHA12}.qcow2"
-
+          {
+            echo "sha12=${SHA12}"
+            echo "gcp_name=${GCP_NAME}"
+            echo "uki_sha256=${UKI_SHA256}"
+            echo "root_sha256=${ROOT_SHA256}"
+            echo "qcow2_sha256=${QCOW2_SHA256}"
+          } >> "$GITHUB_OUTPUT"
+          mv easyenclave.efi "easyenclave-${SHA12}.efi"
+          mv easyenclave.root.raw "easyenclave-${SHA12}.raw"
+          mv easyenclave.qcow2 "easyenclave-${SHA12}.qcow2"
           cp "easyenclave-${SHA12}.raw" disk.raw
           tar -czf "easyenclave-${SHA12}-gcp.tar.gz" disk.raw
           rm disk.raw
-
-          ls -lh
+          cat > MEASUREMENTS.txt <<EOF
+          commit: ${{ github.sha }}
+          UKI sha256: ${UKI_SHA256}
+          Disk sha256: ${ROOT_SHA256}
+          EOF
 
       - uses: actions/upload-artifact@v4
         with:
@@ -157,29 +123,28 @@ jobs:
             image/output/MEASUREMENTS.txt
           retention-days: 7
 
-  # ── Staging image (runs on PRs + merges) ─────────────────────────
-  # Creates a GCP image immediately. PRs and merges both join the
-  # easyenclave-staging family — last to pass = what staging sees.
-  staging-image:
+  # ── Deploy, test, and release (one GCP auth) ─────────────────────
+  deploy-and-test:
     needs: build
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
+      - uses: actions/checkout@v4
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
           service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
       - uses: google-github-actions/setup-gcloud@v2
-
       - uses: actions/download-artifact@v4
         with:
           name: easyenclave-image
           path: image/output
 
-      - name: Upload to GCS and create GCP image
+      # ── Create staging image ─────────────────────────────────────
+      - name: Create GCP image
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
@@ -192,52 +157,32 @@ jobs:
             "gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz"
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            FAMILY="--family=easyenclave-stable"
             CHANNEL="stable"
-            FAMILY_FLAG="--family=easyenclave-stable"
           elif [ "$IS_PR" = "true" ]; then
+            FAMILY="--family=easyenclave-staging"
             CHANNEL="pr"
-            FAMILY_FLAG="--family=easyenclave-staging"
           else
+            FAMILY="--family=easyenclave-staging"
             CHANNEL="staging"
-            FAMILY_FLAG="--family=easyenclave-staging"
           fi
 
           gcloud compute images create "${GCP_NAME}" \
             --project="${GCP_PROJECT}" \
             --source-uri="gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz" \
-            ${FAMILY_FLAG} \
+            ${FAMILY} \
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
             --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
+          echo "Created: ${GCP_NAME} (${CHANNEL})"
 
-          echo "Created GCP image: ${GCP_NAME} (channel=${CHANNEL})"
-
-  # ── Integration test (runs on PRs + merges) ──────────────────────
-  # Boots a TDX VM with a real workload (traefik/whoami), verifies
-  # every stage of the boot chain via serial markers, then curls the
-  # VM's external IP to prove HTTP works end-to-end.
-  integration-test:
-    needs: [build, staging-image]
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
-          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Integration test — boot TDX VM, deploy workload, curl HTTP
+      # ── Integration test ─────────────────────────────────────────
+      - name: Integration test — deploy workload + curl HTTP
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_NAME: ${{ needs.build.outputs.gcp_name }}
           SHA12: ${{ needs.build.outputs.sha12 }}
         run: |
           LABEL="${SHA12}"
-
-          # name:pattern:required
           CHECKS=(
             "kernel_boot:Run /init as init process:1"
             "root_resolved:Resolved root to /dev/:1"
@@ -254,7 +199,6 @@ jobs:
             "deployment_running:deployment .* running:1"
           )
 
-          # ── Test workload config ─────────────────────────────────
           cat > /tmp/ee-config.json <<'EECONF'
           {
             "EE_OWNER": "integration-test",
@@ -262,26 +206,18 @@ jobs:
           }
           EECONF
 
-          # ── Firewall (idempotent, tag-scoped) ────────────────────
           gcloud compute firewall-rules describe ee-smoke-allow-http \
             --project="$GCP_PROJECT" >/dev/null 2>&1 || \
           gcloud compute firewall-rules create ee-smoke-allow-http \
-            --project="$GCP_PROJECT" \
-            --allow=tcp:80 \
-            --target-tags=ee-smoke-test \
-            --source-ranges=0.0.0.0/0 \
-            --quiet
+            --project="$GCP_PROJECT" --allow=tcp:80 \
+            --target-tags=ee-smoke-test --source-ranges=0.0.0.0/0 --quiet
 
-          # ── Boot VM ──────────────────────────────────────────────
           VM_NAME="ee-test-$(date +%s)"
           gcloud compute instances create "$VM_NAME" \
-            --project="$GCP_PROJECT" \
-            --zone=us-central1-c \
+            --project="$GCP_PROJECT" --zone=us-central1-c \
             --machine-type=c3-standard-4 \
-            --confidential-compute-type=TDX \
-            --maintenance-policy=TERMINATE \
-            --image="${GCP_NAME}" \
-            --image-project="$GCP_PROJECT" \
+            --confidential-compute-type=TDX --maintenance-policy=TERMINATE \
+            --image="${GCP_NAME}" --image-project="$GCP_PROJECT" \
             --boot-disk-size=10GB \
             --metadata-from-file=ee-config=/tmp/ee-config.json \
             --tags=ee-smoke-test
@@ -291,7 +227,6 @@ jobs:
               --project="$GCP_PROJECT" --zone=us-central1-c --quiet || true
           }
 
-          # ── Serial streaming + checklist ─────────────────────────
           declare -A PASSED
           LAST_LINES=0
           ALL_REQUIRED_DONE=false
@@ -299,27 +234,20 @@ jobs:
           for i in $(seq 1 36); do
             out=$(gcloud compute instances get-serial-port-output "$VM_NAME" \
               --project="$GCP_PROJECT" --zone=us-central1-c 2>/dev/null || true)
-
             TOTAL_LINES=$(echo "$out" | wc -l)
             if [ "$TOTAL_LINES" -gt "$LAST_LINES" ]; then
               echo "$out" | tail -n +$((LAST_LINES + 1)) | sed 's/^/[serial] /'
               LAST_LINES=$TOTAL_LINES
             fi
-
             if echo "$out" | grep -qE "FATAL|Kernel panic|switch_root: can|Invalid ELF header"; then
               echo "::error::boot failed — fatal pattern in serial"
               break
             fi
-
             for check in "${CHECKS[@]}"; do
               IFS=: read -r name pattern required <<< "$check"
               [ -n "${PASSED[$name]:-}" ] && continue
-              if echo "$out" | grep -qE "$pattern"; then
-                PASSED[$name]=1
-                echo "  ✓ $name"
-              fi
+              echo "$out" | grep -qE "$pattern" && PASSED[$name]=1 && echo "  ✓ $name"
             done
-
             ALL_REQUIRED_DONE=true
             for check in "${CHECKS[@]}"; do
               IFS=: read -r name pattern required <<< "$check"
@@ -327,197 +255,96 @@ jobs:
               [ -z "${PASSED[$name]:-}" ] && ALL_REQUIRED_DONE=false && break
             done
             $ALL_REQUIRED_DONE && break
-
             echo "  waiting... (${i}/36)"
             sleep 10
           done
 
-          # ── Workload HTTP test ───────────────────────────────────
           HTTP_OK=false
           if $ALL_REQUIRED_DONE; then
             VM_IP=$(gcloud compute instances describe "$VM_NAME" \
               --project="$GCP_PROJECT" --zone=us-central1-c \
               --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
             echo ""
-            echo "Testing workload HTTP on $VM_IP:80..."
+            echo "Testing HTTP on $VM_IP:80..."
             for i in $(seq 1 12); do
-              HTTP_CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
-                --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo "000")
-              if [ "$HTTP_CODE" = "200" ]; then
-                echo "  ✓ workload_http (200 on $VM_IP:80)"
-                HTTP_OK=true
-                break
-              fi
-              echo "  waiting for workload HTTP... ${HTTP_CODE} (${i}/12)"
+              code=$(curl -sS -o /dev/null -w '%{http_code}' \
+                --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo 000)
+              [ "$code" = "200" ] && echo "  ✓ workload_http ($VM_IP)" && HTTP_OK=true && break
+              echo "  waiting... ${code} (${i}/12)"
               sleep 5
             done
           fi
 
-          # ── Summary ──────────────────────────────────────────────
           echo ""
-          echo "=== easyenclave integration test (${LABEL}) ==="
-          REQUIRED_PASS=0
-          REQUIRED_TOTAL=0
+          echo "=== integration test (${LABEL}) ==="
+          PASS=0; TOTAL=0
           for check in "${CHECKS[@]}"; do
             IFS=: read -r name pattern required <<< "$check"
-            [ "$required" = "1" ] && REQUIRED_TOTAL=$((REQUIRED_TOTAL + 1))
+            [ "$required" = "1" ] && TOTAL=$((TOTAL + 1))
             if [ -n "${PASSED[$name]:-}" ]; then
               echo "  ✓ $name"
-              [ "$required" = "1" ] && REQUIRED_PASS=$((REQUIRED_PASS + 1))
+              [ "$required" = "1" ] && PASS=$((PASS + 1))
             else
               echo "  ✗ $name"
             fi
           done
-          if $HTTP_OK; then
-            echo "  ✓ workload_http"
-            REQUIRED_PASS=$((REQUIRED_PASS + 1))
-          else
-            echo "  ✗ workload_http"
-          fi
-          REQUIRED_TOTAL=$((REQUIRED_TOTAL + 1))
-          echo ""
-          echo "${REQUIRED_PASS}/${REQUIRED_TOTAL} checks passed"
-          echo "==="
+          TOTAL=$((TOTAL + 1))
+          $HTTP_OK && echo "  ✓ workload_http" && PASS=$((PASS + 1)) || echo "  ✗ workload_http"
+          echo "${PASS}/${TOTAL} passed"
 
           if $ALL_REQUIRED_DONE && $HTTP_OK; then
             echo "✓ Integration test passed"
-            cleanup
-            exit 0
+            cleanup; exit 0
           else
-            echo "::error::Integration test failed (${REQUIRED_PASS}/${REQUIRED_TOTAL})"
-            echo "--- final serial tail ---"
+            echo "::error::Integration test failed (${PASS}/${TOTAL})"
             echo "$out" | tail -80
-            cleanup
-            exit 1
+            cleanup; exit 1
           fi
 
-  # ── Release (merge/tag only) ─────────────────────────────────────
-  release:
-    needs: [build, staging-image, integration-test]
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: easyenclave-image
-          path: image/output
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
-          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Determine release channel
-        id: channel
+      # ── Release (merge/tag only) ─────────────────────────────────
+      - name: Rotate old images
+        if: github.event_name != 'pull_request'
         env:
-          SHA12: ${{ needs.build.outputs.sha12 }}
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            {
-              echo "channel=stable"
-              echo "gh_tag=${TAG}"
-              echo "asset_base=easyenclave-${TAG}"
-              echo "prerelease_flag="
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "channel=staging"
-              echo "gh_tag=image-${SHA12}"
-              echo "asset_base=easyenclave-${SHA12}"
-              echo "prerelease_flag=--prerelease"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Rename assets to match channel (tag releases)
-        if: steps.channel.outputs.channel == 'stable'
-        env:
-          SHA12: ${{ needs.build.outputs.sha12 }}
-          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
-        run: |
-          cd image/output
-          for ext in efi raw qcow2; do
-            mv "easyenclave-${SHA12}.${ext}" "${ASSET_BASE}.${ext}"
+          for filter in "labels.channel=staging" "labels.channel=pr"; do
+            KEEP=$( [ "$filter" = "labels.channel=pr" ] && echo 11 || echo 6 )
+            gcloud compute images list --project="${GCP_PROJECT}" \
+              --filter="labels.easyenclave=image AND ${filter}" \
+              --format="value(name)" --sort-by="~creationTimestamp" \
+              | tail -n +${KEEP} \
+              | xargs -rI{} gcloud compute images delete {} \
+                  --project="${GCP_PROJECT}" --quiet
           done
-          mv "easyenclave-${SHA12}-gcp.tar.gz" "${ASSET_BASE}-gcp.tar.gz"
-
-      - name: Rotate old staging images (keep 5 newest)
-        if: steps.channel.outputs.channel == 'staging'
-        env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-        run: |
-          gcloud compute images list \
-            --project="${GCP_PROJECT}" \
-            --filter="labels.easyenclave=image AND labels.channel=staging" \
-            --format="value(name)" \
-            --sort-by="~creationTimestamp" \
-            | tail -n +6 \
-            | xargs -rI{} gcloud compute images delete {} \
-                --project="${GCP_PROJECT}" --quiet
-
-      - name: Rotate old PR images (keep 10 newest)
-        env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-        run: |
-          gcloud compute images list \
-            --project="${GCP_PROJECT}" \
-            --filter="labels.easyenclave=image AND labels.channel=pr" \
-            --format="value(name)" \
-            --sort-by="~creationTimestamp" \
-            | tail -n +11 \
-            | xargs -rI{} gcloud compute images delete {} \
-                --project="${GCP_PROJECT}" --quiet
 
       - name: Create GitHub Release
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCP_NAME: ${{ needs.build.outputs.gcp_name }}
-          GH_TAG: ${{ steps.channel.outputs.gh_tag }}
-          ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
-          CHANNEL: ${{ steps.channel.outputs.channel }}
-          PRERELEASE_FLAG: ${{ steps.channel.outputs.prerelease_flag }}
+          SHA12: ${{ needs.build.outputs.sha12 }}
           UKI_SHA256: ${{ needs.build.outputs.uki_sha256 }}
-          ROOT_SHA256: ${{ needs.build.outputs.root_sha256 }}
-          QCOW2_SHA256: ${{ needs.build.outputs.qcow2_sha256 }}
         run: |
           cd image/output
-
-          if [[ "${CHANNEL}" == "stable" ]]; then
-            TITLE="EasyEnclave ${GH_TAG}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            GH_TAG="${TAG}"
+            ASSET_BASE="easyenclave-${TAG}"
+            PRERELEASE=""
+            for ext in efi raw qcow2; do
+              mv "easyenclave-${SHA12}.${ext}" "${ASSET_BASE}.${ext}"
+            done
+            mv "easyenclave-${SHA12}-gcp.tar.gz" "${ASSET_BASE}-gcp.tar.gz"
           else
-            TITLE="Staging ${GH_TAG}"
+            GH_TAG="image-${SHA12}"
+            ASSET_BASE="easyenclave-${SHA12}"
+            PRERELEASE="--prerelease"
           fi
-
-          NOTES=$(cat <<RELEASE
-          ### Boot measurement (UKI SHA256)
-          \`${UKI_SHA256}\`
-
-          ### GCP image
-          \`projects/${GCP_PROJECT}/global/images/${GCP_NAME}\`
-
-          \`\`\`bash
-          gcloud compute instances create my-enclave \\
-            --machine-type=c3-standard-4 \\
-            --confidential-compute-type=TDX \\
-            --maintenance-policy=TERMINATE \\
-            --image=${GCP_NAME} \\
-            --image-project=${GCP_PROJECT}
-          \`\`\`
-          RELEASE
-          )
-
-          gh release create "${GH_TAG}" \
-            ${PRERELEASE_FLAG} \
-            --title "${TITLE}" \
-            --notes "${NOTES}" \
-            "${ASSET_BASE}.efi" \
-            "${ASSET_BASE}.raw" \
-            "${ASSET_BASE}.qcow2" \
-            "${ASSET_BASE}-gcp.tar.gz" \
+          gh release create "${GH_TAG}" ${PRERELEASE} \
+            --title "${GH_TAG}" \
+            --notes "UKI SHA256: \`${UKI_SHA256}\`
+          GCP image: \`${GCP_NAME}\`" \
+            "${ASSET_BASE}.efi" "${ASSET_BASE}.raw" \
+            "${ASSET_BASE}.qcow2" "${ASSET_BASE}-gcp.tar.gz" \
             "MEASUREMENTS.txt"
