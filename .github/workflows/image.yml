@@ -442,7 +442,7 @@ jobs:
             "tdx_attestation:attestation backend: tdx:1"
             "network_up:Device link is up:1"
             "dhcp_lease:lease of .* obtained:1"
-            "default_route:default via .* dev:1"
+            "default_route:default via .* dev:0"
             "dns_configured:dns from dhcp lease:1"
             "gce_metadata:gce-meta env:0"
             "listening:easyenclave: listening on:1"
