@@ -54,6 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha12: ${{ steps.meta.outputs.sha12 }}
+      gcp_name: ${{ steps.meta.outputs.gcp_name }}
       uki_sha256: ${{ steps.meta.outputs.uki_sha256 }}
       root_sha256: ${{ steps.meta.outputs.root_sha256 }}
       qcow2_sha256: ${{ steps.meta.outputs.qcow2_sha256 }}
@@ -145,7 +146,19 @@ jobs:
           QCOW2_SHA256=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
           KERNEL_VER=$(strings easyenclave.vmlinuz | grep -oP '\d+\.\d+\.\d+-\d+-generic' | head -1 || echo unknown)
 
+          # GCP image name — computed here in the build job (no secrets,
+          # no environment) so the output propagates to downstream jobs.
+          # Jobs with `environment: release` get their outputs masked by
+          # GitHub's secret-detection heuristic.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            GCP_NAME="easyenclave-${TAG//./-}"
+          else
+            GCP_NAME="easyenclave-${SHA12}"
+          fi
+
           echo "sha12=${SHA12}"             >> "$GITHUB_OUTPUT"
+          echo "gcp_name=${GCP_NAME}"       >> "$GITHUB_OUTPUT"
           echo "uki_sha256=${UKI_SHA256}"   >> "$GITHUB_OUTPUT"
           echo "root_sha256=${ROOT_SHA256}" >> "$GITHUB_OUTPUT"
           echo "qcow2_sha256=${QCOW2_SHA256}" >> "$GITHUB_OUTPUT"
@@ -240,32 +253,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     environment: release
-    outputs:
-      gcp_name: ${{ steps.name.outputs.gcp_name }}
     permissions:
       contents: read
       id-token: write
     steps:
-      # Compute the GCP image name in a step with NO secrets in env.
-      # GitHub Actions blocks cross-job outputs from steps that have
-      # secrets ("Skip output since it may contain secret"). Keeping
-      # this step secret-free lets the output propagate to smoke-test
-      # and release jobs.
-      - name: Determine image name
-        id: name
-        env:
-          SHA12: ${{ needs.build.outputs.sha12 }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            GCP_NAME="easyenclave-${TAG//./-}"
-          else
-            GCP_NAME="easyenclave-${SHA12}"
-          fi
-          echo "gcp_name=${GCP_NAME}" >> "$GITHUB_OUTPUT"
-          echo "Image name: ${GCP_NAME}"
-
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
@@ -283,7 +274,7 @@ jobs:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           SHA12: ${{ needs.build.outputs.sha12 }}
-          GCP_NAME: ${{ steps.name.outputs.gcp_name }}
+          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           ASSET_BASE="easyenclave-${SHA12}"
@@ -315,7 +306,6 @@ jobs:
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
             --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
 
-          echo "gcp_name=${GCP_NAME}" >> "$GITHUB_OUTPUT"
           echo "Created GCP image: ${GCP_NAME} (channel=${CHANNEL})"
 
   # ── Smoke test (boot-chain checklist) ───────────────────────────────
@@ -340,7 +330,7 @@ jobs:
       - name: Boot TDX VM and validate boot chain
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ needs.staging-image.outputs.gcp_name }}
+          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
           SHA12: ${{ needs.build.outputs.sha12 }}
         run: |
           # ── Boot chain checklist ──────────────────────────────────────
@@ -567,7 +557,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ needs.staging-image.outputs.gcp_name }}
+          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
           GH_TAG: ${{ steps.channel.outputs.gh_tag }}
           ASSET_BASE: ${{ steps.channel.outputs.asset_base }}
           CHANNEL: ${{ steps.channel.outputs.channel }}
