@@ -5,13 +5,13 @@ name: Build & Release VM Image
 # available for anyone to test against immediately.
 #
 # Three channels:
-#   - PR:      every PR → staging GCP image easyenclave-<sha12> (no family,
-#              labeled channel=pr). Boot-chain checklist runs. Image usable
-#              for parallel testing — point `--image=easyenclave-<sha12>
-#              --image-project=<project>` at it. Rotated: keep 10 newest.
-#   - STAGING: push to main → same staging image, promoted into the
-#              easyenclave-staging family + GitHub pre-release. Rotation
-#              keeps 5 newest in the family.
+#   - PR:      every PR → staging GCP image easyenclave-<sha12> in the
+#              easyenclave-staging family (labeled channel=pr). Boot-chain
+#              checklist runs. The image auto-promotes into the staging
+#              family so dd staging-deploy picks it up without merging.
+#              Last PR to pass = what staging sees. Rotated: keep 10.
+#   - STAGING: push to main → same staging image in easyenclave-staging
+#              family + GitHub pre-release. Rotation keeps 5 newest.
 #   - STABLE:  push tag v* → GCP image easyenclave-v1-2-3 in
 #              easyenclave-stable family + full GitHub release. Never
 #              rotated — kept forever for rollback history.
@@ -194,10 +194,11 @@ jobs:
 
   # ── Staging image ───────────────────────────────────────────────────
   # Create a GCP image from the build artifact on EVERY push and PR.
-  # PRs get a testable staging image immediately — point
-  # `--image=easyenclave-<sha12> --image-project=<project>` at it.
-  # On merge, the same image gets promoted into the staging family
-  # by the release job below.
+  # Both PRs and merges join the easyenclave-staging family — the last
+  # image to pass the smoke-test becomes what dd staging-deploy picks
+  # up. This lets you test a PR on real staging infrastructure without
+  # merging. On merge, the release job additionally creates a GitHub
+  # Release with downloadable assets.
   staging-image:
     needs: build
     runs-on: ubuntu-latest
@@ -235,23 +236,23 @@ jobs:
           gcloud storage cp "image/output/${ASSET_BASE}-gcp.tar.gz" \
             "gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz"
 
-          # Determine channel label (pr vs staging vs stable)
-          if [ "$IS_PR" = "true" ]; then
-            CHANNEL="pr"
-            FAMILY_FLAG=""
-          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          # PRs and pushes to main both join the easyenclave-staging
+          # family — the last image to pass the smoke-test checklist
+          # becomes what `--image-family=easyenclave-staging` resolves
+          # to. This lets you test a PR on dd staging without merging.
+          # Tags get their own easyenclave-stable family.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
             GCP_NAME="easyenclave-${TAG//./-}"
             CHANNEL="stable"
             FAMILY_FLAG="--family=easyenclave-stable"
+          elif [ "$IS_PR" = "true" ]; then
+            CHANNEL="pr"
+            FAMILY_FLAG="--family=easyenclave-staging"
           else
             CHANNEL="staging"
             FAMILY_FLAG="--family=easyenclave-staging"
           fi
-
-          # Create the GCP image. On merge, --family joins it into
-          # the staging/stable family for auto-resolution. On PR,
-          # no family — but the image is still usable by name.
           gcloud compute images create "${GCP_NAME}" \
             --project="${GCP_PROJECT}" \
             --source-uri="gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz" \
