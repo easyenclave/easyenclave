@@ -28,6 +28,23 @@ pub async fn pull_and_run(
     let image_config = pull_image(image, &rootfs_dir).await?;
     eprintln!("easyenclave: image unpacked to {rootfs_dir}");
 
+    // Ensure /etc/hosts exists in the container rootfs. Without it,
+    // Go binaries (like cloudflared) resolve "localhost" via DNS
+    // instead of the hosts file, failing with "no such host".
+    let etc_dir = format!("{rootfs_dir}/etc");
+    let _ = tokio::fs::create_dir_all(&etc_dir).await;
+    let hosts_path = format!("{etc_dir}/hosts");
+    if !tokio::fs::try_exists(&hosts_path).await.unwrap_or(false) {
+        let _ = tokio::fs::write(&hosts_path, "127.0.0.1 localhost\n::1 localhost\n").await;
+    }
+    // Also ensure resolv.conf so DNS works inside the container
+    let resolv_path = format!("{etc_dir}/resolv.conf");
+    if !tokio::fs::try_exists(&resolv_path).await.unwrap_or(false) {
+        if let Ok(host_resolv) = tokio::fs::read_to_string("/etc/resolv.conf").await {
+            let _ = tokio::fs::write(&resolv_path, host_resolv).await;
+        }
+    }
+
     // Generate OCI runtime spec using the image's entrypoint/cmd/env
     let spec = build_spec(&rootfs_dir, env, &image_config);
     let spec_path = format!("{container_dir}/config.json");
