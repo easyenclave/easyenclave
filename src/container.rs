@@ -45,6 +45,10 @@ pub async fn pull_and_run(
         }
     }
 
+    // Create mount point for the easyenclave data dir bind-mount.
+    let ee_mount_dir = format!("{rootfs_dir}/var/lib/easyenclave");
+    let _ = tokio::fs::create_dir_all(&ee_mount_dir).await;
+
     // Generate OCI runtime spec using the image's entrypoint/cmd/env
     let spec = build_spec(&rootfs_dir, env, &image_config);
     let spec_path = format!("{container_dir}/config.json");
