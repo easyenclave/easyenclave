@@ -66,6 +66,41 @@ pub async fn pull_and_run(
     Ok(container_id)
 }
 
+/// Pull an OCI image and extract the entrypoint + env for native execution.
+/// Returns (entrypoint_args, env_vars). The unpacked rootfs is at
+/// {CONTAINER_ROOT}/{name}/rootfs — binaries can be run directly from there.
+pub async fn pull_native(image: &str, name: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    let container_dir = format!("{CONTAINER_ROOT}/{name}");
+    let rootfs_dir = format!("{container_dir}/rootfs");
+    let _ = tokio::fs::create_dir_all(&rootfs_dir).await;
+
+    eprintln!("easyenclave: pulling {image} (native)");
+    let config = pull_image(image, &rootfs_dir).await?;
+    eprintln!("easyenclave: image unpacked to {rootfs_dir}");
+
+    // Build the full command: entrypoint + cmd (per OCI spec)
+    let args = if !config.entrypoint.is_empty() {
+        let mut a = config.entrypoint;
+        a.extend(config.cmd);
+        a
+    } else if !config.cmd.is_empty() {
+        config.cmd
+    } else {
+        return Err("image has no entrypoint or cmd".into());
+    };
+
+    // Rewrite paths to point into the unpacked rootfs
+    let mut resolved = args;
+    if let Some(first) = resolved.first_mut() {
+        let rootfs_path = format!("{rootfs_dir}{first}");
+        if tokio::fs::try_exists(&rootfs_path).await.unwrap_or(false) {
+            *first = rootfs_path;
+        }
+    }
+
+    Ok((resolved, config.env))
+}
+
 /// OCI image config — extracted from the registry for building the runtime spec.
 #[derive(Default)]
 struct ImageConfig {

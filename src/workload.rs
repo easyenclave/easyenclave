@@ -41,6 +41,9 @@ pub struct DeployRequest {
     /// Commands to exec inside the container after it starts.
     #[serde(default)]
     pub post_deploy: Option<Vec<Vec<String>>>,
+    /// Run the OCI image natively (extract binary, exec on host).
+    #[serde(default)]
+    pub native: bool,
 }
 
 pub type Deployments = Arc<Mutex<HashMap<String, DeploymentInfo>>>;
@@ -105,7 +108,53 @@ async fn run_deploy(
         }
     }
 
-    if let Some(ref image) = req.image {
+    if req.native && req.image.is_some() {
+        // Native path: pull OCI image, unpack layers, run entrypoint
+        // directly on the host. Full access to host filesystem + sockets.
+        let image = req.image.as_ref().unwrap();
+        match container::pull_native(image, &app_name).await {
+            Ok((entrypoint, image_env)) => {
+                // Merge env: image defaults + workload overrides
+                let mut env_map: HashMap<String, String> = HashMap::new();
+                for e in &image_env {
+                    if let Some((k, v)) = e.split_once('=') {
+                        env_map.insert(k.to_string(), v.to_string());
+                    }
+                }
+                if let Some(extra) = &req.env {
+                    for e in extra {
+                        if let Some((k, v)) = e.split_once('=') {
+                            env_map.insert(k.to_string(), v.to_string());
+                        }
+                    }
+                }
+
+                let program = &entrypoint[0];
+                let args: Vec<&str> = entrypoint[1..].iter().map(|s| s.as_str()).collect();
+                match process::spawn_command_with_env(program, &args, false, &env_map).await {
+                    Ok(mut child) => {
+                        let pid = child.id();
+                        eprintln!("easyenclave: deployment {dep_id} running native (pid={pid:?})");
+                        let mut deps = deployments.lock().await;
+                        if let Some(info) = deps.get_mut(&dep_id) {
+                            info.pid = pid;
+                            info.status = "running".into();
+                        }
+                        drop(deps);
+                        tokio::spawn(async move {
+                            let _ = child.wait().await;
+                        });
+                    }
+                    Err(e) => {
+                        set_deploy_failed(&deployments, &dep_id, &e).await;
+                    }
+                }
+            }
+            Err(e) => {
+                set_deploy_failed(&deployments, &dep_id, &e).await;
+            }
+        }
+    } else if let Some(ref image) = req.image {
         // Container path
         match container::pull_and_run(image, &app_name, req.env, req.volumes, true).await {
             Ok(container_id) => {

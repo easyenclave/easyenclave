@@ -28,6 +28,11 @@ pub struct BootWorkload {
     pub env: Option<Vec<String>>,
     #[serde(default)]
     pub volumes: Option<Vec<String>>,
+    /// Run the OCI image natively (extract binary, exec on host) instead
+    /// of through libcontainer. The binary gets full host access including
+    /// the easyenclave agent socket.
+    #[serde(default)]
+    pub native: bool,
 }
 
 fn default_socket_path() -> String {

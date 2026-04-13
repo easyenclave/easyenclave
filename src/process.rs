@@ -39,6 +39,35 @@ pub async fn spawn_command(program: &str, args: &[&str], tty: bool) -> Result<Ch
     Ok(child)
 }
 
+/// Spawn a command with explicit environment variables.
+pub async fn spawn_command_with_env(
+    program: &str,
+    args: &[&str],
+    tty: bool,
+    env: &std::collections::HashMap<String, String>,
+) -> Result<Child, String> {
+    let _ = tokio::fs::create_dir_all("/var/lib/easyenclave/workloads/logs").await;
+
+    let mut cmd = Command::new(program);
+    cmd.args(args);
+    // Inherit host env, then overlay workload env
+    cmd.envs(env);
+    if tty {
+        cmd.env("TERM", "xterm-256color");
+    }
+
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let child = cmd.spawn().map_err(|e| format!("spawn {program}: {e}"))?;
+    eprintln!(
+        "easyenclave: spawned {program} (pid={})",
+        child.id().unwrap_or(0)
+    );
+    Ok(child)
+}
+
 /// Kill a process by PID (SIGTERM then SIGKILL).
 pub async fn kill_process(pid: u32) -> Result<(), String> {
     let _ = Command::new("kill")

@@ -52,6 +52,7 @@ async fn main() {
             app_name: Some(bw.app_name.clone()),
             tty: false,
             post_deploy: None,
+            native: bw.native,
         };
         let (id, _status) = workload::execute_deploy(&deployments, req).await;
         eprintln!("easyenclave: boot workload {} -> {id}", bw.app_name);
