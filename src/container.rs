@@ -231,11 +231,13 @@ fn build_spec(
         .build()
         .unwrap();
 
-    // Bind-mount the easyenclave agent socket so workloads can query
-    // the host agent API (e.g. dd-web reads deployment list + logs).
+    // Bind-mount the easyenclave data dir so workloads can access the
+    // agent socket (e.g. dd-web reads deployment list + logs).
+    // Mount the directory, not the socket file — the socket is created
+    // concurrently and may not exist when the container spec is built.
     let mounts = vec![MountBuilder::default()
-        .destination("/var/lib/easyenclave/agent.sock")
-        .source("/var/lib/easyenclave/agent.sock")
+        .destination("/var/lib/easyenclave")
+        .source("/var/lib/easyenclave")
         .typ("bind")
         .options(vec!["bind".to_string(), "rw".to_string()])
         .build()
