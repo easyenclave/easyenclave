@@ -231,10 +231,21 @@ fn build_spec(
         .build()
         .unwrap();
 
+    // Bind-mount the easyenclave agent socket so workloads can query
+    // the host agent API (e.g. dd-web reads deployment list + logs).
+    let mounts = vec![MountBuilder::default()
+        .destination("/var/lib/easyenclave/agent.sock")
+        .source("/var/lib/easyenclave/agent.sock")
+        .typ("bind")
+        .options(vec!["bind".to_string(), "rw".to_string()])
+        .build()
+        .unwrap()];
+
     SpecBuilder::default()
         .version("1.0.2".to_string())
         .process(process)
         .root(root)
+        .mounts(mounts)
         .linux(linux)
         .build()
         .unwrap()
