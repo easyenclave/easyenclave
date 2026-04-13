@@ -45,10 +45,6 @@ pub async fn pull_and_run(
         }
     }
 
-    // Create mount point for the easyenclave data dir bind-mount.
-    let ee_mount_dir = format!("{rootfs_dir}/var/lib/easyenclave");
-    let _ = tokio::fs::create_dir_all(&ee_mount_dir).await;
-
     // Generate OCI runtime spec using the image's entrypoint/cmd/env
     let spec = build_spec(&rootfs_dir, env, &image_config);
     let spec_path = format!("{container_dir}/config.json");
@@ -235,23 +231,10 @@ fn build_spec(
         .build()
         .unwrap();
 
-    // Bind-mount the easyenclave data dir so workloads can access the
-    // agent socket (e.g. dd-web reads deployment list + logs).
-    // Mount the directory, not the socket file — the socket is created
-    // concurrently and may not exist when the container spec is built.
-    let mounts = vec![MountBuilder::default()
-        .destination("/var/lib/easyenclave")
-        .source("/var/lib/easyenclave")
-        .typ("bind")
-        .options(vec!["bind".to_string(), "rw".to_string()])
-        .build()
-        .unwrap()];
-
     SpecBuilder::default()
         .version("1.0.2".to_string())
         .process(process)
         .root(root)
-        .mounts(mounts)
         .linux(linux)
         .build()
         .unwrap()
