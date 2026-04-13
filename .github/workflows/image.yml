@@ -1,43 +1,46 @@
-name: Build & Release VM Image
-
-# Build the sealed TDX VM image and run a full integration test on
-# EVERY push and PR. PRs auto-promote into the staging family.
-#
-# Pipeline: build → deploy-and-test (staging image + integration
-#           test + release on merge)
+name: VM Image
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "image/**"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "Dockerfile.smoke-admin"
+      - ".github/workflows/image.yml"
+      - ".github/scripts/**"
   push:
     branches: [main]
-    tags: ['v*']
     paths:
       - "image/**"
       - "src/**"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "Dockerfile.smoke-admin"
       - ".github/workflows/image.yml"
-  pull_request:
-    paths:
-      - "image/**"
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - ".github/workflows/image.yml"
+      - ".github/scripts/**"
   workflow_dispatch:
+    inputs:
+      release_test_config_json:
+        description: "Optional override for RELEASE_TEST_EE_CONFIG_JSON"
+        required: false
+        type: string
 
 concurrency:
-  group: easyenclave-image-${{ github.ref }}
+  group: easyenclave-vm-image-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     outputs:
       sha12: ${{ steps.meta.outputs.sha12 }}
-      gcp_name: ${{ steps.meta.outputs.gcp_name }}
+      asset_base: ${{ steps.meta.outputs.asset_base }}
       uki_sha256: ${{ steps.meta.outputs.uki_sha256 }}
       root_sha256: ${{ steps.meta.outputs.root_sha256 }}
       qcow2_sha256: ${{ steps.meta.outputs.qcow2_sha256 }}
@@ -72,44 +75,43 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build
+      - name: Build VM image
         env:
           KVER: ${{ steps.kver.outputs.kver }}
         run: |
           cargo build --release
           cd image && make build KVER="$KVER"
 
-      - name: Compute measurements
+      - name: Compute artifact metadata
         id: meta
         run: |
           cd image/output
           SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            GCP_NAME="easyenclave-${TAG//./-}"
-          else
-            GCP_NAME="easyenclave-${SHA12}"
-          fi
+          ASSET_BASE="easyenclave-${SHA12}"
           UKI_SHA256=$(sha256sum easyenclave.efi | cut -d' ' -f1)
           ROOT_SHA256=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
           QCOW2_SHA256=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
+
           {
             echo "sha12=${SHA12}"
-            echo "gcp_name=${GCP_NAME}"
+            echo "asset_base=${ASSET_BASE}"
             echo "uki_sha256=${UKI_SHA256}"
             echo "root_sha256=${ROOT_SHA256}"
             echo "qcow2_sha256=${QCOW2_SHA256}"
           } >> "$GITHUB_OUTPUT"
-          mv easyenclave.efi "easyenclave-${SHA12}.efi"
-          mv easyenclave.root.raw "easyenclave-${SHA12}.raw"
-          mv easyenclave.qcow2 "easyenclave-${SHA12}.qcow2"
-          cp "easyenclave-${SHA12}.raw" disk.raw
-          tar -czf "easyenclave-${SHA12}-gcp.tar.gz" disk.raw
+
+          mv easyenclave.efi "${ASSET_BASE}.efi"
+          mv easyenclave.root.raw "${ASSET_BASE}.raw"
+          mv easyenclave.qcow2 "${ASSET_BASE}.qcow2"
+          cp "${ASSET_BASE}.raw" disk.raw
+          tar -czf "${ASSET_BASE}-gcp.tar.gz" disk.raw
           rm disk.raw
+
           cat > MEASUREMENTS.txt <<EOF
           commit: ${{ github.sha }}
           UKI sha256: ${UKI_SHA256}
           Disk sha256: ${ROOT_SHA256}
+          QCOW2 sha256: ${QCOW2_SHA256}
           EOF
 
       - uses: actions/upload-artifact@v4
@@ -123,228 +125,294 @@ jobs:
             image/output/MEASUREMENTS.txt
           retention-days: 7
 
-  # ── Deploy, test, and release (one GCP auth) ─────────────────────
-  deploy-and-test:
-    needs: build
+  publish-smoke-admin-image:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      image_ref: ${{ steps.meta.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute public smoke-admin image ref
+        id: meta
+        run: |
+          SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            IMAGE_REF="ttl.sh/easyenclave-smoke-admin-pr-${{ github.event.pull_request.number }}-${{ github.run_id }}-${SHA12}:24h"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            IMAGE_REF="ttl.sh/easyenclave-smoke-admin-main-${{ github.run_id }}-${SHA12}:24h"
+          else
+            IMAGE_REF="ttl.sh/easyenclave-smoke-admin-dispatch-${{ github.run_id }}-${SHA12}:24h"
+          fi
+          echo "image_ref=${IMAGE_REF}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and push public smoke-admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.smoke-admin
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.meta.outputs.image_ref }}
+
+  pr-integration-test:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    needs:
+      - build
+      - publish-smoke-admin-image
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - uses: google-github-actions/auth@v2
+      - uses: actions/setup-python@v5
         with:
-          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
-          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
-      - uses: google-github-actions/setup-gcloud@v2
+          python-version: "3.12"
       - uses: actions/download-artifact@v4
         with:
           name: easyenclave-image
           path: image/output
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider' }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com' }}
+      - uses: google-github-actions/setup-gcloud@v2
 
-      # ── Create staging image ─────────────────────────────────────
-      - name: Create GCP image
+      - name: PR integration test
         env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           SHA12: ${{ needs.build.outputs.sha12 }}
-          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
+          ASSET_BASE: ${{ needs.build.outputs.asset_base }}
+          TEST_GCP_PROJECT_VAR: ${{ vars.TEST_GCP_PROJECT_ID }}
+          TEST_GCP_PROJECT_SECRET: ${{ secrets.GCP_PROJECT_ID }}
+          TEST_GCS_BUCKET_VAR: ${{ vars.TEST_GCS_BUCKET }}
+          TEST_GCS_BUCKET_SECRET: ${{ secrets.GCS_BUCKET }}
+          TEST_ZONE_VAR: ${{ vars.TEST_ZONE }}
+          TEST_MACHINE_TYPE_VAR: ${{ vars.TEST_MACHINE_TYPE }}
+          PR_TEST_EE_CONFIG_JSON_VAR: ${{ vars.PR_TEST_EE_CONFIG_JSON }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SMOKE_ADMIN_IMAGE: ${{ needs.publish-smoke-admin-image.outputs.image_ref }}
         run: |
-          ASSET_BASE="easyenclave-${SHA12}"
-          gcloud storage cp "image/output/${ASSET_BASE}-gcp.tar.gz" \
-            "gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz"
+          TEST_GCP_PROJECT="${TEST_GCP_PROJECT_VAR:-${TEST_GCP_PROJECT_SECRET}}"
+          TEST_GCS_BUCKET="${TEST_GCS_BUCKET_VAR:-${TEST_GCS_BUCKET_SECRET}}"
+          TEST_ZONE="${TEST_ZONE_VAR:-us-central1-c}"
+          TEST_MACHINE_TYPE="${TEST_MACHINE_TYPE_VAR:-c3-standard-4}"
+          CONFIG_JSON="${PR_TEST_EE_CONFIG_JSON_VAR:-}"
 
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            FAMILY="--family=easyenclave-stable"
-            CHANNEL="stable"
-          elif [ "$IS_PR" = "true" ]; then
-            FAMILY="--family=easyenclave-staging"
-            CHANNEL="pr"
-          else
-            FAMILY="--family=easyenclave-staging"
-            CHANNEL="staging"
+          if [[ -z "$CONFIG_JSON" ]]; then
+            CONFIG_JSON=$(python - <<'PY'
+          import json
+          import os
+
+          payload = {
+              "EE_OWNER": "pr-integration-test",
+              "EE_BOOT_WORKLOADS": json.dumps(
+                  [
+                      {
+                          "image": os.environ["SMOKE_ADMIN_IMAGE"],
+                          "app_name": "smoke-admin",
+                          "native": True,
+                          "env": [
+                              "EE_SMOKE_ADMIN_PORT=8080",
+                              "EE_SMOKE_ADMIN_TITLE=EasyEnclave PR Smoke Admin",
+                          ],
+                      }
+                  ]
+              ),
+          }
+          print(json.dumps(payload))
+          PY
+            )
           fi
 
-          gcloud compute images create "${GCP_NAME}" \
-            --project="${GCP_PROJECT}" \
-            --source-uri="gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz" \
-            ${FAMILY} \
-            --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
-            --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
-          echo "Created: ${GCP_NAME} (${CHANNEL})"
+          python .github/scripts/write_ee_config.py \
+            --json "$CONFIG_JSON" \
+            --output /tmp/pr-ee-config.json \
+            --require-native-static
 
-      # ── Integration test ─────────────────────────────────────────
-      - name: Integration test — deploy workload + curl HTTP
-        env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
-        run: |
-          LABEL="${SHA12}"
-          CHECKS=(
-            "kernel_boot:Run /init as init process:1"
-            "root_resolved:Resolved root to /dev/:1"
-            "easyenclave_pid1:easyenclave: running as PID 1:1"
-            "tmpfs_mounted:mounted /var/lib/easyenclave:1"
-            "cgroup_mounted:mounted /sys/fs/cgroup:1"
-            "tdx_attestation:attestation backend: tdx:1"
-            "network_up:Device link is up:1"
-            "dhcp_lease:lease of .* obtained:1"
-            "dns_configured:dns from dhcp lease:1"
-            "gce_metadata:gce-meta env:1"
-            "listening:easyenclave: listening on:1"
-            "container_started:container .* started:1"
-            "deployment_running:deployment .* running:1"
-          )
-
-          cat > /tmp/ee-config.json <<'EECONF'
-          {
-            "EE_OWNER": "integration-test",
-            "EE_BOOT_WORKLOADS": "[{\"image\":\"docker.io/traefik/whoami:latest\",\"app_name\":\"whoami\",\"env\":[]}]"
-          }
-          EECONF
-
-          gcloud compute firewall-rules describe ee-smoke-allow-http \
-            --project="$GCP_PROJECT" >/dev/null 2>&1 || \
-          gcloud compute firewall-rules create ee-smoke-allow-http \
-            --project="$GCP_PROJECT" --allow=tcp:80 \
-            --target-tags=ee-smoke-test --source-ranges=0.0.0.0/0 --quiet
-
-          VM_NAME="ee-test-$(date +%s)"
-          gcloud compute instances create "$VM_NAME" \
-            --project="$GCP_PROJECT" --zone=us-central1-c \
-            --machine-type=c3-standard-4 \
-            --confidential-compute-type=TDX --maintenance-policy=TERMINATE \
-            --image="${GCP_NAME}" --image-project="$GCP_PROJECT" \
-            --boot-disk-size=10GB \
-            --metadata-from-file=ee-config=/tmp/ee-config.json \
-            --tags=ee-smoke-test
+          GCS_OBJECT="gs://${TEST_GCS_BUCKET}/pr/${PR_NUMBER}/${ASSET_BASE}-gcp.tar.gz"
+          IMAGE_NAME="easyenclave-pr-${PR_NUMBER}-${SHA12}"
 
           cleanup() {
-            gcloud compute instances delete "$VM_NAME" \
-              --project="$GCP_PROJECT" --zone=us-central1-c --quiet || true
+            gcloud compute images delete "$IMAGE_NAME" \
+              --project="$TEST_GCP_PROJECT" --quiet >/dev/null 2>&1 || true
+            gcloud storage rm "$GCS_OBJECT" >/dev/null 2>&1 || true
           }
+          trap cleanup EXIT
 
-          declare -A PASSED
-          LAST_LINES=0
-          ALL_REQUIRED_DONE=false
+          gcloud storage cp "image/output/${ASSET_BASE}-gcp.tar.gz" "$GCS_OBJECT"
 
-          for i in $(seq 1 36); do
-            out=$(gcloud compute instances get-serial-port-output "$VM_NAME" \
-              --project="$GCP_PROJECT" --zone=us-central1-c 2>/dev/null || true)
-            TOTAL_LINES=$(echo "$out" | wc -l)
-            if [ "$TOTAL_LINES" -gt "$LAST_LINES" ]; then
-              echo "$out" | tail -n +$((LAST_LINES + 1)) | sed 's/^/[serial] /'
-              LAST_LINES=$TOTAL_LINES
-            fi
-            if echo "$out" | grep -qE "FATAL|Kernel panic|switch_root: can|Invalid ELF header"; then
-              echo "::error::boot failed — fatal pattern in serial"
-              break
-            fi
-            for check in "${CHECKS[@]}"; do
-              IFS=: read -r name pattern required <<< "$check"
-              [ -n "${PASSED[$name]:-}" ] && continue
-              echo "$out" | grep -qE "$pattern" && PASSED[$name]=1 && echo "  ✓ $name"
-            done
-            ALL_REQUIRED_DONE=true
-            for check in "${CHECKS[@]}"; do
-              IFS=: read -r name pattern required <<< "$check"
-              [ "$required" = "0" ] && continue
-              [ -z "${PASSED[$name]:-}" ] && ALL_REQUIRED_DONE=false && break
-            done
-            $ALL_REQUIRED_DONE && break
-            echo "  waiting... (${i}/36)"
-            sleep 10
-          done
+          gcloud compute images create "$IMAGE_NAME" \
+            --project="$TEST_GCP_PROJECT" \
+            --source-uri="$GCS_OBJECT" \
+            --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
+            --labels=easyenclave=image,channel=pr,commit="${SHA12}"
 
-          HTTP_OK=false
-          if $ALL_REQUIRED_DONE; then
-            VM_IP=$(gcloud compute instances describe "$VM_NAME" \
-              --project="$GCP_PROJECT" --zone=us-central1-c \
-              --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
-            echo ""
-            echo "Testing HTTP on $VM_IP:80..."
-            for i in $(seq 1 12); do
-              code=$(curl -sS -o /dev/null -w '%{http_code}' \
-                --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo 000)
-              [ "$code" = "200" ] && echo "  ✓ workload_http ($VM_IP)" && HTTP_OK=true && break
-              echo "  waiting... ${code} (${i}/12)"
-              sleep 5
-            done
-          fi
+          bash .github/scripts/smoke_test_gcp_vm.sh \
+            --project "$TEST_GCP_PROJECT" \
+            --zone "$TEST_ZONE" \
+            --machine-type "$TEST_MACHINE_TYPE" \
+            --image "$IMAGE_NAME" \
+            --image-project "$TEST_GCP_PROJECT" \
+            --metadata-file /tmp/pr-ee-config.json \
+            --mode native-static \
+            --http-port 8080 \
+            --http-path /health
 
-          echo ""
-          echo "=== integration test (${LABEL}) ==="
-          PASS=0; TOTAL=0
-          for check in "${CHECKS[@]}"; do
-            IFS=: read -r name pattern required <<< "$check"
-            [ "$required" = "1" ] && TOTAL=$((TOTAL + 1))
-            if [ -n "${PASSED[$name]:-}" ]; then
-              echo "  ✓ $name"
-              [ "$required" = "1" ] && PASS=$((PASS + 1))
-            else
-              echo "  ✗ $name"
-            fi
-          done
-          TOTAL=$((TOTAL + 1))
-          $HTTP_OK && echo "  ✓ workload_http" && PASS=$((PASS + 1)) || echo "  ✗ workload_http"
-          echo "${PASS}/${TOTAL} passed"
+  release-candidate-test:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - build
+      - publish-smoke-admin-image
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: easyenclave-image
+          path: image/output
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider' }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com' }}
+      - uses: google-github-actions/setup-gcloud@v2
 
-          if $ALL_REQUIRED_DONE && $HTTP_OK; then
-            echo "✓ Integration test passed"
-            cleanup; exit 0
-          else
-            echo "::error::Integration test failed (${PASS}/${TOTAL})"
-            echo "$out" | tail -80
-            cleanup; exit 1
-          fi
-
-      # ── Release (merge/tag only) ─────────────────────────────────
-      - name: Rotate old images
-        if: github.event_name != 'pull_request'
+      - name: Release candidate smoke test
         env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-        run: |
-          for filter in "labels.channel=staging" "labels.channel=pr"; do
-            KEEP=$( [ "$filter" = "labels.channel=pr" ] && echo 11 || echo 6 )
-            gcloud compute images list --project="${GCP_PROJECT}" \
-              --filter="labels.easyenclave=image AND ${filter}" \
-              --format="value(name)" --sort-by="~creationTimestamp" \
-              | tail -n +${KEEP} \
-              | xargs -rI{} gcloud compute images delete {} \
-                  --project="${GCP_PROJECT}" --quiet
-          done
-
-      - name: Create GitHub Release
-        if: github.event_name != 'pull_request'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
           SHA12: ${{ needs.build.outputs.sha12 }}
-          UKI_SHA256: ${{ needs.build.outputs.uki_sha256 }}
+          ASSET_BASE: ${{ needs.build.outputs.asset_base }}
+          RELEASE_GCP_PROJECT_VAR: ${{ vars.RELEASE_GCP_PROJECT_ID }}
+          FALLBACK_GCP_PROJECT_SECRET: ${{ secrets.GCP_PROJECT_ID }}
+          RELEASE_GCS_BUCKET_VAR: ${{ vars.RELEASE_GCS_BUCKET }}
+          RELEASE_IMAGE_PREFIX_VAR: ${{ vars.RELEASE_IMAGE_PREFIX }}
+          RELEASE_TEST_EE_CONFIG_JSON_VAR: ${{ vars.RELEASE_TEST_EE_CONFIG_JSON }}
+          RELEASE_TEST_INPUT_JSON: ${{ inputs.release_test_config_json }}
+          RELEASE_ZONE_VAR: ${{ vars.RELEASE_ZONE }}
+          RELEASE_MACHINE_TYPE_VAR: ${{ vars.RELEASE_MACHINE_TYPE }}
+          FALLBACK_GCS_BUCKET_SECRET: ${{ secrets.GCS_BUCKET }}
+          SMOKE_ADMIN_IMAGE: ${{ needs.publish-smoke-admin-image.outputs.image_ref }}
         run: |
-          cd image/output
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            GH_TAG="${TAG}"
-            ASSET_BASE="easyenclave-${TAG}"
-            PRERELEASE=""
-            for ext in efi raw qcow2; do
-              mv "easyenclave-${SHA12}.${ext}" "${ASSET_BASE}.${ext}"
-            done
-            mv "easyenclave-${SHA12}-gcp.tar.gz" "${ASSET_BASE}-gcp.tar.gz"
-          else
-            GH_TAG="image-${SHA12}"
-            ASSET_BASE="easyenclave-${SHA12}"
-            PRERELEASE="--prerelease"
+          RELEASE_GCP_PROJECT="${RELEASE_GCP_PROJECT_VAR:-${FALLBACK_GCP_PROJECT_SECRET}}"
+          RELEASE_GCS_BUCKET="${RELEASE_GCS_BUCKET_VAR:-${FALLBACK_GCS_BUCKET_SECRET}}"
+          RELEASE_ZONE="${RELEASE_ZONE_VAR:-us-central1-c}"
+          RELEASE_MACHINE_TYPE="${RELEASE_MACHINE_TYPE_VAR:-c3-standard-4}"
+          RELEASE_IMAGE_PREFIX="${RELEASE_IMAGE_PREFIX_VAR:-easyenclave-release}"
+          CONFIG_JSON="${RELEASE_TEST_INPUT_JSON:-${RELEASE_TEST_EE_CONFIG_JSON_VAR:-}}"
+
+          if [[ -z "$CONFIG_JSON" ]]; then
+            CONFIG_JSON=$(python - <<'PY'
+          import json
+          import os
+
+          payload = {
+              "EE_OWNER": "release-smoke-test",
+              "EE_BOOT_WORKLOADS": json.dumps(
+                  [
+                      {
+                          "image": os.environ["SMOKE_ADMIN_IMAGE"],
+                          "app_name": "smoke-admin",
+                          "native": True,
+                          "env": [
+                              "EE_SMOKE_ADMIN_PORT=8080",
+                              "EE_SMOKE_ADMIN_TITLE=EasyEnclave Release Smoke Admin",
+                          ],
+                      }
+                  ]
+              ),
+          }
+          print(json.dumps(payload))
+          PY
+            )
           fi
-          gh release create "${GH_TAG}" ${PRERELEASE} \
-            --title "${GH_TAG}" \
-            --notes "UKI SHA256: \`${UKI_SHA256}\`
-          GCP image: \`${GCP_NAME}\`" \
-            "${ASSET_BASE}.efi" "${ASSET_BASE}.raw" \
-            "${ASSET_BASE}.qcow2" "${ASSET_BASE}-gcp.tar.gz" \
-            "MEASUREMENTS.txt"
+
+          python .github/scripts/write_ee_config.py \
+            --json "$CONFIG_JSON" \
+            --output /tmp/release-ee-config.json \
+            --require-native-static
+
+          GCS_OBJECT="gs://${RELEASE_GCS_BUCKET}/release/${ASSET_BASE}-gcp.tar.gz"
+          CANDIDATE_IMAGE="${RELEASE_IMAGE_PREFIX}-${SHA12}-candidate"
+
+          cleanup() {
+            gcloud compute images delete "$CANDIDATE_IMAGE" \
+              --project="$RELEASE_GCP_PROJECT" --quiet >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          gcloud storage cp "image/output/${ASSET_BASE}-gcp.tar.gz" "$GCS_OBJECT"
+
+          gcloud compute images create "$CANDIDATE_IMAGE" \
+            --project="$RELEASE_GCP_PROJECT" \
+            --source-uri="$GCS_OBJECT" \
+            --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
+            --labels=easyenclave=image,channel=release-candidate,commit="${SHA12}"
+
+          bash .github/scripts/smoke_test_gcp_vm.sh \
+            --project "$RELEASE_GCP_PROJECT" \
+            --zone "$RELEASE_ZONE" \
+            --machine-type "$RELEASE_MACHINE_TYPE" \
+            --image "$CANDIDATE_IMAGE" \
+            --image-project "$RELEASE_GCP_PROJECT" \
+            --metadata-file /tmp/release-ee-config.json \
+            --mode native-static \
+            --http-port 8080 \
+            --http-path /health
+
+  publish-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - build
+      - release-candidate-test
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider' }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com' }}
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Publish verified release image
+        env:
+          SHA12: ${{ needs.build.outputs.sha12 }}
+          ASSET_BASE: ${{ needs.build.outputs.asset_base }}
+          RELEASE_GCP_PROJECT_VAR: ${{ vars.RELEASE_GCP_PROJECT_ID }}
+          FALLBACK_GCP_PROJECT_SECRET: ${{ secrets.GCP_PROJECT_ID }}
+          RELEASE_GCS_BUCKET_VAR: ${{ vars.RELEASE_GCS_BUCKET }}
+          RELEASE_IMAGE_PREFIX_VAR: ${{ vars.RELEASE_IMAGE_PREFIX }}
+          RELEASE_IMAGE_FAMILY_VAR: ${{ vars.RELEASE_IMAGE_FAMILY }}
+          FALLBACK_GCS_BUCKET_SECRET: ${{ secrets.GCS_BUCKET }}
+        run: |
+          RELEASE_GCP_PROJECT="${RELEASE_GCP_PROJECT_VAR:-${FALLBACK_GCP_PROJECT_SECRET}}"
+          RELEASE_GCS_BUCKET="${RELEASE_GCS_BUCKET_VAR:-${FALLBACK_GCS_BUCKET_SECRET}}"
+          RELEASE_IMAGE_PREFIX="${RELEASE_IMAGE_PREFIX_VAR:-easyenclave-release}"
+          RELEASE_IMAGE_FAMILY="${RELEASE_IMAGE_FAMILY_VAR:-easyenclave-release}"
+          GCS_OBJECT="gs://${RELEASE_GCS_BUCKET}/release/${ASSET_BASE}-gcp.tar.gz"
+          FINAL_IMAGE="${RELEASE_IMAGE_PREFIX}-${SHA12}"
+
+          gcloud compute images create "$FINAL_IMAGE" \
+            --project="$RELEASE_GCP_PROJECT" \
+            --source-uri="$GCS_OBJECT" \
+            --family="$RELEASE_IMAGE_FAMILY" \
+            --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
+            --labels=easyenclave=image,channel=release,commit="${SHA12}"
+
+          gcloud compute images list --project="$RELEASE_GCP_PROJECT" \
+            --filter="labels.easyenclave=image AND labels.channel=release" \
+            --format="value(name)" \
+            --sort-by="~creationTimestamp" \
+            | tail -n +11 \
+            | xargs -rI{} gcloud compute images delete {} \
+                --project="$RELEASE_GCP_PROJECT" --quiet

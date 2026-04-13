@@ -2,7 +2,9 @@
 
 Generic enclave runtime for Intel TDX confidential VMs. Runs as PID 1 inside a sealed VM and exposes a unix socket API for workload management.
 
-No HTTP server. No networking. No database. Minimal attack surface.
+No HTTP server. Unix socket control plane only. No database. Minimal attack surface.
+
+`native` deployments are intentionally narrow: easyenclave extracts and runs a single static ELF from the OCI image rather than unpacking a full root filesystem.
 
 ## Quick start
 
@@ -24,6 +26,8 @@ TDX VM (hardware-sealed memory)
         └── TDX attestation (configfs-tsm)
 ```
 
+The control API is local-only over a Unix socket, but the runtime does configure guest networking at boot and can use outbound HTTP(S) for DHCP-dependent metadata fetches and OCI image pulls.
+
 ## Socket API
 
 Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
@@ -32,11 +36,11 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 |--------|---------|----------|
 | health | `{"method":"health"}` | `{"ok":true,"attestation_type":"tdx","workloads":2}` |
 | deploy | `{"method":"deploy","image":"...","app_name":"myapp"}` | `{"ok":true,"id":"...","status":"deploying"}` |
-| attest | `{"method":"attest","nonce":"..."}` | `{"ok":true,"quote_b64":"..."}` |
+| attest | `{"method":"attest","nonce":"<base64>"}` | `{"ok":true,"quote_b64":"..."}` |
 | list | `{"method":"list"}` | `{"ok":true,"deployments":[...]}` |
 | stop | `{"method":"stop","id":"..."}` | `{"ok":true}` |
 | exec | `{"method":"exec","cmd":["uname","-a"]}` | `{"ok":true,"exit_code":0,"stdout":"..."}` |
-| logs | `{"method":"logs","id":"..."}` | `{"ok":true,"logs":["..."]}` |
+| logs | `{"method":"logs","id":"..."}` | `{"ok":true,"lines":["..."]}` |
 
 ## Configuration
 

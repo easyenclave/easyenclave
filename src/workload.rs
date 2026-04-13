@@ -41,18 +41,36 @@ pub struct DeployRequest {
     /// Commands to exec inside the container after it starts.
     #[serde(default)]
     pub post_deploy: Option<Vec<Vec<String>>>,
-    /// Run the OCI image natively (extract binary, exec on host).
+    /// Run the OCI image natively by extracting a single static ELF
+    /// executable and exec'ing it on the host.
     #[serde(default)]
     pub native: bool,
 }
 
 pub type Deployments = Arc<Mutex<HashMap<String, DeploymentInfo>>>;
 
+impl DeployRequest {
+    fn validate(&self) -> Result<(), String> {
+        if self.image.is_none() && self.cmd.is_empty() {
+            return Err("either image or cmd must be specified".into());
+        }
+        if self.native && self.image.is_none() {
+            return Err("native deployments require an image".into());
+        }
+        Ok(())
+    }
+}
+
 // ── Deploy ───────────────────────────────────────────────────────────────────
 
 /// Start a deployment. Spawns run_deploy on tokio and returns immediately
 /// with (deployment_id, "deploying").
-pub async fn execute_deploy(deployments: &Deployments, req: DeployRequest) -> (String, String) {
+pub async fn execute_deploy(
+    deployments: &Deployments,
+    req: DeployRequest,
+) -> Result<(String, String), String> {
+    req.validate()?;
+
     let dep_id = uuid::Uuid::new_v4().to_string();
     let app_name = req.app_name.clone().unwrap_or_else(|| "unnamed".into());
 
@@ -80,7 +98,7 @@ pub async fn execute_deploy(deployments: &Deployments, req: DeployRequest) -> (S
         run_deploy(deployments_clone, dep_id, app_name, req).await;
     });
 
-    (return_id, "deploying".into())
+    Ok((return_id, "deploying".into()))
 }
 
 async fn run_deploy(
@@ -109,7 +127,7 @@ async fn run_deploy(
     }
 
     if req.native && req.image.is_some() {
-        // Native path: pull OCI image, unpack layers, run entrypoint
+        // Native path: extract a single static ELF from the image and run it
         // directly on the host. Full access to host filesystem + sockets.
         let image = req.image.as_ref().unwrap();
         match container::pull_native(image, &app_name).await {
@@ -141,8 +159,12 @@ async fn run_deploy(
                             info.status = "running".into();
                         }
                         drop(deps);
+                        let deployments_for_wait = deployments.clone();
+                        let dep_id_for_wait = dep_id.clone();
                         tokio::spawn(async move {
-                            let _ = child.wait().await;
+                            let outcome = child.wait().await;
+                            record_process_exit(&deployments_for_wait, &dep_id_for_wait, outcome)
+                                .await;
                         });
                     }
                     Err(e) => {
@@ -165,6 +187,7 @@ async fn run_deploy(
                     info.status = "running".into();
                 }
                 drop(deps);
+                spawn_container_monitor(deployments.clone(), dep_id.clone(), container_id.clone());
 
                 // Run post-deploy commands inside the container
                 if let Some(ref commands) = req.post_deploy {
@@ -181,9 +204,10 @@ async fn run_deploy(
                             continue;
                         }
                         eprintln!("easyenclave: post-deploy exec: {}", cmd.join(" "));
-                        match container::exec(&app_name, cmd).await {
+                        match container::exec(&container_id, cmd).await {
                             Ok((code, stdout, stderr)) => {
                                 if code != 0 {
+                                    let _ = container::stop(&container_id).await;
                                     eprintln!(
                                         "easyenclave: post-deploy cmd failed (exit {}): {}{}",
                                         code,
@@ -210,6 +234,7 @@ async fn run_deploy(
                                 }
                             }
                             Err(e) => {
+                                let _ = container::stop(&container_id).await;
                                 set_deploy_failed(
                                     &deployments,
                                     &dep_id,
@@ -243,8 +268,11 @@ async fn run_deploy(
                 drop(deps);
 
                 // Wait for process in background
+                let deployments_for_wait = deployments.clone();
+                let dep_id_for_wait = dep_id.clone();
                 tokio::spawn(async move {
-                    let _ = child.wait().await;
+                    let outcome = child.wait().await;
+                    record_process_exit(&deployments_for_wait, &dep_id_for_wait, outcome).await;
                 });
             }
             Err(e) => {
@@ -263,6 +291,62 @@ async fn set_deploy_failed(deployments: &Deployments, dep_id: &str, error: &str)
         info.status = "failed".into();
         info.error_message = Some(error.to_string());
     }
+}
+
+async fn record_process_exit(
+    deployments: &Deployments,
+    dep_id: &str,
+    outcome: Result<std::process::ExitStatus, std::io::Error>,
+) {
+    let (status, error_message) = match outcome {
+        Ok(exit_status) if exit_status.success() => ("exited", None),
+        Ok(exit_status) => (
+            "failed",
+            Some(format!("process exited with status {exit_status}")),
+        ),
+        Err(e) => ("failed", Some(format!("wait failed: {e}"))),
+    };
+
+    let mut deps = deployments.lock().await;
+    if let Some(info) = deps.get_mut(dep_id) {
+        if info.status == "running" {
+            info.pid = None;
+            info.status = status.to_string();
+            info.error_message = error_message;
+        }
+    }
+}
+
+fn spawn_container_monitor(deployments: Deployments, dep_id: String, container_id: String) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+            let should_stop = {
+                let deps = deployments.lock().await;
+                match deps.get(&dep_id) {
+                    Some(info) => {
+                        info.status != "running"
+                            || info.container_id.as_deref() != Some(container_id.as_str())
+                    }
+                    None => true,
+                }
+            };
+            if should_stop {
+                break;
+            }
+
+            if !container::is_running(&container_id).await {
+                let mut deps = deployments.lock().await;
+                if let Some(info) = deps.get_mut(&dep_id) {
+                    if info.status == "running" {
+                        info.status = "exited".into();
+                    }
+                }
+                break;
+            }
+        }
+    });
 }
 
 // ── Stop ─────────────────────────────────────────────────────────────────────
@@ -306,5 +390,46 @@ pub async fn stop_all(deployments: &Deployments) {
         if let Err(e) = execute_stop(deployments, &id).await {
             eprintln!("easyenclave: stop {id}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeployRequest;
+
+    #[test]
+    fn deploy_request_requires_image_or_command() {
+        let err = DeployRequest {
+            cmd: Vec::new(),
+            image: None,
+            env: None,
+            volumes: None,
+            app_name: None,
+            tty: false,
+            post_deploy: None,
+            native: false,
+        }
+        .validate()
+        .unwrap_err();
+
+        assert_eq!(err, "either image or cmd must be specified");
+    }
+
+    #[test]
+    fn native_deployments_require_image() {
+        let err = DeployRequest {
+            cmd: vec!["/bin/demo".into()],
+            image: None,
+            env: None,
+            volumes: None,
+            app_name: None,
+            tty: false,
+            post_deploy: None,
+            native: true,
+        }
+        .validate()
+        .unwrap_err();
+
+        assert_eq!(err, "native deployments require an image");
     }
 }

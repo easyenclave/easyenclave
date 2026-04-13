@@ -58,7 +58,7 @@ pub fn maybe_init() {
             if let Some(kv) = param.strip_prefix("ee.") {
                 if let Some((key, val)) = kv.split_once('=') {
                     std::env::set_var(key, val);
-                    eprintln!("easyenclave: init: cmdline env {key}={val}");
+                    eprintln!("easyenclave: init: cmdline env {key}=<redacted>");
                 }
             }
             if let Some(hostname) = param.strip_prefix("hostname=") {
@@ -101,7 +101,7 @@ pub fn maybe_init() {
                 }
                 if let Some((key, val)) = line.split_once('=') {
                     std::env::set_var(key.trim(), val.trim());
-                    eprintln!("easyenclave: init: config env {key}={val}");
+                    eprintln!("easyenclave: init: config env {key}=<redacted>");
                 }
             }
         }

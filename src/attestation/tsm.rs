@@ -15,9 +15,7 @@ fn generate_tdx_quote(report_root: &str, user_data: &[u8]) -> Result<Vec<u8>, St
     let root = Path::new(report_root);
 
     // Pad or truncate user data to exactly 64 bytes (configfs-tsm requirement).
-    let mut padded = [0u8; 64];
-    let copy_len = user_data.len().min(64);
-    padded[..copy_len].copy_from_slice(&user_data[..copy_len]);
+    let padded = normalize_report_data(user_data);
 
     // Write raw binary user data to the inblob file.
     let inblob_path = root.join("inblob");
@@ -36,12 +34,17 @@ fn generate_tdx_quote_base64(user_data: &[u8]) -> Result<String, String> {
 
     std::fs::create_dir_all(&report_root).map_err(|e| format!("create tsm report dir: {e}"))?;
 
-    let quote_bytes = generate_tdx_quote(&report_root, user_data)?;
-
-    // Clean up.
+    let result = generate_tdx_quote(&report_root, user_data)
+        .map(|quote_bytes| base64::engine::general_purpose::STANDARD.encode(&quote_bytes));
     let _ = std::fs::remove_dir_all(&report_root);
+    result
+}
 
-    Ok(base64::engine::general_purpose::STANDARD.encode(&quote_bytes))
+fn normalize_report_data(user_data: &[u8]) -> [u8; 64] {
+    let mut padded = [0u8; 64];
+    let copy_len = user_data.len().min(64);
+    padded[..copy_len].copy_from_slice(&user_data[..copy_len]);
+    padded
 }
 
 /// TDX attestation backend using configfs-tsm.
@@ -58,5 +61,25 @@ impl super::AttestationBackend for TdxBackend {
 
     fn generate_quote_with_nonce(&self, nonce: &[u8]) -> Option<String> {
         generate_tdx_quote_base64(nonce).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_report_data;
+
+    #[test]
+    fn normalize_report_data_pads_short_input() {
+        let data = normalize_report_data(b"abc");
+        assert_eq!(&data[..3], b"abc");
+        assert!(data[3..].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn normalize_report_data_truncates_long_input() {
+        let input = vec![7u8; 80];
+        let data = normalize_report_data(&input);
+        assert_eq!(data.len(), 64);
+        assert!(data.iter().all(|b| *b == 7));
     }
 }

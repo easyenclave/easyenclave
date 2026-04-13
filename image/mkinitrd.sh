@@ -27,7 +27,7 @@ fi
 chmod +x "$WORKDIR/bin/busybox"
 
 # Symlink essential commands
-for cmd in sh mount umount switch_root mkdir cat echo sleep modprobe insmod findfs ls; do
+for cmd in sh mount umount switch_root mkdir cat echo sleep modprobe insmod findfs ls seq; do
     ln -s busybox "$WORKDIR/bin/$cmd"
 done
 

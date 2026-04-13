@@ -21,7 +21,7 @@
 
 <div class="hero">
   <h1>Run anything inside a <span class="g">hardware-sealed enclave</span></h1>
-  <p>Open-source runtime for Intel TDX confidential VMs. Runs as PID 1. Unix socket API. No networking in the enclave &mdash; minimal attack surface by design.</p>
+  <p>Open-source runtime for Intel TDX confidential VMs. Runs as PID 1. Unix socket API. No HTTP control plane in the enclave &mdash; minimal attack surface by design.</p>
   <div class="btns">
     <a href="#start" class="btn btn-g">Get Started</a>
     <a href="https://github.com/easyenclave/easyenclave" class="btn btn-o">View on GitHub</a>
@@ -35,7 +35,7 @@
     <div class="grid">
       <div class="card"><div class="ic">&#x1f510;</div><h3>PID 1 Runtime</h3><p>Runs as the init process inside the sealed VM. Mounts filesystems, configures network, reaps zombies, manages the full workload lifecycle.</p></div>
       <div class="card"><div class="ic">&#x1f50c;</div><h3>Unix Socket API</h3><p>Newline-delimited JSON over <code>/var/lib/easyenclave/agent.sock</code>. Deploy, attest, exec, monitor &mdash; all through one socket. No HTTP server in the enclave.</p></div>
-      <div class="card"><div class="ic">&#x1f6e1;</div><h3>No Networking</h3><p>The runtime itself has zero networking code. Workloads handle their own connectivity. Minimal attack surface &mdash; the enclave boundary is tight.</p></div>
+      <div class="card"><div class="ic">&#x1f6e1;</div><h3>No HTTP Surface</h3><p>The control plane stays on a local unix socket. Boot networking and image pulls still work, but there is no inbound HTTP API to expose inside the enclave.</p></div>
       <div class="card"><div class="ic">&#x2705;</div><h3>TDX Attestation</h3><p>Generate cryptographic quotes via configfs-tsm. Prove your code is running unmodified on real TDX hardware. Supports nonce-based fresh attestation.</p></div>
       <div class="card"><div class="ic">&#x1f433;</div><h3>Containers + Processes</h3><p>Deploy OCI containers (pulled and run directly by a Rust-native runtime &mdash; no podman, no docker daemon) or bare processes. Post-deploy exec commands run inside containers after start. Same API for both.</p></div>
       <div class="card"><div class="ic">&#x1f4dc;</div><h3>MIT Open Source</h3><p>Read every line. Audit every build. The enclave runtime is fully open, fully auditable. Built for production confidential computing workloads.</p></div>
@@ -91,7 +91,7 @@
       <div class="ae"><div class="l">deploy</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">deploy</span>","<span class="k">image</span>":"<span class="s">ghcr.io/org/app:latest</span>",
     "<span class="k">app_name</span>":"<span class="s">myapp</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">id</span>":"<span class="s">abc123</span>","<span class="k">status</span>":"<span class="s">deploying</span>"}</pre></div>
-      <div class="ae"><div class="l">attest</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">attest</span>","<span class="k">nonce</span>":"<span class="s">deadbeef</span>"}
+      <div class="ae"><div class="l">attest</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">attest</span>","<span class="k">nonce</span>":"<span class="s">&lt;base64 nonce&gt;</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">quote_b64</span>":"<span class="s">AQAAAA...</span>"}</pre></div>
       <div class="ae"><div class="l">exec</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">exec</span>","<span class="k">cmd</span>":["<span class="s">uname</span>","<span class="s">-a</span>"]}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">exit_code</span>":0,"<span class="k">stdout</span>":"<span class="s">Linux...</span>"}</pre></div>

@@ -1,11 +1,4 @@
-mod attestation;
-mod config;
-mod container;
-mod init;
-mod process;
-mod socket;
-mod workload;
-
+use easyenclave::{attestation, config, init, socket, workload};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -24,18 +17,33 @@ async fn main() {
         }
     };
 
+    std::env::set_var("EE_DATA_DIR", &cfg.data_dir);
+    std::env::set_var("EE_SOCKET_PATH", &cfg.socket_path);
+
     // Ensure data directory exists
-    let _ = std::fs::create_dir_all(&cfg.data_dir);
-    let _ = std::fs::create_dir_all(format!("{}/workloads/logs", cfg.data_dir));
+    if let Err(e) = std::fs::create_dir_all(&cfg.data_dir) {
+        eprintln!(
+            "easyenclave: failed to create data dir {}: {e}",
+            cfg.data_dir
+        );
+        std::process::exit(1);
+    }
+    if let Err(e) = std::fs::create_dir_all(format!("{}/workloads/logs", cfg.data_dir)) {
+        eprintln!(
+            "easyenclave: failed to create workload log dir under {}: {e}",
+            cfg.data_dir
+        );
+        std::process::exit(1);
+    }
 
     // 3. Detect attestation backend
-    let attestation = attestation::detect().unwrap_or_else(|e| {
+    let attestation_backend = attestation::detect().unwrap_or_else(|e| {
         eprintln!("easyenclave: FATAL: {e}");
         std::process::exit(1);
     });
     eprintln!(
         "easyenclave: attestation backend: {}",
-        attestation.attestation_type()
+        attestation_backend.attestation_type()
     );
 
     // 4. Create empty deployments
@@ -54,8 +62,10 @@ async fn main() {
             post_deploy: None,
             native: bw.native,
         };
-        let (id, _status) = workload::execute_deploy(&deployments, req).await;
-        eprintln!("easyenclave: boot workload {} -> {id}", bw.app_name);
+        match workload::execute_deploy(&deployments, req).await {
+            Ok((id, _status)) => eprintln!("easyenclave: boot workload {} -> {id}", bw.app_name),
+            Err(e) => eprintln!("easyenclave: boot workload {} rejected: {e}", bw.app_name),
+        }
     }
 
     let start_time = std::time::Instant::now();
@@ -82,7 +92,7 @@ async fn main() {
     let server = socket::SocketServer {
         socket_path: cfg.socket_path.clone(),
         deployments,
-        attestation: Arc::new(attestation),
+        attestation: Arc::from(attestation_backend),
         start_time,
     };
 

@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 
 use crate::attestation::AttestationBackend;
@@ -11,7 +11,7 @@ use crate::workload::{DeployRequest, Deployments};
 pub struct SocketServer {
     pub socket_path: String,
     pub deployments: Deployments,
-    pub attestation: Arc<Box<dyn AttestationBackend>>,
+    pub attestation: Arc<dyn AttestationBackend>,
     pub start_time: std::time::Instant,
 }
 
@@ -41,22 +41,38 @@ impl SocketServer {
             let attestation = self.attestation.clone();
             let start_time = self.start_time;
 
-            tokio::spawn(async move {
-                let (reader, mut writer) = stream.into_split();
-                let mut lines = BufReader::new(reader).lines();
+            tokio::spawn(serve_stream(stream, deployments, attestation, start_time));
+        }
+    }
+}
 
-                while let Ok(Some(line)) = lines.next_line().await {
-                    let response =
-                        handle_request(&line, &deployments, &attestation, start_time).await;
-                    let mut out = serde_json::to_string(&response).unwrap_or_else(|_| {
-                        r#"{"ok":false,"error":"serialize error"}"#.to_string()
-                    });
-                    out.push('\n');
-                    if writer.write_all(out.as_bytes()).await.is_err() {
-                        break;
-                    }
-                }
-            });
+async fn serve_stream(
+    stream: tokio::net::UnixStream,
+    deployments: Deployments,
+    attestation: Arc<dyn AttestationBackend>,
+    start_time: std::time::Instant,
+) {
+    serve_io(stream, deployments, attestation, start_time).await;
+}
+
+async fn serve_io<S>(
+    stream: S,
+    deployments: Deployments,
+    attestation: Arc<dyn AttestationBackend>,
+    start_time: std::time::Instant,
+) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut lines = BufReader::new(reader).lines();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let response = handle_request(&line, &deployments, &attestation, start_time).await;
+        let mut out = serde_json::to_string(&response)
+            .unwrap_or_else(|_| r#"{"ok":false,"error":"serialize error"}"#.to_string());
+        out.push('\n');
+        if writer.write_all(out.as_bytes()).await.is_err() {
+            break;
         }
     }
 }
@@ -64,7 +80,7 @@ impl SocketServer {
 async fn handle_request(
     line: &str,
     deployments: &Deployments,
-    attestation: &Arc<Box<dyn AttestationBackend>>,
+    attestation: &Arc<dyn AttestationBackend>,
     start_time: std::time::Instant,
 ) -> Value {
     let req: Value = match serde_json::from_str(line) {
@@ -91,7 +107,7 @@ async fn handle_request(
 
 async fn handle_health(
     deployments: &Deployments,
-    attestation: &Arc<Box<dyn AttestationBackend>>,
+    attestation: &Arc<dyn AttestationBackend>,
     start_time: std::time::Instant,
 ) -> Value {
     let count = deployments.lock().await.len();
@@ -103,7 +119,7 @@ async fn handle_health(
     })
 }
 
-fn handle_attest(req: &Value, attestation: &Arc<Box<dyn AttestationBackend>>) -> Value {
+fn handle_attest(req: &Value, attestation: &Arc<dyn AttestationBackend>) -> Value {
     let nonce_b64 = req.get("nonce").and_then(|n| n.as_str()).unwrap_or("");
     let nonce_bytes = if nonce_b64.is_empty() {
         Vec::new()
@@ -135,8 +151,10 @@ async fn handle_deploy(req: &Value, deployments: &Deployments) -> Value {
         Err(e) => return json!({"ok": false, "error": format!("invalid deploy request: {e}")}),
     };
 
-    let (id, status) = crate::workload::execute_deploy(deployments, deploy_req).await;
-    json!({"ok": true, "id": id, "status": status})
+    match crate::workload::execute_deploy(deployments, deploy_req).await {
+        Ok((id, status)) => json!({"ok": true, "id": id, "status": status}),
+        Err(e) => json!({"ok": false, "error": e}),
+    }
 }
 
 async fn handle_list(deployments: &Deployments) -> Value {
@@ -233,5 +251,86 @@ async fn handle_logs(req: &Value, deployments: &Deployments) -> Value {
             Err(e) => json!({"ok": false, "error": e}),
         },
         None => json!({"ok": true, "lines": [], "note": "process workload (no container logs)"}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{serve_io, SocketServer};
+    use crate::attestation::AttestationBackend;
+    use crate::workload::Deployments;
+    use serde_json::Value;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::sync::Mutex;
+
+    struct FakeAttestation;
+
+    impl AttestationBackend for FakeAttestation {
+        fn attestation_type(&self) -> &str {
+            "tdx"
+        }
+
+        fn generate_quote_b64(&self) -> Option<String> {
+            Some("quote".into())
+        }
+
+        fn generate_quote_with_nonce(&self, _nonce: &[u8]) -> Option<String> {
+            Some("quote-with-nonce".into())
+        }
+    }
+
+    async fn send_request(request: &str) -> Value {
+        let deployments: Deployments = Arc::new(Mutex::new(HashMap::new()));
+        let attestation: Arc<dyn AttestationBackend> = Arc::new(FakeAttestation);
+        let (client, server) = tokio::io::duplex(4096);
+
+        tokio::spawn(serve_io(
+            server,
+            deployments,
+            attestation,
+            std::time::Instant::now(),
+        ));
+
+        let (reader, mut writer) = tokio::io::split(client);
+        writer
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let mut lines = BufReader::new(reader).lines();
+        let response = lines.next_line().await.unwrap().unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn health_request_works_over_real_stream_protocol() {
+        let response = send_request(r#"{"method":"health"}"#).await;
+
+        assert_eq!(response["ok"], true);
+        assert_eq!(response["attestation_type"], "tdx");
+        assert_eq!(response["workloads"], 0);
+    }
+
+    #[tokio::test]
+    async fn deploy_rejects_empty_request_immediately() {
+        let response = send_request(r#"{"method":"deploy"}"#).await;
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"], "either image or cmd must be specified");
+    }
+
+    #[test]
+    fn socket_server_holds_trait_object_without_boxing() {
+        let deployments: Deployments = Arc::new(Mutex::new(HashMap::new()));
+        let attestation: Arc<dyn AttestationBackend> = Arc::new(FakeAttestation);
+        let server = SocketServer {
+            socket_path: "/tmp/ignored.sock".into(),
+            deployments,
+            attestation,
+            start_time: std::time::Instant::now(),
+        };
+
+        assert_eq!(server.attestation.attestation_type(), "tdx");
     }
 }

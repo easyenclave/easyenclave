@@ -35,7 +35,7 @@ command -v qemu-system-x86_64 >/dev/null || { echo "qemu-system-x86_64 not found
 TDX_SUPPORT=$(cat /sys/module/kvm_intel/parameters/tdx 2>/dev/null || echo "N")
 if [ "$TDX_SUPPORT" != "Y" ]; then
     echo "WARNING: TDX not available on this host (kvm_intel.tdx=$TDX_SUPPORT)"
-    echo "         Booting without TDX — attestation will fail but everything else works."
+    echo "         Booting without TDX — easyenclave will reach attestation detection and then exit."
     TDX_FLAGS=""
 else
     TDX_FLAGS="-machine q35,kernel-irqchip=split,confidential-guest-support=tdx -object tdx-guest,id=tdx"
@@ -47,12 +47,14 @@ if [ -n "$ENV_FILE" ]; then
     [ -f "$ENV_FILE" ] || { echo "agent.env not found: $ENV_FILE"; exit 1; }
     command -v genisoimage >/dev/null || { echo "genisoimage not found (apt install genisoimage)"; exit 1; }
 
+    CONFIG_DIR=$(mktemp -d)
     CONFIG_ISO=$(mktemp --suffix=.iso)
-    trap 'rm -f "$CONFIG_ISO"' EXIT
+    trap 'rm -rf "$CONFIG_DIR" "$CONFIG_ISO"' EXIT
 
-    genisoimage -quiet -o "$CONFIG_ISO" -V CONFIG -r -J "$ENV_FILE"
+    cp "$ENV_FILE" "$CONFIG_DIR/agent.env"
+    genisoimage -quiet -o "$CONFIG_ISO" -V CONFIG -r -J "$CONFIG_DIR/agent.env"
     CONFIG_DRIVE="-drive file=$CONFIG_ISO,if=virtio,format=raw,media=cdrom,readonly=on"
-    echo "Config ISO: $CONFIG_ISO (from $ENV_FILE)"
+    echo "Config ISO: $CONFIG_ISO (from $ENV_FILE, staged as /agent.env)"
 fi
 
 # ── Boot ─────────────────────────────────────────────────────────────
