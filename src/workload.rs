@@ -1,23 +1,31 @@
 //! Workload deployment and lifecycle management.
+//!
+//! A workload is either a command to run, or a GitHub release asset to
+//! download and then run. No containers, no OCI — the asset is a static
+//! binary, treated as a plain process. Fetch-only workloads (github_release
+//! present, cmd empty) just prime the bin dir with a tool for other
+//! workloads to shell out to (e.g. cloudflared).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-use crate::container;
 use crate::process;
+use crate::release::{self, GithubRelease};
 
-// ── Types ────────────────────────────────────────────────────────────────────
+const BIN_DIR: &str = "/var/lib/easyenclave/bin";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeploymentInfo {
     pub id: String,
     pub pid: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container_id: Option<String>,
     pub app_name: String,
-    pub image: String,
+    /// Human-readable label describing what this deployment is —
+    /// "owner/repo@tag" for github_release, or the command line for cmd.
+    pub source: String,
+    /// "deploying", "running", "completed", "failed", "stopped"
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_message: Option<String>,
@@ -29,35 +37,26 @@ pub struct DeployRequest {
     #[serde(default)]
     pub cmd: Vec<String>,
     #[serde(default)]
-    pub image: Option<String>,
-    #[serde(default)]
     pub env: Option<Vec<String>>,
-    #[serde(default)]
-    pub volumes: Option<Vec<String>>,
     #[serde(default)]
     pub app_name: Option<String>,
     #[serde(default)]
     pub tty: bool,
-    /// Commands to exec inside the container after it starts.
+    /// Fetch a static binary from a GitHub release before starting.
     #[serde(default)]
-    pub post_deploy: Option<Vec<Vec<String>>>,
-    /// Run the OCI image natively (extract binary, exec on host).
-    #[serde(default)]
-    pub native: bool,
+    pub github_release: Option<GithubRelease>,
 }
 
 pub type Deployments = Arc<Mutex<HashMap<String, DeploymentInfo>>>;
 
 // ── Deploy ───────────────────────────────────────────────────────────────────
 
-/// Start a deployment. Spawns run_deploy on tokio and returns immediately
-/// with (deployment_id, "deploying").
 pub async fn execute_deploy(deployments: &Deployments, req: DeployRequest) -> (String, String) {
     let dep_id = uuid::Uuid::new_v4().to_string();
     let app_name = req.app_name.clone().unwrap_or_else(|| "unnamed".into());
 
-    let image_label = if let Some(ref img) = req.image {
-        img.clone()
+    let source = if let Some(ref gh) = req.github_release {
+        format!("{}@{}", gh.repo, gh.tag.as_deref().unwrap_or("latest"))
     } else {
         req.cmd.join(" ")
     };
@@ -65,9 +64,8 @@ pub async fn execute_deploy(deployments: &Deployments, req: DeployRequest) -> (S
     let info = DeploymentInfo {
         id: dep_id.clone(),
         pid: None,
-        container_id: None,
         app_name: app_name.clone(),
-        image: image_label,
+        source,
         status: "deploying".into(),
         error_message: None,
         started_at: chrono::Utc::now().to_rfc3339(),
@@ -89,170 +87,120 @@ async fn run_deploy(
     app_name: String,
     req: DeployRequest,
 ) {
-    // Stop old workloads for same app
-    {
-        let deps = deployments.lock().await;
-        let old: Vec<(String, Option<u32>, Option<String>)> = deps
-            .values()
-            .filter(|d| d.app_name == app_name && d.id != dep_id)
-            .map(|d| (d.id.clone(), d.pid, d.container_id.clone()))
-            .collect();
-        drop(deps);
-        for (old_id, old_pid, old_cid) in old {
-            if let Some(cid) = old_cid {
-                let _ = container::stop(&cid).await;
-            } else if let Some(pid) = old_pid {
-                let _ = process::kill_process(pid).await;
+    // Stop prior deployments for this app.
+    stop_old_for_app(&deployments, &app_name, &dep_id).await;
+
+    let has_gh = req.github_release.is_some();
+    let has_cmd = !req.cmd.is_empty();
+
+    if has_gh && !has_cmd {
+        // Fetch-only: download the binary, mark completed. Its presence
+        // on PATH is what other workloads need (e.g. cloudflared).
+        match fetch_release(req.github_release.as_ref().unwrap()).await {
+            Ok(path) => {
+                eprintln!(
+                    "easyenclave: fetched {} -> {} (fetch-only)",
+                    app_name,
+                    path.display()
+                );
+                let mut deps = deployments.lock().await;
+                if let Some(info) = deps.get_mut(&dep_id) {
+                    info.status = "completed".into();
+                }
             }
-            deployments.lock().await.remove(&old_id);
+            Err(e) => set_deploy_failed(&deployments, &dep_id, &e).await,
+        }
+    } else if has_gh {
+        // Fetch then run. If `cmd` starts with the asset name (or rename),
+        // we treat it as "use the fetched binary" and rewrite to the full
+        // path. Otherwise we assume cmd[0] is already on PATH.
+        let gh = req.github_release.as_ref().unwrap();
+        match fetch_release(gh).await {
+            Ok(path) => spawn_from_cmd(&deployments, &dep_id, &app_name, &req, Some(&path)).await,
+            Err(e) => set_deploy_failed(&deployments, &dep_id, &e).await,
+        }
+    } else if has_cmd {
+        spawn_from_cmd(&deployments, &dep_id, &app_name, &req, None).await;
+    } else {
+        set_deploy_failed(
+            &deployments,
+            &dep_id,
+            "neither github_release nor cmd specified",
+        )
+        .await;
+    }
+}
+
+/// Spawn a command. If `binary_override` is Some, cmd[0] is replaced with it.
+async fn spawn_from_cmd(
+    deployments: &Deployments,
+    dep_id: &str,
+    app_name: &str,
+    req: &DeployRequest,
+    binary_override: Option<&PathBuf>,
+) {
+    let program_owned: String = if let Some(b) = binary_override {
+        b.to_string_lossy().into_owned()
+    } else {
+        req.cmd[0].clone()
+    };
+    let args: Vec<&str> = req.cmd.iter().skip(1).map(|s| s.as_str()).collect();
+
+    let result = if let Some(env_list) = &req.env {
+        let env_map = parse_env_list(env_list);
+        process::spawn_command_with_env(&program_owned, &args, req.tty, &env_map, app_name).await
+    } else {
+        process::spawn_command(&program_owned, &args, req.tty, app_name).await
+    };
+
+    match result {
+        Ok(mut child) => {
+            let pid = child.id();
+            eprintln!("easyenclave: deployment {dep_id} running (pid={pid:?})");
+            let mut deps = deployments.lock().await;
+            if let Some(info) = deps.get_mut(dep_id) {
+                info.pid = pid;
+                info.status = "running".into();
+            }
+            drop(deps);
+            tokio::spawn(async move {
+                let _ = child.wait().await;
+            });
+        }
+        Err(e) => set_deploy_failed(deployments, dep_id, &e).await,
+    }
+}
+
+async fn fetch_release(gh: &GithubRelease) -> Result<PathBuf, String> {
+    let gh_clone = gh.clone();
+    tokio::task::spawn_blocking(move || release::download(&gh_clone, BIN_DIR))
+        .await
+        .map_err(|e| format!("fetch task: {e}"))?
+}
+
+fn parse_env_list(env_list: &[String]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for e in env_list {
+        if let Some((k, v)) = e.split_once('=') {
+            map.insert(k.to_string(), v.to_string());
         }
     }
+    map
+}
 
-    if req.native && req.image.is_some() {
-        // Native path: pull OCI image, unpack layers, run entrypoint
-        // directly on the host. Full access to host filesystem + sockets.
-        let image = req.image.as_ref().unwrap();
-        match container::pull_native(image, &app_name).await {
-            Ok((entrypoint, image_env)) => {
-                // Merge env: image defaults + workload overrides
-                let mut env_map: HashMap<String, String> = HashMap::new();
-                for e in &image_env {
-                    if let Some((k, v)) = e.split_once('=') {
-                        env_map.insert(k.to_string(), v.to_string());
-                    }
-                }
-                if let Some(extra) = &req.env {
-                    for e in extra {
-                        if let Some((k, v)) = e.split_once('=') {
-                            env_map.insert(k.to_string(), v.to_string());
-                        }
-                    }
-                }
-
-                let program = &entrypoint[0];
-                let args: Vec<&str> = entrypoint[1..].iter().map(|s| s.as_str()).collect();
-                match process::spawn_command_with_env(program, &args, false, &env_map).await {
-                    Ok(mut child) => {
-                        let pid = child.id();
-                        eprintln!("easyenclave: deployment {dep_id} running native (pid={pid:?})");
-                        let mut deps = deployments.lock().await;
-                        if let Some(info) = deps.get_mut(&dep_id) {
-                            info.pid = pid;
-                            info.status = "running".into();
-                        }
-                        drop(deps);
-                        tokio::spawn(async move {
-                            let _ = child.wait().await;
-                        });
-                    }
-                    Err(e) => {
-                        set_deploy_failed(&deployments, &dep_id, &e).await;
-                    }
-                }
-            }
-            Err(e) => {
-                set_deploy_failed(&deployments, &dep_id, &e).await;
-            }
+async fn stop_old_for_app(deployments: &Deployments, app_name: &str, current_id: &str) {
+    let old: Vec<(String, Option<u32>)> = {
+        let deps = deployments.lock().await;
+        deps.values()
+            .filter(|d| d.app_name == app_name && d.id != current_id)
+            .map(|d| (d.id.clone(), d.pid))
+            .collect()
+    };
+    for (id, pid) in old {
+        if let Some(p) = pid {
+            let _ = process::kill_process(p).await;
         }
-    } else if let Some(ref image) = req.image {
-        // Container path
-        match container::pull_and_run(image, &app_name, req.env, req.volumes, true).await {
-            Ok(container_id) => {
-                eprintln!("easyenclave: deployment {dep_id} running (container={container_id})");
-                let mut deps = deployments.lock().await;
-                if let Some(info) = deps.get_mut(&dep_id) {
-                    info.container_id = Some(container_id.clone());
-                    info.status = "running".into();
-                }
-                drop(deps);
-
-                // Run post-deploy commands inside the container
-                if let Some(ref commands) = req.post_deploy {
-                    // Wait for container to be ready
-                    for _ in 0..60 {
-                        if container::is_running(&container_id).await {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    }
-
-                    for cmd in commands {
-                        if cmd.is_empty() {
-                            continue;
-                        }
-                        eprintln!("easyenclave: post-deploy exec: {}", cmd.join(" "));
-                        match container::exec(&app_name, cmd).await {
-                            Ok((code, stdout, stderr)) => {
-                                if code != 0 {
-                                    eprintln!(
-                                        "easyenclave: post-deploy cmd failed (exit {}): {}{}",
-                                        code,
-                                        stdout.trim(),
-                                        if stderr.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!(" stderr: {}", stderr.trim())
-                                        }
-                                    );
-                                    set_deploy_failed(
-                                        &deployments,
-                                        &dep_id,
-                                        &format!(
-                                            "post-deploy failed: {} (exit {code})",
-                                            cmd.join(" ")
-                                        ),
-                                    )
-                                    .await;
-                                    return;
-                                }
-                                if !stdout.trim().is_empty() {
-                                    eprintln!("easyenclave: post-deploy: {}", stdout.trim());
-                                }
-                            }
-                            Err(e) => {
-                                set_deploy_failed(
-                                    &deployments,
-                                    &dep_id,
-                                    &format!("post-deploy exec error: {e}"),
-                                )
-                                .await;
-                                return;
-                            }
-                        }
-                    }
-                    eprintln!("easyenclave: post-deploy commands complete for {app_name}");
-                }
-            }
-            Err(e) => {
-                set_deploy_failed(&deployments, &dep_id, &e).await;
-            }
-        }
-    } else if !req.cmd.is_empty() {
-        // Process path
-        let program = &req.cmd[0];
-        let args: Vec<&str> = req.cmd[1..].iter().map(|s| s.as_str()).collect();
-        match process::spawn_command(program, &args, req.tty).await {
-            Ok(mut child) => {
-                let pid = child.id();
-                eprintln!("easyenclave: deployment {dep_id} running (pid={pid:?})");
-                let mut deps = deployments.lock().await;
-                if let Some(info) = deps.get_mut(&dep_id) {
-                    info.pid = pid;
-                    info.status = "running".into();
-                }
-                drop(deps);
-
-                // Wait for process in background
-                tokio::spawn(async move {
-                    let _ = child.wait().await;
-                });
-            }
-            Err(e) => {
-                set_deploy_failed(&deployments, &dep_id, &e).await;
-            }
-        }
-    } else {
-        set_deploy_failed(&deployments, &dep_id, "neither image nor cmd specified").await;
+        deployments.lock().await.remove(&id);
     }
 }
 
@@ -268,7 +216,7 @@ async fn set_deploy_failed(deployments: &Deployments, dep_id: &str, error: &str)
 // ── Stop ─────────────────────────────────────────────────────────────────────
 
 pub async fn execute_stop(deployments: &Deployments, id: &str) -> Result<(), String> {
-    let (pid, container_id) = {
+    let pid = {
         let deps = deployments.lock().await;
         let info = deps.get(id).ok_or("deployment not found")?;
         if info.status != "running" && info.status != "deploying" {
@@ -277,13 +225,11 @@ pub async fn execute_stop(deployments: &Deployments, id: &str) -> Result<(), Str
                 info.status
             ));
         }
-        (info.pid, info.container_id.clone())
+        info.pid
     };
 
-    if let Some(cid) = container_id {
-        container::stop(&cid).await?;
-    } else if let Some(pid) = pid {
-        process::kill_process(pid).await?;
+    if let Some(p) = pid {
+        process::kill_process(p).await?;
     }
 
     let mut deps = deployments.lock().await;
@@ -293,7 +239,6 @@ pub async fn execute_stop(deployments: &Deployments, id: &str) -> Result<(), Str
     Ok(())
 }
 
-/// Stop all running deployments (used during shutdown).
 pub async fn stop_all(deployments: &Deployments) {
     let ids: Vec<String> = {
         let deps = deployments.lock().await;

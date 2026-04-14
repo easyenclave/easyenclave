@@ -1,6 +1,6 @@
 [package]
 name = "easyenclave"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "MIT"
 description = "Generic enclave runtime. Runs as PID 1 in a sealed TDX VM. Unix socket API."
@@ -12,19 +12,16 @@ path = "src/main.rs"
 [dependencies]
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
+# flate2 + tar: extracting .tar.gz release assets from GitHub.
 flate2 = "1"
+tar = "0.4"
 futures-util = "0.3"
 libc = "0.2"
-libcontainer = "0.6"
-oci-distribution = { version = "0.11", default-features = false, features = ["rustls-tls"] }
-oci-spec = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
-tar = "0.4"
-tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "net", "io-util"] }
-# ureq: tiny synchronous HTTP client for GCE metadata fetch at boot
-# (called from maybe_init, which is sync). No TLS features — GCE
-# metadata endpoint is plain HTTP at 169.254.169.254.
-ureq = { version = "2", default-features = false }
+tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "net", "io-util", "sync"] }
+# ureq: sync HTTP client. Used for GCE metadata at boot (plain HTTP) and
+# for the GitHub Releases API (HTTPS, needs TLS). `tls` pulls rustls +
+# webpki-roots; we don't depend on system CA certs.
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 uuid = { version = "1", features = ["serde", "v4"] }

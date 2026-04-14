@@ -2,6 +2,8 @@
 
 use serde::Deserialize;
 
+use crate::release::GithubRelease;
+
 const DEFAULT_SOCKET_PATH: &str = "/var/lib/easyenclave/agent.sock";
 const DEFAULT_DATA_DIR: &str = "/var/lib/easyenclave";
 const CONFIG_FILE_PATH: &str = "/etc/easyenclave/config.json";
@@ -20,19 +22,19 @@ pub struct Config {
 pub struct BootWorkload {
     #[serde(default)]
     pub cmd: Option<Vec<String>>,
-    #[serde(default)]
-    pub image: Option<String>,
     #[serde(default = "default_app_name")]
     pub app_name: String,
     #[serde(default)]
     pub env: Option<Vec<String>>,
     #[serde(default)]
-    pub volumes: Option<Vec<String>>,
-    /// Run the OCI image natively (extract binary, exec on host) instead
-    /// of through libcontainer. The binary gets full host access including
-    /// the easyenclave agent socket.
+    pub tty: bool,
+    /// Download a static binary from a GitHub release before starting.
+    /// If `cmd` is empty, this is a fetch-only workload — the binary is
+    /// downloaded into the bin dir (and added to PATH) but nothing is
+    /// spawned. That's how third-party tools like cloudflared get
+    /// installed without running them directly.
     #[serde(default)]
-    pub native: bool,
+    pub github_release: Option<GithubRelease>,
 }
 
 fn default_socket_path() -> String {
@@ -50,7 +52,6 @@ fn default_app_name() -> String {
 impl Config {
     /// Load config from file, then overlay with environment variables.
     pub fn load() -> Result<Self, String> {
-        // Start with config file if it exists
         let mut config = if std::path::Path::new(CONFIG_FILE_PATH).exists() {
             let data = std::fs::read_to_string(CONFIG_FILE_PATH)
                 .map_err(|e| format!("read config: {e}"))?;
@@ -63,7 +64,6 @@ impl Config {
             }
         };
 
-        // Overlay env vars
         if let Ok(val) = std::env::var("EE_SOCKET_PATH") {
             config.socket_path = val;
         }
@@ -71,7 +71,6 @@ impl Config {
             config.data_dir = val;
         }
 
-        // Boot workloads from env (JSON array)
         if let Ok(val) = std::env::var("EE_BOOT_WORKLOADS") {
             match serde_json::from_str::<Vec<BootWorkload>>(&val) {
                 Ok(workloads) => config.boot_workloads = workloads,

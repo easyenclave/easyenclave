@@ -219,19 +219,16 @@ async fn handle_logs(req: &Value, deployments: &Deployments) -> Value {
     };
     let tail = req.get("tail").and_then(|t| t.as_u64()).unwrap_or(100) as usize;
 
-    let container_id = {
+    let app_name = {
         let deps = deployments.lock().await;
         match deps.get(id) {
-            Some(info) => info.container_id.clone(),
+            Some(info) => info.app_name.clone(),
             None => return json!({"ok": false, "error": "deployment not found"}),
         }
     };
 
-    match container_id {
-        Some(cid) => match crate::container::logs(&cid, tail).await {
-            Ok(lines) => json!({"ok": true, "lines": lines}),
-            Err(e) => json!({"ok": false, "error": e}),
-        },
-        None => json!({"ok": true, "lines": [], "note": "process workload (no container logs)"}),
+    match crate::process::read_logs(&app_name, tail).await {
+        Ok(lines) => json!({"ok": true, "lines": lines}),
+        Err(e) => json!({"ok": false, "error": e}),
     }
 }

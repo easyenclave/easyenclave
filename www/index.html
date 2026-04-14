@@ -37,7 +37,7 @@
       <div class="card"><div class="ic">&#x1f50c;</div><h3>Unix Socket API</h3><p>Newline-delimited JSON over <code>/var/lib/easyenclave/agent.sock</code>. Deploy, attest, exec, monitor &mdash; all through one socket. No HTTP server in the enclave.</p></div>
       <div class="card"><div class="ic">&#x1f6e1;</div><h3>No Networking</h3><p>The runtime itself has zero networking code. Workloads handle their own connectivity. Minimal attack surface &mdash; the enclave boundary is tight.</p></div>
       <div class="card"><div class="ic">&#x2705;</div><h3>TDX Attestation</h3><p>Generate cryptographic quotes via configfs-tsm. Prove your code is running unmodified on real TDX hardware. Supports nonce-based fresh attestation.</p></div>
-      <div class="card"><div class="ic">&#x1f433;</div><h3>Containers + Processes</h3><p>Deploy OCI containers (pulled and run directly by a Rust-native runtime &mdash; no podman, no docker daemon) or bare processes. Post-deploy exec commands run inside containers after start. Same API for both.</p></div>
+      <div class="card"><div class="ic">&#x1f433;</div><h3>GitHub Releases + Processes</h3><p>Deploy static binaries pulled straight from GitHub releases (no registry, no Dockerfile), or run bare commands. The runtime watches the release, downloads the asset, runs it as a native process. Same API for both.</p></div>
       <div class="card"><div class="ic">&#x1f4dc;</div><h3>MIT Open Source</h3><p>Read every line. Audit every build. The enclave runtime is fully open, fully auditable. Built for production confidential computing workloads.</p></div>
     </div>
   </div>
@@ -48,9 +48,9 @@
     <h2>How It Works</h2>
     <p class="sub">Boot a TDX VM with EasyEnclave as PID 1. Connect via unix socket. Deploy workloads.</p>
     <div class="steps">
-      <div class="step"><div class="sn">1</div><div><h3>Boot</h3><p>The TDX VM starts with EasyEnclave as its init process. It mounts filesystems, loads config, and starts listening on the unix socket. The container runtime is compiled in &mdash; no external daemon to start.</p></div></div>
+      <div class="step"><div class="sn">1</div><div><h3>Boot</h3><p>The TDX VM starts with EasyEnclave as its init process. It mounts filesystems, loads config, pre-fetches any GitHub release binaries listed in the boot workloads, and starts listening on the unix socket.</p></div></div>
       <div class="step"><div class="sn">2</div><div><h3>Connect</h3><p>Your client connects to <code>/var/lib/easyenclave/agent.sock</code>. Send JSON, get JSON back. No HTTP overhead.</p></div></div>
-      <div class="step"><div class="sn">3</div><div><h3>Deploy</h3><p>Send a deploy request with an image or command. EasyEnclave pulls the image, starts the container, runs post-deploy commands. All tracked with status and logs.</p></div></div>
+      <div class="step"><div class="sn">3</div><div><h3>Deploy</h3><p>Send a deploy request with a GitHub release (owner/repo + asset) or a bare command. EasyEnclave downloads the binary into its bin dir, makes it executable, starts it as a process. Status and logs tracked automatically.</p></div></div>
       <div class="step"><div class="sn">4</div><div><h3>Attest</h3><p>Request a TDX attestation quote with an optional nonce. The hardware generates a cryptographic proof that the exact measured code is running inside the sealed VM.</p></div></div>
     </div>
   </div>
@@ -71,11 +71,11 @@
  |     +-- workload: <span class="b">your-client</span> (web dashboard, API, etc)
  |     |     connects to socket for deploy/attest/logs
  |     |
- |     +-- workload: <span class="b">your-app</span> (container or process)
+ |     +-- workload: <span class="b">your-app</span> (native process)
  |           handles its own networking
  |
  +-- <span class="g">attestation</span>: configfs-tsm (/sys/kernel/config/tsm/report)
- +-- <span class="g">containers</span>: libcontainer + oci-distribution (compiled into easyenclave)
+ +-- <span class="g">release fetch</span>: GitHub Releases API over rustls (compiled into easyenclave)
 </pre>
     </div>
   </div>
@@ -88,8 +88,8 @@
     <div class="api">
       <div class="ae"><div class="l">health</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">health</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">attestation_type</span>":"<span class="s">tdx</span>","<span class="k">workloads</span>":2,"<span class="k">uptime_secs</span>":3600}</pre></div>
-      <div class="ae"><div class="l">deploy</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">deploy</span>","<span class="k">image</span>":"<span class="s">ghcr.io/org/app:latest</span>",
-    "<span class="k">app_name</span>":"<span class="s">myapp</span>"}
+      <div class="ae"><div class="l">deploy</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">deploy</span>","<span class="k">github_release</span>":{"<span class="k">repo</span>":"<span class="s">owner/repo</span>",
+    "<span class="k">asset</span>":"<span class="s">app</span>"},"<span class="k">cmd</span>":["<span class="s">app</span>"],"<span class="k">app_name</span>":"<span class="s">myapp</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">id</span>":"<span class="s">abc123</span>","<span class="k">status</span>":"<span class="s">deploying</span>"}</pre></div>
       <div class="ae"><div class="l">attest</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">attest</span>","<span class="k">nonce</span>":"<span class="s">deadbeef</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">quote_b64</span>":"<span class="s">AQAAAA...</span>"}</pre></div>

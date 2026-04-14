@@ -196,8 +196,8 @@ pub fn maybe_init() {
     // DNS: the udhcpc hook writes the DHCP-provided nameservers to
     // /tmp/resolv.conf.udhcpc (because the rootfs is read-only and
     // direct writes to /etc/resolv.conf fail). Bind-mount it over
-    // /etc/resolv.conf so ureq/libcontainer/curl can resolve hostnames
-    // like ghcr.io. EE_DNS overrides the DHCP-provided DNS if set.
+    // /etc/resolv.conf so ureq/curl can resolve hostnames
+    // like api.github.com. EE_DNS overrides the DHCP-provided DNS if set.
     if let Ok(dns) = std::env::var("EE_DNS") {
         eprintln!("easyenclave: init: dns={dns} (static override)");
         let _ = std::fs::write("/tmp/resolv.conf", format!("nameserver {dns}\n"));
