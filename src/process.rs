@@ -1,6 +1,8 @@
 //! Process manager -- run workloads as plain processes on the VM.
 
 use std::path::PathBuf;
+use std::process::Stdio;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 
 const LOG_DIR: &str = "/var/lib/easyenclave/workloads/logs";
@@ -9,27 +11,67 @@ fn log_path(app_name: &str) -> PathBuf {
     PathBuf::from(format!("{LOG_DIR}/{app_name}.log"))
 }
 
-/// Open the per-app log file for writing. Truncates on each deploy —
-/// old workloads for the same app are stopped first, so their logs are
-/// in the previous deploy's copy (not preserved across deploys).
-fn open_log_file(app_name: &str) -> Result<std::fs::File, String> {
-    std::fs::create_dir_all(LOG_DIR).map_err(|e| format!("create log dir: {e}"))?;
-    std::fs::File::create(log_path(app_name)).map_err(|e| format!("open log for {app_name}: {e}"))
+/// Tee a child stream to both a log file and easyenclave's stderr
+/// (which goes to the serial console at boot). Drains the pipe so it
+/// never blocks the child on a full buffer.
+fn spawn_tee(
+    stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
+    log_file: std::fs::File,
+    prefix: String,
+) {
+    use std::io::Write;
+    use std::sync::Mutex;
+    let log_file = std::sync::Arc::new(Mutex::new(log_file));
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stream).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            eprintln!("[{prefix}] {line}");
+            if let Ok(mut f) = log_file.lock() {
+                let _ = writeln!(f, "{line}");
+                let _ = f.flush();
+            }
+        }
+    });
 }
 
-/// Spawn a command directly on the VM. stdout+stderr are redirected to
-/// a log file under LOG_DIR so the `logs` socket method works and so
-/// long-running children don't deadlock on a full pipe buffer.
+/// Spawn a command directly on the VM. stdout+stderr are piped, drained
+/// by background tasks, and tee'd to both a per-app log file (for the
+/// `logs` socket method) and easyenclave's own stderr (so output is
+/// visible on the serial console during boot).
 pub async fn spawn_command(
     program: &str,
     args: &[&str],
     tty: bool,
     app_name: &str,
 ) -> Result<Child, String> {
-    let stdout = open_log_file(app_name)?;
-    let stderr = stdout
+    spawn_inner(program, args, tty, None, app_name).await
+}
+
+/// Spawn a command with an explicit environment map on top of the
+/// inherited parent env.
+pub async fn spawn_command_with_env(
+    program: &str,
+    args: &[&str],
+    tty: bool,
+    env: &std::collections::HashMap<String, String>,
+    app_name: &str,
+) -> Result<Child, String> {
+    spawn_inner(program, args, tty, Some(env), app_name).await
+}
+
+async fn spawn_inner(
+    program: &str,
+    args: &[&str],
+    tty: bool,
+    env: Option<&std::collections::HashMap<String, String>>,
+    app_name: &str,
+) -> Result<Child, String> {
+    std::fs::create_dir_all(LOG_DIR).map_err(|e| format!("create log dir: {e}"))?;
+    let log_file =
+        std::fs::File::create(log_path(app_name)).map_err(|e| format!("open log: {e}"))?;
+    let log_clone = log_file
         .try_clone()
-        .map_err(|e| format!("clone log fd: {e}"))?;
+        .map_err(|e| format!("clone log: {e}"))?;
 
     let mut cmd = if tty {
         let mut c = Command::new("script");
@@ -48,52 +90,28 @@ pub async fn spawn_command(
         c
     };
 
-    cmd.stdin(if tty {
-        std::process::Stdio::piped()
-    } else {
-        std::process::Stdio::null()
-    });
-    cmd.stdout(stdout);
-    cmd.stderr(stderr);
-
-    let child = cmd.spawn().map_err(|e| format!("spawn {program}: {e}"))?;
-    eprintln!(
-        "easyenclave: spawned {program} (pid={}, app={app_name})",
-        child.id().unwrap_or(0)
-    );
-    Ok(child)
-}
-
-/// Spawn a command with an explicit environment map on top of the
-/// inherited parent env.
-pub async fn spawn_command_with_env(
-    program: &str,
-    args: &[&str],
-    tty: bool,
-    env: &std::collections::HashMap<String, String>,
-    app_name: &str,
-) -> Result<Child, String> {
-    let stdout = open_log_file(app_name)?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|e| format!("clone log fd: {e}"))?;
-
-    let mut cmd = Command::new(program);
-    cmd.args(args);
-    cmd.envs(env);
+    if let Some(e) = env {
+        cmd.envs(e);
+    }
     if tty {
         cmd.env("TERM", "xterm-256color");
     }
 
-    cmd.stdin(std::process::Stdio::null());
-    cmd.stdout(stdout);
-    cmd.stderr(stderr);
+    cmd.stdin(if tty { Stdio::piped() } else { Stdio::null() });
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
 
-    let child = cmd.spawn().map_err(|e| format!("spawn {program}: {e}"))?;
-    eprintln!(
-        "easyenclave: spawned {program} (pid={}, app={app_name})",
-        child.id().unwrap_or(0)
-    );
+    let mut child = cmd.spawn().map_err(|e| format!("spawn {program}: {e}"))?;
+    let pid = child.id().unwrap_or(0);
+    eprintln!("easyenclave: spawned {program} (pid={pid}, app={app_name})");
+
+    if let Some(stdout) = child.stdout.take() {
+        spawn_tee(stdout, log_file, app_name.to_string());
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_tee(stderr, log_clone, app_name.to_string());
+    }
+
     Ok(child)
 }
 
