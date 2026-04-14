@@ -30,7 +30,7 @@ src/
 ├── main.rs           Entry: init, config, pre-fetch, boot workloads, socket server
 ├── init.rs           PID 1: mount /proc /sys /dev, configfs, zombie reaper
 ├── config.rs         Config from JSON file + env overlays
-├── socket.rs         Unix socket server, newline-delimited JSON (7 methods)
+├── socket.rs         Unix socket server, newline-delimited JSON (8 methods, attach switches to raw bytes)
 ├── workload.rs       Deploy/stop/list — process lifecycle
 ├── release.rs        GitHub Releases API: fetch static binaries into /var/lib/easyenclave/bin
 ├── process.rs        Spawn (with log capture), kill, logs

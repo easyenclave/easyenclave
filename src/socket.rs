@@ -1,9 +1,15 @@
 //! Unix socket server -- newline-delimited JSON protocol.
+//!
+//! Most methods are one-shot request/response. The `attach` method is
+//! special: after the JSON handshake the connection switches to a raw
+//! byte stream bridging a PTY-backed shell.
 
 use serde_json::{json, Value};
+use std::process::Stdio;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
+use tokio::process::Command;
 
 use crate::attestation::AttestationBackend;
 use crate::workload::{DeployRequest, Deployments};
@@ -43,9 +49,33 @@ impl SocketServer {
 
             tokio::spawn(async move {
                 let (reader, mut writer) = stream.into_split();
-                let mut lines = BufReader::new(reader).lines();
+                let mut buf_reader = BufReader::new(reader);
+                let mut line = String::new();
 
-                while let Ok(Some(line)) = lines.next_line().await {
+                loop {
+                    line.clear();
+                    match buf_reader.read_line(&mut line).await {
+                        Ok(0) => break, // EOF
+                        Ok(_) => {}
+                        Err(_) => break,
+                    }
+
+                    // Sniff for `attach` before dispatching — it switches
+                    // the connection from JSON line mode to raw bytes.
+                    if let Ok(req) = serde_json::from_str::<Value>(line.trim()) {
+                        if req.get("method").and_then(|m| m.as_str()) == Some("attach") {
+                            if writer
+                                .write_all(b"{\"ok\":true,\"attached\":true}\n")
+                                .await
+                                .is_err()
+                            {
+                                return;
+                            }
+                            bridge_attach(buf_reader, writer, &req).await;
+                            return;
+                        }
+                    }
+
                     let response =
                         handle_request(&line, &deployments, &attestation, start_time).await;
                     let mut out = serde_json::to_string(&response).unwrap_or_else(|_| {
@@ -210,6 +240,125 @@ async fn handle_exec(req: &Value) -> Value {
             json!({"ok": false, "error": format!("command timed out after {timeout_secs}s")})
         }
     }
+}
+
+/// Bridge a unix socket connection to a PTY-backed shell.
+///
+/// `req` is the original attach request (`{"method":"attach","cmd":[...]}`).
+/// `cmd` defaults to `["/bin/sh"]`. Uses `script(1)` to allocate a PTY —
+/// the same wrapper `process.rs` uses for tty workloads.
+async fn bridge_attach<R, W>(reader: R, mut writer: W, req: &Value)
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let cmd: Vec<String> = req
+        .get("cmd")
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .filter(|v: &Vec<String>| !v.is_empty())
+        .unwrap_or_else(|| vec!["/bin/sh".to_string()]);
+
+    let full_cmd = cmd.join(" ");
+    eprintln!("easyenclave: attach session: {full_cmd}");
+
+    let mut child = match Command::new("script")
+        .arg("-qfc")
+        .arg(&full_cmd)
+        .arg("/dev/null")
+        .env("TERM", "xterm-256color")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("easyenclave: attach: spawn script: {e}");
+            let _ = writer
+                .write_all(format!("\nattach failed: {e}\n").as_bytes())
+                .await;
+            return;
+        }
+    };
+
+    let pid = child.id();
+    let mut child_stdin = child.stdin.take().expect("stdin piped");
+    let mut child_stdout = child.stdout.take().expect("stdout piped");
+    let mut child_stderr = child.stderr.take().expect("stderr piped");
+
+    // Three concurrent copies. Wrap the writer in an Arc<Mutex<>> so
+    // stdout and stderr can share it without interleaving partial UTF-8
+    // sequences mid-byte. (script(1) usually folds stderr into stdout
+    // anyway, but the stderr leg is cheap insurance.)
+    let writer = std::sync::Arc::new(tokio::sync::Mutex::new(writer));
+
+    let writer_out = writer.clone();
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        loop {
+            match child_stdout.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let mut w = writer_out.lock().await;
+                    if w.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let writer_err = writer.clone();
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        loop {
+            match child_stderr.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let mut w = writer_err.lock().await;
+                    if w.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let stdin_task = tokio::spawn(async move {
+        let mut reader = reader;
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if child_stdin.write_all(&buf[..n]).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    // Wait for the child to exit OR the socket-read side to drop.
+    // Either condition tears the session down.
+    tokio::select! {
+        _ = child.wait() => {}
+        _ = stdin_task => {}
+    }
+
+    // Best-effort: kill the child if it's still around, then drain
+    // stdout/stderr so trailing bytes reach the client.
+    if let Some(p) = pid {
+        let _ = crate::process::kill_process(p).await;
+    }
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+    eprintln!("easyenclave: attach session ended ({full_cmd})");
 }
 
 async fn handle_logs(req: &Value, deployments: &Deployments) -> Value {

@@ -36,7 +36,8 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 | list | `{"method":"list"}` | `{"ok":true,"deployments":[...]}` |
 | stop | `{"method":"stop","id":"..."}` | `{"ok":true}` |
 | exec | `{"method":"exec","cmd":["uname","-a"]}` | `{"ok":true,"exit_code":0,"stdout":"..."}` |
-| logs | `{"method":"logs","id":"..."}` | `{"ok":true,"logs":["..."]}` |
+| logs | `{"method":"logs","id":"..."}` | `{"ok":true,"lines":["..."]}` |
+| attach | `{"method":"attach","cmd":["/bin/sh"]}` | `{"ok":true,"attached":true}` then raw byte stream (PTY-backed shell) |
 
 ## Configuration
 
@@ -65,7 +66,7 @@ src/
 ├── main.rs           Entry: init, config, boot workloads, socket server
 ├── init.rs           PID 1: mount, configfs, kernel cmdline, zombie reaper
 ├── config.rs         Config from file + env overlays
-├── socket.rs         Unix socket server (7 methods)
+├── socket.rs         Unix socket server (8 methods, attach switches to raw bytes)
 ├── workload.rs       Deploy/stop/list, process lifecycle
 ├── release.rs        GitHub Releases API: fetch static binaries
 ├── process.rs        Spawn (with log capture), kill, logs
