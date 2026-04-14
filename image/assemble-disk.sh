@@ -13,20 +13,20 @@
 set -euo pipefail
 
 OUTPUT_DIR="${1:-.}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UKI="${OUTPUT_DIR}/easyenclave.efi"
 ROOT_IMG="${OUTPUT_DIR}/rootfs.img"
 DISK="${OUTPUT_DIR}/easyenclave.root.raw"
+ESP_SIZE=64  # MB
 
 [ -f "$UKI" ] || { echo "No UKI at $UKI"; exit 1; }
 [ -f "$ROOT_IMG" ] || { echo "No rootfs at $ROOT_IMG"; exit 1; }
 
-# ESP with the UKI as the default boot entry
-ESP_SIZE=64  # MB
+# ESP with the UKI as the default boot entry (shared helper — also
+# used by the iso target for El Torito).
 ESP_IMG=$(mktemp)
-dd if=/dev/zero of="$ESP_IMG" bs=1M count=$ESP_SIZE 2>/dev/null
-mkfs.vfat -F 32 "$ESP_IMG" >/dev/null
-mmd -i "$ESP_IMG" ::EFI ::EFI/BOOT
-mcopy -i "$ESP_IMG" "$UKI" ::EFI/BOOT/BOOTX64.EFI
+trap 'rm -f "$ESP_IMG"' EXIT
+bash "$SCRIPT_DIR/lib/mkesp.sh" "$UKI" "$ESP_IMG" $ESP_SIZE
 
 # Partition layout
 ESP_BYTES=$((ESP_SIZE * 1024 * 1024))
@@ -50,8 +50,6 @@ EOF
 # Write partition contents
 dd if="$ESP_IMG" of="$DISK" bs=512 seek=$ESP_START conv=notrunc 2>/dev/null
 dd if="$ROOT_IMG" of="$DISK" bs=512 seek=$ROOT_START conv=notrunc 2>/dev/null
-
-rm -f "$ESP_IMG"
 
 SIZE=$(du -h "$DISK" | cut -f1)
 echo "Bootable disk assembled: $DISK ($SIZE)"
