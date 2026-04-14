@@ -82,7 +82,7 @@ jobs:
       - name: Compute measurements
         id: meta
         run: |
-          cd image/output
+          cd image/output/gcp
           SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
@@ -103,11 +103,11 @@ jobs:
           mv easyenclave.efi "easyenclave-${SHA12}.efi"
           mv easyenclave.root.raw "easyenclave-${SHA12}.raw"
           mv easyenclave.qcow2 "easyenclave-${SHA12}.qcow2"
-          cp "easyenclave-${SHA12}.raw" disk.raw
-          tar -czf "easyenclave-${SHA12}-gcp.tar.gz" disk.raw
-          rm disk.raw
+          # mkimage.sh already produced easyenclave-gcp.tar.gz; just rename.
+          mv easyenclave-gcp.tar.gz "easyenclave-${SHA12}-gcp.tar.gz"
           cat > MEASUREMENTS.txt <<EOF
           commit: ${{ github.sha }}
+          target: gcp
           UKI sha256: ${UKI_SHA256}
           Disk sha256: ${ROOT_SHA256}
           EOF
@@ -116,11 +116,11 @@ jobs:
         with:
           name: easyenclave-image
           path: |
-            image/output/easyenclave-*.efi
-            image/output/easyenclave-*.raw
-            image/output/easyenclave-*.qcow2
-            image/output/easyenclave-*-gcp.tar.gz
-            image/output/MEASUREMENTS.txt
+            image/output/gcp/easyenclave-*.efi
+            image/output/gcp/easyenclave-*.raw
+            image/output/gcp/easyenclave-*.qcow2
+            image/output/gcp/easyenclave-*-gcp.tar.gz
+            image/output/gcp/MEASUREMENTS.txt
           retention-days: 7
 
   # ── Deploy, test, and release (one GCP auth) ─────────────────────
@@ -141,7 +141,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: easyenclave-image
-          path: image/output
+          path: image/output/gcp
 
       # ── Create staging image ─────────────────────────────────────
       - name: Create GCP image
@@ -153,7 +153,7 @@ jobs:
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           ASSET_BASE="easyenclave-${SHA12}"
-          gcloud storage cp "image/output/${ASSET_BASE}-gcp.tar.gz" \
+          gcloud storage cp "image/output/gcp/${ASSET_BASE}-gcp.tar.gz" \
             "gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz"
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
@@ -327,7 +327,7 @@ jobs:
           SHA12: ${{ needs.build.outputs.sha12 }}
           UKI_SHA256: ${{ needs.build.outputs.uki_sha256 }}
         run: |
-          cd image/output
+          cd image/output/gcp
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
             GH_TAG="${TAG}"

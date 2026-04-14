@@ -22,7 +22,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUTPUT_DIR="$SCRIPT_DIR/output"
+# Non-TDX / direct-kernel dev loop — always uses the gcp target's
+# artifacts (ext4 rootfs in a qcow2). Local-TDX ISO boot lives in
+# run-local-tdx.sh.
+OUTPUT_DIR="$SCRIPT_DIR/output/gcp"
 ENV_FILE="${1:-}"
 
 # ── Check prerequisites ──────────────────────────────────────────────

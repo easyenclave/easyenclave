@@ -16,6 +16,45 @@ Requires Intel TDX hardware (configfs-tsm) — refuses to start without it.
 
 Config: `/etc/easyenclave/config.json` or env vars (`EE_SOCKET_PATH`, `EE_DATA_DIR`, `EE_BOOT_WORKLOADS`).
 
+## Deployment targets
+
+Image builds are profile-driven. Each deployment target is a directory under `image/targets/<name>/` with a `profile.env` that supplies its module set, root strategy, kernel cmdline, output format, and default machine topology.
+
+| Target | Format | Root strategy | Use case |
+|--------|--------|---------------|----------|
+| `gcp` | GPT disk (raw + qcow2 + tar.gz) | ext4 label + optional dm-verity | GCP TDX compute images (default) |
+| `local-tdx` | hybrid ISO with embedded ESP | iso9660 + squashfs + tmpfs overlay | Local QEMU/OVMF TDX boot for dev iteration |
+
+Build:
+
+```bash
+cd image
+make build                   # defaults to TARGET=gcp
+make build TARGET=local-tdx  # hybrid ISO for local TDX
+```
+
+Run locally:
+
+```bash
+bash image/test-local.sh [agent.env]        # gcp artifacts, direct-kernel, fastest dev loop
+bash image/run-local-tdx.sh [agent.env]     # local-tdx ISO, full OVMF+TDX boot chain
+```
+
+### Adding a new target
+
+1. `mkdir image/targets/<name> && $EDITOR image/targets/<name>/profile.env` (copy from an existing profile, tweak `TARGET_INITRD_MODULES` / `TARGET_CMDLINE` / `TARGET_FORMAT`).
+2. If you need a new root acquisition strategy, add `image/init-templates/<name>.sh` — it becomes the `/init` inside the initrd.
+3. `make build TARGET=<name>`.
+
+### Attestation across targets
+
+TDX MRTD and RTMR values **differ per target**, and differ again per launch site:
+
+- **MRTD** is derived from TDVF binary + memory size + vCPU topology. Local TDVF ≠ GCP's TDVF; `-m 4G -smp 2` locally ≠ `c3-standard-4` on GCP.
+- **RTMRs** depend on UKI bytes (each target's UKI embeds a different initrd and cmdline).
+
+Don't cross-verify a local quote against a GCP measurement. Treat local-tdx as a dev convenience, not a production-attestation-equivalent artifact.
+
 ## Architecture
 
 ```
