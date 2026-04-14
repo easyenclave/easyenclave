@@ -40,3 +40,4 @@ easyenclave.db-wal
 easyenclave.db-shm
 artifacts/
 infra/
+.claude/
