@@ -50,7 +50,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
             busybox-static e2fsprogs dosfstools qemu-utils \
-            libseccomp-dev zstd linux-image-generic
+            zstd linux-image-generic
 
       - name: Resolve target kernel version
         id: kver
@@ -195,14 +195,15 @@ jobs:
             "dns_configured:dns from dhcp lease:1"
             "gce_metadata:gce-meta env:1"
             "listening:easyenclave: listening on:1"
-            "container_started:container .* started:1"
             "deployment_running:deployment .* running:1"
           )
 
+          # Two native workloads: seed an index file, then serve it with
+          # busybox httpd. Exercises the plain-command path end-to-end.
           cat > /tmp/ee-config.json <<'EECONF'
           {
             "EE_OWNER": "integration-test",
-            "EE_BOOT_WORKLOADS": "[{\"image\":\"docker.io/traefik/whoami:latest\",\"app_name\":\"whoami\",\"env\":[]}]"
+            "EE_BOOT_WORKLOADS": "[{\"cmd\":[\"sh\",\"-c\",\"echo ok > /tmp/index.html\"],\"app_name\":\"seed\"},{\"cmd\":[\"busybox\",\"httpd\",\"-f\",\"-p\",\"80\",\"-h\",\"/tmp\"],\"app_name\":\"whoami\"}]"
           }
           EECONF
 

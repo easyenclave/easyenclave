@@ -20,7 +20,7 @@ Requires Intel TDX hardware — refuses to start without it.
 TDX VM (hardware-sealed memory)
   └── easyenclave (PID 1)
         ├── unix socket: /var/lib/easyenclave/agent.sock
-        ├── workloads (OCI containers via libcontainer, or bare processes)
+        ├── workloads (static binaries from GitHub releases, or bare commands)
         └── TDX attestation (configfs-tsm)
 ```
 
@@ -31,7 +31,7 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 | Method | Request | Response |
 |--------|---------|----------|
 | health | `{"method":"health"}` | `{"ok":true,"attestation_type":"tdx","workloads":2}` |
-| deploy | `{"method":"deploy","image":"...","app_name":"myapp"}` | `{"ok":true,"id":"...","status":"deploying"}` |
+| deploy | `{"method":"deploy","github_release":{"repo":"owner/repo","asset":"app"},"cmd":["app"],"app_name":"myapp"}` | `{"ok":true,"id":"...","status":"deploying"}` |
 | attest | `{"method":"attest","nonce":"..."}` | `{"ok":true,"quote_b64":"..."}` |
 | list | `{"method":"list"}` | `{"ok":true,"deployments":[...]}` |
 | stop | `{"method":"stop","id":"..."}` | `{"ok":true}` |
@@ -66,9 +66,9 @@ src/
 ├── init.rs           PID 1: mount, configfs, kernel cmdline, zombie reaper
 ├── config.rs         Config from file + env overlays
 ├── socket.rs         Unix socket server (7 methods)
-├── workload.rs       Deploy/stop/list, container + process lifecycle
-├── container.rs      Rust-native OCI runtime (libcontainer + oci-distribution)
-├── process.rs        Spawn, kill, liveness
+├── workload.rs       Deploy/stop/list, process lifecycle
+├── release.rs        GitHub Releases API: fetch static binaries
+├── process.rs        Spawn (with log capture), kill, logs
 └── attestation/
     ├── mod.rs         Backend trait + TDX detection (no insecure fallback)
     └── tsm.rs         TDX configfs-tsm implementation

@@ -27,13 +27,13 @@ Config: `/etc/easyenclave/config.json` or env vars (`EE_SOCKET_PATH`, `EE_DATA_D
 
 ```
 src/
-├── main.rs           Entry: init, config, boot workloads, socket server
+├── main.rs           Entry: init, config, pre-fetch, boot workloads, socket server
 ├── init.rs           PID 1: mount /proc /sys /dev, configfs, zombie reaper
 ├── config.rs         Config from JSON file + env overlays
 ├── socket.rs         Unix socket server, newline-delimited JSON (7 methods)
-├── workload.rs       Deploy/stop/list — container + process lifecycle
-├── container.rs      Rust-native OCI runtime (libcontainer + oci-distribution): pull, run, exec, stop, logs
-├── process.rs        Spawn, kill, liveness
+├── workload.rs       Deploy/stop/list — process lifecycle
+├── release.rs        GitHub Releases API: fetch static binaries into /var/lib/easyenclave/bin
+├── process.rs        Spawn (with log capture), kill, logs
 └── attestation/
     ├── mod.rs         AttestationBackend trait + detect() — errors if no TDX
     └── tsm.rs         TDX via configfs-tsm (/sys/kernel/config/tsm/report)
@@ -43,6 +43,6 @@ src/
 
 - No insecure attestation fallback — detect() returns error without TDX
 - Unix socket only — clients (like dd-client) handle networking
-- Workloads are OCI containers (libcontainer + oci-distribution, Rust-native, no daemon) or bare processes
-- post_deploy: sequential exec commands inside containers after start
+- Workloads are static binaries from GitHub releases, or bare commands — no container runtime
+- Fetch-only workloads (github_release with no cmd) prime the bin dir for other workloads to shell out to
 - Config from JSON + env, not database — stateless runtime

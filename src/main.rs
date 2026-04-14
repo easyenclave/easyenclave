@@ -1,8 +1,8 @@
 mod attestation;
 mod config;
-mod container;
 mod init;
 mod process;
+mod release;
 mod socket;
 mod workload;
 
@@ -24,9 +24,11 @@ async fn main() {
         }
     };
 
-    // Ensure data directory exists
+    // Ensure data directories exist
     let _ = std::fs::create_dir_all(&cfg.data_dir);
     let _ = std::fs::create_dir_all(format!("{}/workloads/logs", cfg.data_dir));
+    let bin_dir = format!("{}/bin", cfg.data_dir);
+    let _ = std::fs::create_dir_all(&bin_dir);
 
     // 3. Detect attestation backend
     let attestation = attestation::detect().unwrap_or_else(|e| {
@@ -38,21 +40,51 @@ async fn main() {
         attestation.attestation_type()
     );
 
-    // 4. Create empty deployments
+    // 4. Pre-fetch all github_release assets before any workload starts.
+    // Boot workloads spawn asynchronously, so without this phase a
+    // workload could shell out to a tool (e.g. cloudflared) before its
+    // download completes. Fail fast if any asset can't be fetched —
+    // the VM is useless without its binaries.
+    for bw in &cfg.boot_workloads {
+        if let Some(gh) = bw.github_release.clone() {
+            eprintln!("easyenclave: pre-fetching {} for {}", gh.asset, bw.app_name);
+            let bin = bin_dir.clone();
+            let res = tokio::task::spawn_blocking(move || release::download(&gh, &bin))
+                .await
+                .map_err(|e| format!("join: {e}"));
+            match res.and_then(|r| r) {
+                Ok(path) => eprintln!("easyenclave: fetched {}", path.display()),
+                Err(e) => {
+                    eprintln!(
+                        "easyenclave: FATAL: failed to fetch asset for {}: {e}",
+                        bw.app_name
+                    );
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+
+    // Put the bin dir on PATH so workloads can shell out by name.
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    if existing_path.is_empty() {
+        std::env::set_var("PATH", &bin_dir);
+    } else {
+        std::env::set_var("PATH", format!("{bin_dir}:{existing_path}"));
+    }
+
+    // 5. Create empty deployments
     let deployments: workload::Deployments = Arc::new(Mutex::new(HashMap::new()));
 
-    // 5. Deploy boot workloads from config
+    // 6. Deploy boot workloads from config.
     for bw in &cfg.boot_workloads {
         eprintln!("easyenclave: boot workload: {}", bw.app_name);
         let req = workload::DeployRequest {
             cmd: bw.cmd.clone().unwrap_or_default(),
-            image: bw.image.clone(),
             env: bw.env.clone(),
-            volumes: bw.volumes.clone(),
             app_name: Some(bw.app_name.clone()),
-            tty: false,
-            post_deploy: None,
-            native: bw.native,
+            tty: bw.tty,
+            github_release: bw.github_release.clone(),
         };
         let (id, _status) = workload::execute_deploy(&deployments, req).await;
         eprintln!("easyenclave: boot workload {} -> {id}", bw.app_name);
@@ -60,7 +92,7 @@ async fn main() {
 
     let start_time = std::time::Instant::now();
 
-    // 6. Start socket server (with SIGTERM handler for clean shutdown)
+    // 7. Start socket server (with signal handlers for clean shutdown)
     let deployments_shutdown = deployments.clone();
     tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
