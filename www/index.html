@@ -38,6 +38,7 @@
       <div class="card"><div class="ic">&#x1f6e1;</div><h3>No Networking</h3><p>The runtime itself has zero networking code. Workloads handle their own connectivity. Minimal attack surface &mdash; the enclave boundary is tight.</p></div>
       <div class="card"><div class="ic">&#x2705;</div><h3>TDX Attestation</h3><p>Generate cryptographic quotes via configfs-tsm. Prove your code is running unmodified on real TDX hardware. Supports nonce-based fresh attestation.</p></div>
       <div class="card"><div class="ic">&#x1f433;</div><h3>GitHub Releases + Processes</h3><p>Deploy static binaries pulled straight from GitHub releases (no registry, no Dockerfile), or run bare commands. The runtime watches the release, downloads the asset, runs it as a native process. Same API for both.</p></div>
+      <div class="card"><div class="ic">&#x1f4bb;</div><h3>Interactive Shell</h3><p>The <code>attach</code> socket method bridges a PTY-backed shell over the unix socket. Real terminal sessions for ops, not polling hacks &mdash; <code>cd</code> persists, <code>vim</code> works, <code>htop</code> paints. Proxied through dd-client's xterm.js dashboard in the fleet model.</p></div>
       <div class="card"><div class="ic">&#x1f4dc;</div><h3>MIT Open Source</h3><p>Read every line. Audit every build. The enclave runtime is fully open, fully auditable. Built for production confidential computing workloads.</p></div>
     </div>
   </div>
@@ -99,6 +100,10 @@
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">deployments</span>":[{"<span class="k">app_name</span>":"<span class="s">myapp</span>","<span class="k">status</span>":"<span class="s">running</span>"}]}</pre></div>
       <div class="ae"><div class="l">stop</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">stop</span>","<span class="k">id</span>":"<span class="s">abc123</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true}</pre></div>
+      <div class="ae"><div class="l">attach</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">attach</span>","<span class="k">cmd</span>":["<span class="s">/bin/sh</span>"]}
+<span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">attached</span>":true}
+<span class="c">  // rest of the connection is a raw byte stream</span>
+<span class="c">  // bridging a PTY-backed shell</span></pre></div>
     </div>
   </div>
 </section>
