@@ -21,4 +21,10 @@ mkdir -p /usr/local/bin
 # Required dirs
 mkdir -p /etc/easyenclave /var/lib/easyenclave /mnt/config
 
+# Rootfs is mounted read-only at runtime, but udhcpc's DNS hook and
+# the EE_DNS static override both need to write resolv.conf. Point
+# /etc/resolv.conf at /run/resolv.conf (tmpfs, mounted by init before
+# udhcpc runs) so writes land on tmpfs.
+ln -sf /run/resolv.conf /etc/resolv.conf
+
 echo "[mkosi.postinst] Done."

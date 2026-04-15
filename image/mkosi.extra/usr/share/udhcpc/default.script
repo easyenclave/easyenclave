@@ -12,7 +12,9 @@ set -e
 
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 IP=ip
-RESOLV=/etc/resolv.conf
+# /etc/resolv.conf is a symlink to /run/resolv.conf (tmpfs) — rootfs
+# is mounted read-only, so we write to the tmpfs side directly.
+RESOLV=/run/resolv.conf
 
 case "$1" in
   deconfig)
@@ -55,11 +57,10 @@ case "$1" in
       done
     fi
 
-    # DNS — write /etc/resolv.conf. The rootfs may be read-only
-    # (dm-verity or just mounted ro), so write to /tmp first and
-    # bind-mount over /etc/resolv.conf. If even that fails, skip
-    # DNS — routes are more critical than resolver config, and
-    # easyenclave's init.rs has an EE_DNS static override path.
+    # DNS: write through the /run/resolv.conf tmpfs target. Keep a
+    # /tmp copy for serial/debug inspection if the copy fails; routes
+    # are more critical than resolver config, and init.rs has an
+    # EE_DNS static override path.
     if [ -n "$dns" ]; then
       : > /tmp/resolv.conf.udhcpc
       [ -n "$domain" ] && echo "search $domain" >> /tmp/resolv.conf.udhcpc
