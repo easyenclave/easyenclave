@@ -193,31 +193,15 @@ pub fn maybe_init() {
             }
         }
     }
-    // DNS: the udhcpc hook writes the DHCP-provided nameservers to
-    // /tmp/resolv.conf.udhcpc (because the rootfs is read-only and
-    // direct writes to /etc/resolv.conf fail). Bind-mount it over
-    // /etc/resolv.conf so ureq/curl can resolve hostnames
-    // like api.github.com. EE_DNS overrides the DHCP-provided DNS if set.
+    // DNS: /etc/resolv.conf in the rootfs is a symlink to
+    // /run/resolv.conf (tmpfs). The udhcpc hook writes DHCP DNS there;
+    // EE_DNS overrides that file if set.
     if let Ok(dns) = std::env::var("EE_DNS") {
         eprintln!("easyenclave: init: dns={dns} (static override)");
-        let _ = std::fs::write("/tmp/resolv.conf", format!("nameserver {dns}\n"));
-        let _ = nix_mount_flags("/tmp/resolv.conf", "/etc/resolv.conf", "", libc::MS_BIND);
-    } else if std::path::Path::new("/tmp/resolv.conf.udhcpc").exists() {
-        eprintln!("easyenclave: init: dns from dhcp lease");
-        let _ = nix_mount_flags(
-            "/tmp/resolv.conf.udhcpc",
-            "/etc/resolv.conf",
-            "",
-            libc::MS_BIND,
-        );
+        let _ = std::fs::write("/run/resolv.conf", format!("nameserver {dns}\n"));
     }
 
-    // Force glibc to re-read /etc/resolv.conf. glibc caches the resolver
-    // config at process start — when /etc/resolv.conf was empty (the rootfs
-    // ships an empty placeholder for the bind-mount target). After the
-    // bind-mount above puts real nameservers in place, __res_init() forces
-    // glibc to pick them up. Without this, all DNS queries fail with
-    // "Temporary failure in name resolution".
+    // Force glibc to re-read /etc/resolv.conf after DHCP or EE_DNS writes it.
     extern "C" {
         fn __res_init() -> libc::c_int;
     }
