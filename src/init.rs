@@ -183,6 +183,12 @@ pub fn maybe_init() {
             {
                 Ok(s) if s.success() => {
                     eprintln!("easyenclave: init: dhcp lease acquired");
+                    if std::fs::metadata("/run/resolv.conf")
+                        .map(|m| m.len() > 0)
+                        .unwrap_or(false)
+                    {
+                        eprintln!("easyenclave: init: dns from dhcp lease");
+                    }
                 }
                 Ok(s) => {
                     eprintln!("easyenclave: init: udhcpc exited with {s}");

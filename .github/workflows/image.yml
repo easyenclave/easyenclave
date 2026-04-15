@@ -183,19 +183,20 @@ jobs:
           SHA12: ${{ needs.build.outputs.sha12 }}
         run: |
           LABEL="${SHA12}"
+          # Use '|' as field delimiter so patterns can contain ':'.
           CHECKS=(
-            "kernel_boot:Run /init as init process:1"
-            "root_resolved:Resolved root to /dev/:1"
-            "easyenclave_pid1:easyenclave: running as PID 1:1"
-            "tmpfs_mounted:mounted /var/lib/easyenclave:1"
-            "cgroup_mounted:mounted /sys/fs/cgroup:1"
-            "tdx_attestation:attestation backend: tdx:1"
-            "network_up:Device link is up:1"
-            "dhcp_lease:lease of .* obtained:1"
-            "dns_configured:dns from dhcp lease:1"
-            "gce_metadata:gce-meta env:1"
-            "listening:easyenclave: listening on:1"
-            "deployment_running:deployment .* running:1"
+            "kernel_boot|Run /init as init process|1"
+            "root_resolved|Resolved root to /dev/|1"
+            "easyenclave_pid1|easyenclave: running as PID 1|1"
+            "tmpfs_mounted|mounted /var/lib/easyenclave|1"
+            "cgroup_mounted|mounted /sys/fs/cgroup|1"
+            "tdx_attestation|attestation backend: tdx|1"
+            "network_up|Device link is up|1"
+            "dhcp_lease|lease of .* obtained|1"
+            "dns_configured|dns from dhcp lease|1"
+            "gce_metadata|gce-meta env|1"
+            "listening|easyenclave: listening on|1"
+            "deployment_running|deployment .* running|1"
           )
 
           # Two native workloads: seed an index file, then serve it with
@@ -245,13 +246,13 @@ jobs:
               break
             fi
             for check in "${CHECKS[@]}"; do
-              IFS=: read -r name pattern required <<< "$check"
+              IFS="|" read -r name pattern required <<< "$check"
               [ -n "${PASSED[$name]:-}" ] && continue
               echo "$out" | grep -qE "$pattern" && PASSED[$name]=1 && echo "  ✓ $name"
             done
             ALL_REQUIRED_DONE=true
             for check in "${CHECKS[@]}"; do
-              IFS=: read -r name pattern required <<< "$check"
+              IFS="|" read -r name pattern required <<< "$check"
               [ "$required" = "0" ] && continue
               [ -z "${PASSED[$name]:-}" ] && ALL_REQUIRED_DONE=false && break
             done
@@ -280,7 +281,7 @@ jobs:
           echo "=== integration test (${LABEL}) ==="
           PASS=0; TOTAL=0
           for check in "${CHECKS[@]}"; do
-            IFS=: read -r name pattern required <<< "$check"
+            IFS="|" read -r name pattern required <<< "$check"
             [ "$required" = "1" ] && TOTAL=$((TOTAL + 1))
             if [ -n "${PASSED[$name]:-}" ]; then
               echo "  ✓ $name"
