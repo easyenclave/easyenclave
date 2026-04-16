@@ -134,28 +134,104 @@ async fn handle_health(
 }
 
 fn handle_attest(req: &Value, attestation: &Arc<Box<dyn AttestationBackend>>) -> Value {
-    let nonce_b64 = req.get("nonce").and_then(|n| n.as_str()).unwrap_or("");
-    let nonce_bytes = if nonce_b64.is_empty() {
-        Vec::new()
-    } else {
-        use base64::Engine;
-        match base64::engine::general_purpose::STANDARD.decode(nonce_b64) {
-            Ok(bytes) => bytes,
-            Err(e) => return json!({"ok": false, "error": format!("invalid nonce base64: {e}")}),
-        }
+    let report_data = match attestation_report_data(req) {
+        Ok(report_data) => report_data,
+        Err(e) => return json!({"ok": false, "error": e}),
     };
 
-    let quote = if nonce_bytes.is_empty() {
+    let quote = if report_data.is_empty() {
         attestation.generate_quote_b64()
     } else {
-        attestation.generate_quote_with_nonce(&nonce_bytes)
+        attestation.generate_quote_with_report_data(&report_data)
     };
 
     match quote {
-        Some(q) => json!({"ok": true, "quote_b64": q}),
-        None => {
-            json!({"ok": true, "quote_b64": null, "attestation_type": attestation.attestation_type()})
+        Ok(q) => {
+            use base64::Engine;
+            json!({
+                "ok": true,
+                "attestation_type": attestation.attestation_type(),
+                "quote_format": "tdx",
+                "quote_b64": q,
+                "report_data_b64": base64::engine::general_purpose::STANDARD.encode(&report_data),
+                "report_data_len": report_data.len(),
+            })
         }
+        Err(e) => json!({
+            "ok": false,
+            "attestation_type": attestation.attestation_type(),
+            "error": e,
+        }),
+    }
+}
+
+fn attestation_report_data(req: &Value) -> Result<Vec<u8>, String> {
+    let report_data =
+        if let Some(report_data_b64) = req.get("report_data_b64").and_then(|n| n.as_str()) {
+            decode_base64_field("report_data_b64", report_data_b64)?
+        } else if let Some(nonce) = req.get("nonce").and_then(|n| n.as_str()) {
+            decode_legacy_nonce(nonce)?
+        } else {
+            Vec::new()
+        };
+
+    if report_data.len() > 64 {
+        return Err(format!(
+            "TDX report data is {} bytes; maximum is 64",
+            report_data.len()
+        ));
+    }
+
+    Ok(report_data)
+}
+
+fn decode_base64_field(field: &str, value: &str) -> Result<Vec<u8>, String> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|e| format!("invalid {field} base64: {e}"))
+}
+
+fn decode_legacy_nonce(value: &str) -> Result<Vec<u8>, String> {
+    if is_hex(value) {
+        decode_hex(value).map_err(|e| format!("invalid nonce hex: {e}"))
+    } else {
+        decode_base64_field("nonce", value)
+    }
+}
+
+fn is_hex(value: &str) -> bool {
+    !value.is_empty()
+        && value.len().is_multiple_of(2)
+        && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) {
+        return Err("odd number of digits".into());
+    }
+
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = hex_value(pair[0])?;
+            let low = hex_value(pair[1])?;
+            Ok((high << 4) | low)
+        })
+        .collect()
+}
+
+fn hex_value(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(format!("non-hex digit '{}'", byte as char)),
     }
 }
 
@@ -379,5 +455,54 @@ async fn handle_logs(req: &Value, deployments: &Deployments) -> Value {
     match crate::process::read_logs(&app_name, tail).await {
         Ok(lines) => json!({"ok": true, "lines": lines}),
         Err(e) => json!({"ok": false, "error": e}),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use serde_json::json;
+
+    #[test]
+    fn report_data_b64_is_preferred() {
+        let report_data = vec![1u8; 32];
+        let req = json!({
+            "report_data_b64": base64::engine::general_purpose::STANDARD.encode(&report_data),
+            "nonce": "00",
+        });
+
+        assert_eq!(attestation_report_data(&req).unwrap(), report_data);
+    }
+
+    #[test]
+    fn legacy_nonce_accepts_base64() {
+        let nonce = b"freshness";
+        let req = json!({
+            "nonce": base64::engine::general_purpose::STANDARD.encode(nonce),
+        });
+
+        assert_eq!(attestation_report_data(&req).unwrap(), nonce);
+    }
+
+    #[test]
+    fn legacy_nonce_accepts_hex_values() {
+        let req = json!({ "nonce": "deadbeef" });
+
+        assert_eq!(
+            attestation_report_data(&req).unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn report_data_rejects_oversize_values() {
+        let report_data = vec![7u8; 65];
+        let req = json!({
+            "report_data_b64": base64::engine::general_purpose::STANDARD.encode(report_data),
+        });
+
+        let err = attestation_report_data(&req).unwrap_err();
+        assert!(err.contains("maximum is 64"));
     }
 }
