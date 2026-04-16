@@ -7,10 +7,15 @@ pub trait AttestationBackend: Send + Sync {
     fn attestation_type(&self) -> &str;
 
     /// Generate a base64-encoded attestation quote, if available.
-    fn generate_quote_b64(&self) -> Option<String>;
+    fn generate_quote_b64(&self) -> Result<String, String>;
 
-    /// Generate a quote with caller-supplied nonce embedded in report data.
-    fn generate_quote_with_nonce(&self, nonce: &[u8]) -> Option<String>;
+    /// Generate a base64-encoded quote with caller-supplied report data.
+    ///
+    /// For TDX this is the raw TD report_data buffer before zero padding.
+    /// Callers that integrate an external verifier such as Intel Trust
+    /// Authority should compute that verifier's required report_data binding
+    /// outside the enclave runtime and pass it here.
+    fn generate_quote_with_report_data(&self, report_data: &[u8]) -> Result<String, String>;
 }
 
 /// Detect the attestation backend. Returns an error if no hardware

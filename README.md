@@ -82,6 +82,59 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 
 `attach` is the only method that changes the connection's protocol — after the JSON ack, the connection is a raw byte stream bridging a `script -qfc <cmd> /dev/null` PTY. Used by clients that want an interactive shell (dd-client, dd-web).
 
+For a Java workload example, see
+[`docs/confer-proxy-on-easyenclave.md`](docs/confer-proxy-on-easyenclave.md).
+
+### ITA v2 and verifier integration
+
+EasyEnclave is an evidence producer, not a verifier. The runtime intentionally
+does not carry Intel Trust Authority API keys, call ITA over the network, or
+make policy decisions inside PID 1. A relying party, dd-web/dd-register, or a
+small verifier sidecar should:
+
+1. Get freshness material from the verifier. For ITA v2 this can be
+   `GET https://api.trustauthority.intel.com/appraisal/v2/nonce`.
+2. Compute the 64-byte TDX `report_data` binding required by the verifier.
+   For ITA, use Intel's client adapter logic for the verifier nonce,
+   `runtime_data`, and any held data you include.
+3. Ask EasyEnclave for a quote:
+
+   ```json
+   {"method":"attest","report_data_b64":"<64-byte-report-data-base64>"}
+   ```
+
+4. Submit the returned `quote_b64` to ITA v2:
+
+   ```json
+   {
+     "tdx": {
+       "quote": "<quote_b64>",
+       "verifier_nonce": {"val":"...","iat":"...","signature":"..."}
+     },
+     "policy_ids": ["<policy-id>"],
+     "policy_must_match": true
+   }
+   ```
+
+The legacy `nonce` request field is still accepted. Hex-looking values are
+decoded as hex for existing tooling; other values are decoded as base64. New
+verifier integrations should use `report_data_b64` so the caller controls the
+exact TDX report-data bytes.
+
+### QGS boundary
+
+EasyEnclave does not talk to the Intel TDX Quote Generation Service directly.
+It uses the Linux `configfs-tsm` interface:
+
+```
+/sys/kernel/config/tsm/report/<report>/inblob
+/sys/kernel/config/tsm/report/<report>/outblob
+```
+
+If QGS is needed on a platform, it sits below that interface in the guest
+kernel, VMM, host, or cloud provider quote path. EasyEnclave only requires that
+`configfs-tsm` can produce a real TDX quote.
+
 ## Configuration
 
 `/etc/easyenclave/config.json` (optional, env vars override):
