@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EasyEnclave - Run Anything Inside a Hardware-Sealed Enclave</title>
-  <meta name="description" content="Open-source enclave runtime for Intel TDX confidential VMs. PID 1 with unix socket API. No networking. Minimal attack surface.">
+  <title>EasyEnclave - The Minimal Linux Distro for Confidential Computing</title>
+  <meta name="description" content="A sealed Linux image with only 2 packages. No systemd, no SSH, no container runtime. Boots a Unified Kernel Image straight to your workload inside Intel TDX hardware.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -12,47 +12,68 @@
 <nav>
   <a href="/" class="logo">EasyEnclave</a>
   <div class="links">
+    <a href="#whats-inside">What's Inside</a>
     <a href="#features">Features</a>
     <a href="#how">How It Works</a>
-    <a href="#api">API</a>
     <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
   </div>
 </nav>
 
 <div class="hero">
-  <h1>Run anything inside a <span class="g">hardware-sealed enclave</span></h1>
-  <p>Open-source runtime for Intel TDX confidential VMs. Runs as PID 1. Unix socket API. No networking in the enclave &mdash; minimal attack surface by design.</p>
+  <h1>Two packages. One binary. <span class="g">Hardware-sealed.</span></h1>
+  <p>EasyEnclave is a stripped-to-the-bone Linux image for Intel TDX confidential VMs. The entire userland is <code>ca-certificates</code> and <code>busybox-static</code>. No systemd, no SSH, no container runtime. One Unified Kernel Image. One measurement.</p>
   <div class="btns">
     <a href="#start" class="btn btn-g">Get Started</a>
     <a href="https://github.com/easyenclave/easyenclave" class="btn btn-o">View on GitHub</a>
   </div>
 </div>
 
+<section id="whats-inside" class="ct">
+  <div class="c">
+    <h2>What's Inside</h2>
+    <p class="sub">Everything a typical server ships. Everything EasyEnclave doesn't.</p>
+    <div class="comparison">
+      <div class="cmp-hdr"><span>Component</span><span>Typical Server</span><span>EasyEnclave</span></div>
+      <div class="cmp-row"><span>Init system</span><span>systemd</span><span>easyenclave (PID 1)</span></div>
+      <div class="cmp-row"><span>SSH</span><span>openssh-server</span><span>None</span></div>
+      <div class="cmp-row"><span>Package manager</span><span>apt / dpkg</span><span>None (immutable)</span></div>
+      <div class="cmp-row"><span>Container runtime</span><span>docker / containerd</span><span>None (native processes)</span></div>
+      <div class="cmp-row"><span>Bootloader</span><span>grub2 / shim</span><span>None (UKI boots directly)</span></div>
+      <div class="cmp-row"><span>Userland packages</span><span>200&ndash;400+</span><span>2</span></div>
+      <div class="cmp-row"><span>Network listeners</span><span>Multiple</span><span>0</span></div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="num">2</div><div class="lbl">packages</div></div>
+      <div class="stat"><div class="num">1</div><div class="lbl">EFI binary</div></div>
+      <div class="stat"><div class="num">0</div><div class="lbl">network listeners</div></div>
+    </div>
+  </div>
+</section>
+
 <section id="features" class="ct">
   <div class="c">
     <h2>Why EasyEnclave</h2>
-    <p class="sub">Everything you need to run workloads in a sealed TDX VM. Nothing you don't.</p>
+    <p class="sub">Stripped to the bone. Sealed by hardware.</p>
     <div class="grid">
-      <div class="card"><div class="ic">&#x1f510;</div><h3>PID 1 Runtime</h3><p>Runs as the init process inside the sealed VM. Mounts filesystems, configures network, reaps zombies, manages the full workload lifecycle.</p></div>
-      <div class="card"><div class="ic">&#x1f50c;</div><h3>Unix Socket API</h3><p>Newline-delimited JSON over <code>/var/lib/easyenclave/agent.sock</code>. Deploy, attest, exec, monitor &mdash; all through one socket. No HTTP server in the enclave.</p></div>
-      <div class="card"><div class="ic">&#x1f6e1;</div><h3>No Networking</h3><p>The runtime itself has zero networking code. Workloads handle their own connectivity. Minimal attack surface &mdash; the enclave boundary is tight.</p></div>
-      <div class="card"><div class="ic">&#x2705;</div><h3>TDX Attestation</h3><p>Generate cryptographic quotes via configfs-tsm. Prove your code is running unmodified on real TDX hardware. Supports nonce-based fresh attestation.</p></div>
-      <div class="card"><div class="ic">&#x1f433;</div><h3>GitHub Releases + Processes</h3><p>Deploy static binaries pulled straight from GitHub releases (no registry, no Dockerfile), or run bare commands. The runtime watches the release, downloads the asset, runs it as a native process. Same API for both.</p></div>
-      <div class="card"><div class="ic">&#x1f4bb;</div><h3>Interactive Shell</h3><p>The <code>attach</code> socket method bridges a PTY-backed shell over the unix socket. Real terminal sessions for ops, not polling hacks &mdash; <code>cd</code> persists, <code>vim</code> works, <code>htop</code> paints. Proxied through dd-client's xterm.js dashboard in the fleet model.</p></div>
-      <div class="card"><div class="ic">&#x1f4dc;</div><h3>MIT Open Source</h3><p>Read every line. Audit every build. The enclave runtime is fully open, fully auditable. Built for production confidential computing workloads.</p></div>
+      <div class="card"><div class="ic">&#x1f4e6;</div><h3>Unified Kernel Image</h3><p>Kernel + initrd + cmdline packed into one EFI binary. One file, one cryptographic measurement. No bootloader chain, no GRUB config, no shim.</p></div>
+      <div class="card"><div class="ic">&#x1f9f9;</div><h3>Two Packages, Period</h3><p>The entire userland is <code>ca-certificates</code> and <code>busybox-static</code>. No package manager in the image. What isn't there can't be exploited.</p></div>
+      <div class="card"><div class="ic">&#x1f512;</div><h3>dm-verity Rootfs</h3><p>The root filesystem is integrity-verified at the block level. Tamper with a single byte and the kernel refuses to read it.</p></div>
+      <div class="card"><div class="ic">&#x2699;</div><h3>PID 1 Runtime</h3><p>Boots straight to easyenclave. No systemd, no init scripts, no runlevels. Mounts filesystems, reaps zombies, runs your workload &mdash; nothing else.</p></div>
+      <div class="card"><div class="ic">&#x1f3af;</div><h3>Profile-Driven Builds</h3><p><code>make build TARGET=gcp</code> or <code>TARGET=local-tdx</code>. Each profile defines its kernel cmdline, module set, root strategy, and output format. Add a target in minutes.</p></div>
+      <div class="card"><div class="ic">&#x2705;</div><h3>TDX Attestation</h3><p>Generate cryptographic quotes via configfs-tsm. The hardware proves the exact measured image is running unmodified inside a sealed VM. Nonce or report-data binding.</p></div>
     </div>
   </div>
 </section>
 
 <section id="how" class="ct">
   <div class="c">
-    <h2>How It Works</h2>
-    <p class="sub">Boot a TDX VM with EasyEnclave as PID 1. Connect via unix socket. Deploy workloads.</p>
+    <h2>From Source to Sealed VM</h2>
+    <p class="sub">Build a minimal image. Boot it. Deploy workloads. Prove it's real.</p>
     <div class="steps">
-      <div class="step"><div class="sn">1</div><div><h3>Boot</h3><p>The TDX VM starts with EasyEnclave as its init process. It mounts filesystems, loads config, pre-fetches any GitHub release binaries listed in the boot workloads, and starts listening on the unix socket.</p></div></div>
-      <div class="step"><div class="sn">2</div><div><h3>Connect</h3><p>Your client connects to <code>/var/lib/easyenclave/agent.sock</code>. Send JSON, get JSON back. No HTTP overhead.</p></div></div>
-      <div class="step"><div class="sn">3</div><div><h3>Deploy</h3><p>Send a deploy request with a GitHub release (owner/repo + asset) or a bare command. EasyEnclave downloads the binary into its bin dir, makes it executable, starts it as a process. Status and logs tracked automatically.</p></div></div>
-      <div class="step"><div class="sn">4</div><div><h3>Attest</h3><p>Request a TDX attestation quote with an optional nonce. The hardware generates a cryptographic proof that the exact measured code is running inside the sealed VM.</p></div></div>
+      <div class="step"><div class="sn">1</div><div><h3>Build</h3><p><code>make build TARGET=gcp</code> assembles a rootfs with mkosi (2 packages), packs it into a Unified Kernel Image, and outputs a disk image. Everything else is excluded.</p></div></div>
+      <div class="step"><div class="sn">2</div><div><h3>Boot</h3><p>UEFI firmware loads the UKI directly &mdash; no bootloader. The kernel starts, the initrd mounts the dm-verity rootfs, and easyenclave becomes PID 1.</p></div></div>
+      <div class="step"><div class="sn">3</div><div><h3>Deploy</h3><p>Send a JSON command over the unix socket. EasyEnclave downloads a static binary from GitHub Releases and runs it as a native process. No containers, no registries.</p></div></div>
+      <div class="step"><div class="sn">4</div><div><h3>Attest</h3><p>Request a TDX attestation quote. The hardware generates a cryptographic proof that the exact measured image is running unmodified inside the sealed VM.</p></div></div>
     </div>
   </div>
 </section>
@@ -60,23 +81,23 @@
 <section class="ct">
   <div class="c">
     <h2>Architecture</h2>
-    <p class="sub">EasyEnclave is the sealed boundary. Workloads run inside it.</p>
+    <p class="sub">From firmware to workload &mdash; nothing in between that doesn't need to be there.</p>
     <div class="arch">
 <pre>
-<span class="g">TDX VM</span> (hardware-sealed memory)
+<span class="g">UEFI firmware</span>
  |
- +-- <span class="g">easyenclave</span> (PID 1)
- |     |
- |     +-- unix socket: <span class="b">/var/lib/easyenclave/agent.sock</span>
- |     |
- |     +-- workload: <span class="b">your-client</span> (web dashboard, API, etc)
- |     |     connects to socket for deploy/attest/logs
- |     |
- |     +-- workload: <span class="b">your-app</span> (native process)
- |           handles its own networking
- |
- +-- <span class="g">attestation</span>: configfs-tsm (/sys/kernel/config/tsm/report)
- +-- <span class="g">release fetch</span>: GitHub Releases API over rustls (compiled into easyenclave)
+ +-- <span class="g">easyenclave.efi</span> (UKI: kernel + initrd + cmdline)
+      |
+      +-- <span class="g">easyenclave</span> (PID 1)
+      |     |
+      |     +-- unix socket: <span class="b">/var/lib/easyenclave/agent.sock</span>
+      |     |
+      |     +-- workload: <span class="b">your-app</span> (static binary, native process)
+      |     |     fetched from GitHub Releases or run as bare command
+      |     |
+      |     +-- workload: <span class="b">your-client</span> (deploy, attest, logs via socket)
+      |
+      +-- <span class="g">attestation</span>: configfs-tsm (/sys/kernel/config/tsm/report)
 </pre>
     </div>
   </div>
@@ -85,41 +106,39 @@
 <section id="api" class="ct">
   <div class="c">
     <h2>Socket API</h2>
-    <p class="sub">Newline-delimited JSON. Send a request, get a response. One method per line.</p>
+    <p class="sub">Newline-delimited JSON over a unix socket. No HTTP server in the enclave.</p>
     <div class="api">
       <div class="ae"><div class="l">health</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">health</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">attestation_type</span>":"<span class="s">tdx</span>","<span class="k">workloads</span>":2,"<span class="k">uptime_secs</span>":3600}</pre></div>
       <div class="ae"><div class="l">deploy</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">deploy</span>","<span class="k">github_release</span>":{"<span class="k">repo</span>":"<span class="s">owner/repo</span>",
     "<span class="k">asset</span>":"<span class="s">app</span>"},"<span class="k">cmd</span>":["<span class="s">app</span>"],"<span class="k">app_name</span>":"<span class="s">myapp</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">id</span>":"<span class="s">abc123</span>","<span class="k">status</span>":"<span class="s">deploying</span>"}</pre></div>
-      <div class="ae"><div class="l">attest</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">attest</span>","<span class="k">nonce</span>":"<span class="s">deadbeef</span>"}
+      <div class="ae"><div class="l">attest</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">attest</span>","<span class="k">report_data_b64</span>":"<span class="s">AQAB...</span>"}
 <span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">quote_b64</span>":"<span class="s">AQAAAA...</span>"}</pre></div>
-      <div class="ae"><div class="l">exec</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">exec</span>","<span class="k">cmd</span>":["<span class="s">uname</span>","<span class="s">-a</span>"]}
-<span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">exit_code</span>":0,"<span class="k">stdout</span>":"<span class="s">Linux...</span>"}</pre></div>
-      <div class="ae"><div class="l">list</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">list</span>"}
-<span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">deployments</span>":[{"<span class="k">app_name</span>":"<span class="s">myapp</span>","<span class="k">status</span>":"<span class="s">running</span>"}]}</pre></div>
-      <div class="ae"><div class="l">stop</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">stop</span>","<span class="k">id</span>":"<span class="s">abc123</span>"}
-<span class="k">&larr;</span> {"<span class="k">ok</span>":true}</pre></div>
-      <div class="ae"><div class="l">attach</div><pre><span class="k">&rarr;</span> {"<span class="k">method</span>":"<span class="s">attach</span>","<span class="k">cmd</span>":["<span class="s">/bin/sh</span>"]}
-<span class="k">&larr;</span> {"<span class="k">ok</span>":true,"<span class="k">attached</span>":true}
-<span class="c">  // rest of the connection is a raw byte stream</span>
-<span class="c">  // bridging a PTY-backed shell</span></pre></div>
     </div>
+    <p style="margin-top:16px"><a href="https://github.com/easyenclave/easyenclave#socket-api">Full API reference &rarr;</a></p>
   </div>
 </section>
 
 <section id="start" class="ct">
   <div class="c">
     <h2>Get Started</h2>
-    <p class="sub">Clone, build, run.</p>
+    <p class="sub">Clone, build an image, boot it.</p>
     <div class="cb">
       <div class="h">terminal</div>
 <pre>git clone https://github.com/easyenclave/easyenclave
 cd easyenclave
+
+# Build the runtime
 cargo build --release
 
-# Run in a TDX VM (as PID 1) or locally for dev
-./target/release/easyenclave</pre>
+# Build a sealed VM image (GCP TDX or local dev)
+cd image
+make build TARGET=gcp          # GPT disk image
+make build TARGET=local-tdx    # hybrid ISO for local QEMU
+
+# Boot locally for dev
+bash test-local.sh</pre>
     </div>
   </div>
 </section>
@@ -127,6 +146,7 @@ cargo build --release
 <footer>
   <p>
     <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
+    <a href="https://github.com/easyenclave/easyenclave#socket-api">API</a>
     <a href="https://github.com/easyenclave/easyenclave/wiki">Docs</a>
   </p>
   <p style="margin-top:8px">EasyEnclave &mdash; MIT License</p>

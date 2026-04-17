@@ -55,7 +55,24 @@ section h2 { font-size: 24px; font-weight: 700; margin-bottom: 10px; }
 .cb .h { padding: 8px 14px; border-bottom: 1px solid var(--surface); font-family: var(--mono); font-size: 11px; color: var(--dim); }
 .cb pre { padding: 14px; font-family: var(--mono); font-size: 12px; line-height: 1.6; overflow-x: auto; }
 
+.stats { display: flex; justify-content: center; gap: 40px; flex-wrap: wrap; margin: 32px auto 0; }
+.stat { text-align: center; }
+.stat .num { font-family: var(--mono); font-size: 42px; font-weight: 800; color: var(--green); line-height: 1; }
+.stat .lbl { font-size: 13px; color: var(--dim); margin-top: 4px; }
+
+.comparison { max-width: 620px; margin: 0 auto; border: 1px solid var(--surface); border-radius: 10px; overflow: hidden; }
+.cmp-hdr { display: grid; grid-template-columns: 1fr 1fr 1fr; background: var(--surface); }
+.cmp-hdr span { padding: 10px 14px; font-size: 12px; font-weight: 600; font-family: var(--mono); }
+.cmp-hdr span:first-child { color: var(--dim); }
+.cmp-hdr span:nth-child(2) { color: var(--dim); text-align: center; }
+.cmp-hdr span:last-child { color: var(--green); text-align: center; }
+.cmp-row { display: grid; grid-template-columns: 1fr 1fr 1fr; border-top: 1px solid var(--surface); background: var(--bg-alt); }
+.cmp-row span { padding: 8px 14px; font-size: 12px; }
+.cmp-row span:first-child { color: var(--dim); font-weight: 500; }
+.cmp-row span:nth-child(2) { color: var(--dim); text-align: center; opacity: .6; }
+.cmp-row span:last-child { color: var(--green); text-align: center; font-weight: 600; }
+
 footer { border-top: 1px solid var(--surface); padding: 24px; text-align: center; }
 footer p { color: var(--dim); font-size: 13px; } footer a { color: var(--dim); margin: 0 10px; }
 
-@media(max-width:600px) { nav .links{display:none} .hero{padding:64px 16px 40px} .grid,.api{grid-template-columns:1fr} }
+@media(max-width:600px) { nav .links{display:none} .hero{padding:64px 16px 40px} .grid,.api{grid-template-columns:1fr} .stats{gap:24px} .cmp-hdr,.cmp-row{grid-template-columns:1fr 1fr 1fr; font-size:11px} .cmp-hdr span,.cmp-row span{padding:6px 8px} }
