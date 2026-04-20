@@ -12,10 +12,18 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use crate::capture::CaptureSink;
 use crate::process;
 use crate::release::{self, GithubRelease};
 
 const BIN_DIR: &str = "/var/lib/easyenclave/bin";
+
+/// Reads `EE_CAPTURE_SOCKET`; when set, every spawned workload's
+/// stdin/stdout is teed to this unix-domain socket as LDJSON records.
+/// See [`capture`](crate::capture).
+fn capture_socket_path() -> Option<PathBuf> {
+    std::env::var_os("EE_CAPTURE_SOCKET").map(PathBuf::from)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DeploymentInfo {
@@ -146,15 +154,49 @@ async fn spawn_from_cmd(
     };
     let args: Vec<&str> = req.cmd.iter().skip(1).map(|s| s.as_str()).collect();
 
+    // If EE_CAPTURE_SOCKET is set, open a per-workload connection to it
+    // and emit a `spawn` record before the child starts. The sink is
+    // cloned into the tee tasks (so each stdout/stderr line becomes an
+    // `out` record) and moved into the wait task (so we emit `exit`
+    // when the child terminates). A failed connect falls back to
+    // running without capture — best-effort tee, not a hard dependency.
+    let capture = if let Some(sock) = capture_socket_path() {
+        let id = format!(
+            "{}-{}",
+            app_name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
+        let argv: Vec<String> = std::iter::once(program_owned.clone())
+            .chain(args.iter().map(|s| s.to_string()))
+            .collect();
+        CaptureSink::connect(&sock, id, &argv, None).await
+    } else {
+        None
+    };
+
     let result = if let Some(env_list) = &req.env {
         let env_map = parse_env_list(env_list);
-        process::spawn_command_with_env(&program_owned, &args, req.tty, &env_map, app_name).await
+        process::spawn_command_with_env(
+            &program_owned,
+            &args,
+            req.tty,
+            &env_map,
+            app_name,
+            capture.clone(),
+        )
+        .await
     } else {
-        process::spawn_command(&program_owned, &args, req.tty, app_name).await
+        process::spawn_command(&program_owned, &args, req.tty, app_name, capture.clone()).await
     };
 
     match result {
-        Ok(mut child) => {
+        Ok(process::SpawnedChild {
+            mut child,
+            tee_handles,
+        }) => {
             let pid = child.id();
             eprintln!("easyenclave: deployment {dep_id} running (pid={pid:?})");
             let mut deps = deployments.lock().await;
@@ -164,7 +206,18 @@ async fn spawn_from_cmd(
             }
             drop(deps);
             tokio::spawn(async move {
-                let _ = child.wait().await;
+                let status = child.wait().await;
+                // Wait for the tee tasks to finish draining stdout/stderr
+                // before emitting the final `exit` record — otherwise a
+                // workload's last lines lose the race and get committed
+                // after the block's closing bookmark.
+                for h in tee_handles {
+                    let _ = h.await;
+                }
+                if let Some(sink) = capture {
+                    let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                    sink.exit(code).await;
+                }
             });
         }
         Err(e) => set_deploy_failed(deployments, dep_id, &e).await,

@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
+
+use crate::capture::CaptureSink;
 
 const LOG_DIR: &str = "/var/lib/easyenclave/workloads/logs";
 
@@ -18,7 +21,9 @@ fn spawn_tee(
     stream: impl tokio::io::AsyncRead + Unpin + Send + 'static,
     log_file: std::fs::File,
     prefix: String,
-) {
+    capture: Option<CaptureSink>,
+    stream_name: &'static str,
+) -> JoinHandle<()> {
     use std::io::Write;
     use std::sync::Mutex;
     let log_file = std::sync::Arc::new(Mutex::new(log_file));
@@ -30,21 +35,35 @@ fn spawn_tee(
                 let _ = writeln!(f, "{line}");
                 let _ = f.flush();
             }
+            if let Some(c) = capture.as_ref() {
+                c.out(stream_name, &line).await;
+            }
         }
-    });
+    })
 }
 
 /// Spawn a command directly on the VM. stdout+stderr are piped, drained
 /// by background tasks, and tee'd to both a per-app log file (for the
 /// `logs` socket method) and easyenclave's own stderr (so output is
 /// visible on the serial console during boot).
+/// Handle to a spawned workload. `tee_handles` are the background tasks
+/// draining stdout/stderr into the log file (and the capture socket, if
+/// configured). Await them before emitting a final `exit` record so the
+/// child's last lines aren't lost to the race between `child.wait()` and
+/// pipe drain.
+pub struct SpawnedChild {
+    pub child: Child,
+    pub tee_handles: Vec<JoinHandle<()>>,
+}
+
 pub async fn spawn_command(
     program: &str,
     args: &[&str],
     tty: bool,
     app_name: &str,
-) -> Result<Child, String> {
-    spawn_inner(program, args, tty, None, app_name).await
+    capture: Option<CaptureSink>,
+) -> Result<SpawnedChild, String> {
+    spawn_inner(program, args, tty, None, app_name, capture).await
 }
 
 /// Spawn a command with an explicit environment map on top of the
@@ -55,8 +74,9 @@ pub async fn spawn_command_with_env(
     tty: bool,
     env: &std::collections::HashMap<String, String>,
     app_name: &str,
-) -> Result<Child, String> {
-    spawn_inner(program, args, tty, Some(env), app_name).await
+    capture: Option<CaptureSink>,
+) -> Result<SpawnedChild, String> {
+    spawn_inner(program, args, tty, Some(env), app_name, capture).await
 }
 
 async fn spawn_inner(
@@ -65,7 +85,8 @@ async fn spawn_inner(
     tty: bool,
     env: Option<&std::collections::HashMap<String, String>>,
     app_name: &str,
-) -> Result<Child, String> {
+    capture: Option<CaptureSink>,
+) -> Result<SpawnedChild, String> {
     std::fs::create_dir_all(LOG_DIR).map_err(|e| format!("create log dir: {e}"))?;
     let log_file =
         std::fs::File::create(log_path(app_name)).map_err(|e| format!("open log: {e}"))?;
@@ -105,14 +126,27 @@ async fn spawn_inner(
     let pid = child.id().unwrap_or(0);
     eprintln!("easyenclave: spawned {program} (pid={pid}, app={app_name})");
 
+    let mut tee_handles = Vec::with_capacity(2);
     if let Some(stdout) = child.stdout.take() {
-        spawn_tee(stdout, log_file, app_name.to_string());
+        tee_handles.push(spawn_tee(
+            stdout,
+            log_file,
+            app_name.to_string(),
+            capture.clone(),
+            "stdout",
+        ));
     }
     if let Some(stderr) = child.stderr.take() {
-        spawn_tee(stderr, log_clone, app_name.to_string());
+        tee_handles.push(spawn_tee(
+            stderr,
+            log_clone,
+            app_name.to_string(),
+            capture,
+            "stderr",
+        ));
     }
 
-    Ok(child)
+    Ok(SpawnedChild { child, tee_handles })
 }
 
 /// Read the last `tail` lines from a workload's log file.
