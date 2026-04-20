@@ -25,3 +25,6 @@ tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "si
 # webpki-roots; we don't depend on system CA certs.
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 uuid = { version = "1", features = ["serde", "v4"] }
+
+[dev-dependencies]
+tempfile = "3"

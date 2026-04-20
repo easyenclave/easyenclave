@@ -1,4 +1,5 @@
 mod attestation;
+mod capture;
 mod config;
 mod init;
 mod process;
