@@ -77,12 +77,25 @@ async fn main() {
     // 5. Create empty deployments
     let deployments: workload::Deployments = Arc::new(Mutex::new(HashMap::new()));
 
+    // Mint a single per-boot token. Workloads with `inherit_token: true`
+    // get it in their env (`EE_TOKEN=<hex>`); the socket server requires
+    // it on every request. Local-root-inside-a-compromised-workload
+    // stops being enough to drive EE — only the one workload that was
+    // explicitly granted the env var can talk to the socket.
+    let boot_token = mint_boot_token();
+
     // 6. Deploy boot workloads from config.
     for bw in &cfg.boot_workloads {
         eprintln!("easyenclave: boot workload: {}", bw.app_name);
+        let mut env = bw.env.clone();
+        if bw.inherit_token {
+            env.get_or_insert_with(Vec::new)
+                .push(format!("EE_TOKEN={boot_token}"));
+            eprintln!("easyenclave: {} inherits EE_TOKEN", bw.app_name);
+        }
         let req = workload::DeployRequest {
             cmd: bw.cmd.clone().unwrap_or_default(),
-            env: bw.env.clone(),
+            env,
             app_name: Some(bw.app_name.clone()),
             tty: bw.tty,
             github_release: bw.github_release.clone(),
@@ -117,10 +130,31 @@ async fn main() {
         deployments,
         attestation: Arc::new(attestation),
         start_time,
+        expected_token: Some(boot_token),
     };
 
     if let Err(e) = server.run().await {
         eprintln!("easyenclave: socket server error: {e}");
         std::process::exit(1);
     }
+}
+
+/// Mint a 32-byte random token at boot, hex-encoded. Uses
+/// `getrandom(2)` via the kernel; no extra crate dep. `/dev/urandom`
+/// is also an option but `getrandom` avoids the need to open a file
+/// and is always available on Linux 3.17+.
+fn mint_boot_token() -> String {
+    let mut buf = [0u8; 32];
+    unsafe {
+        let mut got = 0usize;
+        while got < buf.len() {
+            let n = libc::getrandom(buf.as_mut_ptr().add(got) as *mut _, buf.len() - got, 0);
+            if n < 0 {
+                let err = std::io::Error::last_os_error();
+                panic!("easyenclave: FATAL: getrandom failed: {err}");
+            }
+            got += n as usize;
+        }
+    }
+    buf.iter().map(|b| format!("{b:02x}")).collect()
 }
