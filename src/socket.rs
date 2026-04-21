@@ -19,6 +19,10 @@ pub struct SocketServer {
     pub deployments: Deployments,
     pub attestation: Arc<Box<dyn AttestationBackend>>,
     pub start_time: std::time::Instant,
+    /// If set, every request must include `"token": "<matching-value>"`.
+    /// Minted once at boot by `main.rs::mint_boot_token` and handed to
+    /// workloads that opt in via `BootWorkload.inherit_token`.
+    pub expected_token: Option<String>,
 }
 
 impl SocketServer {
@@ -35,6 +39,14 @@ impl SocketServer {
         let listener = UnixListener::bind(&self.socket_path)
             .map_err(|e| format!("bind {}: {e}", self.socket_path))?;
 
+        // Belt-and-suspenders: even with the token check in place, only
+        // root should be able to open the socket. Workloads running as
+        // non-root (future privilege-drop tier) can't bypass the token
+        // check by guessing — they can't even connect.
+        if let Err(e) = chmod_0600(&self.socket_path) {
+            eprintln!("easyenclave: warning: chmod {} 0600: {e}", self.socket_path);
+        }
+
         eprintln!("easyenclave: listening on {}", self.socket_path);
 
         loop {
@@ -46,6 +58,7 @@ impl SocketServer {
             let deployments = self.deployments.clone();
             let attestation = self.attestation.clone();
             let start_time = self.start_time;
+            let expected_token = self.expected_token.clone();
 
             tokio::spawn(async move {
                 let (reader, mut writer) = stream.into_split();
@@ -63,6 +76,12 @@ impl SocketServer {
                     // Sniff for `attach` before dispatching — it switches
                     // the connection from JSON line mode to raw bytes.
                     if let Ok(req) = serde_json::from_str::<Value>(line.trim()) {
+                        if !token_ok(&req, expected_token.as_deref()) {
+                            let _ = writer
+                                .write_all(b"{\"ok\":false,\"error\":\"unauthenticated\"}\n")
+                                .await;
+                            continue;
+                        }
                         if req.get("method").and_then(|m| m.as_str()) == Some("attach") {
                             if writer
                                 .write_all(b"{\"ok\":true,\"attached\":true}\n")
@@ -458,11 +477,84 @@ async fn handle_logs(req: &Value, deployments: &Deployments) -> Value {
     }
 }
 
+/// Constant-time-ish equality + `None`-means-unsealed logic. When
+/// `expected` is `None` the socket is in "no seal" mode and every
+/// request is accepted (matches pre-Tier-1 behaviour — useful for
+/// local dev and upstream's existing standalone usage). When
+/// `expected` is `Some(t)`, the caller must include a matching
+/// `"token": "<t>"` field.
+fn token_ok(req: &Value, expected: Option<&str>) -> bool {
+    let Some(expected) = expected else {
+        return true;
+    };
+    let Some(got) = req.get("token").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    constant_time_eq(got.as_bytes(), expected.as_bytes())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut acc: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        acc |= x ^ y;
+    }
+    acc == 0
+}
+
+/// `chmod 0600` on a path. Used right after `UnixListener::bind` so
+/// only the owner (EE itself, UID 0) can connect. Combined with the
+/// token check this makes local-admin access a two-factor gate.
+fn chmod_0600(path: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_mode(0o600);
+    std::fs::set_permissions(path, perms)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use base64::Engine;
     use serde_json::json;
+
+    #[test]
+    fn token_ok_accepts_when_no_seal() {
+        // expected=None → pre-seal behaviour, every request passes.
+        assert!(token_ok(&json!({}), None));
+        assert!(token_ok(&json!({"method": "health"}), None));
+    }
+
+    #[test]
+    fn token_ok_rejects_without_token() {
+        assert!(!token_ok(&json!({"method": "health"}), Some("secret")));
+    }
+
+    #[test]
+    fn token_ok_rejects_wrong_token() {
+        assert!(!token_ok(
+            &json!({"method": "health", "token": "nope"}),
+            Some("secret"),
+        ));
+    }
+
+    #[test]
+    fn token_ok_accepts_matching_token() {
+        assert!(token_ok(
+            &json!({"method": "health", "token": "secret"}),
+            Some("secret"),
+        ));
+    }
+
+    #[test]
+    fn constant_time_eq_matches_std_eq() {
+        assert!(constant_time_eq(b"hello", b"hello"));
+        assert!(!constant_time_eq(b"hello", b"world"));
+        assert!(!constant_time_eq(b"short", b"shorter"));
+        assert!(constant_time_eq(b"", b""));
+    }
 
     #[test]
     fn report_data_b64_is_preferred() {

@@ -35,6 +35,14 @@ pub struct BootWorkload {
     /// installed without running them directly.
     #[serde(default)]
     pub github_release: Option<GithubRelease>,
+    /// When true, EE injects `EE_TOKEN=<hex>` into this workload's env
+    /// at spawn. The workload must include `"token": "<hex>"` on every
+    /// EE socket request; unauth'd requests are rejected with
+    /// `{"ok":false,"error":"unauthenticated"}`. Today only `dd-agent`
+    /// needs this — every other workload runs without socket access,
+    /// which is the whole point of the seal.
+    #[serde(default)]
+    pub inherit_token: bool,
 }
 
 fn default_socket_path() -> String {
