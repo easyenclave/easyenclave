@@ -160,6 +160,11 @@ async fn spawn_from_cmd(
     // `out` record) and moved into the wait task (so we emit `exit`
     // when the child terminates). A failed connect falls back to
     // running without capture — best-effort tee, not a hard dependency.
+    //
+    // Bounded by a 1-second timeout: if the consumer on the other end
+    // of the socket hangs (not-yet-accepted or accepted-but-not-reading),
+    // we give up and spawn the workload without capture rather than
+    // wedging every subsequent deploy behind a stalled socket.
     let capture = if let Some(sock) = capture_socket_path() {
         let id = format!(
             "{}-{}",
@@ -172,7 +177,20 @@ async fn spawn_from_cmd(
         let argv: Vec<String> = std::iter::once(program_owned.clone())
             .chain(args.iter().map(|s| s.to_string()))
             .collect();
-        CaptureSink::connect(&sock, id, &argv, None).await
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            CaptureSink::connect(&sock, id.clone(), &argv, None),
+        )
+        .await
+        {
+            Ok(sink) => sink,
+            Err(_) => {
+                eprintln!(
+                    "easyenclave: capture connect for {app_name} timed out after 1s — running uncaptured"
+                );
+                None
+            }
+        }
     } else {
         None
     };

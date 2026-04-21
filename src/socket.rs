@@ -255,12 +255,21 @@ fn hex_value(byte: u8) -> Result<u8, String> {
 }
 
 async fn handle_deploy(req: &Value, deployments: &Deployments) -> Value {
+    let app_preview = req
+        .get("app_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(none)");
+    eprintln!("easyenclave: handle_deploy entered (app={app_preview})");
     let deploy_req: DeployRequest = match serde_json::from_value(req.clone()) {
         Ok(r) => r,
-        Err(e) => return json!({"ok": false, "error": format!("invalid deploy request: {e}")}),
+        Err(e) => {
+            eprintln!("easyenclave: handle_deploy parse error: {e}");
+            return json!({"ok": false, "error": format!("invalid deploy request: {e}")});
+        }
     };
 
     let (id, status) = crate::workload::execute_deploy(deployments, deploy_req).await;
+    eprintln!("easyenclave: handle_deploy → id={id} status={status}");
     json!({"ok": true, "id": id, "status": status})
 }
 
