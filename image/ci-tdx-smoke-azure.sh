@@ -222,7 +222,12 @@ echo "smoke:azure: create TDX VM $VM_NAME ($VM_SIZE in $REGION)"
 # --image = SIG image-version resource ID (the CVM-capable image we just
 #   published). Provisioning agent runs from scratch → customData lands
 #   in IMDS correctly (unlike --attach-os-disk which skips provisioning).
-# --security-type ConfidentialVM + vTPM + secure boot: TDX CVM requirements.
+# --security-type ConfidentialVM + vTPM: TDX CVM requirements.
+# --enable-secure-boot false: EasyEnclave's UKI is unsigned. Azure's
+#   Secure Boot (UEFI-level signature check) is distinct from TDX
+#   attestation (measured-boot via configfs-tsm) — we rely on the
+#   latter, not the former. Signing UKIs is a production cert-mgmt
+#   concern we're not taking on for CI smoke.
 # --os-disk-security-encryption-type VMGuestStateOnly: TDX-appropriate
 #   (no disk encryption; memory is what TDX protects).
 # --boot-diagnostics-storage "" : managed (Azure-provided) storage.
@@ -232,7 +237,7 @@ az vm create \
     --size "$VM_SIZE" \
     --security-type ConfidentialVM \
     --os-disk-security-encryption-type VMGuestStateOnly \
-    --enable-vtpm true --enable-secure-boot true \
+    --enable-vtpm true --enable-secure-boot false \
     --image "$IMG_VERSION_ID" \
     --nics "$NIC_NAME" \
     --boot-diagnostics-storage "" \
