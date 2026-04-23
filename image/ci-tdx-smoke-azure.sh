@@ -45,36 +45,40 @@ VHD="image/output/azure/easyenclave-${SHA12}-azure.vhd"
 
 STAMP=$(date +%s)
 PREFIX="ee-smoke-${SHA12}-${STAMP}"
-DISK_NAME="${PREFIX}-disk"
 VM_NAME="${PREFIX}-vm"
 NIC_NAME="${PREFIX}-nic"
 PIP_NAME="${PREFIX}-pip"
 NSG_NAME="${PREFIX}-nsg"
 VNET_NAME="${PREFIX}-vnet"
 
-# Shared Image Gallery state. The gallery + image-definition are idempotent
-# (created if missing, reused otherwise); only the image VERSION is per-run
-# and torn down after the test. Conventional names below; can be overridden
-# via env. The SecurityType=ConfidentialVmSupported feature on the image
-# definition is what unlocks `az vm create --security-type ConfidentialVM`
-# downstream — managed disks created with `--upload-type Upload` reject
-# the ConfidentialVM security type directly, so we stage through the SIG.
+# Shared Image Gallery state. The gallery + image-definition are
+# idempotent (created if missing, reused otherwise); only the image
+# VERSION is per-run and torn down after the test.
 GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery}"
 IMG_DEF_NAME="${AZURE_IMG_DEF:-easyenclave-x64}"
 IMG_VERSION="0.0.$(date +%s)"
 
+# Storage account for staging the VHD as a page blob. ConfidentialVmSupported
+# SIG images reject managed-disk sources ("Currently only Vhd Blob, User
+# Image and Gallery Image Version sources are supported"), so we bypass the
+# managed-disk intermediate entirely and go blob → image-version.
+# Account names must be 3-24 chars, lowercase alphanumeric only, globally
+# unique. Keep it tied to the RG so the user doesn't end up with a
+# storage-account-per-subscription dangling forever.
+STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "$AZURE_RESOURCE_GROUP" | sha256sum | cut -c1-16)}"
+STORAGE_CONTAINER="${AZURE_STORAGE_CONTAINER:-vhds}"
+BLOB_NAME="${PREFIX}.vhd"
+
 cleanup() {
     set +e
     echo "smoke:azure: cleanup"
-    # Order: VM first (frees NIC + OS disk), then image version (unblocks
-    # disk deletion if VM was created --attach-os-disk which we're not,
-    # but defensive), disk, network.
     az vm delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" --yes --no-wait 2>/dev/null || true
     sleep 10
     az sig image-version delete --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
         --gallery-image-version "$IMG_VERSION" --no-wait 2>/dev/null || true
-    az disk delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$DISK_NAME" --yes --no-wait 2>/dev/null || true
+    az storage blob delete --account-name "$STORAGE_ACCT" --container-name "$STORAGE_CONTAINER" \
+        --name "$BLOB_NAME" --auth-mode login 2>/dev/null || true
     az network nic delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NIC_NAME" --no-wait 2>/dev/null || true
     az network public-ip delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" --no-wait 2>/dev/null || true
     az network nsg delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NSG_NAME" --no-wait 2>/dev/null || true
@@ -102,44 +106,47 @@ if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
         --publisher easyenclave --offer easyenclave --sku linux-x64 >/dev/null
 fi
 
-# ── Upload VHD to a Standard (non-CVM) managed disk ─────────────────
-# The CVM security type is REJECTED on CreateOption=Upload (the only
-# supported CVM create-options are FromImage / ImportSecure /
-# UploadPreparedSecure). We sidestep this by uploading to a plain
-# Standard disk, then promoting the disk to a CVM-capable image version
-# in the gallery, then creating the VM from that image with CVM security.
-echo "smoke:azure: upload VHD to Standard managed disk $DISK_NAME"
-SIZE=$(stat -c %s "$VHD")
-az disk create \
-    --resource-group "$AZURE_RESOURCE_GROUP" --name "$DISK_NAME" \
-    --location "$REGION" \
-    --hyper-v-generation V2 \
-    --os-type Linux \
-    --upload-type Upload --upload-size-bytes "$SIZE" \
-    --sku Standard_LRS >/dev/null
+# ── Upload VHD to a storage-account page blob ──────────────────────
+# Direct blob upload avoids the managed-disk intermediate entirely. The
+# CVM-capable SIG image-version explicitly rejects disk sources
+# ("Currently only Vhd Blob, User Image and Gallery Image Version
+# sources are supported for 'ConfidentialVmSupported' images"), but
+# blob sources work directly via --os-vhd-uri.
+if ! az storage account show --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" >/dev/null 2>&1; then
+    echo "smoke:azure: create storage account $STORAGE_ACCT"
+    az storage account create \
+        --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
+        --location "$REGION" --sku Standard_LRS --kind StorageV2 \
+        --allow-blob-public-access false >/dev/null
+fi
+az storage container create \
+    --account-name "$STORAGE_ACCT" --name "$STORAGE_CONTAINER" \
+    --auth-mode login --public-access off >/dev/null 2>&1 || true
 
-# The JSON key is `accessSAS` (uppercase-SAS), not `accessSas`. The
-# lowercase variant returns empty and azcopy sees a blank destination.
-SAS_URI=$(az disk grant-access \
-    --resource-group "$AZURE_RESOURCE_GROUP" --name "$DISK_NAME" \
-    --duration-in-seconds 3600 --access-level Write \
-    --query accessSAS -o tsv)
-[ -n "$SAS_URI" ] || { echo "::error::smoke:azure: empty SAS URI from grant-access" >&2; exit 1; }
+echo "smoke:azure: upload VHD to blob $STORAGE_ACCT/$STORAGE_CONTAINER/$BLOB_NAME"
+# Grab a short-lived write SAS for azcopy. Azcopy handles resumable
+# chunked upload — `az storage blob upload` doesn't support page-blob
+# upload at VHD-scale reliably.
+EXPIRY=$(date -u -d '+1 hour' '+%Y-%m-%dT%H:%MZ')
+SAS=$(az storage container generate-sas \
+    --account-name "$STORAGE_ACCT" --name "$STORAGE_CONTAINER" \
+    --permissions cw --expiry "$EXPIRY" --auth-mode login --as-user -o tsv)
+[ -n "$SAS" ] || { echo "::error::smoke:azure: empty SAS from generate-sas" >&2; exit 1; }
 
-# azcopy is required for VHD → page-blob upload; `az storage blob upload`
-# doesn't support the direct-to-disk-SAS flow.
-azcopy copy "$VHD" "$SAS_URI" --blob-type PageBlob
+BLOB_URL="https://${STORAGE_ACCT}.blob.core.windows.net/${STORAGE_CONTAINER}/${BLOB_NAME}"
+azcopy copy "$VHD" "${BLOB_URL}?${SAS}" --blob-type PageBlob
 
-az disk revoke-access --resource-group "$AZURE_RESOURCE_GROUP" --name "$DISK_NAME" >/dev/null
-
-# ── Promote disk → image version in the SIG ─────────────────────────
-DISK_ID=$(az disk show --resource-group "$AZURE_RESOURCE_GROUP" --name "$DISK_NAME" --query id -o tsv)
-echo "smoke:azure: create image version $IMG_VERSION from $DISK_NAME"
+# ── Publish image-version pointing at the blob ──────────────────────
+STORAGE_ACCT_ID=$(az storage account show \
+    --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
+    --query id -o tsv)
+echo "smoke:azure: create image version $IMG_VERSION from blob"
 az sig image-version create \
     --resource-group "$AZURE_RESOURCE_GROUP" \
     --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
     --gallery-image-version "$IMG_VERSION" \
-    --os-snapshot "$DISK_ID" \
+    --os-vhd-uri "$BLOB_URL" \
+    --os-vhd-storage-account "$STORAGE_ACCT_ID" \
     --target-regions "$REGION" \
     --replica-count 1 >/dev/null
 IMG_VERSION_ID=$(az sig image-version show \

@@ -95,6 +95,11 @@ echo "tdx2-smoke: sha12=$SHA12 firmware=$OVMF_CODE hostfwd=localhost:${HOST_PORT
 # Without this full set the vCPU-startup path fails with "Convert non
 # guest_memfd backed memory region ... to private" during TDX measurement.
 MEM_BYTES=$((4 * 1024 * 1024 * 1024))
+# `-nodefaults` drops the default IDE/SATA controller that `-cdrom` hooks
+# into, so CDROM devices never appear. Attach both ISOs as virtio-blk RO
+# devices instead: the hybrid ISO has an embedded GPT+ESP that OVMF will
+# boot directly, and the init template probes /dev/vda/vdb in addition
+# to /dev/sr0 so the iso9660 mount still resolves.
 qemu-system-x86_64 \
     -enable-kvm -cpu host -smp 2 \
     -m size=4194304k \
@@ -102,8 +107,8 @@ qemu-system-x86_64 \
     -object memory-backend-ram,id=pc.ram,size=${MEM_BYTES} \
     -object tdx-guest,id=lsec0 \
     -bios "$OVMF_CODE" \
-    -cdrom "$ISO" \
-    -drive "file=$CONFIG_ISO,if=virtio,format=raw,media=cdrom,readonly=on" \
+    -drive "file=$ISO,if=virtio,format=raw,readonly=on" \
+    -drive "file=$CONFIG_ISO,if=virtio,format=raw,readonly=on" \
     -netdev "user,id=n0,hostfwd=tcp::${HOST_PORT}-:80" \
     -device virtio-net-pci,netdev=n0 \
     -serial "file:$SERIAL_LOG" \
