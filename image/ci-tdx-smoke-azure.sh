@@ -38,8 +38,14 @@ set -euo pipefail
 : "${AZURE_RESOURCE_GROUP:?}"
 : "${SHA12:?}"
 
-REGION="${AZURE_REGION:-eastus2}"
-VM_SIZE="${AZURE_VM_SIZE:-Standard_DC2es_v5}"
+# Default to westus3 + DC2es_v6 (Intel TDX v6). The DCEDV5/DCEV5
+# families showed "quota approved" in eastus2/centralus but the SKUs
+# never actually shipped in those regions (az vm list-skus returns
+# zero matches). DC*_v6 is the GA Intel TDX SKU line, available in
+# westus3 with 10 vCPUs of approved quota on this subscription.
+# Override via env if a different region has quota.
+REGION="${AZURE_REGION:-westus3}"
+VM_SIZE="${AZURE_VM_SIZE:-Standard_DC2es_v6}"
 VHD="image/output/azure/easyenclave-${SHA12}-azure.vhd"
 [ -f "$VHD" ] || { echo "missing $VHD" >&2; exit 2; }
 
@@ -63,9 +69,9 @@ IMG_VERSION="0.0.$(date +%s)"
 # Image and Gallery Image Version sources are supported"), so we bypass the
 # managed-disk intermediate entirely and go blob → image-version.
 # Account names must be 3-24 chars, lowercase alphanumeric only, globally
-# unique. Keep it tied to the RG so the user doesn't end up with a
-# storage-account-per-subscription dangling forever.
-STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "$AZURE_RESOURCE_GROUP" | sha256sum | cut -c1-16)}"
+# unique. Derive from RG + region so runs in different regions don't
+# collide on a pinned-region account (storage accounts are single-region).
+STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "${AZURE_RESOURCE_GROUP}-${REGION}" | sha256sum | cut -c1-16)}"
 STORAGE_CONTAINER="${AZURE_STORAGE_CONTAINER:-vhds}"
 BLOB_NAME="${PREFIX}.vhd"
 
