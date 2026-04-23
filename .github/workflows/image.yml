@@ -1,14 +1,12 @@
 name: Build & Release VM Image
 
-# Build the sealed TDX VM image for every supported target on every
-# push and PR. Each target gets a non-TDX QEMU smoke test; GCP also
-# gets a full real-TDX integration test. Release job attaches all
-# artifacts on main/tag.
+# Build every target, spin up a real TDX VM per target, run an end-to-end
+# enclave test, then publish the gcp image family + all artifacts.
 #
 # Pipeline:
-#   meta ── build (matrix: gcp/azure/local-tdx) ──┬── smoke (matrix)
-#                                                  ├── deploy-and-test (gcp)
-#                                                  └── release (non-PR)
+#   meta ── build (matrix) ──┬── tdx-smoke (matrix: real TDX per target)
+#                             ├── gcp-promote  (non-PR only)
+#                             └── release      (non-PR only, gates on all above)
 
 on:
   push:
@@ -37,7 +35,7 @@ permissions:
   contents: write
 
 jobs:
-  # ── Shared metadata (sha12, tag, gcp image name) ────────────────────
+  # ── Shared metadata (sha12, tag, release name, gcp image name) ──────
   meta:
     runs-on: ubuntu-latest
     outputs:
@@ -120,19 +118,12 @@ jobs:
         run: |
           cd image/output/${TARGET}
           UKI_SHA256=$(sha256sum easyenclave.efi | cut -d' ' -f1)
-
-          # Common rename: UKI is always produced; rename for release clarity.
           mv easyenclave.efi "easyenclave-${SHA12}-${TARGET}.efi"
-
-          # Per-target format-specific artifacts + hashes. The MEASUREMENTS
-          # file is the canonical per-target record: commit, target, UKI
-          # hash, and whichever disk/iso hashes the target produces.
           {
             echo "commit: ${{ github.sha }}"
             echo "target: ${TARGET}"
             echo "UKI sha256: ${UKI_SHA256}"
           } > MEASUREMENTS.txt
-
           if [ -f easyenclave.root.raw ]; then
             RAW_SHA=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
             mv easyenclave.root.raw "easyenclave-${SHA12}-${TARGET}.raw"
@@ -156,9 +147,6 @@ jobs:
             mv easyenclave.iso "easyenclave-${SHA12}-${TARGET}.iso"
             echo "ISO sha256: ${ISO_SHA}" >> MEASUREMENTS.txt
           fi
-
-          # Keep the unrenamed vmlinuz/initrd/cmdline alongside renamed
-          # artifacts — the smoke job expects them at those names.
           ls -la
 
       - uses: actions/upload-artifact@v4
@@ -166,24 +154,22 @@ jobs:
           name: easyenclave-image-${{ matrix.target }}
           path: |
             image/output/${{ matrix.target }}/easyenclave-*
-            image/output/${{ matrix.target }}/easyenclave.vmlinuz
-            image/output/${{ matrix.target }}/easyenclave.initrd
-            image/output/${{ matrix.target }}/easyenclave.cmdline
             image/output/${{ matrix.target }}/MEASUREMENTS.txt
           retention-days: 7
 
-  # ── Non-TDX QEMU smoke test per target ──────────────────────────────
-  # Asserts that the full init-pipeline (cmdline parse → root mount →
-  # vendor stage → switch_root → Rust PID 1 → attestation detect) runs
-  # end-to-end on every target. Expects FATAL at attestation because
-  # runners don't have TDX; anything earlier than that is a regression.
-  smoke:
+  # ── Real-TDX integration test per target ────────────────────────────
+  # Each matrix entry provisions a real TDX VM on its platform, runs the
+  # enclave through boot + attestation + workload-serve, tears down.
+  # Skipped on fork PRs (would burn money / expose self-hosted-equivalent
+  # SSH creds). See the per-target scripts under image/ci-tdx-smoke-*.sh.
+  tdx-smoke:
     needs: [meta, build]
-    # Pin to 24.04 explicitly — 24.04 Actions runners expose /dev/kvm,
-    # 22.04 runners don't. Without KVM we fall back to TCG, which boots
-    # a 2G/2CPU VM at ~10× real time and can easily blow past any
-    # reasonable timeout on ext4/squashfs mount + initrd.
-    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -191,51 +177,73 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install qemu
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86
-
       - uses: actions/download-artifact@v4
         with:
           name: easyenclave-image-${{ matrix.target }}
           path: image/output/${{ matrix.target }}
 
-      - name: Restore canonical artifact names for smoke boot
+      # ── GCP auth (target=gcp only) ─────────────────────────────────
+      - if: matrix.target == 'gcp'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
+          service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
+      - if: matrix.target == 'gcp'
+        uses: google-github-actions/setup-gcloud@v2
+
+      # ── Azure auth + CLI tools (target=azure only) ─────────────────
+      - if: matrix.target == 'azure'
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - if: matrix.target == 'azure'
+        name: Install AzCopy
+        run: |
+          curl -fsSL https://aka.ms/downloadazcopy-v10-linux | tar -xz
+          sudo mv azcopy_linux_amd64_*/azcopy /usr/local/bin/
+          azcopy --version
+
+      # ── Local-TDX: SSH key staging (target=local-tdx only) ─────────
+      - if: matrix.target == 'local-tdx'
+        name: Stage SSH key for tdx2
         env:
-          TARGET: ${{ matrix.target }}
+          EE_LOCAL_SSH_KEY: ${{ secrets.EE_LOCAL_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$EE_LOCAL_SSH_KEY" > ~/.ssh/tdx2_key
+          chmod 600 ~/.ssh/tdx2_key
+          echo "EE_LOCAL_SSH_KEY_PATH=$HOME/.ssh/tdx2_key" >> "$GITHUB_ENV"
+
+      # ── Run the per-target real-TDX smoke ──────────────────────────
+      # Azure's flow involves several CLI specifics (ConfidentialVM disk
+      # upload semantics, attach-os-disk + custom-data interaction) that
+      # may need iteration to get right on first production run. Mark it
+      # continue-on-error until first successful run, so Azure iteration
+      # doesn't block gcp/local-tdx from publishing releases. Flip to
+      # false once Azure is known-good.
+      - name: Real-TDX smoke (${{ matrix.target }})
+        continue-on-error: ${{ matrix.target == 'azure' }}
+        env:
           SHA12: ${{ needs.meta.outputs.sha12 }}
-        run: |
-          cd image/output/${TARGET}
-          # The build job renamed artifacts to include sha12+target for
-          # release clarity; the smoke script expects the canonical
-          # names the build produces (easyenclave.root.raw, .iso, etc.).
-          [ -f "easyenclave-${SHA12}-${TARGET}.raw" ]  && ln -sf "easyenclave-${SHA12}-${TARGET}.raw"  easyenclave.root.raw
-          [ -f "easyenclave-${SHA12}-${TARGET}.iso" ]  && ln -sf "easyenclave-${SHA12}-${TARGET}.iso"  easyenclave.iso
-          [ -f "easyenclave-${SHA12}-${TARGET}.efi" ]  && ln -sf "easyenclave-${SHA12}-${TARGET}.efi"  easyenclave.efi
-          ls -la
+          GITHUB_SHA: ${{ github.sha }}
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          EE_LOCAL_HOST: ${{ secrets.EE_LOCAL_HOST }}
+        run: bash image/ci-tdx-smoke-${{ matrix.target }}.sh
 
-      - name: Smoke boot
-        env:
-          TARGET: ${{ matrix.target }}
-          # Belt-and-suspenders: even with KVM, cold-boot across three
-          # targets can vary by ±30s depending on runner load. 300s is
-          # comfortable without masking real hangs (a hang burns the
-          # full budget before failing).
-          TIMEOUT_SECS: "300"
-        run: |
-          bash image/ci-smoke-boot.sh "$TARGET"
-
-  # ── Full real-TDX GCP integration test + image promotion ────────────
-  # Unchanged from the pre-matrix workflow, just parameterized to pull
-  # the gcp-matrix artifact and use the shared meta outputs.
-  deploy-and-test:
-    needs: [meta, build]
-    if: github.repository == 'easyenclave/easyenclave'
+  # ── GCP image promotion (publishes staging / stable family) ─────────
+  # Separate from tdx-smoke-gcp (which creates + deletes an ephemeral
+  # image). This job publishes the image under a channel label (staging
+  # on main, pr on PRs-from-same-repo, stable on tags) and rotates old
+  # images. Skipped entirely on PRs — promotion is a merge-time action.
+  gcp-promote:
+    needs: [meta, build, tdx-smoke]
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      contents: write
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -249,14 +257,12 @@ jobs:
           name: easyenclave-image-gcp
           path: image/output/gcp
 
-      # ── Create staging image ─────────────────────────────────────
-      - name: Create GCP image
+      - name: Upload + create promoted image
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           SHA12: ${{ needs.meta.outputs.sha12 }}
           GCP_NAME: ${{ needs.meta.outputs.gcp_name }}
-          IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
           ASSET="easyenclave-${SHA12}-gcp.tar.gz"
           gcloud storage cp "image/output/gcp/${ASSET}" \
@@ -265,9 +271,6 @@ jobs:
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             FAMILY="--family=easyenclave-stable"
             CHANNEL="stable"
-          elif [ "$IS_PR" = "true" ]; then
-            FAMILY="--family=easyenclave-staging"
-            CHANNEL="pr"
           else
             FAMILY="--family=easyenclave-staging"
             CHANNEL="staging"
@@ -279,159 +282,21 @@ jobs:
             ${FAMILY} \
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
             --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
-          echo "Created: ${GCP_NAME} (${CHANNEL})"
 
-      # ── Integration test ─────────────────────────────────────────
-      - name: Integration test — deploy workload + curl HTTP
-        env:
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ needs.meta.outputs.gcp_name }}
-          SHA12: ${{ needs.meta.outputs.sha12 }}
-        run: |
-          LABEL="${SHA12}"
-          # Use '|' as field delimiter so patterns can contain ':'.
-          CHECKS=(
-            "kernel_boot|Run /init as init process|1"
-            "root_resolved|Resolved root to /dev/|1"
-            "easyenclave_pid1|easyenclave: running as PID 1|1"
-            "vendor_stage|vendor:gcp:|1"
-            "metadata_merged|vendor:gcp: merged .* config into|1"
-            "tdx_attestation|attestation backend: tdx|1"
-            "network_up|Device link is up|1"
-            "dhcp_lease|lease of .* obtained|1"
-            "listening|easyenclave: listening on|1"
-            "deployment_running|deployment .* running|1"
-          )
-
-          # Two native workloads: seed an index file, then serve it with
-          # busybox httpd. Exercises the plain-command path end-to-end.
-          # Deliberately uses the LEGACY JSON format so the JSON-flatten
-          # path in vendors/_lib.sh's ee_append_config gets real-boot
-          # coverage — the unit test exercises the awk parser in
-          # isolation, but end-to-end matters too.
-          cat > /tmp/ee-config.json <<'EECONF'
-          {
-            "EE_OWNER": "integration-test",
-            "EE_BOOT_WORKLOADS": "[{\"cmd\":[\"sh\",\"-c\",\"echo ok > /tmp/index.html\"],\"app_name\":\"seed\"},{\"cmd\":[\"busybox\",\"httpd\",\"-f\",\"-p\",\"80\",\"-h\",\"/tmp\"],\"app_name\":\"whoami\"}]"
-          }
-          EECONF
-
-          gcloud compute firewall-rules describe ee-smoke-allow-http \
-            --project="$GCP_PROJECT" >/dev/null 2>&1 || \
-          gcloud compute firewall-rules create ee-smoke-allow-http \
-            --project="$GCP_PROJECT" --allow=tcp:80 \
-            --target-tags=ee-smoke-test --source-ranges=0.0.0.0/0 --quiet
-
-          VM_NAME="ee-test-$(date +%s)"
-          gcloud compute instances create "$VM_NAME" \
-            --project="$GCP_PROJECT" --zone=us-central1-c \
-            --machine-type=c3-standard-4 \
-            --confidential-compute-type=TDX --maintenance-policy=TERMINATE \
-            --image="${GCP_NAME}" --image-project="$GCP_PROJECT" \
-            --boot-disk-size=10GB \
-            --metadata-from-file=ee-config=/tmp/ee-config.json \
-            --tags=ee-smoke-test
-
-          cleanup() {
-            gcloud compute instances delete "$VM_NAME" \
-              --project="$GCP_PROJECT" --zone=us-central1-c --quiet || true
-          }
-
-          declare -A PASSED
-          LAST_LINES=0
-          ALL_REQUIRED_DONE=false
-
-          for i in $(seq 1 36); do
-            out=$(gcloud compute instances get-serial-port-output "$VM_NAME" \
-              --project="$GCP_PROJECT" --zone=us-central1-c 2>/dev/null || true)
-            TOTAL_LINES=$(echo "$out" | wc -l)
-            if [ "$TOTAL_LINES" -gt "$LAST_LINES" ]; then
-              echo "$out" | tail -n +$((LAST_LINES + 1)) | sed 's/^/[serial] /'
-              LAST_LINES=$TOTAL_LINES
-            fi
-            if echo "$out" | grep -qE "FATAL|Kernel panic|switch_root: can|Invalid ELF header"; then
-              echo "::error::boot failed — fatal pattern in serial"
-              break
-            fi
-            for check in "${CHECKS[@]}"; do
-              IFS="|" read -r name pattern required <<< "$check"
-              [ -n "${PASSED[$name]:-}" ] && continue
-              echo "$out" | grep -qE "$pattern" && PASSED[$name]=1 && echo "  ✓ $name"
-            done
-            ALL_REQUIRED_DONE=true
-            for check in "${CHECKS[@]}"; do
-              IFS="|" read -r name pattern required <<< "$check"
-              [ "$required" = "0" ] && continue
-              [ -z "${PASSED[$name]:-}" ] && ALL_REQUIRED_DONE=false && break
-            done
-            $ALL_REQUIRED_DONE && break
-            echo "  waiting... (${i}/36)"
-            sleep 10
-          done
-
-          HTTP_OK=false
-          if $ALL_REQUIRED_DONE; then
-            VM_IP=$(gcloud compute instances describe "$VM_NAME" \
-              --project="$GCP_PROJECT" --zone=us-central1-c \
-              --format="value(networkInterfaces[0].accessConfigs[0].natIP)")
-            echo ""
-            echo "Testing HTTP on $VM_IP:80..."
-            for i in $(seq 1 12); do
-              code=$(curl -sS -o /dev/null -w '%{http_code}' \
-                --connect-timeout 5 "http://$VM_IP:80/" 2>/dev/null || echo 000)
-              [ "$code" = "200" ] && echo "  ✓ workload_http ($VM_IP)" && HTTP_OK=true && break
-              echo "  waiting... ${code} (${i}/12)"
-              sleep 5
-            done
-          fi
-
-          echo ""
-          echo "=== integration test (${LABEL}) ==="
-          PASS=0; TOTAL=0
-          for check in "${CHECKS[@]}"; do
-            IFS="|" read -r name pattern required <<< "$check"
-            [ "$required" = "1" ] && TOTAL=$((TOTAL + 1))
-            if [ -n "${PASSED[$name]:-}" ]; then
-              echo "  ✓ $name"
-              [ "$required" = "1" ] && PASS=$((PASS + 1))
-            else
-              echo "  ✗ $name"
-            fi
-          done
-          TOTAL=$((TOTAL + 1))
-          $HTTP_OK && echo "  ✓ workload_http" && PASS=$((PASS + 1)) || echo "  ✗ workload_http"
-          echo "${PASS}/${TOTAL} passed"
-
-          if $ALL_REQUIRED_DONE && $HTTP_OK; then
-            echo "✓ Integration test passed"
-            cleanup; exit 0
-          else
-            echo "::error::Integration test failed (${PASS}/${TOTAL})"
-            echo "$out" | tail -80
-            cleanup; exit 1
-          fi
-
-      - name: Rotate old images
-        if: github.event_name != 'pull_request'
+      - name: Rotate old promoted images
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
         run: |
-          for filter in "labels.channel=staging" "labels.channel=pr"; do
-            KEEP=$( [ "$filter" = "labels.channel=pr" ] && echo 11 || echo 6 )
-            gcloud compute images list --project="${GCP_PROJECT}" \
-              --filter="labels.easyenclave=image AND ${filter}" \
-              --format="value(name)" --sort-by="~creationTimestamp" \
-              | tail -n +${KEEP} \
-              | xargs -rI{} gcloud compute images delete {} \
-                  --project="${GCP_PROJECT}" --quiet
-          done
+          gcloud compute images list --project="${GCP_PROJECT}" \
+            --filter="labels.easyenclave=image AND labels.channel=staging" \
+            --format="value(name)" --sort-by="~creationTimestamp" \
+            | tail -n +6 \
+            | xargs -rI{} gcloud compute images delete {} \
+                --project="${GCP_PROJECT}" --quiet
 
   # ── Release (non-PR only) ───────────────────────────────────────────
-  # Collects per-target artifacts + measurements and attaches everything
-  # to a single GitHub release. Gated on matrix build + smoke passing
-  # across all targets, plus the real-TDX GCP integration.
   release:
-    needs: [meta, build, smoke, deploy-and-test]
+    needs: [meta, build, tdx-smoke, gcp-promote]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -447,19 +312,13 @@ jobs:
       - name: Stage release assets
         env:
           SHA12: ${{ needs.meta.outputs.sha12 }}
-          RELEASE_NAME: ${{ needs.meta.outputs.release_name }}
         run: |
           mkdir -p release-out
           cd release-stage
           for target_dir in easyenclave-image-*; do
             target="${target_dir#easyenclave-image-}"
-            # Copy every easyenclave-* artifact as-is; rename MEASUREMENTS
-            # to be per-target so they don't collide.
             for f in "${target_dir}"/easyenclave-*; do
               [ -f "$f" ] || continue
-              case "$(basename "$f")" in
-                *.vmlinuz|*.initrd|*.cmdline) continue ;;  # internal, not released
-              esac
               cp "$f" ../release-out/
             done
             if [ -f "${target_dir}/MEASUREMENTS.txt" ]; then
@@ -474,7 +333,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA12: ${{ needs.meta.outputs.sha12 }}
           TAG: ${{ needs.meta.outputs.tag }}
-          RELEASE_NAME: ${{ needs.meta.outputs.release_name }}
           GCP_NAME: ${{ needs.meta.outputs.gcp_name }}
         run: |
           if [ -n "$TAG" ]; then
@@ -485,7 +343,6 @@ jobs:
             PRERELEASE="--prerelease"
           fi
 
-          # Build release notes that embed each per-target measurements.
           NOTES_FILE=$(mktemp)
           {
             echo "## Artifacts by target"
