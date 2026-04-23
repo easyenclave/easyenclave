@@ -77,8 +77,16 @@ cleanup() {
     az sig image-version delete --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
         --gallery-image-version "$IMG_VERSION" --no-wait 2>/dev/null || true
-    az storage blob delete --account-name "$STORAGE_ACCT" --container-name "$STORAGE_CONTAINER" \
-        --name "$BLOB_NAME" --auth-mode login 2>/dev/null || true
+    # ACCT_KEY may be unset if we exited before fetching it; fetch again
+    # (cheap: az handles the no-op case), fall back to nothing if the
+    # account itself is gone.
+    CLEANUP_KEY=$(az storage account keys list \
+        --resource-group "$AZURE_RESOURCE_GROUP" --account-name "$STORAGE_ACCT" \
+        --query '[0].value' -o tsv 2>/dev/null || true)
+    if [ -n "$CLEANUP_KEY" ]; then
+        az storage blob delete --account-name "$STORAGE_ACCT" --container-name "$STORAGE_CONTAINER" \
+            --name "$BLOB_NAME" --account-key "$CLEANUP_KEY" 2>/dev/null || true
+    fi
     az network nic delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NIC_NAME" --no-wait 2>/dev/null || true
     az network public-ip delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" --no-wait 2>/dev/null || true
     az network nsg delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NSG_NAME" --no-wait 2>/dev/null || true
@@ -119,18 +127,27 @@ if ! az storage account show --resource-group "$AZURE_RESOURCE_GROUP" --name "$S
         --location "$REGION" --sku Standard_LRS --kind StorageV2 \
         --allow-blob-public-access false >/dev/null
 fi
+
+# Use the account key for data-plane operations. AZURE_CREDENTIALS has
+# RG-level Contributor (ARM plane) but no Storage Blob Data Contributor
+# by default; user-delegation SAS fails with AuthorizationPermissionMismatch.
+# Account key works because it's fetched via ARM and doesn't require
+# data-plane RBAC. The key is only in-memory for the run.
+ACCT_KEY=$(az storage account keys list \
+    --resource-group "$AZURE_RESOURCE_GROUP" --account-name "$STORAGE_ACCT" \
+    --query '[0].value' -o tsv)
+[ -n "$ACCT_KEY" ] || { echo "::error::smoke:azure: empty storage account key" >&2; exit 1; }
+
 az storage container create \
     --account-name "$STORAGE_ACCT" --name "$STORAGE_CONTAINER" \
-    --auth-mode login --public-access off >/dev/null 2>&1 || true
+    --account-key "$ACCT_KEY" --public-access off >/dev/null 2>&1 || true
 
 echo "smoke:azure: upload VHD to blob $STORAGE_ACCT/$STORAGE_CONTAINER/$BLOB_NAME"
-# Grab a short-lived write SAS for azcopy. Azcopy handles resumable
-# chunked upload — `az storage blob upload` doesn't support page-blob
-# upload at VHD-scale reliably.
 EXPIRY=$(date -u -d '+1 hour' '+%Y-%m-%dT%H:%MZ')
 SAS=$(az storage container generate-sas \
     --account-name "$STORAGE_ACCT" --name "$STORAGE_CONTAINER" \
-    --permissions cw --expiry "$EXPIRY" --auth-mode login --as-user -o tsv)
+    --account-key "$ACCT_KEY" \
+    --permissions cw --expiry "$EXPIRY" -o tsv)
 [ -n "$SAS" ] || { echo "::error::smoke:azure: empty SAS from generate-sas" >&2; exit 1; }
 
 BLOB_URL="https://${STORAGE_ACCT}.blob.core.windows.net/${STORAGE_CONTAINER}/${BLOB_NAME}"
