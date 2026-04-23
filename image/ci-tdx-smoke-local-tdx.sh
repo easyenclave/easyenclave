@@ -54,8 +54,14 @@ echo "smoke:local: ssh + update checkout + run runner"
 ssh "${SSH_OPTS[@]}" "tdx2@${EE_LOCAL_HOST}" "bash -s" <<REMOTE_SCRIPT
 set -euo pipefail
 cd /home/tdx2/src/easyenclave
+# /home/tdx2/src/easyenclave on tdx2 is a CI workspace, not a dev
+# checkout — force-reset to the SHA under test so we pick up the
+# latest runner script even if the tree has local cruft. Without
+# --hard, an in-progress dev branch on tdx2 makes \`git checkout\`
+# fail with "local changes would be overwritten."
 git fetch --quiet origin ${GITHUB_SHA}
-git checkout --quiet ${GITHUB_SHA}
+git reset --quiet --hard ${GITHUB_SHA}
+git clean -qfd
 # Defensive: verify the checkout matched. If 'origin' points somewhere
 # unexpected we'd otherwise run a stale runner against a fresh ISO.
 actual=\$(git rev-parse HEAD)
