@@ -14,7 +14,7 @@ cargo build --release
 
 Requires Intel TDX hardware (configfs-tsm) — refuses to start without it.
 
-Config: `/etc/easyenclave/config.json`, env vars (`EE_SOCKET_PATH`, `EE_DATA_DIR`, `EE_BOOT_WORKLOADS`), a config disk, or GCE metadata.
+Config: `/etc/easyenclave/config.json`, env vars (`EE_SOCKET_PATH`, `EE_DATA_DIR`, `EE_BOOT_WORKLOADS`). The per-vendor boot-time env file at `/run/easyenclave/env` — written by the initrd vendor stage from kernel cmdline `ee.*` params, a secondary config disk (`/agent.env`), GCE instance attribute `ee-config`, or Azure IMDS customData — is merged into the process env before config loads.
 
 ## Deployment targets
 
@@ -22,16 +22,18 @@ Image builds are profile-driven. Each deployment target is a directory under `im
 
 Artifacts land in `image/output/<target>/`.
 
-| Target | Format | Root strategy | Primary artifacts | Use case |
-|--------|--------|---------------|-------------------|----------|
-| `gcp` | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2`, `easyenclave-gcp.tar.gz` | GCP TDX compute images (default) |
-| `local-tdx` | hybrid ISO with embedded ESP | iso9660 + squashfs + tmpfs overlay | `easyenclave.iso`, `rootfs.squashfs` | Local QEMU/OVMF TDX boot for dev iteration |
+| Target | Vendor stage | Format | Root strategy | Primary artifacts | Use case |
+|--------|--------------|--------|---------------|-------------------|----------|
+| `gcp` | `gcp` (IMDS `ee-config`) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2`, `easyenclave-gcp.tar.gz` | GCP TDX compute images (default) |
+| `azure` | `azure` (IMDS `customData`) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.vhd` | Azure TDX CVMs — import the VHD into a Shared Image Gallery or Managed Disk |
+| `local-tdx` | `qemu` (secondary config disk) | hybrid ISO with embedded ESP | iso9660 + squashfs + tmpfs overlay | `easyenclave.iso`, `rootfs.squashfs` | Local QEMU/OVMF TDX boot for dev iteration |
 
 Build:
 
 ```bash
 cd image
 make build                   # defaults to TARGET=gcp
+make build TARGET=azure      # Azure fixed-size VHD
 make build TARGET=local-tdx  # hybrid ISO for local TDX
 ```
 
@@ -39,9 +41,10 @@ For local launch, boot `image/output/local-tdx/easyenclave.iso` with a TDX-capab
 
 ### Adding a new target
 
-1. `mkdir image/targets/<name> && $EDITOR image/targets/<name>/profile.env` (copy from an existing profile, tweak `TARGET_INITRD_MODULES`, `TARGET_CMDLINE`, `TARGET_FORMAT`, and `TARGET_OUTPUTS`).
+1. `mkdir image/targets/<name> && $EDITOR image/targets/<name>/profile.env` (copy from an existing profile, tweak `TARGET_INITRD_MODULES`, `TARGET_CMDLINE`, `TARGET_FORMAT`, `TARGET_OUTPUTS`, and `TARGET_VENDOR`).
 2. If you need a new root acquisition strategy, add `image/init-templates/<name>.sh` — it becomes the `/init` inside the initrd.
-3. `make build TARGET=<name>`.
+3. If the host is a new cloud (or a variant that needs its own metadata/network plumbing), add `image/init-templates/vendors/<vendor>.sh` and set `TARGET_VENDOR=<vendor>` in the profile. The vendor stage gets `$1 = <newroot>`, is expected to load its network driver, bring up DHCP, fetch metadata, and append KEY=VALUE lines to `<newroot>/run/easyenclave/env`.
+4. `make build TARGET=<name>`.
 
 ### Attestation across targets
 
@@ -134,12 +137,15 @@ kernel, VMM, host, or cloud provider quote path. EasyEnclave only requires that
 
 ## Configuration
 
-Config is loaded from `/etc/easyenclave/config.json`, then environment variables override it. PID 1 can populate env vars from:
+Config is loaded from `/etc/easyenclave/config.json`, then environment variables override it. The initrd's per-vendor stage populates `/run/easyenclave/env` (a KEY=VALUE file, one per line) from the sources below, and PID 1 merges those entries into the process env before config loads:
 
-- kernel command line params prefixed with `ee.`, for example `ee.EE_DATA_DIR=/var/lib/easyenclave`
-- a secondary config disk containing `/agent.env`
-- GCE instance metadata attribute `ee-config`, encoded as a JSON object of environment variable names to values
+- kernel command line params prefixed with `ee.`, for example `ee.EE_DATA_DIR=/var/lib/easyenclave` (parsed by the root-strategy init template)
+- a secondary config disk containing `/agent.env` (local-tdx / qemu vendor stage only)
+- GCE instance metadata attribute `ee-config` — KEY=VALUE per line, or the legacy flat-JSON `{"KEY":"VALUE",...}` (auto-flattened by the gcp vendor stage)
+- Azure IMDS `customData` — base64-encoded. The decoded bytes may be KEY=VALUE per line or legacy flat-JSON (azure vendor stage)
 - the inherited process environment
+
+The Rust binary itself never talks to a metadata service or probes a config disk — all of that is shell code baked into the target's initrd, so the runtime stays vendor-agnostic.
 
 Example `/etc/easyenclave/config.json`:
 
@@ -172,16 +178,18 @@ Example `/etc/easyenclave/config.json`:
 | `EE_DATA_DIR` | `/var/lib/easyenclave` | Data directory |
 | `EE_BOOT_WORKLOADS` | (none) | JSON array of boot workloads |
 | `EE_GITHUB_TOKEN` | (none) | Optional GitHub token for private repos / higher rate limits |
-| `EE_IP` | DHCP | Static address/CIDR for the first non-loopback interface |
-| `EE_GATEWAY` | (none) | Default gateway when `EE_IP` is set |
-| `EE_DNS` | DHCP DNS | DNS server override written to `/run/resolv.conf` |
+| `EE_IP` | DHCP | Static address/CIDR for the first non-loopback interface (consumed by vendor stage, not by Rust) |
+| `EE_GATEWAY` | (none) | Default gateway when `EE_IP` is set (consumed by vendor stage) |
+| `EE_DNS` | DHCP DNS | DNS server written to `/run/resolv.conf` by the vendor stage |
+
+Networking (interface up, DHCP, DNS) is handled entirely by the vendor stage at `image/init-templates/vendors/<vendor>.sh` in the initrd. `EE_IP`/`EE_GATEWAY`/`EE_DNS` are read by the shared `ee_ifup` helper in `vendors/_lib.sh`, so they continue to work even though the PID 1 binary no longer reads them directly.
 
 ## Source
 
 ```
 src/
 ├── main.rs           Entry: init, config, pre-fetch, boot workloads, socket server
-├── init.rs           PID 1: mount, configfs, kernel cmdline, zombie reaper
+├── init.rs           PID 1: load /run/easyenclave/env, mount configfs/devpts, zombie reaper
 ├── config.rs         Config from file + env overlays
 ├── socket.rs         Unix socket server (8 methods; attach switches to raw bytes)
 ├── workload.rs       Deploy/stop/list, process lifecycle
@@ -190,13 +198,23 @@ src/
 └── attestation/
     ├── mod.rs         Backend trait + TDX detection (no insecure fallback)
     └── tsm.rs         TDX configfs-tsm implementation
+
+image/
+├── init-templates/
+│   ├── ext4-label.sh       Root strategy: mount ext4 LABEL=root (gcp, azure)
+│   ├── squashfs-overlay.sh Root strategy: iso + squashfs + tmpfs overlay (local-tdx)
+│   └── vendors/
+│       ├── gcp.sh           Network + GCE IMDS `ee-config` → /run/easyenclave/env
+│       ├── azure.sh         Network + Azure IMDS `customData` → /run/easyenclave/env
+│       └── qemu.sh          Secondary config disk /agent.env → /run/easyenclave/env
+└── targets/<name>/profile.env    Declares TARGET_ROOT_STRATEGY, TARGET_VENDOR, modules, outputs
 ```
 
 ## Key decisions
 
 - **No insecure attestation fallback** — `detect()` returns error without TDX.
 - **Unix socket control plane** — clients (like dd-client) handle external control-plane networking.
-- **Runtime-managed networking** — PID 1 brings up networking for metadata/config fetches, GitHub release downloads, and workload connectivity.
+- **Vendor plumbing is image-time, not Rust-time** — networking, cloud metadata, and config-disk probing live in per-vendor shell scripts baked into the initrd. The PID 1 binary only reads `/run/easyenclave/env` and runs; it never talks to a metadata service or probes `/dev/vdb`. Adding a cloud = adding a `vendors/<name>.sh` plus a target profile, with no Rust changes.
 - **Workloads are static binaries from GitHub releases, or bare commands** — no container runtime.
 - **Fetch-only workloads** (`github_release` with no `cmd`) prime the bin dir for other workloads to shell out to (e.g. cloudflared).
 - **Config from JSON + env, not database** — stateless runtime.

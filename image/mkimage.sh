@@ -10,7 +10,8 @@
 # Outputs depend on TARGET_FORMAT:
 #   disk → rootfs.img (ext4), easyenclave.root.raw (GPT disk),
 #          easyenclave.qcow2 (if `qcow2` in TARGET_OUTPUTS),
-#          easyenclave-<sha12>-gcp.tar.gz (if `gcp-tar.gz` in TARGET_OUTPUTS)
+#          easyenclave-<sha12>-gcp.tar.gz (if `gcp-tar.gz` in TARGET_OUTPUTS),
+#          easyenclave.vhd (if `vhd` in TARGET_OUTPUTS; fixed-size for Azure)
 #   iso  → rootfs.squashfs, easyenclave.iso
 set -euo pipefail
 
@@ -56,6 +57,20 @@ case "$TARGET_FORMAT" in
                 cp "$OUT/easyenclave.root.raw" "$OUT/disk.raw"
                 tar -czf "$OUT/easyenclave-gcp.tar.gz" -C "$OUT" disk.raw
                 rm -f "$OUT/disk.raw"
+                ;;
+        esac
+        case " $TARGET_OUTPUTS " in
+            *" vhd "*)
+                # Azure Managed Disk upload requires a *fixed-size* VHD
+                # (vpc subformat=fixed) with virtual size aligned to
+                # 1 MiB. `force_size=on` keeps qemu-img from padding the
+                # geometry field to the next CHS boundary, which would
+                # otherwise round the logical size up and break the
+                # alignment assertion Azure runs at import time.
+                qemu-img convert -f raw -O vpc \
+                    -o subformat=fixed,force_size=on \
+                    "$OUT/easyenclave.root.raw" \
+                    "$OUT/easyenclave.vhd"
                 ;;
         esac
         ;;
