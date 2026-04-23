@@ -59,8 +59,13 @@ VNET_NAME="${PREFIX}-vnet"
 
 # Shared Image Gallery state. The gallery + image-definition are
 # idempotent (created if missing, reused otherwise); only the image
-# VERSION is per-run and torn down after the test.
-GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery}"
+# VERSION is per-run and torn down after the test. Name is region-
+# scoped: `az sig show` is RG-scoped (not region-scoped), so a gallery
+# created in region A is "found" when running in region B — but a SIG
+# image-version must be rooted in its gallery's region, so the publish
+# then fails with "target regions must contain gallery region". The
+# region suffix gives each region its own gallery.
+GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery${REGION}}"
 IMG_DEF_NAME="${AZURE_IMG_DEF:-easyenclave-x64}"
 IMG_VERSION="0.0.$(date +%s)"
 
@@ -163,14 +168,28 @@ azcopy copy "$VHD" "${BLOB_URL}?${SAS}" --blob-type PageBlob
 STORAGE_ACCT_ID=$(az storage account show \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
     --query id -o tsv)
-echo "smoke:azure: create image version $IMG_VERSION from blob"
+# Azure's SIG image-version create insists target-regions include the
+# RG's home region even when all other resources (gallery, image-def,
+# storage account, blob) are explicitly in $REGION. The resource
+# group's location is where Azure places the image-version's "home"
+# replica, regardless of overrides. Fetch the RG's region and include
+# both it and $REGION in target-regions — the VM still boots from the
+# $REGION replica where we have quota.
+RG_LOCATION=$(az group show --name "$AZURE_RESOURCE_GROUP" --query location -o tsv)
+if [ "$RG_LOCATION" = "$REGION" ]; then
+    TARGET_REGIONS="$REGION"
+else
+    TARGET_REGIONS="$RG_LOCATION $REGION"
+fi
+echo "smoke:azure: create image version $IMG_VERSION from blob (target-regions: $TARGET_REGIONS)"
+# shellcheck disable=SC2086
 az sig image-version create \
     --resource-group "$AZURE_RESOURCE_GROUP" \
     --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
     --gallery-image-version "$IMG_VERSION" \
     --os-vhd-uri "$BLOB_URL" \
     --os-vhd-storage-account "$STORAGE_ACCT_ID" \
-    --target-regions "$REGION" \
+    --target-regions $TARGET_REGIONS \
     --replica-count 1 >/dev/null
 IMG_VERSION_ID=$(az sig image-version show \
     --resource-group "$AZURE_RESOURCE_GROUP" \
