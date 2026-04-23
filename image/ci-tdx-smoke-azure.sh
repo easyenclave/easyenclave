@@ -243,7 +243,26 @@ az vm create \
     --boot-diagnostics-storage "" \
     --admin-username eeci \
     --generate-ssh-keys \
-    --custom-data /tmp/ee-config.env >/dev/null
+    --custom-data /tmp/ee-config.env \
+    --no-wait >/dev/null
+# EasyEnclave has no Azure VM agent inside the sealed image, so the
+# default `az vm create` wait (which blocks until waagent reports
+# ready) hangs ~30min on its internal timeout. The VM itself boots
+# fine — Azure has no channel to confirm it. --no-wait + poll
+# provisioningState ourselves: we care that Azure's deployment layer
+# succeeded (VM object up, disk/NIC attached), not that a guest
+# agent called home.
+echo "smoke:azure: VM create submitted, polling provisioning..."
+for i in $(seq 1 30); do
+    state=$(az vm show --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" \
+        --query provisioningState -o tsv 2>/dev/null || echo "?")
+    echo "smoke:azure: provisioning=$state ($i/30)"
+    case "$state" in
+        Succeeded) break ;;
+        Failed|Canceled) echo "::error::smoke:azure: VM provisioning $state" >&2; exit 1 ;;
+    esac
+    sleep 10
+done
 
 # Assertions — same shape as gcp, different label. metadata_merged
 # becomes vendor:azure: since the azure vendor stage is the one that
