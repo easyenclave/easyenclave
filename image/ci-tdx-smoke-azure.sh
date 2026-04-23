@@ -38,14 +38,21 @@ set -euo pipefail
 : "${AZURE_RESOURCE_GROUP:?}"
 : "${SHA12:?}"
 
-# Default to westus3 + DC2es_v6 (Intel TDX v6). The DCEDV5/DCEV5
-# families showed "quota approved" in eastus2/centralus but the SKUs
-# never actually shipped in those regions (az vm list-skus returns
-# zero matches). DC*_v6 is the GA Intel TDX SKU line, available in
-# westus3 with 10 vCPUs of approved quota on this subscription.
-# Override via env if a different region has quota.
+# Regions are split into two concerns because the RG and the TDX-
+# SKU-quota don't line up for this subscription:
+#   - STORAGE_REGION = where the blob + gallery + image-version HOME
+#     live. Pinned to the RG's location because Azure's image-version
+#     import uses an internal staging disk rooted in the RG region,
+#     and rejects cross-region blob sources with "source blob does
+#     not belong to the same region as the disk."
+#   - VM_REGION = where the TDX VM actually boots. $REGION is the
+#     user-facing knob; defaults to westus3 where DCe_v6 quota exists.
+# The image-version replicates from STORAGE_REGION into VM_REGION so
+# the VM provision step pulls a local-region replica.
 REGION="${AZURE_REGION:-westus3}"
 VM_SIZE="${AZURE_VM_SIZE:-Standard_DC2es_v6}"
+STORAGE_REGION="$(az group show --name "$AZURE_RESOURCE_GROUP" --query location -o tsv)"
+[ -n "$STORAGE_REGION" ] || { echo "::error::smoke:azure: couldn't resolve RG location" >&2; exit 1; }
 VHD="image/output/azure/easyenclave-${SHA12}-azure.vhd"
 [ -f "$VHD" ] || { echo "missing $VHD" >&2; exit 2; }
 
@@ -57,21 +64,16 @@ PIP_NAME="${PREFIX}-pip"
 NSG_NAME="${PREFIX}-nsg"
 VNET_NAME="${PREFIX}-vnet"
 
-# Shared Image Gallery state. The gallery + image-definition are
-# idempotent (created if missing, reused otherwise); only the image
-# VERSION is per-run and torn down after the test.
+# Shared Image Gallery state. Gallery + image-def live in STORAGE_REGION
+# (the RG's location) so Azure's internal staging pipeline is happy.
+# Only the image VERSION is per-run and torn down after the test.
 GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery}"
 IMG_DEF_NAME="${AZURE_IMG_DEF:-easyenclave-x64}"
 IMG_VERSION="0.0.$(date +%s)"
 
-# Storage account for staging the VHD as a page blob. ConfidentialVmSupported
-# SIG images reject managed-disk sources ("Currently only Vhd Blob, User
-# Image and Gallery Image Version sources are supported"), so we bypass the
-# managed-disk intermediate entirely and go blob → image-version.
-# Account names must be 3-24 chars, lowercase alphanumeric only, globally
-# unique. Derive from RG + region so runs in different regions don't
-# collide on a pinned-region account (storage accounts are single-region).
-STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "${AZURE_RESOURCE_GROUP}-${REGION}" | sha256sum | cut -c1-16)}"
+# Storage account for staging the VHD as a page blob. Pinned to
+# STORAGE_REGION (= RG location). One account per RG.
+STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "${AZURE_RESOURCE_GROUP}" | sha256sum | cut -c1-16)}"
 STORAGE_CONTAINER="${AZURE_STORAGE_CONTAINER:-vhds}"
 BLOB_NAME="${PREFIX}.vhd"
 
@@ -106,14 +108,14 @@ trap cleanup EXIT
 if ! az sig show --resource-group "$AZURE_RESOURCE_GROUP" --gallery-name "$GALLERY_NAME" >/dev/null 2>&1; then
     echo "smoke:azure: create Shared Image Gallery $GALLERY_NAME"
     az sig create --resource-group "$AZURE_RESOURCE_GROUP" \
-        --gallery-name "$GALLERY_NAME" --location "$REGION" >/dev/null
+        --gallery-name "$GALLERY_NAME" --location "$STORAGE_REGION" >/dev/null
 fi
 if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" >/dev/null 2>&1; then
     echo "smoke:azure: create image definition $IMG_DEF_NAME (ConfidentialVmSupported)"
     az sig image-definition create --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
-        --location "$REGION" \
+        --location "$STORAGE_REGION" \
         --os-type Linux --os-state Generalized \
         --hyper-v-generation V2 \
         --features SecurityType=ConfidentialVmSupported \
@@ -130,7 +132,7 @@ if ! az storage account show --resource-group "$AZURE_RESOURCE_GROUP" --name "$S
     echo "smoke:azure: create storage account $STORAGE_ACCT"
     az storage account create \
         --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
-        --location "$REGION" --sku Standard_LRS --kind StorageV2 \
+        --location "$STORAGE_REGION" --sku Standard_LRS --kind StorageV2 \
         --allow-blob-public-access false >/dev/null
 fi
 
@@ -163,14 +165,23 @@ azcopy copy "$VHD" "${BLOB_URL}?${SAS}" --blob-type PageBlob
 STORAGE_ACCT_ID=$(az storage account show \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
     --query id -o tsv)
-echo "smoke:azure: create image version $IMG_VERSION from blob"
+# Home region (STORAGE_REGION) is the first target so the staging
+# disk matches the blob's region. Include $REGION too so the image-
+# version is replicated to where the VM will boot.
+if [ "$STORAGE_REGION" = "$REGION" ]; then
+    TARGET_REGIONS="$REGION"
+else
+    TARGET_REGIONS="$STORAGE_REGION $REGION"
+fi
+echo "smoke:azure: create image version $IMG_VERSION from blob (target-regions: $TARGET_REGIONS)"
+# shellcheck disable=SC2086
 az sig image-version create \
     --resource-group "$AZURE_RESOURCE_GROUP" \
     --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
     --gallery-image-version "$IMG_VERSION" \
     --os-vhd-uri "$BLOB_URL" \
     --os-vhd-storage-account "$STORAGE_ACCT_ID" \
-    --target-regions "$REGION" \
+    --target-regions $TARGET_REGIONS \
     --replica-count 1 >/dev/null
 IMG_VERSION_ID=$(az sig image-version show \
     --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -211,7 +222,12 @@ echo "smoke:azure: create TDX VM $VM_NAME ($VM_SIZE in $REGION)"
 # --image = SIG image-version resource ID (the CVM-capable image we just
 #   published). Provisioning agent runs from scratch → customData lands
 #   in IMDS correctly (unlike --attach-os-disk which skips provisioning).
-# --security-type ConfidentialVM + vTPM + secure boot: TDX CVM requirements.
+# --security-type ConfidentialVM + vTPM: TDX CVM requirements.
+# --enable-secure-boot false: EasyEnclave's UKI is unsigned. Azure's
+#   Secure Boot (UEFI-level signature check) is distinct from TDX
+#   attestation (measured-boot via configfs-tsm) — we rely on the
+#   latter, not the former. Signing UKIs is a production cert-mgmt
+#   concern we're not taking on for CI smoke.
 # --os-disk-security-encryption-type VMGuestStateOnly: TDX-appropriate
 #   (no disk encryption; memory is what TDX protects).
 # --boot-diagnostics-storage "" : managed (Azure-provided) storage.
@@ -221,13 +237,32 @@ az vm create \
     --size "$VM_SIZE" \
     --security-type ConfidentialVM \
     --os-disk-security-encryption-type VMGuestStateOnly \
-    --enable-vtpm true --enable-secure-boot true \
+    --enable-vtpm true --enable-secure-boot false \
     --image "$IMG_VERSION_ID" \
     --nics "$NIC_NAME" \
     --boot-diagnostics-storage "" \
     --admin-username eeci \
     --generate-ssh-keys \
-    --custom-data /tmp/ee-config.env >/dev/null
+    --custom-data /tmp/ee-config.env \
+    --no-wait >/dev/null
+# EasyEnclave has no Azure VM agent inside the sealed image, so the
+# default `az vm create` wait (which blocks until waagent reports
+# ready) hangs ~30min on its internal timeout. The VM itself boots
+# fine — Azure has no channel to confirm it. --no-wait + poll
+# provisioningState ourselves: we care that Azure's deployment layer
+# succeeded (VM object up, disk/NIC attached), not that a guest
+# agent called home.
+echo "smoke:azure: VM create submitted, polling provisioning..."
+for i in $(seq 1 30); do
+    state=$(az vm show --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" \
+        --query provisioningState -o tsv 2>/dev/null || echo "?")
+    echo "smoke:azure: provisioning=$state ($i/30)"
+    case "$state" in
+        Succeeded) break ;;
+        Failed|Canceled) echo "::error::smoke:azure: VM provisioning $state" >&2; exit 1 ;;
+    esac
+    sleep 10
+done
 
 # Assertions — same shape as gcp, different label. metadata_merged
 # becomes vendor:azure: since the azure vendor stage is the one that
