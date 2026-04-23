@@ -215,14 +215,12 @@ jobs:
           echo "EE_LOCAL_SSH_KEY_PATH=$HOME/.ssh/tdx2_key" >> "$GITHUB_ENV"
 
       # ── Run the per-target real-TDX smoke ──────────────────────────
-      # Azure's flow involves several CLI specifics (ConfidentialVM disk
-      # upload semantics, attach-os-disk + custom-data interaction) that
-      # may need iteration to get right on first production run. Mark it
-      # continue-on-error until first successful run, so Azure iteration
-      # doesn't block gcp/local-tdx from publishing releases. Flip to
-      # false once Azure is known-good.
+      # All three targets must pass now. Previously `azure` had
+      # continue-on-error while we iterated on its Azure-CLI specifics
+      # (disk upload mode, SAS auth, SIG flow, SKU/region selection,
+      # gallery region scoping) — those are all resolved. Keeping the
+      # mask in place would hide future Azure regressions.
       - name: Real-TDX smoke (${{ matrix.target }})
-        continue-on-error: ${{ matrix.target == 'azure' }}
         env:
           SHA12: ${{ needs.meta.outputs.sha12 }}
           GITHUB_SHA: ${{ github.sha }}
