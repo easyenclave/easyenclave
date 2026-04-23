@@ -179,7 +179,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [gcp, azure]
+        target: [gcp, azure, local-tdx-qcow2]
     steps:
       - uses: actions/checkout@v4
 
@@ -209,8 +209,19 @@ jobs:
           sudo mv azcopy_linux_amd64_*/azcopy /usr/local/bin/
           azcopy --version
 
+      # ── local-tdx-qcow2: SSH key for tdx2 (the libvirt host) ────────
+      - if: matrix.target == 'local-tdx-qcow2'
+        name: Stage SSH key for tdx2
+        env:
+          EE_LOCAL_SSH_KEY: ${{ secrets.EE_LOCAL_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$EE_LOCAL_SSH_KEY" > ~/.ssh/tdx2_key
+          chmod 600 ~/.ssh/tdx2_key
+          echo "EE_LOCAL_SSH_KEY_PATH=$HOME/.ssh/tdx2_key" >> "$GITHUB_ENV"
+
       # ── Run the per-target real-TDX smoke ──────────────────────────
-      # Both targets must pass now. Previously `azure` had continue-on-error
+      # All three targets must pass. Previously `azure` had continue-on-error
       # while we iterated on its Azure-CLI specifics (disk upload mode,
       # SAS auth, SIG flow, SKU/region selection, gallery region scoping)
       # — those are all resolved. Keeping the mask in place would hide
@@ -222,6 +233,7 @@ jobs:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          EE_LOCAL_HOST: ${{ secrets.EE_LOCAL_HOST }}
         run: bash image/ci-tdx-smoke-${{ matrix.target }}.sh
 
   # ── GCP image promotion (publishes staging / stable family) ─────────

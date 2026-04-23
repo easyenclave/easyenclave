@@ -174,6 +174,13 @@ else
     TARGET_REGIONS="$STORAGE_REGION $REGION"
 fi
 echo "smoke:azure: create image version $IMG_VERSION from blob (target-regions: $TARGET_REGIONS)"
+# `az sig image-version create` without --no-wait blocks ~7-9 minutes
+# on ConfidentialVmSupported image-versions. The image-version itself
+# is 322MB — the wait isn't network; it's Azure's internal pipeline
+# (CVM metadata seal → replica copy → catalog index → validate).
+# Submit async, poll provisioningState + replicationStatus every 20s
+# so CI logs show progress instead of silent 8-min hang.
+VERSION_START=$(date +%s)
 # shellcheck disable=SC2086
 az sig image-version create \
     --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -182,7 +189,41 @@ az sig image-version create \
     --os-vhd-uri "$BLOB_URL" \
     --os-vhd-storage-account "$STORAGE_ACCT_ID" \
     --target-regions $TARGET_REGIONS \
-    --replica-count 1 >/dev/null
+    --replica-count 1 \
+    --no-wait >/dev/null
+
+for attempt in $(seq 1 60); do
+    # provisioningState: Creating / Succeeded / Failed
+    # replicationStatus.regionalReplicationStatus: per-region progress (0-100)
+    info=$(az sig image-version show \
+        --resource-group "$AZURE_RESOURCE_GROUP" \
+        --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
+        --gallery-image-version "$IMG_VERSION" \
+        --query "{p: provisioningState, r: replicationStatus}" \
+        -o json 2>/dev/null || echo '{"p":"?","r":null}')
+    state=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('p','?'))")
+    reps=$(echo "$info" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+r = d.get('r') or {}
+regs = r.get('regionalReplicationStatus') or []
+parts = []
+for rg in regs:
+    name = rg.get('region', '?')
+    state = rg.get('state', '?')
+    prog = rg.get('progress', 0)
+    parts.append(f'{name}:{state}[{prog}%]')
+print(' '.join(parts) if parts else 'no-replica-info')
+" 2>/dev/null || echo "?")
+    elapsed=$(( $(date +%s) - VERSION_START ))
+    printf 'smoke:azure: [%3ds] provisioning=%s replicas=%s\n' "$elapsed" "$state" "$reps"
+    case "$state" in
+        Succeeded) break ;;
+        Failed|Canceled) echo "::error::smoke:azure: image-version create $state" >&2; exit 1 ;;
+    esac
+    sleep 20
+done
+
 IMG_VERSION_ID=$(az sig image-version show \
     --resource-group "$AZURE_RESOURCE_GROUP" \
     --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
@@ -278,13 +319,19 @@ FATAL_PATTERNS="FATAL|Kernel panic|switch_root: can|Invalid ELF header"
 
 declare -A PASSED
 ALL_DONE=false
+LAST_LINES=0
 for i in $(seq 1 36); do
-    # boot-diagnostics-log returns the full serial each call. Stream the
-    # whole thing every 10s — simpler than diffing, slightly noisier output.
+    # boot-diagnostics-log returns the full serial each call. Diff against
+    # last poll and stream only new lines (same pattern gcp's get-serial-
+    # port-output uses), so CI logs show boot progress live.
     out=$(az vm boot-diagnostics get-boot-log \
         --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" 2>/dev/null || true)
-    if [ -n "$out" ] && [ "$i" -eq 1 -o $((i % 3)) -eq 0 ]; then
-        echo "$out" | tail -n 60 | sed 's/^/[serial] /'
+    if [ -n "$out" ]; then
+        TOTAL=$(echo "$out" | wc -l)
+        if [ "$TOTAL" -gt "$LAST_LINES" ]; then
+            echo "$out" | tail -n +$((LAST_LINES + 1)) | sed 's/^/[serial] /'
+            LAST_LINES=$TOTAL
+        fi
     fi
     if echo "$out" | grep -qE "$FATAL_PATTERNS"; then
         echo "::error::smoke:azure: fatal pattern in serial"
