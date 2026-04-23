@@ -70,7 +70,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [gcp, azure, local-tdx]
+        # local-tdx-qcow2: a GPT-disk qcow2 with the `qemu` vendor stage —
+        # libvirt-backing-file shape for `devopsdefender/dd` et al. Same
+        # rootfs build as `gcp`, but without the GCE IMDS probe. Not in
+        # the tdx-smoke matrix because its boot chain is all already
+        # covered by `local-tdx` (squashfs/ISO) + `gcp` (GPT/ext4) and
+        # dd's preview-deploy smokes it end-to-end against a real
+        # workload on every release.
+        target: [gcp, azure, local-tdx, local-tdx-qcow2]
     steps:
       - uses: actions/checkout@v4
 
