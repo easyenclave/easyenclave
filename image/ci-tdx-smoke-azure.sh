@@ -59,8 +59,13 @@ VNET_NAME="${PREFIX}-vnet"
 
 # Shared Image Gallery state. The gallery + image-definition are
 # idempotent (created if missing, reused otherwise); only the image
-# VERSION is per-run and torn down after the test.
-GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery}"
+# VERSION is per-run and torn down after the test. Name is region-
+# scoped: `az sig show` is RG-scoped (not region-scoped), so a gallery
+# created in region A is "found" when running in region B — but a SIG
+# image-version must be rooted in its gallery's region, so the publish
+# then fails with "target regions must contain gallery region". The
+# region suffix gives each region its own gallery.
+GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery${REGION}}"
 IMG_DEF_NAME="${AZURE_IMG_DEF:-easyenclave-x64}"
 IMG_VERSION="0.0.$(date +%s)"
 
