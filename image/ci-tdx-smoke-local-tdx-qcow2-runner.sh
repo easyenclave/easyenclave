@@ -78,6 +78,11 @@ MEM_BYTES=$((4 * 1024 * 1024 * 1024))
 # -drive if=pflash fails on KVM 10.2 ("pflash with kvm requires KVM
 # readonly memory support") and bare -machine q35 fails memory-convert
 # during vCPU startup.
+# With -nodefaults, QEMU doesn't auto-wire a virtio-blk-pci device for
+# each `-drive if=virtio`. The FIRST drive happens to work (root ends up
+# on /dev/vda) but the SECOND silently doesn't attach — the qemu vendor
+# stage then reports "no config disk at /dev/vdb or /dev/sdb" and skips
+# the config merge. Bind each drive to its own virtio-blk-pci explicitly.
 qemu-system-x86_64 \
     -enable-kvm -cpu host -smp 2 \
     -m size=4194304k \
@@ -85,8 +90,10 @@ qemu-system-x86_64 \
     -object memory-backend-ram,id=pc.ram,size=${MEM_BYTES} \
     -object tdx-guest,id=lsec0 \
     -bios "$OVMF_CODE" \
-    -drive "file=$WORK_QCOW2,if=virtio,format=qcow2" \
-    -drive "file=$CONFIG_ISO,if=virtio,format=raw,readonly=on" \
+    -drive "file=$WORK_QCOW2,if=none,id=rootdrv,format=qcow2" \
+    -device virtio-blk-pci,drive=rootdrv \
+    -drive "file=$CONFIG_ISO,if=none,id=cfgdrv,format=raw,readonly=on" \
+    -device virtio-blk-pci,drive=cfgdrv \
     -netdev "user,id=n0,hostfwd=tcp::${HOST_PORT}-:80" \
     -device virtio-net-pci,netdev=n0 \
     -serial "file:$SERIAL_LOG" \
