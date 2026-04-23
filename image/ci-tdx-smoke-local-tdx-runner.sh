@@ -28,9 +28,22 @@ if [ "$TDX_SUPPORT" != "Y" ]; then
     exit 2
 fi
 
-# Prefer real TDVF if present; fall back to generic OVMF.
+# Prefer TDX-enlightened OVMF if present; fall back to generic. The
+# canonical path on our tdx2 host is /usr/local/share/ovmf/
+# OVMF.inteltdx.fd (built from edk2 with the intel-tdx feature);
+# Ubuntu's ovmf package ships OVMF.inteltdx.ms.fd (MS-signed variant)
+# and plain OVMF.fd / OVMF_CODE_4M.fd as non-TDX fallbacks. We only
+# log a warning if we land on a non-TDX variant — attestation will
+# fail at runtime and we'll catch it via the assertion set.
 OVMF_CODE=""
-for candidate in /usr/share/tdvf/TDVF.fd /opt/intel-tdvf/TDVF.fd /usr/share/OVMF/OVMF_CODE.fd; do
+for candidate in \
+    /usr/local/share/ovmf/OVMF.inteltdx.fd \
+    /usr/share/ovmf/OVMF.inteltdx.ms.fd \
+    /usr/share/tdvf/TDVF.fd \
+    /opt/intel-tdvf/TDVF.fd \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /usr/share/ovmf/OVMF.fd; do
     [ -f "$candidate" ] && OVMF_CODE="$candidate" && break
 done
 [ -n "$OVMF_CODE" ] || { echo "::error::tdx2-smoke: no TDVF/OVMF firmware found" >&2; exit 2; }
