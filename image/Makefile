@@ -17,15 +17,14 @@
 #   6. mkimage.sh <profile>                      (per-target format: disk or iso)
 #
 # Prerequisites: mkosi 25+, cargo, busybox-static, e2fsprogs, mtools,
-#   systemd-boot-efi (for the EFI stub), systemd-ukify,
-#   xorriso + squashfs-tools (for iso targets),
-#   qemu-utils (for qcow2)
+#   systemd-boot-efi (for the EFI stub), systemd-ukify, qemu-utils (qcow2)
 #
 # Usage:
-#   make build                    # default TARGET=gcp
-#   make build TARGET=local-tdx   # hybrid ISO for local TDX boot
-#   make clean                    # clean just the current TARGET's output
-#   make clean-all                # clean output/ entirely
+#   make build                          # default TARGET=gcp
+#   make build TARGET=azure             # Azure VHD for TDX CVMs
+#   make build TARGET=local-tdx-qcow2   # libvirt backing-file qcow2
+#   make clean                          # clean just the current TARGET's output
+#   make clean-all                      # clean output/ entirely
 
 REPO_ROOT := ..
 EXTRA_BIN := mkosi.extra/usr/local/bin
@@ -71,7 +70,7 @@ build: $(EXTRA_BIN)/easyenclave
 		--initrd $(OUTPUT_DIR)/easyenclave.initrd \
 		--cmdline @$(OUTPUT_DIR)/easyenclave.cmdline \
 		--output $(OUTPUT_DIR)/easyenclave.efi
-	# 7. Per-target final image (disk or iso).
+	# 7. Per-target final image (GPT disk + derived formats).
 	bash mkimage.sh $(PROFILE) $(OUTPUT_DIR)
 	@echo ""
 	@echo "=== Build complete ($(TARGET)) ==="
