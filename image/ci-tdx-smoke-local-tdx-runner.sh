@@ -83,17 +83,31 @@ trap cleanup EXIT
 
 echo "tdx2-smoke: sha12=$SHA12 firmware=$OVMF_CODE hostfwd=localhost:${HOST_PORT}→vm:80"
 
+# TDX-on-QEMU requires (see /var/log/libvirt/qemu/dd-local-*.log on tdx2
+# for the reference working invocation):
+#   - `-bios` (not -drive if=pflash) so the firmware rom isn't a regular
+#     read-only memory region that TDX's private-memory conversion rejects
+#   - an explicit memory-backend-ram wired into `-machine memory-backend=`
+#   - machine-level flags usb=off/hpet=off/dump-guest-core=off/acpi=on
+#   - `-nodefaults -no-user-config` to stop QEMU from auto-attaching
+#     devices that grab memory regions TDX can't convert to private
+#   - `confidential-guest-support=lsec0` matching an `-object tdx-guest,id=lsec0`
+# Without this full set the vCPU-startup path fails with "Convert non
+# guest_memfd backed memory region ... to private" during TDX measurement.
+MEM_BYTES=$((4 * 1024 * 1024 * 1024))
 qemu-system-x86_64 \
-    -enable-kvm -cpu host -m 4G -smp 2 \
-    -machine q35,kernel-irqchip=split,confidential-guest-support=tdx \
-    -object tdx-guest,id=tdx \
-    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
+    -enable-kvm -cpu host -smp 2 \
+    -m size=4194304k \
+    -machine q35,usb=off,dump-guest-core=off,memory-backend=pc.ram,confidential-guest-support=lsec0,hpet=off,acpi=on \
+    -object memory-backend-ram,id=pc.ram,size=${MEM_BYTES} \
+    -object tdx-guest,id=lsec0 \
+    -bios "$OVMF_CODE" \
     -cdrom "$ISO" \
     -drive "file=$CONFIG_ISO,if=virtio,format=raw,media=cdrom,readonly=on" \
     -netdev "user,id=n0,hostfwd=tcp::${HOST_PORT}-:80" \
     -device virtio-net-pci,netdev=n0 \
     -serial "file:$SERIAL_LOG" \
-    -nographic -display none -no-reboot \
+    -display none -no-reboot -no-user-config -nodefaults \
     > /dev/null 2>&1 &
 QEMU_PID=$!
 echo "$QEMU_PID" > "$QEMU_PID_FILE"

@@ -118,10 +118,13 @@ az disk create \
     --upload-type Upload --upload-size-bytes "$SIZE" \
     --sku Standard_LRS >/dev/null
 
+# The JSON key is `accessSAS` (uppercase-SAS), not `accessSas`. The
+# lowercase variant returns empty and azcopy sees a blank destination.
 SAS_URI=$(az disk grant-access \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$DISK_NAME" \
     --duration-in-seconds 3600 --access-level Write \
-    --query accessSas -o tsv)
+    --query accessSAS -o tsv)
+[ -n "$SAS_URI" ] || { echo "::error::smoke:azure: empty SAS URI from grant-access" >&2; exit 1; }
 
 # azcopy is required for VHD → page-blob upload; `az storage blob upload`
 # doesn't support the direct-to-disk-SAS flow.
