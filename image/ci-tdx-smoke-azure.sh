@@ -186,7 +186,7 @@ az network nsg rule create \
     --destination-port-ranges 80 --access Allow >/dev/null
 az network public-ip create \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" \
-    --location "$REGION" --sku Basic >/dev/null
+    --location "$REGION" --sku Standard --allocation-method Static >/dev/null
 az network nic create \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$NIC_NAME" \
     --location "$REGION" \
@@ -219,6 +219,8 @@ az vm create \
     --image "$IMG_VERSION_ID" \
     --nics "$NIC_NAME" \
     --boot-diagnostics-storage "" \
+    --admin-username eeci \
+    --generate-ssh-keys \
     --custom-data /tmp/ee-config.env >/dev/null
 
 # Assertions — same shape as gcp, different label. metadata_merged
