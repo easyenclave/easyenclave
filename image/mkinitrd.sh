@@ -8,6 +8,10 @@
 # The profile env file (e.g. image/targets/gcp/profile.env) supplies:
 #   TARGET_INITRD_MODULES   - space-separated module names to pull in
 #   TARGET_ROOT_STRATEGY    - name of the init template under init-templates/
+#   TARGET_VENDOR           - name of the vendor stage script under
+#                             init-templates/vendors/ (gcp, azure, qemu).
+#                             Missing = no vendor stage (the initrd will
+#                             skip cloud metadata + network setup).
 set -euo pipefail
 
 OUTFILE="${1:?Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>}"
@@ -25,15 +29,22 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INIT_TEMPLATE="$SCRIPT_DIR/init-templates/${TARGET_ROOT_STRATEGY}.sh"
 [ -f "$INIT_TEMPLATE" ] || { echo "FATAL: no init template for $TARGET_ROOT_STRATEGY at $INIT_TEMPLATE"; exit 1; }
 
+VENDOR_SCRIPT=""
+if [ -n "${TARGET_VENDOR:-}" ]; then
+    VENDOR_SCRIPT="$SCRIPT_DIR/init-templates/vendors/${TARGET_VENDOR}.sh"
+    [ -f "$VENDOR_SCRIPT" ] || { echo "FATAL: no vendor script for $TARGET_VENDOR at $VENDOR_SCRIPT"; exit 1; }
+fi
+
 echo "Building initrd for kernel $KVER"
 echo "  profile:  $PROFILE"
 echo "  strategy: $TARGET_ROOT_STRATEGY"
+echo "  vendor:   ${TARGET_VENDOR:-<none>}"
 echo "  modules:  $TARGET_INITRD_MODULES"
 
 WORKDIR=$(mktemp -d)
 trap "rm -rf $WORKDIR" EXIT
 
-mkdir -p "$WORKDIR"/{bin,sbin,lib,lib64,dev,proc,sys,mnt/root,etc}
+mkdir -p "$WORKDIR"/{bin,sbin,lib,lib64,dev,proc,sys,tmp,mnt/root,etc}
 
 # Busybox as the userspace (static, ~1MB)
 if command -v busybox >/dev/null 2>&1; then
@@ -45,8 +56,13 @@ else
 fi
 chmod +x "$WORKDIR/bin/busybox"
 
-# Symlink essential commands
-for cmd in sh mount umount switch_root mkdir cat echo sleep modprobe insmod findfs ls losetup; do
+# Symlink essential commands. The vendor stage needs `ip`, `udhcpc`,
+# `wget`, `base64`, `grep`, `head`, `tail`, `tr`, `cut`, and the usual
+# coreutils wrappers (busybox applets). Adding a symlink is free at
+# runtime — busybox routes applets by argv[0].
+for cmd in sh mount umount switch_root mkdir cat echo sleep modprobe insmod \
+           findfs ls losetup ip udhcpc wget base64 grep head tail tr cut \
+           sed awk seq printf chmod touch rm ln env; do
     ln -s busybox "$WORKDIR/bin/$cmd"
 done
 
@@ -142,6 +158,35 @@ fi
 # Install the profile-specified init template.
 cp "$INIT_TEMPLATE" "$WORKDIR/init"
 chmod +x "$WORKDIR/init"
+
+# Install the per-vendor stage script at /init-vendor.sh, plus the
+# udhcpc hook it needs to actually configure the interface after DHCP.
+# The hook is the same one the rootfs ships at /usr/share/udhcpc/
+# default.script — keeping one source of truth for classless-static-
+# route handling.
+if [ -n "$VENDOR_SCRIPT" ]; then
+    cp "$VENDOR_SCRIPT" "$WORKDIR/init-vendor.sh"
+    chmod +x "$WORKDIR/init-vendor.sh"
+
+    # Shared vendor-stage helpers (ee_log, ee_ifup, ee_append_config).
+    # Path under / so the sourced path in vendor scripts is stable.
+    LIB_SRC="$SCRIPT_DIR/init-templates/vendors/_lib.sh"
+    if [ -f "$LIB_SRC" ]; then
+        cp "$LIB_SRC" "$WORKDIR/init-templates-vendors-lib.sh"
+    else
+        echo "FATAL: vendor helper lib $LIB_SRC missing"
+        exit 1
+    fi
+
+    HOOK_SRC="$SCRIPT_DIR/mkosi.extra/usr/share/udhcpc/default.script"
+    if [ -f "$HOOK_SRC" ]; then
+        mkdir -p "$WORKDIR/usr/share/udhcpc"
+        cp "$HOOK_SRC" "$WORKDIR/usr/share/udhcpc/default.script"
+        chmod +x "$WORKDIR/usr/share/udhcpc/default.script"
+    else
+        echo "WARN: udhcpc hook $HOOK_SRC missing — DHCP-derived routes won't install"
+    fi
+fi
 
 # Create the cpio archive
 (cd "$WORKDIR" && find . | cpio -o -H newc 2>/dev/null) | gzip -9 > "$OUTFILE"

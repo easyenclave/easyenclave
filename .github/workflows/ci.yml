@@ -8,6 +8,8 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/**"
+      - "image/init-templates/vendors/**"
+      - "image/ci-test-vendor-lib.sh"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -28,3 +30,12 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+      # busybox-static gives us the exact `awk` / `sh` implementation
+      # the initrd runs, so the vendor-lib unit tests exercise the same
+      # parser code paths that boot time will.
+      - name: Install busybox-static
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends busybox-static
+
+      - name: Vendor-lib unit tests (_ee_json_to_env, ee_append_config)
+        run: busybox sh image/ci-test-vendor-lib.sh

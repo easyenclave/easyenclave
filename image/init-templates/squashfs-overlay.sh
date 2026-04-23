@@ -1,24 +1,37 @@
 #!/bin/sh
-# Minimal init: load modules, find ISO, loop-mount squashfs, overlay on
-# tmpfs for writable upper layer, switch_root.
+# Root-strategy: iso9660 on a CDROM device carrying rootfs.squashfs,
+# loop-mounted RO and overlaid with a tmpfs upper layer for writes.
+# Used by local-tdx for dev iteration — nothing persists across reboots.
 #
-# Root acquisition: iso9660 from a CDROM device, squashfs file inside it,
-# overlayfs(tmpfs upper, squashfs lower).
+# Flow mirrors ext4-label.sh:
+#   1. Mount /proc /sys /dev.
+#   2. Parse cmdline — we don't use root=/roothash= here (iso discovery
+#      is by device probe), but ee.* vars still get captured for the
+#      newroot env file.
+#   3. Load iso/squashfs/overlay modules + attestation. Network drivers
+#      come from the vendor stage.
+#   4. Find CDROM, loop-mount squashfs, build tmpfs overlay at /mnt/root.
+#   5. Seed /run/easyenclave/env from cmdline.
+#   6. Run per-vendor stage (qemu for local — merges /agent.env from
+#      the secondary config disk).
+#   7. mount --move /proc /sys /dev, switch_root.
 
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
 mount -t devtmpfs devtmpfs /dev
 
-# Load modules. Storage + network + iso/squashfs/overlay. Tolerate
-# built-ins silently (modprobe prints "not found" when the driver is
-# compiled in, which is fine — the capability is still present).
-for m in tdx_guest tsm_report virtio_blk virtio_net virtio_pci virtio_scsi sr_mod cdrom isofs loop squashfs overlay; do
+# Accumulate ee.* cmdline params for the newroot env file.
+: > /tmp/ee-cmdline.env
+for param in $(cat /proc/cmdline); do
+    case "$param" in
+        ee.*) echo "${param#ee.}" >> /tmp/ee-cmdline.env ;;
+    esac
+done
+
+for m in tdx_guest tsm_report virtio_blk virtio_pci virtio_scsi sr_mod cdrom isofs loop squashfs overlay; do
     modprobe "$m" 2>/dev/null || echo "note: $m not loaded (may be built-in)"
 done
 
-# Find the CDROM holding rootfs.squashfs. Try common names in order; the
-# device ordering depends on host config (local QEMU tends to /dev/sr0,
-# virtio-scsi hosts may see /dev/sr1 first).
 mkdir -p /mnt/iso /mnt/lower /mnt/upper /mnt/work /mnt/root
 ISO_DEV=""
 for i in $(seq 1 30); do
@@ -37,15 +50,10 @@ done
 [ -n "$ISO_DEV" ] || { echo "FATAL: no iso9660 with rootfs.squashfs"; ls /dev/sr* /dev/vd* 2>/dev/null; exec /bin/sh; }
 echo "Resolved iso to $ISO_DEV"
 
-# Loop-mount the sealed rootfs read-only.
 mount -t squashfs -o loop,ro /mnt/iso/rootfs.squashfs /mnt/lower || {
     echo "FATAL: squashfs mount failed"
     exec /bin/sh
 }
-
-# Writable overlay: lower = sealed squashfs, upper = tmpfs.
-# Result: the rootfs looks writable but nothing persists across reboots —
-# which is the intended sealed-VM behavior.
 mount -t tmpfs tmpfs /mnt/upper || true
 mkdir -p /mnt/upper/u /mnt/upper/w
 mount -t overlay overlay \
@@ -55,10 +63,30 @@ mount -t overlay overlay \
     exec /bin/sh
 }
 
-# Carry the iso9660 mount forward so the running system can still read
-# rootfs.squashfs (debugging) and any secondary data the image may add.
+# Carry iso9660 forward for post-boot inspection of rootfs.squashfs.
 mkdir -p /mnt/root/mnt/iso
 mount --move /mnt/iso /mnt/root/mnt/iso 2>/dev/null || true
 
-umount /proc /sys
+# Writable runtime mounts. The overlay upper is already tmpfs-backed,
+# so these are redundant for squashfs-overlay — but kept for symmetry
+# with ext4-label (ensures `/run` is a fresh tmpfs on every boot, not
+# tied to overlay upper-layer lifetime).
+mount -t tmpfs tmpfs /mnt/root/run 2>/dev/null || :
+mount -t tmpfs tmpfs /mnt/root/var/lib/easyenclave 2>/dev/null || :
+mkdir -p /mnt/root/run/easyenclave \
+         /mnt/root/var/lib/easyenclave/workloads \
+         /mnt/root/var/lib/easyenclave/shared
+
+cat /tmp/ee-cmdline.env > /mnt/root/run/easyenclave/env
+
+if [ -x /init-vendor.sh ]; then
+    /init-vendor.sh /mnt/root || echo "vendor stage exited non-zero (non-fatal)"
+else
+    echo "no /init-vendor.sh — skipping vendor stage"
+fi
+
+mount --move /proc /mnt/root/proc
+mount --move /sys  /mnt/root/sys
+mount --move /dev  /mnt/root/dev
+
 exec switch_root /mnt/root /sbin/init

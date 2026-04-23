@@ -20,9 +20,10 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "process", "rt-multi-thread", "signal", "time", "fs", "net", "io-util", "sync"] }
-# ureq: sync HTTP client. Used for GCE metadata at boot (plain HTTP) and
-# for the GitHub Releases API (HTTPS, needs TLS). `tls` pulls rustls +
-# webpki-roots; we don't depend on system CA certs.
+# ureq: sync HTTP client for the GitHub Releases API (HTTPS, needs TLS).
+# `tls` pulls rustls + webpki-roots; we don't depend on system CA certs.
+# Cloud-metadata fetches live in the initrd vendor stage (busybox wget),
+# not in this binary.
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
 uuid = { version = "1", features = ["serde", "v4"] }
 
