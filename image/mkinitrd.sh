@@ -143,7 +143,7 @@ cat "$MODDIR/modules.dep" 2>/dev/null || echo "(missing)"
 echo "==="
 
 # veritysetup for dm-verity (from cryptsetup-bin). Only meaningful for
-# strategies that use dm-verity (ext4-label does; squashfs-overlay
+# strategies that use dm-verity (ext4-label does; other strategies
 # doesn't). Copying unconditionally adds ~200KB + libs; cheap insurance.
 if command -v veritysetup >/dev/null 2>&1; then
     cp "$(which veritysetup)" "$WORKDIR/sbin/"

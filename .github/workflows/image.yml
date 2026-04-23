@@ -73,11 +73,10 @@ jobs:
         # local-tdx-qcow2: a GPT-disk qcow2 with the `qemu` vendor stage —
         # libvirt-backing-file shape for `devopsdefender/dd` et al. Same
         # rootfs build as `gcp`, but without the GCE IMDS probe. Not in
-        # the tdx-smoke matrix because its boot chain is all already
-        # covered by `local-tdx` (squashfs/ISO) + `gcp` (GPT/ext4) and
-        # dd's preview-deploy smokes it end-to-end against a real
-        # workload on every release.
-        target: [gcp, azure, local-tdx, local-tdx-qcow2]
+        # the tdx-smoke matrix because its boot chain is already covered
+        # by `gcp` (GPT/ext4) and dd's preview-deploy smokes it end-to-end
+        # against a real workload on every release.
+        target: [gcp, azure, local-tdx-qcow2]
     steps:
       - uses: actions/checkout@v4
 
@@ -180,7 +179,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [gcp, azure, local-tdx]
+        target: [gcp, azure, local-tdx-qcow2]
     steps:
       - uses: actions/checkout@v4
 
@@ -210,8 +209,8 @@ jobs:
           sudo mv azcopy_linux_amd64_*/azcopy /usr/local/bin/
           azcopy --version
 
-      # ── Local-TDX: SSH key staging (target=local-tdx only) ─────────
-      - if: matrix.target == 'local-tdx'
+      # ── local-tdx-qcow2: SSH key for tdx2 (the libvirt host) ────────
+      - if: matrix.target == 'local-tdx-qcow2'
         name: Stage SSH key for tdx2
         env:
           EE_LOCAL_SSH_KEY: ${{ secrets.EE_LOCAL_SSH_KEY }}
@@ -222,14 +221,12 @@ jobs:
           echo "EE_LOCAL_SSH_KEY_PATH=$HOME/.ssh/tdx2_key" >> "$GITHUB_ENV"
 
       # ── Run the per-target real-TDX smoke ──────────────────────────
-      # Azure's flow involves several CLI specifics (ConfidentialVM disk
-      # upload semantics, attach-os-disk + custom-data interaction) that
-      # may need iteration to get right on first production run. Mark it
-      # continue-on-error until first successful run, so Azure iteration
-      # doesn't block gcp/local-tdx from publishing releases. Flip to
-      # false once Azure is known-good.
+      # All three targets must pass. Previously `azure` had continue-on-error
+      # while we iterated on its Azure-CLI specifics (disk upload mode,
+      # SAS auth, SIG flow, SKU/region selection, gallery region scoping)
+      # — those are all resolved. Keeping the mask in place would hide
+      # future Azure regressions.
       - name: Real-TDX smoke (${{ matrix.target }})
-        continue-on-error: ${{ matrix.target == 'azure' }}
         env:
           SHA12: ${{ needs.meta.outputs.sha12 }}
           GITHUB_SHA: ${{ github.sha }}
@@ -356,7 +353,7 @@ jobs:
             echo ""
             echo "- **gcp** — raw, qcow2, gcp-tar.gz (GCE import)"
             echo "- **azure** — raw, vhd (fixed-size, Azure Managed Disk import)"
-            echo "- **local-tdx** — iso (hybrid, OVMF/TDVF boot)"
+            echo "- **local-tdx-qcow2** — raw, qcow2 (libvirt backing file for dd-style deployments)"
             echo ""
             echo "GCP image: \`${GCP_NAME}\`"
             echo ""
