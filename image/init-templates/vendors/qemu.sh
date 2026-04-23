@@ -25,9 +25,9 @@ if [ -n "${IFACE:-}" ]; then
     ee_ifup "$IFACE"
 fi
 
-# Probe a secondary config disk for /agent.env. The local-tdx build
-# expects dev users to drop config on an auxiliary disk or ISO — there's
-# no metadata service to pull it from.
+# Probe a secondary config disk for /agent.env. Local/libvirt deployments
+# (local-tdx-qcow2 target) drop config on an auxiliary disk or ISO —
+# there's no metadata service to pull it from.
 CONFIG_MNT=/tmp/ee-config-disk
 mkdir -p "$CONFIG_MNT"
 MOUNTED=""
