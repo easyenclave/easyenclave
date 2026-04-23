@@ -44,7 +44,7 @@ echo "  modules:  $TARGET_INITRD_MODULES"
 WORKDIR=$(mktemp -d)
 trap "rm -rf $WORKDIR" EXIT
 
-mkdir -p "$WORKDIR"/{bin,sbin,lib,lib64,dev,proc,sys,mnt/root,etc}
+mkdir -p "$WORKDIR"/{bin,sbin,lib,lib64,dev,proc,sys,tmp,mnt/root,etc}
 
 # Busybox as the userspace (static, ~1MB)
 if command -v busybox >/dev/null 2>&1; then
