@@ -169,17 +169,17 @@ STORAGE_ACCT_ID=$(az storage account show \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
     --query id -o tsv)
 # Azure's SIG image-version create insists target-regions include the
-# RG's home region even when all other resources (gallery, image-def,
-# storage account, blob) are explicitly in $REGION. The resource
-# group's location is where Azure places the image-version's "home"
-# replica, regardless of overrides. Fetch the RG's region and include
-# both it and $REGION in target-regions — the VM still boots from the
-# $REGION replica where we have quota.
+# RG's home region even when all other resources are explicitly in
+# $REGION — AND the FIRST region in target-regions is where Azure
+# stages the intermediate disk, so it must match the source-blob
+# region or the import fails with "source blob does not belong to the
+# same region as the disk". So: $REGION (where the blob lives) first,
+# RG location second as a replica target.
 RG_LOCATION=$(az group show --name "$AZURE_RESOURCE_GROUP" --query location -o tsv)
 if [ "$RG_LOCATION" = "$REGION" ]; then
     TARGET_REGIONS="$REGION"
 else
-    TARGET_REGIONS="$RG_LOCATION $REGION"
+    TARGET_REGIONS="$REGION $RG_LOCATION"
 fi
 echo "smoke:azure: create image version $IMG_VERSION from blob (target-regions: $TARGET_REGIONS)"
 # shellcheck disable=SC2086
