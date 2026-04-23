@@ -4,9 +4,8 @@ name: Build & Release VM Image
 # enclave test, then publish the gcp image family + all artifacts.
 #
 # Pipeline:
-#   meta ── build (matrix) ──┬── tdx-smoke (matrix: real TDX per target)
-#                             ├── gcp-promote  (non-PR only)
-#                             └── release      (non-PR only, gates on all above)
+#   meta ── build-and-smoke (matrix) ──┬── gcp-promote (non-PR only)
+#                                       └── release     (non-PR only, gates on all above)
 
 on:
   push:
@@ -63,31 +62,42 @@ jobs:
             echo "gcp_name=${GCP_NAME}"
           } >> "$GITHUB_OUTPUT"
 
-  # ── Per-target image build ──────────────────────────────────────────
-  build:
+  # ── Build + real-TDX smoke, combined per target ─────────────────────
+  # One job per target: builds the image, uploads the artifact, then
+  # spins up a real TDX VM on that target's platform and runs the
+  # enclave through boot + attestation + workload-serve.
+  #
+  # Smoke is skipped on fork PRs (would burn cloud $ / expose the tdx2
+  # SSH key). Build still runs on forks so they get at least a
+  # compile-level signal. Build artifacts always upload before smoke
+  # so a smoke failure is debuggable from the artifact.
+  build-and-smoke:
     needs: meta
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
-        # local-tdx-qcow2: a GPT-disk qcow2 with the `qemu` vendor stage —
-        # libvirt-backing-file shape for `devopsdefender/dd` et al. Same
-        # rootfs build as `gcp`, but without the GCE IMDS probe. Not in
-        # the tdx-smoke matrix because its boot chain is already covered
-        # by `gcp` (GPT/ext4) and dd's preview-deploy smokes it end-to-end
-        # against a real workload on every release.
+        # gcp              : GPT disk + GCE import tar.gz, cloud TDX CVM
+        # azure            : GPT disk + fixed-size VHD, Azure TDX CVM via SIG
+        # local-tdx-qcow2  : GPT-disk qcow2, libvirt backing-file shape
+        #                    (`devopsdefender/dd`), boots on tdx2 under
+        #                    real OVMF.inteltdx.fd
         target: [gcp, azure, local-tdx-qcow2]
     steps:
       - uses: actions/checkout@v4
 
+      # ── Build phase ─────────────────────────────────────────────────
       - name: Install apt build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
             busybox-static e2fsprogs dosfstools qemu-utils \
-            zstd linux-image-generic \
-            xorriso squashfs-tools
+            zstd linux-image-generic
 
       - name: Resolve target kernel version
         id: kver
@@ -148,11 +158,6 @@ jobs:
             mv easyenclave.vhd "easyenclave-${SHA12}-${TARGET}.vhd"
             echo "VHD sha256: ${VHD_SHA}" >> MEASUREMENTS.txt
           fi
-          if [ -f easyenclave.iso ]; then
-            ISO_SHA=$(sha256sum easyenclave.iso | cut -d' ' -f1)
-            mv easyenclave.iso "easyenclave-${SHA12}-${TARGET}.iso"
-            echo "ISO sha256: ${ISO_SHA}" >> MEASUREMENTS.txt
-          fi
           ls -la
 
       - uses: actions/upload-artifact@v4
@@ -163,54 +168,44 @@ jobs:
             image/output/${{ matrix.target }}/MEASUREMENTS.txt
           retention-days: 7
 
-  # ── Real-TDX integration test per target ────────────────────────────
-  # Each matrix entry provisions a real TDX VM on its platform, runs the
-  # enclave through boot + attestation + workload-serve, tears down.
-  # Skipped on fork PRs (would burn money / expose self-hosted-equivalent
-  # SSH creds). See the per-target scripts under image/ci-tdx-smoke-*.sh.
-  tdx-smoke:
-    needs: [meta, build]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: read
-      id-token: write
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [gcp, azure, local-tdx-qcow2]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: easyenclave-image-${{ matrix.target }}
-          path: image/output/${{ matrix.target }}
-
-      # ── GCP auth (target=gcp only) ─────────────────────────────────
-      - if: matrix.target == 'gcp'
+      # ── Smoke phase (per-target auth + tools + real TDX test) ───────
+      # Gated on fork check so fork PRs don't burn cloud $ / expose
+      # the tdx2 SSH key. Fork PRs still get the build above.
+      - if: >-
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+             && matrix.target == 'gcp'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: 'projects/779946350556/locations/global/workloadIdentityPools/github-actions-pool/providers/github-provider'
           service_account: 'easyenclave-github-provisioner@easyenclave.iam.gserviceaccount.com'
-      - if: matrix.target == 'gcp'
+      - if: >-
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+             && matrix.target == 'gcp'
         uses: google-github-actions/setup-gcloud@v2
 
-      # ── Azure auth + CLI tools (target=azure only) ─────────────────
-      - if: matrix.target == 'azure'
+      - if: >-
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+             && matrix.target == 'azure'
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-      - if: matrix.target == 'azure'
+      - if: >-
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+             && matrix.target == 'azure'
         name: Install AzCopy
         run: |
           curl -fsSL https://aka.ms/downloadazcopy-v10-linux | tar -xz
           sudo mv azcopy_linux_amd64_*/azcopy /usr/local/bin/
           azcopy --version
 
-      # ── local-tdx-qcow2: SSH key for tdx2 (the libvirt host) ────────
-      - if: matrix.target == 'local-tdx-qcow2'
+      - if: >-
+          (github.event_name != 'pull_request' ||
+           github.event.pull_request.head.repo.full_name == github.repository)
+             && matrix.target == 'local-tdx-qcow2'
         name: Stage SSH key for tdx2
         env:
           EE_LOCAL_SSH_KEY: ${{ secrets.EE_LOCAL_SSH_KEY }}
@@ -220,13 +215,10 @@ jobs:
           chmod 600 ~/.ssh/tdx2_key
           echo "EE_LOCAL_SSH_KEY_PATH=$HOME/.ssh/tdx2_key" >> "$GITHUB_ENV"
 
-      # ── Run the per-target real-TDX smoke ──────────────────────────
-      # All three targets must pass. Previously `azure` had continue-on-error
-      # while we iterated on its Azure-CLI specifics (disk upload mode,
-      # SAS auth, SIG flow, SKU/region selection, gallery region scoping)
-      # — those are all resolved. Keeping the mask in place would hide
-      # future Azure regressions.
-      - name: Real-TDX smoke (${{ matrix.target }})
+      - if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        name: Real-TDX smoke (${{ matrix.target }})
         env:
           SHA12: ${{ needs.meta.outputs.sha12 }}
           GITHUB_SHA: ${{ github.sha }}
@@ -237,12 +229,11 @@ jobs:
         run: bash image/ci-tdx-smoke-${{ matrix.target }}.sh
 
   # ── GCP image promotion (publishes staging / stable family) ─────────
-  # Separate from tdx-smoke-gcp (which creates + deletes an ephemeral
-  # image). This job publishes the image under a channel label (staging
-  # on main, pr on PRs-from-same-repo, stable on tags) and rotates old
-  # images. Skipped entirely on PRs — promotion is a merge-time action.
+  # Runs after build-and-smoke's gcp matrix entry passes. Publishes the
+  # image under a channel label (staging on main, stable on tags) and
+  # rotates old images. Skipped entirely on PRs.
   gcp-promote:
-    needs: [meta, build, tdx-smoke]
+    needs: [meta, build-and-smoke]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: release
@@ -300,7 +291,7 @@ jobs:
 
   # ── Release (non-PR only) ───────────────────────────────────────────
   release:
-    needs: [meta, build, tdx-smoke, gcp-promote]
+    needs: [meta, build-and-smoke, gcp-promote]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
