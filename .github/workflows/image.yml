@@ -1,10 +1,14 @@
 name: Build & Release VM Image
 
-# Build the sealed TDX VM image and run a full integration test on
-# EVERY push and PR. PRs auto-promote into the staging family.
+# Build the sealed TDX VM image for every supported target on every
+# push and PR. Each target gets a non-TDX QEMU smoke test; GCP also
+# gets a full real-TDX integration test. Release job attaches all
+# artifacts on main/tag.
 #
-# Pipeline: build → deploy-and-test (staging image + integration
-#           test + release on merge)
+# Pipeline:
+#   meta ── build (matrix: gcp/azure/local-tdx) ──┬── smoke (matrix)
+#                                                  ├── deploy-and-test (gcp)
+#                                                  └── release (non-PR)
 
 on:
   push:
@@ -33,14 +37,42 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # ── Shared metadata (sha12, tag, gcp image name) ────────────────────
+  meta:
     runs-on: ubuntu-latest
     outputs:
-      sha12: ${{ steps.meta.outputs.sha12 }}
-      gcp_name: ${{ steps.meta.outputs.gcp_name }}
-      uki_sha256: ${{ steps.meta.outputs.uki_sha256 }}
-      root_sha256: ${{ steps.meta.outputs.root_sha256 }}
-      qcow2_sha256: ${{ steps.meta.outputs.qcow2_sha256 }}
+      sha12: ${{ steps.s.outputs.sha12 }}
+      tag: ${{ steps.s.outputs.tag }}
+      release_name: ${{ steps.s.outputs.release_name }}
+      gcp_name: ${{ steps.s.outputs.gcp_name }}
+    steps:
+      - id: s
+        run: |
+          SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            GCP_NAME="easyenclave-${TAG//./-}"
+            RELEASE_NAME="easyenclave-${TAG}"
+          else
+            TAG=""
+            GCP_NAME="easyenclave-${SHA12}"
+            RELEASE_NAME="easyenclave-${SHA12}"
+          fi
+          {
+            echo "sha12=${SHA12}"
+            echo "tag=${TAG}"
+            echo "release_name=${RELEASE_NAME}"
+            echo "gcp_name=${GCP_NAME}"
+          } >> "$GITHUB_OUTPUT"
+
+  # ── Per-target image build ──────────────────────────────────────────
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [gcp, azure, local-tdx]
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +82,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             systemd-boot-efi systemd-ukify mtools cryptsetup-bin \
             busybox-static e2fsprogs dosfstools qemu-utils \
-            zstd linux-image-generic
+            zstd linux-image-generic \
+            xorriso squashfs-tools
 
       - name: Resolve target kernel version
         id: kver
@@ -72,60 +105,133 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build
+      - name: Build (TARGET=${{ matrix.target }})
         env:
           KVER: ${{ steps.kver.outputs.kver }}
+          TARGET: ${{ matrix.target }}
         run: |
           cargo build --release
-          cd image && make build KVER="$KVER"
+          cd image && make build KVER="$KVER" TARGET="$TARGET"
 
-      - name: Compute measurements
-        id: meta
+      - name: Rename + compute measurements
+        env:
+          TARGET: ${{ matrix.target }}
+          SHA12: ${{ needs.meta.outputs.sha12 }}
         run: |
-          cd image/output/gcp
-          SHA12=$(echo "${{ github.sha }}" | cut -c1-12)
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            GCP_NAME="easyenclave-${TAG//./-}"
-          else
-            GCP_NAME="easyenclave-${SHA12}"
-          fi
+          cd image/output/${TARGET}
           UKI_SHA256=$(sha256sum easyenclave.efi | cut -d' ' -f1)
-          ROOT_SHA256=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
-          QCOW2_SHA256=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
+
+          # Common rename: UKI is always produced; rename for release clarity.
+          mv easyenclave.efi "easyenclave-${SHA12}-${TARGET}.efi"
+
+          # Per-target format-specific artifacts + hashes. The MEASUREMENTS
+          # file is the canonical per-target record: commit, target, UKI
+          # hash, and whichever disk/iso hashes the target produces.
           {
-            echo "sha12=${SHA12}"
-            echo "gcp_name=${GCP_NAME}"
-            echo "uki_sha256=${UKI_SHA256}"
-            echo "root_sha256=${ROOT_SHA256}"
-            echo "qcow2_sha256=${QCOW2_SHA256}"
-          } >> "$GITHUB_OUTPUT"
-          mv easyenclave.efi "easyenclave-${SHA12}.efi"
-          mv easyenclave.root.raw "easyenclave-${SHA12}.raw"
-          mv easyenclave.qcow2 "easyenclave-${SHA12}.qcow2"
-          # mkimage.sh already produced easyenclave-gcp.tar.gz; just rename.
-          mv easyenclave-gcp.tar.gz "easyenclave-${SHA12}-gcp.tar.gz"
-          cat > MEASUREMENTS.txt <<EOF
-          commit: ${{ github.sha }}
-          target: gcp
-          UKI sha256: ${UKI_SHA256}
-          Disk sha256: ${ROOT_SHA256}
-          EOF
+            echo "commit: ${{ github.sha }}"
+            echo "target: ${TARGET}"
+            echo "UKI sha256: ${UKI_SHA256}"
+          } > MEASUREMENTS.txt
+
+          if [ -f easyenclave.root.raw ]; then
+            RAW_SHA=$(sha256sum easyenclave.root.raw | cut -d' ' -f1)
+            mv easyenclave.root.raw "easyenclave-${SHA12}-${TARGET}.raw"
+            echo "Disk sha256: ${RAW_SHA}" >> MEASUREMENTS.txt
+          fi
+          if [ -f easyenclave.qcow2 ]; then
+            QCOW_SHA=$(sha256sum easyenclave.qcow2 | cut -d' ' -f1)
+            mv easyenclave.qcow2 "easyenclave-${SHA12}-${TARGET}.qcow2"
+            echo "Qcow2 sha256: ${QCOW_SHA}" >> MEASUREMENTS.txt
+          fi
+          if [ -f easyenclave-gcp.tar.gz ]; then
+            mv easyenclave-gcp.tar.gz "easyenclave-${SHA12}-gcp.tar.gz"
+          fi
+          if [ -f easyenclave.vhd ]; then
+            VHD_SHA=$(sha256sum easyenclave.vhd | cut -d' ' -f1)
+            mv easyenclave.vhd "easyenclave-${SHA12}-${TARGET}.vhd"
+            echo "VHD sha256: ${VHD_SHA}" >> MEASUREMENTS.txt
+          fi
+          if [ -f easyenclave.iso ]; then
+            ISO_SHA=$(sha256sum easyenclave.iso | cut -d' ' -f1)
+            mv easyenclave.iso "easyenclave-${SHA12}-${TARGET}.iso"
+            echo "ISO sha256: ${ISO_SHA}" >> MEASUREMENTS.txt
+          fi
+
+          # Keep the unrenamed vmlinuz/initrd/cmdline alongside renamed
+          # artifacts — the smoke job expects them at those names.
+          ls -la
 
       - uses: actions/upload-artifact@v4
         with:
-          name: easyenclave-image
+          name: easyenclave-image-${{ matrix.target }}
           path: |
-            image/output/gcp/easyenclave-*.efi
-            image/output/gcp/easyenclave-*.raw
-            image/output/gcp/easyenclave-*.qcow2
-            image/output/gcp/easyenclave-*-gcp.tar.gz
-            image/output/gcp/MEASUREMENTS.txt
+            image/output/${{ matrix.target }}/easyenclave-*
+            image/output/${{ matrix.target }}/easyenclave.vmlinuz
+            image/output/${{ matrix.target }}/easyenclave.initrd
+            image/output/${{ matrix.target }}/easyenclave.cmdline
+            image/output/${{ matrix.target }}/MEASUREMENTS.txt
           retention-days: 7
 
-  # ── Deploy, test, and release (one GCP auth) ─────────────────────
+  # ── Non-TDX QEMU smoke test per target ──────────────────────────────
+  # Asserts that the full init-pipeline (cmdline parse → root mount →
+  # vendor stage → switch_root → Rust PID 1 → attestation detect) runs
+  # end-to-end on every target. Expects FATAL at attestation because
+  # runners don't have TDX; anything earlier than that is a regression.
+  smoke:
+    needs: [meta, build]
+    # Pin to 24.04 explicitly — 24.04 Actions runners expose /dev/kvm,
+    # 22.04 runners don't. Without KVM we fall back to TCG, which boots
+    # a 2G/2CPU VM at ~10× real time and can easily blow past any
+    # reasonable timeout on ext4/squashfs mount + initrd.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [gcp, azure, local-tdx]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install qemu
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: easyenclave-image-${{ matrix.target }}
+          path: image/output/${{ matrix.target }}
+
+      - name: Restore canonical artifact names for smoke boot
+        env:
+          TARGET: ${{ matrix.target }}
+          SHA12: ${{ needs.meta.outputs.sha12 }}
+        run: |
+          cd image/output/${TARGET}
+          # The build job renamed artifacts to include sha12+target for
+          # release clarity; the smoke script expects the canonical
+          # names the build produces (easyenclave.root.raw, .iso, etc.).
+          [ -f "easyenclave-${SHA12}-${TARGET}.raw" ]  && ln -sf "easyenclave-${SHA12}-${TARGET}.raw"  easyenclave.root.raw
+          [ -f "easyenclave-${SHA12}-${TARGET}.iso" ]  && ln -sf "easyenclave-${SHA12}-${TARGET}.iso"  easyenclave.iso
+          [ -f "easyenclave-${SHA12}-${TARGET}.efi" ]  && ln -sf "easyenclave-${SHA12}-${TARGET}.efi"  easyenclave.efi
+          ls -la
+
+      - name: Smoke boot
+        env:
+          TARGET: ${{ matrix.target }}
+          # Belt-and-suspenders: even with KVM, cold-boot across three
+          # targets can vary by ±30s depending on runner load. 300s is
+          # comfortable without masking real hangs (a hang burns the
+          # full budget before failing).
+          TIMEOUT_SECS: "300"
+        run: |
+          bash image/ci-smoke-boot.sh "$TARGET"
+
+  # ── Full real-TDX GCP integration test + image promotion ────────────
+  # Unchanged from the pre-matrix workflow, just parameterized to pull
+  # the gcp-matrix artifact and use the shared meta outputs.
   deploy-and-test:
-    needs: build
+    needs: [meta, build]
+    if: github.repository == 'easyenclave/easyenclave'
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -140,7 +246,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
       - uses: actions/download-artifact@v4
         with:
-          name: easyenclave-image
+          name: easyenclave-image-gcp
           path: image/output/gcp
 
       # ── Create staging image ─────────────────────────────────────
@@ -148,13 +254,13 @@ jobs:
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
-          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
+          SHA12: ${{ needs.meta.outputs.sha12 }}
+          GCP_NAME: ${{ needs.meta.outputs.gcp_name }}
           IS_PR: ${{ github.event_name == 'pull_request' }}
         run: |
-          ASSET_BASE="easyenclave-${SHA12}"
-          gcloud storage cp "image/output/gcp/${ASSET_BASE}-gcp.tar.gz" \
-            "gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz"
+          ASSET="easyenclave-${SHA12}-gcp.tar.gz"
+          gcloud storage cp "image/output/gcp/${ASSET}" \
+            "gs://${GCS_BUCKET}/${ASSET}"
 
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             FAMILY="--family=easyenclave-stable"
@@ -169,7 +275,7 @@ jobs:
 
           gcloud compute images create "${GCP_NAME}" \
             --project="${GCP_PROJECT}" \
-            --source-uri="gs://${GCS_BUCKET}/${ASSET_BASE}-gcp.tar.gz" \
+            --source-uri="gs://${GCS_BUCKET}/${ASSET}" \
             ${FAMILY} \
             --guest-os-features=UEFI_COMPATIBLE,TDX_CAPABLE,GVNIC \
             --labels=easyenclave=image,channel=${CHANNEL},commit=${SHA12}
@@ -179,8 +285,8 @@ jobs:
       - name: Integration test — deploy workload + curl HTTP
         env:
           GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
+          GCP_NAME: ${{ needs.meta.outputs.gcp_name }}
+          SHA12: ${{ needs.meta.outputs.sha12 }}
         run: |
           LABEL="${SHA12}"
           # Use '|' as field delimiter so patterns can contain ':'.
@@ -188,19 +294,21 @@ jobs:
             "kernel_boot|Run /init as init process|1"
             "root_resolved|Resolved root to /dev/|1"
             "easyenclave_pid1|easyenclave: running as PID 1|1"
-            "tmpfs_mounted|mounted /var/lib/easyenclave|1"
-            "cgroup_mounted|mounted /sys/fs/cgroup|1"
+            "vendor_stage|vendor:gcp:|1"
+            "metadata_merged|vendor:gcp: merged .* config into|1"
             "tdx_attestation|attestation backend: tdx|1"
             "network_up|Device link is up|1"
             "dhcp_lease|lease of .* obtained|1"
-            "dns_configured|dns from dhcp lease|1"
-            "gce_metadata|gce-meta env|1"
             "listening|easyenclave: listening on|1"
             "deployment_running|deployment .* running|1"
           )
 
           # Two native workloads: seed an index file, then serve it with
           # busybox httpd. Exercises the plain-command path end-to-end.
+          # Deliberately uses the LEGACY JSON format so the JSON-flatten
+          # path in vendors/_lib.sh's ee_append_config gets real-boot
+          # coverage — the unit test exercises the awk parser in
+          # isolation, but end-to-end matters too.
           cat > /tmp/ee-config.json <<'EECONF'
           {
             "EE_OWNER": "integration-test",
@@ -303,7 +411,6 @@ jobs:
             cleanup; exit 1
           fi
 
-      # ── Release (merge/tag only) ─────────────────────────────────
       - name: Rotate old images
         if: github.event_name != 'pull_request'
         env:
@@ -319,34 +426,89 @@ jobs:
                   --project="${GCP_PROJECT}" --quiet
           done
 
+  # ── Release (non-PR only) ───────────────────────────────────────────
+  # Collects per-target artifacts + measurements and attaches everything
+  # to a single GitHub release. Gated on matrix build + smoke passing
+  # across all targets, plus the real-TDX GCP integration.
+  release:
+    needs: [meta, build, smoke, deploy-and-test]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-stage
+          pattern: easyenclave-image-*
+
+      - name: Stage release assets
+        env:
+          SHA12: ${{ needs.meta.outputs.sha12 }}
+          RELEASE_NAME: ${{ needs.meta.outputs.release_name }}
+        run: |
+          mkdir -p release-out
+          cd release-stage
+          for target_dir in easyenclave-image-*; do
+            target="${target_dir#easyenclave-image-}"
+            # Copy every easyenclave-* artifact as-is; rename MEASUREMENTS
+            # to be per-target so they don't collide.
+            for f in "${target_dir}"/easyenclave-*; do
+              [ -f "$f" ] || continue
+              case "$(basename "$f")" in
+                *.vmlinuz|*.initrd|*.cmdline) continue ;;  # internal, not released
+              esac
+              cp "$f" ../release-out/
+            done
+            if [ -f "${target_dir}/MEASUREMENTS.txt" ]; then
+              cp "${target_dir}/MEASUREMENTS.txt" "../release-out/MEASUREMENTS-${target}.txt"
+            fi
+          done
+          cd ..
+          ls -la release-out/
+
       - name: Create GitHub Release
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-          GCP_PROJECT: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_NAME: ${{ needs.build.outputs.gcp_name }}
-          SHA12: ${{ needs.build.outputs.sha12 }}
-          UKI_SHA256: ${{ needs.build.outputs.uki_sha256 }}
+          SHA12: ${{ needs.meta.outputs.sha12 }}
+          TAG: ${{ needs.meta.outputs.tag }}
+          RELEASE_NAME: ${{ needs.meta.outputs.release_name }}
+          GCP_NAME: ${{ needs.meta.outputs.gcp_name }}
         run: |
-          cd image/output/gcp
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-            GH_TAG="${TAG}"
-            ASSET_BASE="easyenclave-${TAG}"
+          if [ -n "$TAG" ]; then
+            GH_TAG="$TAG"
             PRERELEASE=""
-            for ext in efi raw qcow2; do
-              mv "easyenclave-${SHA12}.${ext}" "${ASSET_BASE}.${ext}"
-            done
-            mv "easyenclave-${SHA12}-gcp.tar.gz" "${ASSET_BASE}-gcp.tar.gz"
           else
             GH_TAG="image-${SHA12}"
-            ASSET_BASE="easyenclave-${SHA12}"
             PRERELEASE="--prerelease"
           fi
+
+          # Build release notes that embed each per-target measurements.
+          NOTES_FILE=$(mktemp)
+          {
+            echo "## Artifacts by target"
+            echo ""
+            echo "- **gcp** — raw, qcow2, gcp-tar.gz (GCE import)"
+            echo "- **azure** — raw, vhd (fixed-size, Azure Managed Disk import)"
+            echo "- **local-tdx** — iso (hybrid, OVMF/TDVF boot)"
+            echo ""
+            echo "GCP image: \`${GCP_NAME}\`"
+            echo ""
+            for m in release-out/MEASUREMENTS-*.txt; do
+              [ -f "$m" ] || continue
+              target=$(basename "$m" .txt | sed 's/^MEASUREMENTS-//')
+              echo "### MEASUREMENTS (${target})"
+              echo ""
+              echo '```'
+              cat "$m"
+              echo '```'
+              echo ""
+            done
+          } > "$NOTES_FILE"
+
           gh release create "${GH_TAG}" ${PRERELEASE} \
             --title "${GH_TAG}" \
-            --notes "UKI SHA256: \`${UKI_SHA256}\`
-          GCP image: \`${GCP_NAME}\`" \
-            "${ASSET_BASE}.efi" "${ASSET_BASE}.raw" \
-            "${ASSET_BASE}.qcow2" "${ASSET_BASE}-gcp.tar.gz" \
-            "MEASUREMENTS.txt"
+            --notes-file "${NOTES_FILE}" \
+            release-out/*

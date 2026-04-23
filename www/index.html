@@ -132,13 +132,14 @@ cd easyenclave
 # Build the runtime
 cargo build --release
 
-# Build a sealed VM image (GCP TDX or local dev)
+# Build a sealed VM image (GCP, Azure, or local dev)
 cd image
-make build TARGET=gcp          # GPT disk image
+make build TARGET=gcp          # GCP GPT disk image
+make build TARGET=azure        # Azure fixed-size VHD
 make build TARGET=local-tdx    # hybrid ISO for local QEMU
 
 # Boot locally for dev
-bash test-local.sh</pre>
+bash run-local-tdx.sh</pre>
     </div>
   </div>
 </section>
