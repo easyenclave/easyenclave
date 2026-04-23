@@ -252,8 +252,14 @@ fn nix_mount_ro(src: &str, target: &str, fstype: &str) -> Result<(), String> {
 /// JSON array) is how you get easyenclave to deploy workloads at boot
 /// on a GCE VM — no secondary disk needed.
 ///
-/// On non-GCE hosts, or if the attribute isn't set, fail silently.
+/// Short-circuits on non-GCE hosts by sniffing DMI sys_vendor — the
+/// local libvirt VMs (tdx2) get `sys_vendor=QEMU`, so firing the 2s
+/// HTTP timeout at every boot is wasted time and noisy serial log.
 fn fetch_gce_metadata_config() {
+    if !is_gce_host() {
+        eprintln!("easyenclave: init: skipping gce-meta fetch (not on GCE)");
+        return;
+    }
     const URL: &str = "http://169.254.169.254/computeMetadata/v1/instance/attributes/ee-config";
     let body = match ureq::get(URL)
         .set("Metadata-Flavor", "Google")
@@ -290,6 +296,35 @@ fn fetch_gce_metadata_config() {
     for (k, v) in map {
         std::env::set_var(k, v);
     }
+}
+
+/// Cheap GCE detection via DMI. GCE sets both `sys_vendor` and
+/// `bios_vendor` to `"Google"`; local QEMU libvirt hosts (tdx2,
+/// dev laptops) report `"QEMU"`. If neither file is readable we
+/// fall back to attempting the fetch — safer to waste 2s than to
+/// silently skip a real GCE config.
+fn is_gce_host() -> bool {
+    for path in [
+        "/sys/class/dmi/id/sys_vendor",
+        "/sys/class/dmi/id/bios_vendor",
+    ] {
+        if let Ok(v) = std::fs::read_to_string(path) {
+            if v.trim().eq_ignore_ascii_case("Google") {
+                return true;
+            }
+        }
+    }
+    // Couldn't prove GCE — but couldn't prove non-GCE either if
+    // both reads failed. Check once more: if sys_vendor IS readable
+    // and says something that clearly isn't Google, trust that.
+    if let Ok(v) = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor") {
+        let v = v.trim();
+        if !v.is_empty() && !v.eq_ignore_ascii_case("Google") {
+            return false;
+        }
+    }
+    // Fallback: attempt the fetch. It'll 2s-timeout off-GCE.
+    true
 }
 
 fn nix_mount_flags(
