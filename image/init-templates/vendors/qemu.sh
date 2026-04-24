@@ -18,6 +18,11 @@ mkdir -p "$ENV_DIR"
 for m in virtio_net virtio_blk virtio_pci virtio_scsi; do
     modprobe "$m" 2>/dev/null || :
 done
+# The config-disk probe below tries iso9660 first (that's the format
+# genisoimage produces). Without the isofs module, the mount fails
+# silently and we fall through to "no config disk" even when /dev/vdb
+# is present. Load it here so the probe can use it.
+modprobe isofs 2>/dev/null || :
 
 ip link set lo up 2>/dev/null || :
 IFACE=$(ls /sys/class/net 2>/dev/null | grep -v '^lo$' | head -n1 || true)
@@ -25,9 +30,9 @@ if [ -n "${IFACE:-}" ]; then
     ee_ifup "$IFACE"
 fi
 
-# Probe a secondary config disk for /agent.env. The local-tdx build
-# expects dev users to drop config on an auxiliary disk or ISO — there's
-# no metadata service to pull it from.
+# Probe a secondary config disk for /agent.env. Local/libvirt deployments
+# (local-tdx-qcow2 target) drop config on an auxiliary disk or ISO —
+# there's no metadata service to pull it from.
 CONFIG_MNT=/tmp/ee-config-disk
 mkdir -p "$CONFIG_MNT"
 MOUNTED=""
