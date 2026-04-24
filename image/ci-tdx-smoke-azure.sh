@@ -287,15 +287,37 @@ az vm create \
     --custom-data /tmp/ee-config.env \
     --no-wait >/dev/null
 # EasyEnclave has no Azure VM agent inside the sealed image. That means
-# provisioningState will NEVER reach Succeeded — Azure's success signal
-# is the guest agent calling home, which our image doesn't do. Don't
-# poll provisioningState at all; the VM actually boots fine, we just
-# can't see it through Azure's agent channel. Our source of truth is
-# boot-diagnostics serial, which Azure captures at the hypervisor layer
-# independent of the guest agent. Jump straight to serial polling
-# below; give the VM ~30s to start emitting serial output first.
-echo "smoke:azure: VM create submitted (no provisioning-state wait — image has no Azure agent)"
-sleep 30
+# provisioningState/powerState won't follow the agent-driven happy path.
+# But the deployment layer (ARM → VM object + disk + NIC) DOES complete
+# independently — once that lands, boot-diag captures hypervisor-level
+# serial. Poll for deployment-layer ready (NIC provisioned + VM in one
+# of the reachable states) before jumping to serial.
+echo "smoke:azure: VM create submitted — waiting for deployment layer ready..."
+for i in $(seq 1 60); do
+    info=$(az vm show -d -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" \
+        --query "{ps: provisioningState, power: powerState, diag: diagnosticsProfile}" \
+        -o json 2>/dev/null || echo '{}')
+    ps=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ps','?'))")
+    power=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('power','?'))")
+    echo "smoke:azure: vm state=$ps power=$power ($i/60)"
+    # powerState goes "VM starting" → "VM running" as ARM brings it up
+    # provisioningState may stay Updating/Creating forever without agent
+    case "$power" in
+        "VM running"|"VM stopped"|"VM deallocated") break ;;
+    esac
+    # explicit deployment failure
+    case "$ps" in
+        Failed|Canceled) echo "::error::smoke:azure: VM provisioning $ps" >&2; exit 1 ;;
+    esac
+    sleep 10
+done
+
+# Dump one-off diagnostics so we can see what the serial API returns
+# even when empty (permission? boot-diag not enabled?).
+echo "smoke:azure: probe boot-diag endpoint..."
+diag_uris=$(az vm boot-diagnostics get-boot-log-uris \
+    -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" 2>&1 | head -5 || true)
+echo "smoke:azure: boot-diag-uris: $diag_uris"
 
 # Assertions — same shape as gcp, different label. metadata_merged
 # becomes vendor:azure: since the azure vendor stage is the one that
