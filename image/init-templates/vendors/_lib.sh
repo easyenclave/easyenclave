@@ -44,8 +44,29 @@ ee_ifup() {
         udhcpc -i "$iface" -q -n -t 10 \
             -s /usr/share/udhcpc/default.script \
             -O staticroutes 2>&1 | tail -n 3 || :
+        # The udhcpc hook writes DHCP-provided nameservers to
+        # /tmp/resolv.conf.udhcpc (and tries /run/resolv.conf, which fails
+        # silently — see below). Both paths live in the *initrd* fs and
+        # are wiped by switch_root, so the newroot's /etc/resolv.conf
+        # (symlinked to /run/resolv.conf by mkosi.postinst.chroot) ends
+        # up pointing at an empty tmpfs. Splice the hook's output into
+        # $NEWROOT/run so it survives the switch.
+        #
+        # Using `cat >` redirection rather than `cp`: mkinitrd.sh doesn't
+        # symlink `cp` to busybox, so `cp` would exit 127 "not found".
+        # `cat` is in the symlink list. (This also explains why the hook's
+        # own `cp ... "$RESOLV" || true` has been a silent no-op.)
+        if [ -f /tmp/resolv.conf.udhcpc ]; then
+            mkdir -p "$NEWROOT/run"
+            if cat /tmp/resolv.conf.udhcpc > "$NEWROOT/run/resolv.conf" 2>/dev/null; then
+                ee_log "dns from dhcp → $NEWROOT/run/resolv.conf"
+            else
+                ee_log "splice dhcp resolv.conf failed"
+            fi
+        fi
     fi
 
+    # EE_DNS (static override from cmdline/config-disk) wins over DHCP.
     dns=$(ee_env_get EE_DNS || true)
     if [ -n "$dns" ]; then
         ee_log "static dns=$dns"
