@@ -79,12 +79,23 @@ BLOB_NAME="${PREFIX}.vhd"
 
 cleanup() {
     set +e
+    # Guard against a pre-PREFIX exit (e.g. someone rearranges the script
+    # and moves the trap above PREFIX=). Without this, `az ... --name ""`
+    # could match unintended resources or produce confusing errors.
+    [ -n "${PREFIX:-}" ] || return 0
     echo "smoke:azure: cleanup"
-    az vm delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" --yes --no-wait 2>/dev/null || true
-    sleep 10
+    # VM delete WITHOUT --no-wait: we need Azure to at least ACK the
+    # delete request before this script exits. Previously --no-wait +
+    # runner-kill could leave the DELETE un-posted, orphaning the VM
+    # (and its cores). The wait is ~30-60s, well within budget.
+    # Dropped 2>/dev/null on every cleanup line (keeping || true) so
+    # real cleanup failures surface in the CI log — the earlier silent
+    # swallow masked the managed-disk + NIC orphans that eventually
+    # filled the WestUS3 cores quota.
+    az vm delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" --yes || true
     az sig image-version delete --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
-        --gallery-image-version "$IMG_VERSION" --no-wait 2>/dev/null || true
+        --gallery-image-version "$IMG_VERSION" --no-wait || true
     # ACCT_KEY may be unset if we exited before fetching it; fetch again
     # (cheap: az handles the no-op case), fall back to nothing if the
     # account itself is gone.
@@ -93,12 +104,22 @@ cleanup() {
         --query '[0].value' -o tsv 2>/dev/null || true)
     if [ -n "$CLEANUP_KEY" ]; then
         az storage blob delete --account-name "$STORAGE_ACCT" --container-name "$STORAGE_CONTAINER" \
-            --name "$BLOB_NAME" --account-key "$CLEANUP_KEY" 2>/dev/null || true
+            --name "$BLOB_NAME" --account-key "$CLEANUP_KEY" || true
     fi
-    az network nic delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NIC_NAME" --no-wait 2>/dev/null || true
-    az network public-ip delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" --no-wait 2>/dev/null || true
-    az network nsg delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NSG_NAME" --no-wait 2>/dev/null || true
-    az network vnet delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$VNET_NAME" --no-wait 2>/dev/null || true
+    az network nic delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NIC_NAME" --no-wait || true
+    az network public-ip delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$PIP_NAME" --no-wait || true
+    az network nsg delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$NSG_NAME" --no-wait || true
+    az network vnet delete --resource-group "$AZURE_RESOURCE_GROUP" --name "$VNET_NAME" --no-wait || true
+
+    # Belt-and-suspenders: any resource whose name starts with our
+    # per-run PREFIX that the named deletes above missed (future
+    # naming drift, partial writes, resource types added to the
+    # script without a matching cleanup line). --no-wait so runner
+    # timeout doesn't kill mid-sweep.
+    echo "smoke:azure: prefix sweep for ${PREFIX}-*"
+    az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
+        --query "[?starts_with(name, '${PREFIX}')].id" -o tsv 2>/dev/null \
+      | xargs -r az resource delete --ids --verbose || true
 }
 trap cleanup EXIT
 
@@ -290,6 +311,8 @@ az vm create \
     --enable-vtpm true --enable-secure-boot false \
     --image "$IMG_VERSION_ID" \
     --nics "$NIC_NAME" \
+    --os-disk-delete-option Delete \
+    --nic-delete-option Delete \
     --boot-diagnostics-storage "https://${STORAGE_ACCT}.blob.core.windows.net/" \
     --admin-username eeci \
     --generate-ssh-keys \

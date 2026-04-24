@@ -1,0 +1,86 @@
+name: Cleanup Azure smoke orphans
+
+# Backstop sweep for ee-smoke-* resources left behind by
+# build-and-smoke (azure) runs. The smoke script's own trap cleanup
+# handles the happy path; this workflow covers the pathological cases
+# (runner hard-kill, cleanup exception, future naming-drift) before
+# they pile up against the WestUS3 Regional Cores quota.
+#
+# Safe to run any time: the 2-hour age threshold is well past the
+# ~25-min smoke budget, so an in-flight job's resources won't be
+# swept out from under it.
+
+on:
+  schedule:
+    # 12:00 UTC daily. Once per day is plenty — each smoke run creates
+    # ~7 resources and at steady state zero should survive past the
+    # trap cleanup. The cron is a safety net, not the primary path.
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+# Serialize: if cron + a manual dispatch collide, one waits.
+concurrency:
+  group: cleanup-azure-smoke
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Sweep stale ee-smoke-* resources
+        env:
+          AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+        run: |
+          set -euo pipefail
+          threshold=$(( $(date +%s) - 7200 ))
+          echo "cleanup: threshold=$threshold ($(date -u -d @$threshold '+%Y-%m-%dT%H:%MZ'))"
+
+          # Resource names follow ee-smoke-${SHA12}-${STAMP}-{suffix}
+          # from image/ci-tdx-smoke-azure.sh. Field 4 (dash-split) is
+          # the unix epoch stamp; compare against the 2h threshold.
+          # Using the embedded stamp (rather than Azure's
+          # properties.timeCreated, which isn't uniform across resource
+          # types) keeps this deterministic and auditable.
+          az resource list --resource-group "$AZURE_RESOURCE_GROUP" \
+              --query "[?starts_with(name, 'ee-smoke-')].{name:name, id:id}" \
+              -o json > /tmp/resources.json
+          total=$(jq 'length' /tmp/resources.json)
+          echo "cleanup: found $total ee-smoke-* resources total"
+
+          jq -r --argjson t "$threshold" '
+            .[]
+            | select(((.name | split("-"))[3] // "0") | tonumber < $t)
+            | "\(.id)\t\(.name)"
+          ' /tmp/resources.json > /tmp/stale.tsv
+
+          stale=$(wc -l < /tmp/stale.tsv)
+          echo "cleanup: $stale are older than 2h (will be deleted)"
+          cat /tmp/stale.tsv | sed 's/^/  [stale] /'
+
+          if [ "$stale" -eq 0 ]; then
+            echo "cleanup: nothing to do"
+            exit 0
+          fi
+
+          # --verbose so each delete's ARM response is visible in the
+          # run log. Continue on individual failures (|| true at the
+          # xargs level would swallow them — instead, let the batch
+          # fail if ALL deletes fail, but the set +e inside the loop
+          # means one failure doesn't stop the rest).
+          set +e
+          failed=0
+          while IFS=$'\t' read -r id name; do
+            echo "cleanup: deleting $name"
+            az resource delete --ids "$id" --verbose || failed=$((failed + 1))
+          done < /tmp/stale.tsv
+          echo "cleanup: complete ($((stale - failed))/$stale succeeded, $failed failed)"
+          [ "$failed" -eq "$stale" ] && exit 1 || exit 0
