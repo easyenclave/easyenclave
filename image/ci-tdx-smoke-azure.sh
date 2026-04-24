@@ -281,7 +281,6 @@ az vm create \
     --enable-vtpm true --enable-secure-boot false \
     --image "$IMG_VERSION_ID" \
     --nics "$NIC_NAME" \
-    --boot-diagnostics-storage "" \
     --admin-username eeci \
     --generate-ssh-keys \
     --custom-data /tmp/ee-config.env \
@@ -312,8 +311,14 @@ for i in $(seq 1 60); do
     sleep 10
 done
 
-# Dump one-off diagnostics so we can see what the serial API returns
-# even when empty (permission? boot-diag not enabled?).
+# Explicitly enable managed boot-diagnostics. Passing
+# `--boot-diagnostics-storage ""` on `az vm create` does NOT enable
+# managed diag (empirical: az then reports "Diagnostics is not enabled
+# for VM"). Enabling post-create with the dedicated subcommand works
+# reliably — Azure provisions its own managed storage under the hood.
+echo "smoke:azure: enabling boot-diagnostics (managed storage)..."
+az vm boot-diagnostics enable -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" >/dev/null
+
 echo "smoke:azure: probe boot-diag endpoint..."
 diag_uris=$(az vm boot-diagnostics get-boot-log-uris \
     -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" 2>&1 | head -5 || true)
