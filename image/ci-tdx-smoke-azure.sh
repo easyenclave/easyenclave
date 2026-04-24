@@ -293,7 +293,7 @@ az vm create \
     --boot-diagnostics-storage "https://${STORAGE_ACCT}.blob.core.windows.net/" \
     --admin-username eeci \
     --generate-ssh-keys \
-    --custom-data /tmp/ee-config.env \
+    --user-data /tmp/ee-config.env \
     --no-wait >/dev/null
 # EasyEnclave has no Azure VM agent inside the sealed image. That means
 # provisioningState/powerState won't follow the agent-driven happy path.
