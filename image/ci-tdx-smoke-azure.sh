@@ -286,24 +286,16 @@ az vm create \
     --generate-ssh-keys \
     --custom-data /tmp/ee-config.env \
     --no-wait >/dev/null
-# EasyEnclave has no Azure VM agent inside the sealed image, so the
-# default `az vm create` wait (which blocks until waagent reports
-# ready) hangs ~30min on its internal timeout. The VM itself boots
-# fine — Azure has no channel to confirm it. --no-wait + poll
-# provisioningState ourselves: we care that Azure's deployment layer
-# succeeded (VM object up, disk/NIC attached), not that a guest
-# agent called home.
-echo "smoke:azure: VM create submitted, polling provisioning..."
-for i in $(seq 1 30); do
-    state=$(az vm show --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" \
-        --query provisioningState -o tsv 2>/dev/null || echo "?")
-    echo "smoke:azure: provisioning=$state ($i/30)"
-    case "$state" in
-        Succeeded) break ;;
-        Failed|Canceled) echo "::error::smoke:azure: VM provisioning $state" >&2; exit 1 ;;
-    esac
-    sleep 10
-done
+# EasyEnclave has no Azure VM agent inside the sealed image. That means
+# provisioningState will NEVER reach Succeeded — Azure's success signal
+# is the guest agent calling home, which our image doesn't do. Don't
+# poll provisioningState at all; the VM actually boots fine, we just
+# can't see it through Azure's agent channel. Our source of truth is
+# boot-diagnostics serial, which Azure captures at the hypervisor layer
+# independent of the guest agent. Jump straight to serial polling
+# below; give the VM ~30s to start emitting serial output first.
+echo "smoke:azure: VM create submitted (no provisioning-state wait — image has no Azure agent)"
+sleep 30
 
 # Assertions — same shape as gcp, different label. metadata_merged
 # becomes vendor:azure: since the azure vendor stage is the one that
@@ -320,7 +312,11 @@ FATAL_PATTERNS="FATAL|Kernel panic|switch_root: can|Invalid ELF header"
 declare -A PASSED
 ALL_DONE=false
 LAST_LINES=0
-for i in $(seq 1 36); do
+# 72 × 10s = 12 min. Budget covers VM hypervisor-level boot (~1-3min
+# before first serial output) + enclave boot + workload spawn. Azure
+# CVM provisioning is typically ready at the serial-output level in
+# ~90s, but allow headroom for slow sub-region capacity.
+for i in $(seq 1 72); do
     # boot-diagnostics-log returns the full serial each call. Diff against
     # last poll and stream only new lines (same pattern gcp's get-serial-
     # port-output uses), so CI logs show boot progress live.
@@ -351,7 +347,7 @@ for i in $(seq 1 36); do
         [ -z "${PASSED[$name]:-}" ] && ALL_DONE=false && break
     done
     $ALL_DONE && break
-    echo "smoke:azure: waiting... ($i/36)"
+    echo "smoke:azure: waiting... ($i/72)"
     sleep 10
 done
 
