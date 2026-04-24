@@ -12,7 +12,6 @@
 #          easyenclave.qcow2 (if `qcow2` in TARGET_OUTPUTS),
 #          easyenclave-<sha12>-gcp.tar.gz (if `gcp-tar.gz` in TARGET_OUTPUTS),
 #          easyenclave.vhd (if `vhd` in TARGET_OUTPUTS; fixed-size for Azure)
-#   iso  → rootfs.squashfs, easyenclave.iso
 set -euo pipefail
 
 PROFILE="${1:?Usage: mkimage.sh <profile-env> <output-dir>}"
@@ -73,44 +72,6 @@ case "$TARGET_FORMAT" in
                     "$OUT/easyenclave.vhd"
                 ;;
         esac
-        ;;
-
-    iso)
-        # 1. Squashfs of the rootfs. zstd is a good balance of size/speed;
-        # xz would be ~10-15% smaller but much slower to build.
-        SQUASHFS="$OUT/rootfs.squashfs"
-        rm -f "$SQUASHFS"
-        sudo mksquashfs "$ROOTFS_DIR" "$SQUASHFS" -comp zstd -quiet
-        sudo chown "$(id -u):$(id -g)" "$SQUASHFS"
-
-        # 2. ESP image with the UKI as the El Torito EFI boot entry.
-        ESP_IMG=$(mktemp)
-        trap 'rm -f "$ESP_IMG"' EXIT
-        bash "$SCRIPT_DIR/lib/mkesp.sh" "$UKI" "$ESP_IMG" 48
-
-        # 3. Hybrid ISO with an embedded ESP partition. xorriso's
-        #    -append_partition + -isohybrid-gpt-basdat produces an ISO
-        #    that UEFI firmware boots directly via its El Torito EFI
-        #    entry, while iso9660 still contains our rootfs.squashfs.
-        STAGE=$(mktemp -d)
-        trap 'rm -rf "$STAGE"; rm -f "$ESP_IMG"' EXIT
-        cp "$SQUASHFS" "$STAGE/rootfs.squashfs"
-
-        xorriso -as mkisofs \
-            -V EE_ISO \
-            -o "$OUT/easyenclave.iso" \
-            -isohybrid-gpt-basdat \
-            -partition_offset 16 \
-            -append_partition 2 0xef "$ESP_IMG" \
-            -e --interval:appended_partition_2:all:: \
-            -no-emul-boot \
-            -iso-level 3 \
-            -joliet \
-            -rational-rock \
-            "$STAGE"
-
-        SIZE=$(du -h "$OUT/easyenclave.iso" | cut -f1)
-        echo "ISO built: $OUT/easyenclave.iso ($SIZE)"
         ;;
 
     *)

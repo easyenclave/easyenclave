@@ -59,7 +59,7 @@
       <div class="card"><div class="ic">&#x1f9f9;</div><h3>Two Packages, Period</h3><p>The entire userland is <code>ca-certificates</code> and <code>busybox-static</code>. No package manager in the image. What isn't there can't be exploited.</p></div>
       <div class="card"><div class="ic">&#x1f512;</div><h3>dm-verity Rootfs</h3><p>The root filesystem is integrity-verified at the block level. Tamper with a single byte and the kernel refuses to read it.</p></div>
       <div class="card"><div class="ic">&#x2699;</div><h3>PID 1 Runtime</h3><p>Boots straight to easyenclave. No systemd, no init scripts, no runlevels. Mounts filesystems, reaps zombies, runs your workload &mdash; nothing else.</p></div>
-      <div class="card"><div class="ic">&#x1f3af;</div><h3>Profile-Driven Builds</h3><p><code>make build TARGET=gcp</code> or <code>TARGET=local-tdx</code>. Each profile defines its kernel cmdline, module set, root strategy, and output format. Add a target in minutes.</p></div>
+      <div class="card"><div class="ic">&#x1f3af;</div><h3>Profile-Driven Builds</h3><p><code>make build TARGET=gcp</code> or <code>TARGET=azure</code> or <code>TARGET=local-tdx-qcow2</code>. Each profile defines its kernel cmdline, module set, root strategy, and output format. Add a target in minutes.</p></div>
       <div class="card"><div class="ic">&#x2705;</div><h3>TDX Attestation</h3><p>Generate cryptographic quotes via configfs-tsm. The hardware proves the exact measured image is running unmodified inside a sealed VM. Nonce or report-data binding.</p></div>
     </div>
   </div>
@@ -134,12 +134,9 @@ cargo build --release
 
 # Build a sealed VM image (GCP, Azure, or local dev)
 cd image
-make build TARGET=gcp          # GCP GPT disk image
-make build TARGET=azure        # Azure fixed-size VHD
-make build TARGET=local-tdx    # hybrid ISO for local QEMU
-
-# Boot locally for dev
-bash run-local-tdx.sh</pre>
+make build TARGET=gcp                # GCP GPT disk image
+make build TARGET=azure              # Azure fixed-size VHD
+make build TARGET=local-tdx-qcow2    # libvirt backing-file qcow2</pre>
     </div>
   </div>
 </section>
