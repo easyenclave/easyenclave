@@ -37,11 +37,16 @@ for param in $(cat /proc/cmdline); do
     esac
 done
 
-# Storage + attestation modules. Network drivers (gve/virtio_net/hv_*)
-# are per-vendor; loaded by /init-vendor.sh. Tolerate built-ins (busybox
-# modprobe says "not found" if a driver is compiled into the kernel —
-# the capability is still present).
-for m in dm-verity nvme virtio_blk virtio_pci virtio_scsi tdx_guest tsm_report; do
+# Storage + attestation modules. Network drivers (gve/virtio_net/hv_netvsc)
+# are per-vendor; loaded by /init-vendor.sh. Storage drivers must load
+# HERE because findfs LABEL=root needs the block device enumerated before
+# root mount. Azure's CVM OS disk is on Hyper-V VMBus (hv_storvsc, needs
+# hv_vmbus as a prereq) — without those loaded the disk never shows up
+# and findfs bails after 30s. GCP uses nvme / virtio; including all three
+# families here keeps the template target-agnostic. Tolerate built-ins
+# silently — modprobe returns non-zero when the driver is compiled into
+# the kernel, which is fine.
+for m in dm-verity nvme virtio_blk virtio_pci virtio_scsi hv_vmbus hv_storvsc tdx_guest tsm_report; do
     modprobe "$m" 2>/dev/null || echo "note: $m not loaded (may be built-in)"
 done
 

@@ -38,14 +38,21 @@ set -euo pipefail
 : "${AZURE_RESOURCE_GROUP:?}"
 : "${SHA12:?}"
 
-# Default to westus3 + DC2es_v6 (Intel TDX v6). The DCEDV5/DCEV5
-# families showed "quota approved" in eastus2/centralus but the SKUs
-# never actually shipped in those regions (az vm list-skus returns
-# zero matches). DC*_v6 is the GA Intel TDX SKU line, available in
-# westus3 with 10 vCPUs of approved quota on this subscription.
-# Override via env if a different region has quota.
+# Regions are split into two concerns because the RG and the TDX-
+# SKU-quota don't line up for this subscription:
+#   - STORAGE_REGION = where the blob + gallery + image-version HOME
+#     live. Pinned to the RG's location because Azure's image-version
+#     import uses an internal staging disk rooted in the RG region,
+#     and rejects cross-region blob sources with "source blob does
+#     not belong to the same region as the disk."
+#   - VM_REGION = where the TDX VM actually boots. $REGION is the
+#     user-facing knob; defaults to westus3 where DCe_v6 quota exists.
+# The image-version replicates from STORAGE_REGION into VM_REGION so
+# the VM provision step pulls a local-region replica.
 REGION="${AZURE_REGION:-westus3}"
 VM_SIZE="${AZURE_VM_SIZE:-Standard_DC2es_v6}"
+STORAGE_REGION="$(az group show --name "$AZURE_RESOURCE_GROUP" --query location -o tsv)"
+[ -n "$STORAGE_REGION" ] || { echo "::error::smoke:azure: couldn't resolve RG location" >&2; exit 1; }
 VHD="image/output/azure/easyenclave-${SHA12}-azure.vhd"
 [ -f "$VHD" ] || { echo "missing $VHD" >&2; exit 2; }
 
@@ -57,21 +64,16 @@ PIP_NAME="${PREFIX}-pip"
 NSG_NAME="${PREFIX}-nsg"
 VNET_NAME="${PREFIX}-vnet"
 
-# Shared Image Gallery state. The gallery + image-definition are
-# idempotent (created if missing, reused otherwise); only the image
-# VERSION is per-run and torn down after the test.
+# Shared Image Gallery state. Gallery + image-def live in STORAGE_REGION
+# (the RG's location) so Azure's internal staging pipeline is happy.
+# Only the image VERSION is per-run and torn down after the test.
 GALLERY_NAME="${AZURE_GALLERY:-easyenclaveGallery}"
 IMG_DEF_NAME="${AZURE_IMG_DEF:-easyenclave-x64}"
 IMG_VERSION="0.0.$(date +%s)"
 
-# Storage account for staging the VHD as a page blob. ConfidentialVmSupported
-# SIG images reject managed-disk sources ("Currently only Vhd Blob, User
-# Image and Gallery Image Version sources are supported"), so we bypass the
-# managed-disk intermediate entirely and go blob → image-version.
-# Account names must be 3-24 chars, lowercase alphanumeric only, globally
-# unique. Derive from RG + region so runs in different regions don't
-# collide on a pinned-region account (storage accounts are single-region).
-STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "${AZURE_RESOURCE_GROUP}-${REGION}" | sha256sum | cut -c1-16)}"
+# Storage account for staging the VHD as a page blob. Pinned to
+# STORAGE_REGION (= RG location). One account per RG.
+STORAGE_ACCT="${AZURE_STORAGE_ACCT:-eeci$(echo -n "${AZURE_RESOURCE_GROUP}" | sha256sum | cut -c1-16)}"
 STORAGE_CONTAINER="${AZURE_STORAGE_CONTAINER:-vhds}"
 BLOB_NAME="${PREFIX}.vhd"
 
@@ -106,14 +108,14 @@ trap cleanup EXIT
 if ! az sig show --resource-group "$AZURE_RESOURCE_GROUP" --gallery-name "$GALLERY_NAME" >/dev/null 2>&1; then
     echo "smoke:azure: create Shared Image Gallery $GALLERY_NAME"
     az sig create --resource-group "$AZURE_RESOURCE_GROUP" \
-        --gallery-name "$GALLERY_NAME" --location "$REGION" >/dev/null
+        --gallery-name "$GALLERY_NAME" --location "$STORAGE_REGION" >/dev/null
 fi
 if ! az sig image-definition show --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" >/dev/null 2>&1; then
     echo "smoke:azure: create image definition $IMG_DEF_NAME (ConfidentialVmSupported)"
     az sig image-definition create --resource-group "$AZURE_RESOURCE_GROUP" \
         --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
-        --location "$REGION" \
+        --location "$STORAGE_REGION" \
         --os-type Linux --os-state Generalized \
         --hyper-v-generation V2 \
         --features SecurityType=ConfidentialVmSupported \
@@ -130,7 +132,7 @@ if ! az storage account show --resource-group "$AZURE_RESOURCE_GROUP" --name "$S
     echo "smoke:azure: create storage account $STORAGE_ACCT"
     az storage account create \
         --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
-        --location "$REGION" --sku Standard_LRS --kind StorageV2 \
+        --location "$STORAGE_REGION" --sku Standard_LRS --kind StorageV2 \
         --allow-blob-public-access false >/dev/null
 fi
 
@@ -163,15 +165,65 @@ azcopy copy "$VHD" "${BLOB_URL}?${SAS}" --blob-type PageBlob
 STORAGE_ACCT_ID=$(az storage account show \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$STORAGE_ACCT" \
     --query id -o tsv)
-echo "smoke:azure: create image version $IMG_VERSION from blob"
+# Home region (STORAGE_REGION) is the first target so the staging
+# disk matches the blob's region. Include $REGION too so the image-
+# version is replicated to where the VM will boot.
+if [ "$STORAGE_REGION" = "$REGION" ]; then
+    TARGET_REGIONS="$REGION"
+else
+    TARGET_REGIONS="$STORAGE_REGION $REGION"
+fi
+echo "smoke:azure: create image version $IMG_VERSION from blob (target-regions: $TARGET_REGIONS)"
+# `az sig image-version create` without --no-wait blocks ~7-9 minutes
+# on ConfidentialVmSupported image-versions. The image-version itself
+# is 322MB — the wait isn't network; it's Azure's internal pipeline
+# (CVM metadata seal → replica copy → catalog index → validate).
+# Submit async, poll provisioningState + replicationStatus every 20s
+# so CI logs show progress instead of silent 8-min hang.
+VERSION_START=$(date +%s)
+# shellcheck disable=SC2086
 az sig image-version create \
     --resource-group "$AZURE_RESOURCE_GROUP" \
     --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
     --gallery-image-version "$IMG_VERSION" \
     --os-vhd-uri "$BLOB_URL" \
     --os-vhd-storage-account "$STORAGE_ACCT_ID" \
-    --target-regions "$REGION" \
-    --replica-count 1 >/dev/null
+    --target-regions $TARGET_REGIONS \
+    --replica-count 1 \
+    --no-wait >/dev/null
+
+for attempt in $(seq 1 60); do
+    # provisioningState: Creating / Succeeded / Failed
+    # replicationStatus.regionalReplicationStatus: per-region progress (0-100)
+    info=$(az sig image-version show \
+        --resource-group "$AZURE_RESOURCE_GROUP" \
+        --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
+        --gallery-image-version "$IMG_VERSION" \
+        --query "{p: provisioningState, r: replicationStatus}" \
+        -o json 2>/dev/null || echo '{"p":"?","r":null}')
+    state=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('p','?'))")
+    reps=$(echo "$info" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+r = d.get('r') or {}
+regs = r.get('regionalReplicationStatus') or []
+parts = []
+for rg in regs:
+    name = rg.get('region', '?')
+    state = rg.get('state', '?')
+    prog = rg.get('progress', 0)
+    parts.append(f'{name}:{state}[{prog}%]')
+print(' '.join(parts) if parts else 'no-replica-info')
+" 2>/dev/null || echo "?")
+    elapsed=$(( $(date +%s) - VERSION_START ))
+    printf 'smoke:azure: [%3ds] provisioning=%s replicas=%s\n' "$elapsed" "$state" "$reps"
+    case "$state" in
+        Succeeded) break ;;
+        Failed|Canceled) echo "::error::smoke:azure: image-version create $state" >&2; exit 1 ;;
+    esac
+    sleep 20
+done
+
 IMG_VERSION_ID=$(az sig image-version show \
     --resource-group "$AZURE_RESOURCE_GROUP" \
     --gallery-name "$GALLERY_NAME" --gallery-image-definition "$IMG_DEF_NAME" \
@@ -211,23 +263,71 @@ echo "smoke:azure: create TDX VM $VM_NAME ($VM_SIZE in $REGION)"
 # --image = SIG image-version resource ID (the CVM-capable image we just
 #   published). Provisioning agent runs from scratch → customData lands
 #   in IMDS correctly (unlike --attach-os-disk which skips provisioning).
-# --security-type ConfidentialVM + vTPM + secure boot: TDX CVM requirements.
+# --security-type ConfidentialVM + vTPM: TDX CVM requirements.
+# --enable-secure-boot false: EasyEnclave's UKI is unsigned. Azure's
+#   Secure Boot (UEFI-level signature check) is distinct from TDX
+#   attestation (measured-boot via configfs-tsm) — we rely on the
+#   latter, not the former. Signing UKIs is a production cert-mgmt
+#   concern we're not taking on for CI smoke.
 # --os-disk-security-encryption-type VMGuestStateOnly: TDX-appropriate
 #   (no disk encryption; memory is what TDX protects).
 # --boot-diagnostics-storage "" : managed (Azure-provided) storage.
+# Boot-diagnostics storage: pass a concrete unmanaged storage URL so
+# boot-diag writes directly to our storage account without needing
+# the guest agent (waagent) to confirm. Both the "managed" path
+# (`--boot-diagnostics-storage ""` on create OR post-create
+# `az vm boot-diagnostics enable`) require waagent inside the guest
+# to complete — easyenclave doesn't ship waagent, so those commands
+# time out after ~20min with OSProvisioningTimedOut. Unmanaged-storage
+# path is purely an ARM-layer attachment and works fine on agent-less
+# images.
 az vm create \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" \
     --location "$REGION" \
     --size "$VM_SIZE" \
     --security-type ConfidentialVM \
     --os-disk-security-encryption-type VMGuestStateOnly \
-    --enable-vtpm true --enable-secure-boot true \
+    --enable-vtpm true --enable-secure-boot false \
     --image "$IMG_VERSION_ID" \
     --nics "$NIC_NAME" \
-    --boot-diagnostics-storage "" \
+    --boot-diagnostics-storage "https://${STORAGE_ACCT}.blob.core.windows.net/" \
     --admin-username eeci \
     --generate-ssh-keys \
-    --custom-data /tmp/ee-config.env >/dev/null
+    --user-data /tmp/ee-config.env \
+    --no-wait >/dev/null
+# EasyEnclave has no Azure VM agent inside the sealed image. That means
+# provisioningState/powerState won't follow the agent-driven happy path.
+# But the deployment layer (ARM → VM object + disk + NIC) DOES complete
+# independently — once that lands, boot-diag captures hypervisor-level
+# serial. Poll for deployment-layer ready (NIC provisioned + VM in one
+# of the reachable states) before jumping to serial.
+echo "smoke:azure: VM create submitted — waiting for deployment layer ready..."
+for i in $(seq 1 60); do
+    info=$(az vm show -d -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" \
+        --query "{ps: provisioningState, power: powerState, diag: diagnosticsProfile}" \
+        -o json 2>/dev/null || echo '{}')
+    ps=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('ps','?'))")
+    power=$(echo "$info" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('power','?'))")
+    echo "smoke:azure: vm state=$ps power=$power ($i/60)"
+    # powerState goes "VM starting" → "VM running" as ARM brings it up
+    # provisioningState may stay Updating/Creating forever without agent
+    case "$power" in
+        "VM running"|"VM stopped"|"VM deallocated") break ;;
+    esac
+    # explicit deployment failure
+    case "$ps" in
+        Failed|Canceled) echo "::error::smoke:azure: VM provisioning $ps" >&2; exit 1 ;;
+    esac
+    sleep 10
+done
+
+# One-off probe so the CI log shows whether boot-diag is actually
+# attached before we start polling. If the attachment worked via the
+# --boot-diagnostics-storage arg, this returns a valid blob URI.
+echo "smoke:azure: probe boot-diag endpoint..."
+diag_uris=$(az vm boot-diagnostics get-boot-log-uris \
+    -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" 2>&1 | head -5 || true)
+echo "smoke:azure: boot-diag-uris: $diag_uris"
 
 # Assertions — same shape as gcp, different label. metadata_merged
 # becomes vendor:azure: since the azure vendor stage is the one that
@@ -243,13 +343,23 @@ FATAL_PATTERNS="FATAL|Kernel panic|switch_root: can|Invalid ELF header"
 
 declare -A PASSED
 ALL_DONE=false
-for i in $(seq 1 36); do
-    # boot-diagnostics-log returns the full serial each call. Stream the
-    # whole thing every 10s — simpler than diffing, slightly noisier output.
+LAST_LINES=0
+# 72 × 10s = 12 min. Budget covers VM hypervisor-level boot (~1-3min
+# before first serial output) + enclave boot + workload spawn. Azure
+# CVM provisioning is typically ready at the serial-output level in
+# ~90s, but allow headroom for slow sub-region capacity.
+for i in $(seq 1 72); do
+    # boot-diagnostics-log returns the full serial each call. Diff against
+    # last poll and stream only new lines (same pattern gcp's get-serial-
+    # port-output uses), so CI logs show boot progress live.
     out=$(az vm boot-diagnostics get-boot-log \
         --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" 2>/dev/null || true)
-    if [ -n "$out" ] && [ "$i" -eq 1 -o $((i % 3)) -eq 0 ]; then
-        echo "$out" | tail -n 60 | sed 's/^/[serial] /'
+    if [ -n "$out" ]; then
+        TOTAL=$(echo "$out" | wc -l)
+        if [ "$TOTAL" -gt "$LAST_LINES" ]; then
+            echo "$out" | tail -n +$((LAST_LINES + 1)) | sed 's/^/[serial] /'
+            LAST_LINES=$TOTAL
+        fi
     fi
     if echo "$out" | grep -qE "$FATAL_PATTERNS"; then
         echo "::error::smoke:azure: fatal pattern in serial"
@@ -269,7 +379,7 @@ for i in $(seq 1 36); do
         [ -z "${PASSED[$name]:-}" ] && ALL_DONE=false && break
     done
     $ALL_DONE && break
-    echo "smoke:azure: waiting... ($i/36)"
+    echo "smoke:azure: waiting... ($i/72)"
     sleep 10
 done
 
