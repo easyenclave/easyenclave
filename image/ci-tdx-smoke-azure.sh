@@ -272,6 +272,15 @@ echo "smoke:azure: create TDX VM $VM_NAME ($VM_SIZE in $REGION)"
 # --os-disk-security-encryption-type VMGuestStateOnly: TDX-appropriate
 #   (no disk encryption; memory is what TDX protects).
 # --boot-diagnostics-storage "" : managed (Azure-provided) storage.
+# Boot-diagnostics storage: pass a concrete unmanaged storage URL so
+# boot-diag writes directly to our storage account without needing
+# the guest agent (waagent) to confirm. Both the "managed" path
+# (`--boot-diagnostics-storage ""` on create OR post-create
+# `az vm boot-diagnostics enable`) require waagent inside the guest
+# to complete — easyenclave doesn't ship waagent, so those commands
+# time out after ~20min with OSProvisioningTimedOut. Unmanaged-storage
+# path is purely an ARM-layer attachment and works fine on agent-less
+# images.
 az vm create \
     --resource-group "$AZURE_RESOURCE_GROUP" --name "$VM_NAME" \
     --location "$REGION" \
@@ -281,6 +290,7 @@ az vm create \
     --enable-vtpm true --enable-secure-boot false \
     --image "$IMG_VERSION_ID" \
     --nics "$NIC_NAME" \
+    --boot-diagnostics-storage "https://${STORAGE_ACCT}.blob.core.windows.net/" \
     --admin-username eeci \
     --generate-ssh-keys \
     --custom-data /tmp/ee-config.env \
@@ -311,14 +321,9 @@ for i in $(seq 1 60); do
     sleep 10
 done
 
-# Explicitly enable managed boot-diagnostics. Passing
-# `--boot-diagnostics-storage ""` on `az vm create` does NOT enable
-# managed diag (empirical: az then reports "Diagnostics is not enabled
-# for VM"). Enabling post-create with the dedicated subcommand works
-# reliably — Azure provisions its own managed storage under the hood.
-echo "smoke:azure: enabling boot-diagnostics (managed storage)..."
-az vm boot-diagnostics enable -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" >/dev/null
-
+# One-off probe so the CI log shows whether boot-diag is actually
+# attached before we start polling. If the attachment worked via the
+# --boot-diagnostics-storage arg, this returns a valid blob URI.
 echo "smoke:azure: probe boot-diag endpoint..."
 diag_uris=$(az vm boot-diagnostics get-boot-log-uris \
     -g "$AZURE_RESOURCE_GROUP" -n "$VM_NAME" 2>&1 | head -5 || true)
