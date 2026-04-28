@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EasyEnclave - The Minimal Linux Distro for Confidential Computing</title>
-  <meta name="description" content="A sealed Linux image with only 2 packages. No systemd, no SSH, no container runtime. Boots a Unified Kernel Image straight to your workload inside Intel TDX hardware.">
+  <title>EasyEnclave - A Linux distro replacement for confidential computing</title>
+  <meta name="description" content="Enclaves are hard. EasyEnclave makes them easy. A drop-in replacement for general-purpose Linux distributions: no Go, no systemd, no SSH, no container runtime. One Unified Kernel Image boots straight to your workload inside Intel TDX hardware.">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -14,14 +14,15 @@
   <div class="links">
     <a href="#whats-inside">What's Inside</a>
     <a href="#features">Features</a>
+    <a href="#no-age-gate">No Age Gate</a>
     <a href="#how">How It Works</a>
     <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
   </div>
 </nav>
 
 <div class="hero">
-  <h1>Two packages. One binary. <span class="g">Hardware-sealed.</span></h1>
-  <p>EasyEnclave is a stripped-to-the-bone Linux image for Intel TDX confidential VMs. The entire userland is <code>ca-certificates</code> and <code>busybox-static</code>. No systemd, no SSH, no container runtime. One Unified Kernel Image. One measurement.</p>
+  <h1>Enclaves are hard. <span class="g">EasyEnclave makes them easy.</span></h1>
+  <p>A drop-in replacement for general-purpose Linux distributions &mdash; built for one job: running confidential workloads inside Intel TDX. <strong>No Go. No systemd. No SSH. No container runtime. No age limits.</strong> The entire userland is <code>ca-certificates</code> and <code>busybox-static</code>, packed into a single Unified Kernel Image with one cryptographic measurement.</p>
   <div class="btns">
     <a href="#start" class="btn btn-g">Get Started</a>
     <a href="https://github.com/easyenclave/easyenclave" class="btn btn-o">View on GitHub</a>
@@ -30,17 +31,19 @@
 
 <section id="whats-inside" class="ct">
   <div class="c">
-    <h2>What's Inside</h2>
-    <p class="sub">Everything a typical server ships. Everything EasyEnclave doesn't.</p>
+    <h2>A Linux distro replacement</h2>
+    <p class="sub">Everything Ubuntu, Debian, or RHEL ships to run a confidential workload. Everything EasyEnclave throws away.</p>
     <div class="comparison">
-      <div class="cmp-hdr"><span>Component</span><span>Typical Server</span><span>EasyEnclave</span></div>
-      <div class="cmp-row"><span>Init system</span><span>systemd</span><span>easyenclave (PID 1)</span></div>
+      <div class="cmp-hdr"><span>Component</span><span>General-purpose distro</span><span>EasyEnclave</span></div>
+      <div class="cmp-row"><span>Init system</span><span>systemd</span><span>easyenclave (PID 1, in Rust)</span></div>
+      <div class="cmp-row"><span>Language runtime</span><span>Go runtime, glibc, etc.</span><span>None &mdash; no Go, static binaries only</span></div>
       <div class="cmp-row"><span>SSH</span><span>openssh-server</span><span>None</span></div>
-      <div class="cmp-row"><span>Package manager</span><span>apt / dpkg</span><span>None (immutable)</span></div>
+      <div class="cmp-row"><span>Package manager</span><span>apt / dpkg / rpm</span><span>None (immutable)</span></div>
       <div class="cmp-row"><span>Container runtime</span><span>docker / containerd</span><span>None (native processes)</span></div>
       <div class="cmp-row"><span>Bootloader</span><span>grub2 / shim</span><span>None (UKI boots directly)</span></div>
       <div class="cmp-row"><span>Userland packages</span><span>200&ndash;400+</span><span>2</span></div>
       <div class="cmp-row"><span>Network listeners</span><span>Multiple</span><span>0</span></div>
+      <div class="cmp-row"><span>Age-gate / ID check</span><span>Coming via state mandates &amp; systemd patches</span><span>None &mdash; no user to verify</span></div>
     </div>
     <div class="stats">
       <div class="stat"><div class="num">2</div><div class="lbl">packages</div></div>
@@ -53,15 +56,31 @@
 <section id="features" class="ct">
   <div class="c">
     <h2>Why EasyEnclave</h2>
-    <p class="sub">Stripped to the bone. Sealed by hardware.</p>
+    <p class="sub">Confidential computing without the distro baggage. No Go, no systemd, no excuses.</p>
     <div class="grid">
       <div class="card"><div class="ic">&#x1f4e6;</div><h3>Unified Kernel Image</h3><p>Kernel + initrd + cmdline packed into one EFI binary. One file, one cryptographic measurement. No bootloader chain, no GRUB config, no shim.</p></div>
       <div class="card"><div class="ic">&#x1f9f9;</div><h3>Two Packages, Period</h3><p>The entire userland is <code>ca-certificates</code> and <code>busybox-static</code>. No package manager in the image. What isn't there can't be exploited.</p></div>
       <div class="card"><div class="ic">&#x1f512;</div><h3>dm-verity Rootfs</h3><p>The root filesystem is integrity-verified at the block level. Tamper with a single byte and the kernel refuses to read it.</p></div>
-      <div class="card"><div class="ic">&#x2699;</div><h3>PID 1 Runtime</h3><p>Boots straight to easyenclave. No systemd, no init scripts, no runlevels. Mounts filesystems, reaps zombies, runs your workload &mdash; nothing else.</p></div>
+      <div class="card"><div class="ic">&#x2699;</div><h3>PID 1 Runtime, in Rust</h3><p>Boots straight to easyenclave. No systemd, no init scripts, no runlevels &mdash; and no Go runtime hiding under the hood. A small Rust binary mounts filesystems, reaps zombies, and runs your workload. Nothing else.</p></div>
       <div class="card"><div class="ic">&#x1f3af;</div><h3>Profile-Driven Builds</h3><p><code>make build TARGET=gcp</code> or <code>TARGET=azure</code> or <code>TARGET=local-tdx-qcow2</code>. Each profile defines its kernel cmdline, module set, root strategy, and output format. Add a target in minutes.</p></div>
       <div class="card"><div class="ic">&#x2705;</div><h3>TDX Attestation</h3><p>Generate cryptographic quotes via configfs-tsm. The hardware proves the exact measured image is running unmodified inside a sealed VM. Nonce or report-data binding.</p></div>
     </div>
+  </div>
+</section>
+
+<section id="no-age-gate" class="ct">
+  <div class="c">
+    <h2>Why an OS-level age gate is a horrible idea</h2>
+    <p class="sub">California is moving to make operating systems verify user age. systemd merged the patch. EasyEnclave didn't &mdash; here's why that pattern is broken at every layer.</p>
+    <div class="grid">
+      <div class="card"><div class="ic">&#x1f5a5;</div><h3>The OS doesn't know you</h3><p>Kernels and init systems run processes, not people. Pushing identity verification down to PID 1 means every Linux machine has to know who you are before it will run your code. That's a layering violation, not a feature. Identity belongs to apps and platforms &mdash; not the boot path.</p></div>
+      <div class="card"><div class="ic">&#x1f4e6;</div><h3>It bloats the trusted computing base</h3><p>An age check pulls in an ID provider, a TLS stack, document parsing, a credential store, telemetry, and a kill switch &mdash; all inside the rootfs, all inside the attestation measurement. The whole point of a sealed enclave is to prove a small thing honest. You cannot do that with a million lines of compliance plumbing on the trusted path.</p></div>
+      <div class="card"><div class="ic">&#x2699;</div><h3>Servers don't have ages</h3><p>A confidential VM in a datacenter has no human at the keyboard. Whose ID does the OS check before booting a TDX workload &mdash; the cloud provider's? Yours? A tenant who isn't there yet? The mandate is incoherent the second the machine isn't a laptop.</p></div>
+      <div class="card"><div class="ic">&#x1f513;</div><h3>Compliance creep is a one-way ratchet</h3><p>Once the hook exists, every jurisdiction wants its own check &mdash; region locks, content filters, approved-use lists, export controls. The infrastructure becomes a policy field. There is no version of this where it stays scoped to one rule in one state.</p></div>
+      <div class="card"><div class="ic">&#x1f441;</div><h3>It's a surveillance pipeline by default</h3><p>Mandatory ID verification at boot means every machine phones home to an identity provider with a hardware-bound credential. That's not a side effect &mdash; it's the architecture. Confidential computing exists to keep your workload private from the host; an OS that requires upstream attestation of <em>who you are</em> inverts the threat model.</p></div>
+      <div class="card"><div class="ic">&#x1f50d;</div><h3>And it doesn't even work</h3><p>A motivated user reflashes the firmware, boots an older kernel, or runs a foreign image. The check protects nobody actually trying to evade it &mdash; and breaks every legitimate operator running headless workloads. For confidential computing, that's the entire user population.</p></div>
+    </div>
+    <p style="margin-top:32px;text-align:center"><strong>EasyEnclave's answer:</strong> there is no login, no session, no telemetry, no upstream identity service. PID 1 mounts the rootfs, runs your workload, and reaps zombies. There is no "user" object to attach an age to. Nothing to gate. Nothing to patch.</p>
   </div>
 </section>
 
