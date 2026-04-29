@@ -1,0 +1,50 @@
+#!/bin/bash
+# vllm-serve — OpenAI-compatible vLLM launcher.
+#
+# Modeled on ConferLabs/confer-image's confer-vllm. Run as a boot workload
+# by easyenclave (see /etc/easyenclave/config.json), not as a systemd unit
+# — easyenclave is PID 1 and supervises workloads directly.
+#
+# All knobs come from env vars set on the boot workload entry, kernel
+# cmdline `ee.*`, or the secondary config disk's /agent.env. Sensible
+# defaults are filled in below.
+set -euo pipefail
+
+: "${VLLM_MODEL:=meta-llama/Llama-3.1-8B-Instruct}"
+: "${VLLM_SERVED_MODEL_NAME:=$VLLM_MODEL}"
+: "${VLLM_HOST:=0.0.0.0}"
+: "${VLLM_PORT:=8000}"
+: "${VLLM_GPU_MEMORY:=0.90}"
+: "${VLLM_TENSOR_PARALLEL_SIZE:=1}"
+: "${VLLM_MAX_MODEL_LEN:=8192}"
+: "${VLLM_MAX_NUM_SEQS:=64}"
+: "${VLLM_MAX_NUM_BATCHED_TOKENS:=8192}"
+
+args=(
+  --model "$VLLM_MODEL"
+  --served-model-name "$VLLM_SERVED_MODEL_NAME"
+  --host "$VLLM_HOST"
+  --port "$VLLM_PORT"
+  --gpu-memory-utilization "$VLLM_GPU_MEMORY"
+  --tensor-parallel-size "$VLLM_TENSOR_PARALLEL_SIZE"
+  --max-model-len "$VLLM_MAX_MODEL_LEN"
+  --max-num-seqs "$VLLM_MAX_NUM_SEQS"
+  --max-num-batched-tokens "$VLLM_MAX_NUM_BATCHED_TOKENS"
+)
+
+[ -n "${VLLM_TOOL_CALL_PARSER:-}" ]   && args+=(--enable-auto-tool-choice --tool-call-parser "$VLLM_TOOL_CALL_PARSER")
+[ -n "${VLLM_REASONING_PARSER:-}" ]   && args+=(--reasoning-parser "$VLLM_REASONING_PARSER")
+[[ "${VLLM_ENABLE_EXPERT_PARALLEL:-0}" =~ ^(1|true|yes)$ ]] && args+=(--enable-expert-parallel)
+[[ "${VLLM_ENABLE_CHUNKED_PREFILL:-1}" =~ ^(1|true|yes)$ ]] && args+=(--enable-chunked-prefill)
+[[ "${VLLM_ENABLE_PREFIX_CACHING:-0}" =~ ^(1|true|yes)$ ]]  && args+=(--enable-prefix-caching)
+
+mkdir -p /tmp/huggingface /tmp/.cache
+
+exec env -i \
+  PATH=/usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin \
+  CUDA_HOME=/usr/local/cuda \
+  HOME=/tmp \
+  HF_HUB_CACHE=/tmp/huggingface \
+  XDG_CACHE_HOME=/tmp/.cache \
+  ${HF_TOKEN:+HF_TOKEN=$HF_TOKEN} \
+  /usr/bin/python3 -m vllm.entrypoints.openai.api_server "${args[@]}"

@@ -49,8 +49,10 @@ build: $(EXTRA_BIN)/easyenclave
 	@echo ""
 	# 1. Build rootfs as a directory (Format=disk has a bug where the split
 	#    partition artifact is empty — directory output is populated correctly).
+	#    If the profile declares TARGET_MKOSI_PROFILE, pass it through so
+	#    mkosi.profiles/<name>/ overlays apply.
 	sudo rm -rf easyenclave
-	sudo mkosi build --force --format directory
+	. $(PROFILE); sudo mkosi build --force --format directory $${TARGET_MKOSI_PROFILE:+--profile=$$TARGET_MKOSI_PROFILE}
 	sudo du -sh easyenclave/
 	# 2. Move the populated rootfs under the target's output dir so concurrent
 	#    target builds don't step on each other.

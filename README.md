@@ -27,6 +27,7 @@ Artifacts land in `image/output/<target>/`.
 | `gcp` | `gcp` (IMDS `ee-config`) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2`, `easyenclave-gcp.tar.gz` | GCP TDX compute images (default) |
 | `azure` | `azure` (IMDS `customData`) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.vhd` | Azure TDX CVMs — import the VHD into a Shared Image Gallery or Managed Disk |
 | `local-tdx-qcow2` | `qemu` (secondary config disk) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2` | libvirt backing-file shape (`devopsdefender/dd` et al) — persistent base qcow2, COW overlay per VM |
+| `llm-cuda` | `qemu` (secondary config disk) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2` | TDX confidential VM with NVIDIA GPU passthrough, vLLM as a boot workload (scaffolding — see "LLM target" below) |
 
 Build:
 
@@ -35,6 +36,7 @@ cd image
 make build                         # defaults to TARGET=gcp
 make build TARGET=azure            # Azure fixed-size VHD
 make build TARGET=local-tdx-qcow2  # qcow2 backing file for libvirt
+make build TARGET=llm-cuda         # vLLM + GPU passthrough scaffolding (see "LLM target" below)
 ```
 
 For local launch, boot `image/output/local-tdx-qcow2/easyenclave.qcow2` under libvirt+TDVF. If you need boot-time config, attach a second read-only disk or CD-ROM with `/agent.env`; the qemu vendor stage probes `/dev/vdb` and `/dev/sdb` for `iso9660`, `ext4`, `vfat`, or `ext2` config media.
@@ -44,7 +46,16 @@ For local launch, boot `image/output/local-tdx-qcow2/easyenclave.qcow2` under li
 1. `mkdir image/targets/<name> && $EDITOR image/targets/<name>/profile.env` (copy from an existing profile, tweak `TARGET_INITRD_MODULES`, `TARGET_CMDLINE`, `TARGET_FORMAT`, `TARGET_OUTPUTS`, and `TARGET_VENDOR`).
 2. If you need a new root acquisition strategy, add `image/init-templates/<name>.sh` — it becomes the `/init` inside the initrd.
 3. If the host is a new cloud (or a variant that needs its own metadata/network plumbing), add `image/init-templates/vendors/<vendor>.sh` and set `TARGET_VENDOR=<vendor>` in the profile. The vendor stage gets `$1 = <newroot>`, is expected to load its network driver, bring up DHCP, fetch metadata, and append KEY=VALUE lines to `<newroot>/run/easyenclave/env`.
-4. `make build TARGET=<name>`.
+4. If the target needs extra packages or files in the rootfs (e.g. a CUDA stack or a custom binary), drop them under `image/mkosi.profiles/<name>/mkosi.conf` and `image/mkosi.profiles/<name>/mkosi.extra/` and set `TARGET_MKOSI_PROFILE=<name>` in `profile.env` — the Makefile then passes `--profile=<name>` to mkosi so the overlay applies only for that target.
+5. `make build TARGET=<name>`.
+
+### LLM target (`llm-cuda`)
+
+Pattern adapted from [`ConferLabs/confer-image`](https://github.com/ConferLabs/confer-image) — the same mkosi + Ubuntu Noble + dm-verity shape, retargeted at EasyEnclave's "no systemd, PID 1 is the runtime" invariant. confer-image's `confer-vllm.service`, `nvidia-persistenced.service`, `nvidia-fabricmanager.service`, and `nvidia-cc-attestation.service` collapse into entries in `boot_workloads` in `/etc/easyenclave/config.json`, sequenced by easyenclave directly. The sample config baked into the image lives at [`image/mkosi.profiles/llm-cuda/mkosi.extra/etc/easyenclave/config.json`](image/mkosi.profiles/llm-cuda/mkosi.extra/etc/easyenclave/config.json), and the launcher modeled on `confer-vllm` is at [`image/mkosi.profiles/llm-cuda/mkosi.extra/usr/local/bin/vllm-serve`](image/mkosi.profiles/llm-cuda/mkosi.extra/usr/local/bin/vllm-serve).
+
+Target-specific package overlays use mkosi's `--profile` mechanism: anything under `image/mkosi.profiles/<target>/` (a `mkosi.conf` and an `mkosi.extra/` overlay) applies only when the profile is active. The Makefile passes `--profile=$TARGET_MKOSI_PROFILE` automatically when a target's `profile.env` declares it.
+
+**Status: scaffolding.** The current `make build TARGET=llm-cuda` produces a bootable image with the launcher script, sample config, and IOMMU/passthrough cmdline in place — but **not** the NVIDIA driver, CUDA runtime, or vLLM Python install. Booting it on a GPU host today will surface `nvidia-persistenced`, `nv-fabricmanager`, and the vLLM entrypoint as missing binaries. The driver + CUDA + vLLM bake (Ubuntu `nvidia-driver-580-open` + `cuda-12-8-*` + `pip install vllm`, mirroring confer-image's `mkosi.conf` + `mkosi.postinst` stages 1–2) is intentionally deferred to a follow-up concept; see the comment block in [`image/mkosi.profiles/llm-cuda/mkosi.conf`](image/mkosi.profiles/llm-cuda/mkosi.conf) for the exact additions and `TODO.md` "GPU passthrough image packaging".
 
 ### Attestation across targets
 
