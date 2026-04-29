@@ -31,10 +31,21 @@ echo "mkimage: format=$TARGET_FORMAT strategy=$TARGET_ROOT_STRATEGY"
 
 case "$TARGET_FORMAT" in
     disk)
-        # 1. Pack the rootfs tree into a plain ext4 image.
+        # 1. Pack the rootfs tree into a plain ext4 image. Size auto-fits
+        #    the rootfs contents (was hard-coded to 256MB, which only
+        #    worked for the minimal busybox + easyenclave-binary image —
+        #    blew up the moment llm-cuda added a kernel package). Slack
+        #    of 40% covers ext4 journal + reserved blocks + per-file
+        #    inode/block overhead; floor at 256MB so the existing
+        #    minimal targets keep producing the same partition size
+        #    they always did.
         ROOTFS_IMG="$OUT/rootfs.img"
         rm -f "$ROOTFS_IMG"
-        dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=256 status=none
+        ROOTFS_BYTES=$(sudo du -sb "$ROOTFS_DIR" | awk '{print $1}')
+        ROOTFS_MB=$(( (ROOTFS_BYTES * 14 / 10 / 1048576 + 63) / 64 * 64 ))
+        [ "$ROOTFS_MB" -lt 256 ] && ROOTFS_MB=256
+        echo "mkimage: rootfs partition $ROOTFS_MB MB (contents $((ROOTFS_BYTES / 1048576)) MB)"
+        dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count="$ROOTFS_MB" status=none
         sudo mkfs.ext4 -F -L root -d "$ROOTFS_DIR" "$ROOTFS_IMG" 2>&1 | tail -3
 
         # 2. Assemble GPT disk: ESP (with UKI) + rootfs.

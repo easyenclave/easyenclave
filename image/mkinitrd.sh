@@ -17,7 +17,24 @@ set -euo pipefail
 OUTFILE="${1:?Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>}"
 KVER="${2:?Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>}"
 PROFILE="${3:?Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>}"
-MOD_SRC="/lib/modules/$KVER"
+
+# MOD_SRC defaults to the host's /lib/modules/$KVER (matches the
+# default Makefile path that copies /boot/vmlinuz-$(uname -r)).
+# Targets that ship a packaged kernel inside the rootfs override this
+# via EE_MOD_SRC=<rootfs>/lib/modules/$KVER so module dep resolution
+# happens against the rootfs tree, not the build host. modprobe is
+# given a matching --dirname (the parent two levels up) so it can
+# walk the in-tree dependency graph.
+MOD_SRC="${EE_MOD_SRC:-/lib/modules/$KVER}"
+# modprobe with `--dirname=DIR` resolves DIR to absolute internally
+# and emits absolute `insmod /abs/...` paths. If MOD_SRC is relative
+# the prefix-strip below silently no-ops and copy_mod ends up
+# recreating the entire absolute source path under
+# /lib/modules/<KVER>/<host-path>/... in the initrd. Functional but
+# very ugly. Normalize once so both modprobe and the strip work
+# against the same absolute paths.
+MOD_SRC="$(readlink -f "$MOD_SRC")"
+MODPROBE_BASEDIR="${MOD_SRC%/lib/modules/$KVER}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 [ -f "$PROFILE" ] || { echo "FATAL: profile $PROFILE not found"; exit 1; }
@@ -110,7 +127,11 @@ copy_mod() {
 }
 
 for top in $TARGET_INITRD_MODULES; do
-    deps=$(modprobe --show-depends --set-version "$KVER" "$top" 2>&1 || true)
+    if [ -n "$MODPROBE_BASEDIR" ] && [ "$MODPROBE_BASEDIR" != "" ]; then
+        deps=$(modprobe --dirname "$MODPROBE_BASEDIR" --show-depends --set-version "$KVER" "$top" 2>&1 || true)
+    else
+        deps=$(modprobe --show-depends --set-version "$KVER" "$top" 2>&1 || true)
+    fi
     if ! echo "$deps" | grep -q '^insmod'; then
         echo "  $top: not available as a module on $KVER (built-in or absent)"
         continue
