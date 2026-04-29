@@ -41,7 +41,7 @@ ROOTFS_DIR := $(OUTPUT_DIR)/easyenclave.rootfs
 
 build: $(EXTRA_BIN)/easyenclave
 	@[ -f $(PROFILE) ] || { echo "Unknown TARGET=$(TARGET). Available: $$(ls targets/ 2>/dev/null)"; exit 1; }
-	chmod +x mkosi.postinst.chroot mkosi.finalize mkinitrd.sh mkimage.sh assemble-disk.sh lib/mkesp.sh
+	chmod +x mkosi.postinst.chroot mkosi.finalize mkinitrd.sh mkimage.sh assemble-disk.sh lib/mkesp.sh lib/mkroot.sh
 	mkdir -p $(OUTPUT_DIR)
 	@echo ""
 	@echo "=== Building target: $(TARGET) ==="
@@ -58,8 +58,25 @@ build: $(EXTRA_BIN)/easyenclave
 	#    target builds don't step on each other.
 	sudo rm -rf $(ROOTFS_DIR)
 	sudo mv easyenclave $(ROOTFS_DIR)
-	# 3. Per-target kernel cmdline.
-	. $(PROFILE); echo "$$TARGET_CMDLINE" > $(OUTPUT_DIR)/easyenclave.cmdline
+	# 3a. Build the per-strategy root partition payload. ext4-label
+	#     produces rootfs.img; dm-verity-squashfs produces
+	#     rootfs.squashfs + rootfs.verity + roothash.txt. Done HERE
+	#     (before cmdline assembly + ukify) so the verity roothash can
+	#     be folded into the cmdline that the UKI embeds — that's how
+	#     the rootfs ends up under attestation measurement.
+	sudo bash lib/mkroot.sh $$(. $(PROFILE); echo $$TARGET_ROOT_STRATEGY) $(ROOTFS_DIR) $(OUTPUT_DIR)
+	# 3b. Per-target kernel cmdline. For dm-verity-squashfs we append
+	#     the systemd verity entries plus roothash=<hex>; for ext4-label
+	#     the cmdline is the profile's TARGET_CMDLINE verbatim (so the
+	#     existing `root=LABEL=root` story stays untouched).
+	. $(PROFILE); \
+	cmdline=$$TARGET_CMDLINE; \
+	if [ "$$TARGET_ROOT_STRATEGY" = "dm-verity-squashfs" ]; then \
+		ROOTHASH=$$(cat $(OUTPUT_DIR)/roothash.txt); \
+		cmdline="$$cmdline systemd.verity_root_data=PARTLABEL=root systemd.verity_root_hash=PARTLABEL=verity roothash=$$ROOTHASH"; \
+	fi; \
+	echo "$$cmdline" > $(OUTPUT_DIR)/easyenclave.cmdline; \
+	echo "cmdline: $$cmdline"
 	# 4-5. Kernel + initrd. Two modes:
 	#   - host kernel (default): copy /boot/vmlinuz-$(uname -r), build
 	#     initrd against /lib/modules/$(uname -r) on the build host.
