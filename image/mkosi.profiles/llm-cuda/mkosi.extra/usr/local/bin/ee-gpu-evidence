@@ -1,0 +1,40 @@
+#!/bin/bash
+# ee-gpu-evidence — produce raw NVIDIA H100 CC GPU evidence on stdout.
+#
+# Wire protocol (consumed by easyenclave's nvgpu HelperBackend):
+#   gpu_report_len:u32_be || gpu_report || switch_report_len:u32_be || switch_report
+#
+# A helper that has nothing to report MUST emit the four-byte zero
+# length prefix for both fields rather than nothing — the parser
+# needs the framing.
+#
+# SCAFFOLDING: this is the stub bundled with the llm-cuda target
+# while the real CUDA / driver / nv-attestation-sdk bake is still
+# deferred. It exits non-zero so easyenclave's `attest` response
+# surfaces a clear `evidence.nvgpu_error` rather than silently
+# returning fake-success.
+#
+# When the bake lands, replace this with something like:
+#
+#   exec /opt/venv-attestation/bin/python3 - <<'PY'
+#   import sys, struct
+#   from nv_attestation_sdk import attestation
+#   client = attestation.Attestation()
+#   client.set_name("ee")
+#   client.set_nonce(sys.stdin.readline().strip() or "0" * 64)
+#   client.add_verifier(
+#       attestation.Devices.GPU, attestation.Environment.LOCAL, "", ""
+#   )
+#   token = client.attest()  # returns raw GPU report
+#   sys.stdout.buffer.write(struct.pack(">I", len(token)) + token)
+#   sys.stdout.buffer.write(struct.pack(">I", 0))  # no switch report
+#   PY
+#
+# (Actual API call shape pending the nv-attestation-sdk venv being
+# in place; see docs/gpu-attestation.md and the comment block in
+# image/mkosi.profiles/llm-cuda/mkosi.conf.)
+
+set -euo pipefail
+
+echo "ee-gpu-evidence: nv-attestation-sdk venv not installed (deferred bake)" >&2
+exit 1

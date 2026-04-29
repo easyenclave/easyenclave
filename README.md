@@ -93,6 +93,12 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 
 `attest.nonce` is optional base64-encoded caller data. `attach` is the only method that changes the connection's protocol — after the JSON ack, the connection is a raw byte stream bridging a `script -qfc <cmd> /dev/null` PTY. Used by clients that want an interactive shell (dd-client, dd-web).
 
+### GPU evidence (optional)
+
+On confidential-GPU hosts (NVIDIA H100/H200 in CC mode), the `attest` response can include an additional `evidence.nvgpu` block alongside the TDX quote — raw GPU attestation bytes a relying party submits to ITA v2's combined-appraisal endpoint. The runtime stays an evidence producer: PID 1 does not run `nv-ppcie-verifier` locally and never gates on partial evidence (a GPU helper failure surfaces as `evidence.nvgpu_error`, leaving the TDX quote intact).
+
+The helper is a separate executable owned by the image (see `gpu_attestation.helper_path` in config). Length-prefixed wire protocol, in-process TTL cache, soft detection — running on a non-GPU host with the llm-cuda config baked in still produces TDX-only quotes. Full schema and ITA assembly walkthrough in [`docs/gpu-attestation.md`](docs/gpu-attestation.md).
+
 For a Rust workload example — a TDX-attested LLM proxy with
 ITA-v2 attestation and OpenRouter ZDR routing — see
 [`docs/private-claude.md`](docs/private-claude.md).
@@ -193,6 +199,10 @@ Example `/etc/easyenclave/config.json`:
 | `EE_IP` | DHCP | Static address/CIDR for the first non-loopback interface (consumed by vendor stage, not by Rust) |
 | `EE_GATEWAY` | (none) | Default gateway when `EE_IP` is set (consumed by vendor stage) |
 | `EE_DNS` | DHCP DNS | DNS server written to `/run/resolv.conf` by the vendor stage |
+| `EE_GPU_ATTESTATION_ENABLED` | `false` | Turn on the optional NVIDIA GPU evidence helper (`docs/gpu-attestation.md`) |
+| `EE_GPU_ATTESTATION_HELPER` | `/usr/local/bin/ee-gpu-evidence` | Path to the GPU evidence helper binary |
+| `EE_GPU_ATTESTATION_TIMEOUT` | `15` | Helper invocation timeout, seconds |
+| `EE_GPU_ATTESTATION_CACHE_TTL` | `60` | In-process cache TTL for the last successful collection, seconds (`0` disables caching) |
 
 Networking (interface up, DHCP, DNS) is handled entirely by the vendor stage at `image/init-templates/vendors/<vendor>.sh` in the initrd. `EE_IP`/`EE_GATEWAY`/`EE_DNS` are read by the shared `ee_ifup` helper in `vendors/_lib.sh`, so they continue to work even though the PID 1 binary no longer reads them directly.
 
@@ -208,8 +218,9 @@ src/
 ├── release.rs        GitHub Releases API: fetch static binaries
 ├── process.rs        Spawn (with log capture), kill, logs
 └── attestation/
-    ├── mod.rs         Backend trait + TDX detection (no insecure fallback)
-    └── tsm.rs         TDX configfs-tsm implementation
+    ├── mod.rs         Backend traits + TDX detection (no insecure fallback) + optional GpuEvidenceBackend (soft detect)
+    ├── tsm.rs         TDX configfs-tsm implementation
+    └── nvgpu.rs       NVIDIA-CC GPU evidence via configurable helper script (length-prefixed stdout protocol)
 
 image/
 ├── init-templates/

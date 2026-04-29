@@ -1,7 +1,13 @@
 {
-  "_comment_": "Sample boot_workloads for the llm-cuda target. Mirrors the systemd-unit fan-out in ConferLabs/confer-image (nvidia-persistenced.service, nvidia-fabricmanager.service, nvidia-cc-attestation.service, confer-vllm.service) but as bare commands sequenced by easyenclave (PID 1). Override per-deployment via /agent.env on the secondary config disk, GCE ee-config, Azure customData, or kernel ee.* params. The first three entries are placeholders — they shell out to binaries that the NVIDIA driver bake (deferred concept) installs; running this image as-is will surface those as 'command not found' until the driver overlay lands.",
+  "_comment_": "Sample boot_workloads for the llm-cuda target. Mirrors the systemd-unit fan-out in ConferLabs/confer-image (nvidia-persistenced.service, nvidia-fabricmanager.service, confer-vllm.service) but as bare commands sequenced by easyenclave (PID 1). The confer-image nvidia-cc-attestation.service is intentionally NOT a boot workload here — GPU evidence is produced on demand inside `attest` via gpu_attestation.helper_path (see docs/gpu-attestation.md), not as a one-shot at boot. Override per-deployment via /agent.env on the secondary config disk, GCE ee-config, Azure customData, or kernel ee.* params. The nvidia-* entries are placeholders — they shell out to binaries that the NVIDIA driver bake (deferred concept) installs; running this image as-is will surface those as 'command not found' until the driver overlay lands.",
   "socket_path": "/var/lib/easyenclave/agent.sock",
   "data_dir": "/var/lib/easyenclave",
+  "gpu_attestation": {
+    "enabled": true,
+    "helper_path": "/usr/local/bin/ee-gpu-evidence",
+    "timeout_secs": 15,
+    "cache_ttl_secs": 60
+  },
   "boot_workloads": [
     {
       "app_name": "nvidia-persistenced",
