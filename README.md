@@ -82,8 +82,9 @@ Newline-delimited JSON over `/var/lib/easyenclave/agent.sock`:
 
 `attest.nonce` is optional base64-encoded caller data. `attach` is the only method that changes the connection's protocol — after the JSON ack, the connection is a raw byte stream bridging a `script -qfc <cmd> /dev/null` PTY. Used by clients that want an interactive shell (dd-client, dd-web).
 
-For a Java workload example, see
-[`docs/confer-proxy-on-easyenclave.md`](docs/confer-proxy-on-easyenclave.md).
+For a Rust workload example — a TDX-attested LLM proxy with
+ITA-v2 attestation and OpenRouter ZDR routing — see
+[`docs/private-claude.md`](docs/private-claude.md).
 
 ### ITA v2 and verifier integration
 
