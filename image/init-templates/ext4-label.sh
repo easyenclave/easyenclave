@@ -50,20 +50,47 @@ for m in dm-verity nvme virtio_blk virtio_pci virtio_scsi hv_vmbus hv_storvsc td
     modprobe "$m" 2>/dev/null || echo "note: $m not loaded (may be built-in)"
 done
 
-# Resolve LABEL=/UUID= via findfs, with a retry loop to let hotplug
-# settle. Same UKI boots GCP (nvme0n1p2) and libvirt/qemu (vda2) thanks
-# to the `root` label set at mkfs time (image/mkimage.sh).
-# findfs handles LABEL=/UUID=/PARTLABEL=/PARTUUID=. busybox's
-# implementation supports all four, which lets a verity layout point
-# at the hash partition by PARTLABEL=verity without baking a device
-# path that varies across cloud/qemu hosts.
+# Resolve LABEL= / UUID= via findfs (supported by busybox); resolve
+# PARTLABEL= / PARTUUID= via /sys/class/block/*/uevent because
+# busybox's findfs doesn't grok GPT partition attributes — only
+# filesystem-level LABEL/UUID. The kernel exposes PARTLABEL as
+# `PARTNAME=...` and PARTUUID as `PARTUUID=...` in each block
+# device's uevent file, which gives us a busybox-only path to the
+# device node. Same UKI boots GCP (nvme0n1p2) and libvirt/qemu
+# (vda2) thanks to the partition labels set at sfdisk time
+# (image/assemble-disk.sh).
+resolve_partattr() {
+    local key="$1" value="$2" u dev
+    for u in /sys/class/block/*/uevent; do
+        [ -f "$u" ] || continue
+        if grep -q "^${key}=${value}$" "$u" 2>/dev/null; then
+            dev=$(grep "^DEVNAME=" "$u" | cut -d= -f2)
+            [ -n "$dev" ] && [ -e "/dev/$dev" ] && echo "/dev/$dev" && return 0
+        fi
+    done
+    return 1
+}
 resolve_dev() {
     local spec="$1" name="$2" out
     case "$spec" in
-        LABEL=*|UUID=*|PARTLABEL=*|PARTUUID=*)
+        LABEL=*|UUID=*)
             for _ in $(seq 1 30); do
                 out=$(findfs "$spec" 2>/dev/null || true)
                 [ -n "$out" ] && [ -e "$out" ] && { echo "$out"; return 0; }
+                sleep 1
+            done
+            ;;
+        PARTLABEL=*)
+            for _ in $(seq 1 30); do
+                out=$(resolve_partattr PARTNAME "${spec#PARTLABEL=}")
+                [ -n "$out" ] && { echo "$out"; return 0; }
+                sleep 1
+            done
+            ;;
+        PARTUUID=*)
+            for _ in $(seq 1 30); do
+                out=$(resolve_partattr PARTUUID "${spec#PARTUUID=}")
+                [ -n "$out" ] && { echo "$out"; return 0; }
                 sleep 1
             done
             ;;
