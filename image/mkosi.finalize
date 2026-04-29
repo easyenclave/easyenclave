@@ -1,6 +1,17 @@
 #!/bin/bash
-# Cleanup for reproducible rootfs.
+# Cleanup for reproducible rootfs. Runs OUTSIDE the chroot, after
+# mkosi has unmounted any bind-mounts (notably /etc/resolv.conf,
+# which mkosi bind-mounts onto the chroot during WithNetwork=yes
+# builds).
 set -euo pipefail
 ROOT="${1:-${BUILDROOT:-/buildroot}}"
 rm -f "$ROOT/var/cache/ldconfig/aux-cache"
 find "$ROOT/var/log" -type f -delete 2>/dev/null || true
+
+# Re-create the runtime resolv.conf symlink. mkosi.postinst.chroot
+# would create this normally, but skips it when /etc/resolv.conf is
+# bind-mounted by mkosi. By the time finalize runs the bind-mount
+# is gone, so we can safely overwrite whatever's there (typically
+# systemd-resolved's dangling stub-resolv.conf symlink).
+rm -f "$ROOT/etc/resolv.conf"
+ln -sf /run/resolv.conf "$ROOT/etc/resolv.conf"

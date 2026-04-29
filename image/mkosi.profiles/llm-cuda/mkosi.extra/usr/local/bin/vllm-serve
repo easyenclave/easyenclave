@@ -47,4 +47,4 @@ exec env -i \
   HF_HUB_CACHE=/tmp/huggingface \
   XDG_CACHE_HOME=/tmp/.cache \
   ${HF_TOKEN:+HF_TOKEN=$HF_TOKEN} \
-  /usr/bin/python3 -m vllm.entrypoints.openai.api_server "${args[@]}"
+  /opt/venv-vllm/bin/python3 -m vllm.entrypoints.openai.api_server "${args[@]}"

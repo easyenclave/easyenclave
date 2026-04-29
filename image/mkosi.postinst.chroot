@@ -25,6 +25,15 @@ mkdir -p /etc/easyenclave /var/lib/easyenclave /mnt/config
 # the EE_DNS static override both need to write resolv.conf. Point
 # /etc/resolv.conf at /run/resolv.conf (tmpfs, mounted by init before
 # udhcpc runs) so writes land on tmpfs.
-ln -sf /run/resolv.conf /etc/resolv.conf
+#
+# Skip the symlink if /etc/resolv.conf is a bind-mount (which is
+# what mkosi does during WithNetwork=yes builds — bind-mounts the
+# host's /etc/resolv.conf for chroot DNS). mkosi.finalize re-creates
+# the symlink after the bind-mount is unmounted.
+if mountpoint -q /etc/resolv.conf 2>/dev/null; then
+    echo "[mkosi.postinst] /etc/resolv.conf is bind-mounted (mkosi WithNetwork); finalize will set the symlink"
+else
+    ln -sf /run/resolv.conf /etc/resolv.conf
+fi
 
 echo "[mkosi.postinst] Done."
