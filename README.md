@@ -26,20 +26,18 @@ Artifacts land in `image/output/<target>/`.
 |--------|--------------|--------|---------------|-------------------|----------|
 | `gcp` | `gcp` (IMDS `ee-config`) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2`, `easyenclave-gcp.tar.gz` | GCP TDX compute images (default) |
 | `azure` | `azure` (IMDS `customData`) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.vhd` | Azure TDX CVMs — import the VHD into a Shared Image Gallery or Managed Disk |
-| `local-tdx-qcow2` | `qemu` (secondary config disk) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2` | libvirt backing-file shape (`devopsdefender/dd` et al) — persistent base qcow2, COW overlay per VM |
-| `llm-cuda` | `qemu` (secondary config disk) | GPT disk | ext4 label + optional dm-verity | `easyenclave.root.raw`, `easyenclave.qcow2` | TDX confidential VM with NVIDIA GPU passthrough, vLLM as a boot workload (scaffolding — see "LLM target" below) |
+| `llm-cuda` | `qemu` (secondary config disk) | GPT disk | dm-verity squashfs | `easyenclave.root.raw`, `easyenclave.qcow2` | TDX confidential VM with NVIDIA GPU passthrough, vLLM as a boot workload. Also the libvirt backing-file shape (`devopsdefender/dd` et al) — persistent base qcow2, COW overlay per VM. See "LLM target" below |
 
 Build:
 
 ```bash
 cd image
-make build                         # defaults to TARGET=gcp
-make build TARGET=azure            # Azure fixed-size VHD
-make build TARGET=local-tdx-qcow2  # qcow2 backing file for libvirt
-make build TARGET=llm-cuda         # vLLM + GPU passthrough scaffolding (see "LLM target" below)
+make build                  # defaults to TARGET=gcp
+make build TARGET=azure     # Azure fixed-size VHD
+make build TARGET=llm-cuda  # qcow2 backing file for libvirt, vLLM + GPU passthrough (see "LLM target" below)
 ```
 
-For local launch, boot `image/output/local-tdx-qcow2/easyenclave.qcow2` under libvirt+TDVF. If you need boot-time config, attach a second read-only disk or CD-ROM with `/agent.env`; the qemu vendor stage probes `/dev/vdb` and `/dev/sdb` for `iso9660`, `ext4`, `vfat`, or `ext2` config media.
+For local launch, boot `image/output/llm-cuda/easyenclave.qcow2` under libvirt+TDVF. If you need boot-time config, attach a second read-only disk or CD-ROM with `/agent.env`; the qemu vendor stage probes `/dev/vdb` and `/dev/sdb` for `iso9660`, `ext4`, `vfat`, or `ext2` config media.
 
 ### Adding a new target
 
@@ -55,7 +53,7 @@ Pattern adapted from [`ConferLabs/confer-image`](https://github.com/ConferLabs/c
 
 Target-specific package overlays use mkosi's `--profile` mechanism: anything under `image/mkosi.profiles/<target>/` (a `mkosi.conf` and an `mkosi.extra/` overlay) applies only when the profile is active. The Makefile passes `--profile=$TARGET_MKOSI_PROFILE` automatically when a target's `profile.env` declares it.
 
-**Status: scaffolding.** The current `make build TARGET=llm-cuda` produces a bootable image with the launcher script, sample config, and IOMMU/passthrough cmdline in place — but **not** the NVIDIA driver, CUDA runtime, or vLLM Python install. Booting it on a GPU host today will surface `nvidia-persistenced`, `nv-fabricmanager`, and the vLLM entrypoint as missing binaries. The driver + CUDA + vLLM bake (Ubuntu `nvidia-driver-580-open` + `cuda-12-8-*` + `pip install vllm`, mirroring confer-image's `mkosi.conf` + `mkosi.postinst` stages 1–2) is intentionally deferred to a follow-up concept; see the comment block in [`image/mkosi.profiles/llm-cuda/mkosi.conf`](image/mkosi.profiles/llm-cuda/mkosi.conf) for the exact additions and `TODO.md` "GPU passthrough image packaging".
+The full driver + CUDA + vLLM stack is baked in: `nvidia-dkms-580-open` + `cuda-12-8-*` packages from the Ubuntu Noble snapshot mirror + NVIDIA's CUDA repo, plus `vllm==0.17.0` and `nv-attestation-sdk==2.6.3` pip-installed into `/opt/venv-vllm` and `/opt/venv-attestation` by `image/mkosi.profiles/llm-cuda/mkosi.postinst`. Every byte lives inside the dm-verity squashfs — the rootfs hash flows into the kernel cmdline → UKI → RTMR, so a relying party can pin the inference binary to the TDX measurement.
 
 ### Attestation across targets
 
@@ -64,7 +62,7 @@ TDX MRTD and RTMR values **differ per target**, and differ again per launch site
 - **MRTD** is derived from TDVF binary + memory size + vCPU topology. Local TDVF ≠ GCP's TDVF; `-m 4G -smp 2` locally ≠ `c3-standard-4` on GCP.
 - **RTMRs** depend on UKI bytes (each target's UKI embeds a different initrd and cmdline).
 
-Don't cross-verify a local quote against a GCP measurement. Treat the local-tdx-qcow2 build as a dev / dd-runtime convenience, not a production-attestation-equivalent artifact.
+Don't cross-verify a local quote against a GCP measurement. Treat the local libvirt boot of `llm-cuda` as a dev / dd-runtime convenience, not a production-attestation-equivalent artifact — the production attestation surface is whichever cloud target a relying party actually pinned.
 
 ## Architecture
 
@@ -158,7 +156,7 @@ kernel, VMM, host, or cloud provider quote path. EasyEnclave only requires that
 Config is loaded from `/etc/easyenclave/config.json`, then environment variables override it. The initrd's per-vendor stage populates `/run/easyenclave/env` (a KEY=VALUE file, one per line) from the sources below, and PID 1 merges those entries into the process env before config loads:
 
 - kernel command line params prefixed with `ee.`, for example `ee.EE_DATA_DIR=/var/lib/easyenclave` (parsed by the root-strategy init template)
-- a secondary config disk containing `/agent.env` (local-tdx-qcow2 / qemu vendor stage only)
+- a secondary config disk containing `/agent.env` (llm-cuda / qemu vendor stage only)
 - GCE instance metadata attribute `ee-config` — KEY=VALUE per line, or the legacy flat-JSON `{"KEY":"VALUE",...}` (auto-flattened by the gcp vendor stage)
 - Azure IMDS `customData` — base64-encoded. The decoded bytes may be KEY=VALUE per line or legacy flat-JSON (azure vendor stage)
 - the inherited process environment

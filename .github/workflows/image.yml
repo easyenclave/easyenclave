@@ -81,12 +81,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # gcp              : GPT disk + GCE import tar.gz, cloud TDX CVM
-        # azure            : GPT disk + fixed-size VHD, Azure TDX CVM via SIG
-        # local-tdx-qcow2  : GPT-disk qcow2, libvirt backing-file shape
-        #                    (`devopsdefender/dd`), boots on tdx2 under
-        #                    real OVMF.inteltdx.fd
-        target: [gcp, azure, local-tdx-qcow2]
+        # gcp       : GPT disk + GCE import tar.gz, cloud TDX CVM
+        # azure     : GPT disk + fixed-size VHD, Azure TDX CVM via SIG
+        # llm-cuda  : GPT-disk qcow2 (verity-squashfs root), the libvirt
+        #             backing-file shape `devopsdefender/dd` consumes,
+        #             plus the NVIDIA CUDA + vLLM stack inside the
+        #             measurement. Boots on tdx2 under real
+        #             OVMF.inteltdx.fd; the smoke runner attaches the
+        #             host's H100 only when one is bound to vfio-pci,
+        #             otherwise validates boot-path + attestation only.
+        target: [gcp, azure, llm-cuda]
     steps:
       - uses: actions/checkout@v4
 
@@ -205,7 +209,7 @@ jobs:
       - if: >-
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
-             && matrix.target == 'local-tdx-qcow2'
+             && matrix.target == 'llm-cuda'
         name: Stage SSH key for tdx2
         env:
           EE_LOCAL_SSH_KEY: ${{ secrets.EE_LOCAL_SSH_KEY }}
@@ -344,7 +348,7 @@ jobs:
             echo ""
             echo "- **gcp** — raw, qcow2, gcp-tar.gz (GCE import)"
             echo "- **azure** — raw, vhd (fixed-size, Azure Managed Disk import)"
-            echo "- **local-tdx-qcow2** — raw, qcow2 (libvirt backing file for dd-style deployments)"
+            echo "- **llm-cuda** — raw, qcow2 (libvirt backing file for dd-style deployments + NVIDIA driver / CUDA / vLLM bake)"
             echo ""
             echo "GCP image: \`${GCP_NAME}\`"
             echo ""
