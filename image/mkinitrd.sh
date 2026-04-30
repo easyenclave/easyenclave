@@ -209,8 +209,18 @@ if [ -n "$VENDOR_SCRIPT" ]; then
     fi
 fi
 
-# Create the cpio archive
-(cd "$WORKDIR" && find . | cpio -o -H newc 2>/dev/null) | gzip -9 > "$OUTFILE"
+# Create the cpio archive. Reproducibility — without these knobs the
+# initrd hash differs across builds even when every file's contents
+# are identical, which leaks into the UKI hash and breaks the RTMR
+# measurement that downstream relying parties pin:
+#  - find | sort: default traversal is inode/filesystem order, which
+#    varies per mktemp -d.
+#  - touch clamps every file's mtime; cpio newc embeds mtimes verbatim.
+#  - cpio --owner=0:0 --reproducible: zero out uid/gid and replace the
+#    per-file inode numbers with a synthetic monotonic counter.
+#  - gzip -n strips the source filename + mtime from the gzip header.
+find "$WORKDIR" -exec touch -h -t 197001010000.00 {} + 2>/dev/null || true
+(cd "$WORKDIR" && find . | LC_ALL=C sort | cpio -o -H newc --owner=0:0 --reproducible 2>/dev/null) | gzip -9n > "$OUTFILE"
 
 SIZE=$(du -h "$OUTFILE" | cut -f1)
 echo "Initrd built: $OUTFILE ($SIZE)"
