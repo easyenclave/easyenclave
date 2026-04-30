@@ -17,24 +17,7 @@ set -euo pipefail
 OUTFILE="${1:?Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>}"
 KVER="${2:?Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>}"
 PROFILE="${3:?Usage: mkinitrd.sh <outfile> <kernel-version> <profile-env>}"
-
-# MOD_SRC defaults to the host's /lib/modules/$KVER (matches the
-# default Makefile path that copies /boot/vmlinuz-$(uname -r)).
-# Targets that ship a packaged kernel inside the rootfs override this
-# via EE_MOD_SRC=<rootfs>/lib/modules/$KVER so module dep resolution
-# happens against the rootfs tree, not the build host. modprobe is
-# given a matching --dirname (the parent two levels up) so it can
-# walk the in-tree dependency graph.
-MOD_SRC="${EE_MOD_SRC:-/lib/modules/$KVER}"
-# modprobe with `--dirname=DIR` resolves DIR to absolute internally
-# and emits absolute `insmod /abs/...` paths. If MOD_SRC is relative
-# the prefix-strip below silently no-ops and copy_mod ends up
-# recreating the entire absolute source path under
-# /lib/modules/<KVER>/<host-path>/... in the initrd. Functional but
-# very ugly. Normalize once so both modprobe and the strip work
-# against the same absolute paths.
-MOD_SRC="$(readlink -f "$MOD_SRC")"
-MODPROBE_BASEDIR="${MOD_SRC%/lib/modules/$KVER}"
+MOD_SRC="/lib/modules/$KVER"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 [ -f "$PROFILE" ] || { echo "FATAL: profile $PROFILE not found"; exit 1; }
@@ -127,11 +110,7 @@ copy_mod() {
 }
 
 for top in $TARGET_INITRD_MODULES; do
-    if [ -n "$MODPROBE_BASEDIR" ] && [ "$MODPROBE_BASEDIR" != "" ]; then
-        deps=$(modprobe --dirname "$MODPROBE_BASEDIR" --show-depends --set-version "$KVER" "$top" 2>&1 || true)
-    else
-        deps=$(modprobe --show-depends --set-version "$KVER" "$top" 2>&1 || true)
-    fi
+    deps=$(modprobe --show-depends --set-version "$KVER" "$top" 2>&1 || true)
     if ! echo "$deps" | grep -q '^insmod'; then
         echo "  $top: not available as a module on $KVER (built-in or absent)"
         continue
@@ -209,18 +188,8 @@ if [ -n "$VENDOR_SCRIPT" ]; then
     fi
 fi
 
-# Create the cpio archive. Reproducibility — without these knobs the
-# initrd hash differs across builds even when every file's contents
-# are identical, which leaks into the UKI hash and breaks the RTMR
-# measurement that downstream relying parties pin:
-#  - find | sort: default traversal is inode/filesystem order, which
-#    varies per mktemp -d.
-#  - touch clamps every file's mtime; cpio newc embeds mtimes verbatim.
-#  - cpio --owner=0:0 --reproducible: zero out uid/gid and replace the
-#    per-file inode numbers with a synthetic monotonic counter.
-#  - gzip -n strips the source filename + mtime from the gzip header.
-find "$WORKDIR" -exec touch -h -t 197001010000.00 {} + 2>/dev/null || true
-(cd "$WORKDIR" && find . | LC_ALL=C sort | cpio -o -H newc --owner=0:0 --reproducible 2>/dev/null) | gzip -9n > "$OUTFILE"
+# Create the cpio archive
+(cd "$WORKDIR" && find . | cpio -o -H newc 2>/dev/null) | gzip -9 > "$OUTFILE"
 
 SIZE=$(du -h "$OUTFILE" | cut -f1)
 echo "Initrd built: $OUTFILE ($SIZE)"

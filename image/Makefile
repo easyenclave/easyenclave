@@ -41,7 +41,7 @@ ROOTFS_DIR := $(OUTPUT_DIR)/easyenclave.rootfs
 
 build: $(EXTRA_BIN)/easyenclave
 	@[ -f $(PROFILE) ] || { echo "Unknown TARGET=$(TARGET). Available: $$(ls targets/ 2>/dev/null)"; exit 1; }
-	chmod +x mkosi.postinst.chroot mkosi.finalize mkinitrd.sh mkimage.sh assemble-disk.sh lib/mkesp.sh lib/mkroot.sh
+	chmod +x mkosi.postinst.chroot mkosi.finalize mkinitrd.sh mkimage.sh assemble-disk.sh lib/mkesp.sh
 	mkdir -p $(OUTPUT_DIR)
 	@echo ""
 	@echo "=== Building target: $(TARGET) ==="
@@ -49,57 +49,19 @@ build: $(EXTRA_BIN)/easyenclave
 	@echo ""
 	# 1. Build rootfs as a directory (Format=disk has a bug where the split
 	#    partition artifact is empty — directory output is populated correctly).
-	#    If the profile declares TARGET_MKOSI_PROFILE, pass it through so
-	#    mkosi.profiles/<name>/ overlays apply.
 	sudo rm -rf easyenclave
-	. $(PROFILE); sudo mkosi build --force --format directory $${TARGET_MKOSI_PROFILE:+--profile=$$TARGET_MKOSI_PROFILE}
+	sudo mkosi build --force --format directory
 	sudo du -sh easyenclave/
 	# 2. Move the populated rootfs under the target's output dir so concurrent
 	#    target builds don't step on each other.
 	sudo rm -rf $(ROOTFS_DIR)
 	sudo mv easyenclave $(ROOTFS_DIR)
-	# 3a. Build the per-strategy root partition payload. ext4-label
-	#     produces rootfs.img; dm-verity-squashfs produces
-	#     rootfs.squashfs + rootfs.verity + roothash.txt. Done HERE
-	#     (before cmdline assembly + ukify) so the verity roothash can
-	#     be folded into the cmdline that the UKI embeds — that's how
-	#     the rootfs ends up under attestation measurement.
-	sudo bash lib/mkroot.sh $$(. $(PROFILE); echo $$TARGET_ROOT_STRATEGY) $(ROOTFS_DIR) $(OUTPUT_DIR)
-	# 3b. Per-target kernel cmdline. For dm-verity-squashfs we append
-	#     the systemd verity entries plus roothash=<hex>; for ext4-label
-	#     the cmdline is the profile's TARGET_CMDLINE verbatim (so the
-	#     existing `root=LABEL=root` story stays untouched).
-	. $(PROFILE); \
-	cmdline=$$TARGET_CMDLINE; \
-	if [ "$$TARGET_ROOT_STRATEGY" = "dm-verity-squashfs" ]; then \
-		ROOTHASH=$$(cat $(OUTPUT_DIR)/roothash.txt); \
-		cmdline="$$cmdline systemd.verity_root_data=PARTLABEL=root systemd.verity_root_hash=PARTLABEL=verity roothash=$$ROOTHASH"; \
-	fi; \
-	echo "$$cmdline" > $(OUTPUT_DIR)/easyenclave.cmdline; \
-	echo "cmdline: $$cmdline"
-	# 4-5. Kernel + initrd. Two modes:
-	#   - host kernel (default): copy /boot/vmlinuz-$(uname -r), build
-	#     initrd against /lib/modules/$(uname -r) on the build host.
-	#   - packaged kernel (TARGET_USE_PACKAGED_KERNEL=yes): the rootfs
-	#     contains its own kernel package (e.g. linux-generic-hwe-24.04
-	#     for llm-cuda); resolve KVER from $(ROOTFS_DIR)/lib/modules/,
-	#     copy the kernel from the rootfs, and point mkinitrd.sh at the
-	#     rootfs module tree via EE_MOD_SRC. Lets DKMS-built drivers
-	#     (e.g. nvidia-driver-*) target the same kernel that ends up in
-	#     the UKI and decouples the rootfs hash from the build host.
-	. $(PROFILE); \
-	if [ "$${TARGET_USE_PACKAGED_KERNEL:-no}" = "yes" ]; then \
-		KVER_PKG=$$(ls $(ROOTFS_DIR)/lib/modules/ 2>/dev/null | head -1); \
-		[ -n "$$KVER_PKG" ] || { echo "FATAL: TARGET_USE_PACKAGED_KERNEL=yes but no kernel modules under $(ROOTFS_DIR)/lib/modules/"; exit 1; }; \
-		[ -f $(ROOTFS_DIR)/boot/vmlinuz-$$KVER_PKG ] || { echo "FATAL: no kernel image at $(ROOTFS_DIR)/boot/vmlinuz-$$KVER_PKG"; exit 1; }; \
-		echo "Using packaged kernel from rootfs: $$KVER_PKG"; \
-		sudo EE_MOD_SRC=$(ROOTFS_DIR)/lib/modules/$$KVER_PKG bash mkinitrd.sh $(OUTPUT_DIR)/easyenclave.initrd $$KVER_PKG $(PROFILE); \
-		sudo cp $(ROOTFS_DIR)/boot/vmlinuz-$$KVER_PKG $(OUTPUT_DIR)/easyenclave.vmlinuz; \
-	else \
-		echo "Using host kernel: $(KVER)"; \
-		sudo bash mkinitrd.sh $(OUTPUT_DIR)/easyenclave.initrd $(KVER) $(PROFILE); \
-		sudo cp /boot/vmlinuz-$(KVER) $(OUTPUT_DIR)/easyenclave.vmlinuz; \
-	fi
+	# 3. Per-target kernel cmdline.
+	. $(PROFILE); echo "$$TARGET_CMDLINE" > $(OUTPUT_DIR)/easyenclave.cmdline
+	# 4. Per-target initrd (profile-driven modules + init template).
+	sudo bash mkinitrd.sh $(OUTPUT_DIR)/easyenclave.initrd $(KVER) $(PROFILE)
+	# 5. Host kernel.
+	sudo cp /boot/vmlinuz-$(KVER) $(OUTPUT_DIR)/easyenclave.vmlinuz
 	sudo chmod 644 $(OUTPUT_DIR)/easyenclave.vmlinuz
 	# 6. Build UKI.
 	ukify build \
