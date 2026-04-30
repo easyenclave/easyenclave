@@ -183,15 +183,40 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::{NamedTempFile, TempPath};
 
-    /// Writes a shell script to a temp path, closes the writable fd
-    /// (Linux refuses to exec a file with an open writable fd —
-    /// ETXTBSY), and returns the path. Drop unlinks the file.
+    /// Cargo runs tests as threads in one process. When thread A creates a
+    /// NamedTempFile, the writable fd is briefly visible to the whole
+    /// process. If thread B forks (via Command::spawn) during that window,
+    /// the child inherits A's writable fd. When thread A then tries to
+    /// exec its helper file, the kernel sees a writable fd to that inode
+    /// in another task and returns ETXTBSY.
+    ///
+    /// O_CLOEXEC closes the fd in the grandchild AFTER its own exec, but
+    /// the race window between fork and exec is enough to flake CI under
+    /// load. Local runs almost never hit it; GitHub-hosted runners do.
+    ///
+    /// Serialize every helper-spawning test through this mutex so only
+    /// one NamedTempFile-then-spawn sequence is in flight at a time.
+    static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
+    fn spawn_guard() -> MutexGuard<'static, ()> {
+        SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Writes a shell script to a temp path and returns the path. Caller
+    /// must hold `spawn_guard()` for the lifetime of the spawn that
+    /// follows.
     fn write_helper(script: &str) -> TempPath {
         let mut f = NamedTempFile::new().unwrap();
         f.write_all(script.as_bytes()).unwrap();
-        let path = f.into_temp_path();
+        f.flush().unwrap();
+        // Explicitly drop the File before returning the path so the
+        // writable fd is closed; into_temp_path()'s Drop does this too,
+        // but being explicit makes the lifetime obvious.
+        let (file, path) = f.into_parts();
+        drop(file);
         use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
         perms.set_mode(0o755);
@@ -269,6 +294,7 @@ mod tests {
 
     #[test]
     fn helper_success_round_trip() {
+        let _g = spawn_guard();
         // /bin/sh helper that prints len=4|"ABCD"|len=0 to stdout.
         let helper = write_helper(
             r#"#!/bin/bash
@@ -283,6 +309,7 @@ printf '\x00\x00\x00\x04ABCD\x00\x00\x00\x00'
 
     #[test]
     fn helper_nonzero_exit_surfaces_stderr() {
+        let _g = spawn_guard();
         let helper = write_helper(
             r#"#!/bin/sh
 echo "GPU not in CC mode" >&2
@@ -297,6 +324,7 @@ exit 7
 
     #[test]
     fn helper_timeout_kills_child() {
+        let _g = spawn_guard();
         let helper = write_helper(
             r#"#!/bin/sh
 sleep 30
@@ -313,6 +341,7 @@ sleep 30
 
     #[test]
     fn cache_avoids_second_helper_invocation() {
+        let _g = spawn_guard();
         // Helper that increments a counter file; second collect() should
         // hit cache and not bump it.
         let counter = NamedTempFile::new().unwrap();
