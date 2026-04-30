@@ -22,7 +22,7 @@
 # Usage:
 #   make build                          # default TARGET=gcp
 #   make build TARGET=azure             # Azure VHD for TDX CVMs
-#   make build TARGET=local-tdx-qcow2   # libvirt backing-file qcow2
+#   make build TARGET=llm-cuda          # libvirt backing-file qcow2 + vLLM/CUDA stack
 #   make clean                          # clean just the current TARGET's output
 #   make clean-all                      # clean output/ entirely
 

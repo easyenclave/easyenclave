@@ -94,7 +94,7 @@ Continue.dev / aider at it without losing the attestation guarantee.
 
 ## Choosing a target image
 
-Reuse any existing easyenclave image — `gcp`, `azure`, `local-tdx-qcow2`
+Reuse any existing easyenclave image — `gcp`, `azure`, `llm-cuda`
 all work. Per-target MRTD/RTMR values are different (see the
 "Attestation across targets" section above), so the release manifest
 embedded in the proxy binary is keyed by target name; clients pin the

@@ -33,8 +33,8 @@ ESP_SIZE=64  # MB
 [ -f "$UKI" ] || { echo "No UKI at $UKI"; exit 1; }
 
 # Resolve strategy from profile if provided. Falls back to ext4-label
-# for backward compatibility (the gcp/azure/local-tdx-qcow2 profiles
-# don't set the second arg today).
+# for backward compatibility (the gcp/azure profiles don't set the
+# second arg today).
 STRATEGY="ext4-label"
 if [ -n "$PROFILE" ] && [ -f "$PROFILE" ]; then
     # shellcheck disable=SC1090

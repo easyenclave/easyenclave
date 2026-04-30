@@ -1,14 +1,17 @@
 #!/bin/bash
-# Local-TDX-qcow2 real-TDX integration test — hosted-side driver.
+# llm-cuda real-TDX integration test — hosted-side driver.
 #
-# GitHub-hosted runners don't have TDX. SSH into tdx2 (real TDX via
-# EE_LOCAL_HOST + EE_LOCAL_SSH_KEY_PATH), scp the qcow2 artifact there,
-# invoke the local runner which boots it under real OVMF.inteltdx.fd +
-# kvm_intel.tdx=Y. Mirrors the pattern dd's relaunch-* actions use.
+# GitHub-hosted runners don't have TDX or an H100. SSH into tdx2 (real
+# TDX via EE_LOCAL_HOST + EE_LOCAL_SSH_KEY_PATH), scp the qcow2
+# artifact there, invoke the local runner which boots it under real
+# OVMF.inteltdx.fd + kvm_intel.tdx=Y, optionally attaching the host's
+# H100 if one is bound to vfio-pci. Mirrors the pattern used by every
+# other real-TDX smoke (gcp/azure/local-tdx-qcow2 → SSH-and-go).
 #
-# Why qcow2 (not ISO): dd's production path is libvirt with qcow2 as a
-# COW backing file. This test validates the same artifact shape dd
-# consumes on every release, not a dev-only ISO.
+# Why the llm-cuda image as the smoke target: it's a strict superset
+# of the previous local-tdx-qcow2 image (same TDX boot path, same
+# qemu vendor stage, plus dm-verity + the NVIDIA stack). One smoke
+# job covers everything the local-tdx-qcow2 smoke covered.
 #
 # Required env:
 #   SHA12                    commit sha12 (for artifact name)
@@ -22,7 +25,7 @@ set -euo pipefail
 : "${EE_LOCAL_HOST:?}"
 : "${EE_LOCAL_SSH_KEY_PATH:?}"
 
-QCOW2="image/output/local-tdx-qcow2/easyenclave-${SHA12}-local-tdx-qcow2.qcow2"
+QCOW2="image/output/llm-cuda/easyenclave-${SHA12}-llm-cuda.qcow2"
 [ -f "$QCOW2" ] || { echo "missing $QCOW2" >&2; exit 2; }
 
 SSH_OPTS=(-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -i "$EE_LOCAL_SSH_KEY_PATH")
@@ -30,15 +33,19 @@ REMOTE_QCOW2="/tmp/easyenclave-smoke-${SHA12}.qcow2"
 
 cleanup() {
     set +e
-    echo "smoke:local-tdx-qcow2: cleanup remote qcow2"
+    echo "smoke:llm-cuda: cleanup remote qcow2"
     ssh "${SSH_OPTS[@]}" "tdx2@${EE_LOCAL_HOST}" "rm -f '${REMOTE_QCOW2}'" 2>/dev/null || true
 }
 trap cleanup EXIT
 
-echo "smoke:local-tdx-qcow2: scp $QCOW2 → tdx2@${EE_LOCAL_HOST}:${REMOTE_QCOW2}"
+# llm-cuda qcow2 is ~7GB (CUDA + PyTorch + vLLM bake), so this scp
+# is several minutes on a normal GHA runner uplink. Worth it: the
+# alternative is hosting the artifact in object storage and having
+# tdx2 pull it, which adds an auth surface for no real win.
+echo "smoke:llm-cuda: scp $QCOW2 → tdx2@${EE_LOCAL_HOST}:${REMOTE_QCOW2}"
 scp "${SSH_OPTS[@]}" "$QCOW2" "tdx2@${EE_LOCAL_HOST}:${REMOTE_QCOW2}"
 
-echo "smoke:local-tdx-qcow2: ssh + run runner"
+echo "smoke:llm-cuda: ssh + run runner"
 ssh "${SSH_OPTS[@]}" "tdx2@${EE_LOCAL_HOST}" "bash -s" <<REMOTE_SCRIPT
 set -euo pipefail
 cd /home/tdx2/src/easyenclave
@@ -52,5 +59,5 @@ if [ "\$actual" != "${GITHUB_SHA}" ]; then
     echo "remote HEAD \$actual != expected ${GITHUB_SHA}" >&2
     exit 2
 fi
-exec bash image/ci-tdx-smoke-local-tdx-qcow2-runner.sh "${REMOTE_QCOW2}" "${SHA12}"
+exec bash image/ci-tdx-smoke-llm-cuda-runner.sh "${REMOTE_QCOW2}" "${SHA12}"
 REMOTE_SCRIPT
