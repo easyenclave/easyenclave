@@ -5,16 +5,10 @@
 #
 # Inputs expected in <output-dir>:
 #   easyenclave.efi        (UKI; always required)
-#   ext4-label strategy:
-#     rootfs.img             (built earlier by lib/mkroot.sh)
-#   dm-verity-squashfs strategy:
-#     rootfs.squashfs        (built earlier by lib/mkroot.sh)
-#     rootfs.verity          (built earlier by lib/mkroot.sh)
-#     roothash.txt           (consumed by Makefile pre-ukify; required here
-#                             only as evidence the strategy ran cleanly)
+#   easyenclave.rootfs/    (mkosi-populated directory; for disk format)
 #
 # Outputs depend on TARGET_FORMAT:
-#   disk → easyenclave.root.raw (GPT disk),
+#   disk → rootfs.img (ext4), easyenclave.root.raw (GPT disk),
 #          easyenclave.qcow2 (if `qcow2` in TARGET_OUTPUTS),
 #          easyenclave-<sha12>-gcp.tar.gz (if `gcp-tar.gz` in TARGET_OUTPUTS),
 #          easyenclave.vhd (if `vhd` in TARGET_OUTPUTS; fixed-size for Azure)
@@ -29,35 +23,22 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$PROFILE"
 
 UKI="$OUT/easyenclave.efi"
+ROOTFS_DIR="$OUT/easyenclave.rootfs"
 [ -f "$UKI" ] || { echo "mkimage: no UKI at $UKI"; exit 1; }
+[ -d "$ROOTFS_DIR" ] || { echo "mkimage: no rootfs tree at $ROOTFS_DIR"; exit 1; }
 
 echo "mkimage: format=$TARGET_FORMAT strategy=$TARGET_ROOT_STRATEGY"
 
 case "$TARGET_FORMAT" in
     disk)
-        # 1. Build the per-strategy root payload. ext4-label produces
-        #    rootfs.img; dm-verity-squashfs produces rootfs.squashfs +
-        #    rootfs.verity + roothash.txt. The Makefile is responsible
-        #    for invoking lib/mkroot.sh BEFORE this script runs (so the
-        #    roothash can be folded into the cmdline before ukify), so
-        #    the artifacts are expected to already be on disk here.
-        case "$TARGET_ROOT_STRATEGY" in
-            ext4-label)
-                [ -f "$OUT/rootfs.img" ] || { echo "mkimage: missing $OUT/rootfs.img — has lib/mkroot.sh been run?"; exit 1; }
-                ;;
-            dm-verity-squashfs)
-                for f in rootfs.squashfs rootfs.verity roothash.txt; do
-                    [ -f "$OUT/$f" ] || { echo "mkimage: missing $OUT/$f — has lib/mkroot.sh been run?"; exit 1; }
-                done
-                ;;
-            *)
-                echo "mkimage: unknown strategy '$TARGET_ROOT_STRATEGY'" >&2
-                exit 1
-                ;;
-        esac
+        # 1. Pack the rootfs tree into a plain ext4 image.
+        ROOTFS_IMG="$OUT/rootfs.img"
+        rm -f "$ROOTFS_IMG"
+        dd if=/dev/zero of="$ROOTFS_IMG" bs=1M count=256 status=none
+        sudo mkfs.ext4 -F -L root -d "$ROOTFS_DIR" "$ROOTFS_IMG" 2>&1 | tail -3
 
-        # 2. Assemble GPT disk: ESP (with UKI) + per-strategy root.
-        bash "$SCRIPT_DIR/assemble-disk.sh" "$OUT" "$PROFILE"
+        # 2. Assemble GPT disk: ESP (with UKI) + rootfs.
+        bash "$SCRIPT_DIR/assemble-disk.sh" "$OUT"
 
         # 3. Derived formats.
         case " $TARGET_OUTPUTS " in
