@@ -11,13 +11,19 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::process::Command;
 
-use crate::attestation::AttestationBackend;
+use crate::attestation::{AttestationBackend, GpuEvidenceBackend};
 use crate::workload::{DeployRequest, Deployments};
+
+pub type GpuBackend = Arc<Box<dyn GpuEvidenceBackend>>;
 
 pub struct SocketServer {
     pub socket_path: String,
     pub deployments: Deployments,
     pub attestation: Arc<Box<dyn AttestationBackend>>,
+    /// Optional auxiliary GPU evidence producer. When `Some`, `attest`
+    /// folds an `evidence.nvgpu` (or `evidence.nvgpu_error`) field into
+    /// its response. Failures here never fail the TDX path.
+    pub gpu_evidence: Option<GpuBackend>,
     pub start_time: std::time::Instant,
     /// If set, every request must include `"token": "<matching-value>"`.
     /// Minted once at boot by `main.rs::mint_boot_token` and handed to
@@ -57,6 +63,7 @@ impl SocketServer {
 
             let deployments = self.deployments.clone();
             let attestation = self.attestation.clone();
+            let gpu_evidence = self.gpu_evidence.clone();
             let start_time = self.start_time;
             let expected_token = self.expected_token.clone();
 
@@ -95,8 +102,14 @@ impl SocketServer {
                         }
                     }
 
-                    let response =
-                        handle_request(&line, &deployments, &attestation, start_time).await;
+                    let response = handle_request(
+                        &line,
+                        &deployments,
+                        &attestation,
+                        gpu_evidence.as_ref(),
+                        start_time,
+                    )
+                    .await;
                     let mut out = serde_json::to_string(&response).unwrap_or_else(|_| {
                         r#"{"ok":false,"error":"serialize error"}"#.to_string()
                     });
@@ -114,6 +127,7 @@ async fn handle_request(
     line: &str,
     deployments: &Deployments,
     attestation: &Arc<Box<dyn AttestationBackend>>,
+    gpu_evidence: Option<&GpuBackend>,
     start_time: std::time::Instant,
 ) -> Value {
     let req: Value = match serde_json::from_str(line) {
@@ -127,8 +141,8 @@ async fn handle_request(
     };
 
     match method {
-        "health" => handle_health(deployments, attestation, start_time).await,
-        "attest" => handle_attest(&req, attestation),
+        "health" => handle_health(deployments, attestation, gpu_evidence, start_time).await,
+        "attest" => handle_attest(&req, attestation, gpu_evidence),
         "deploy" => handle_deploy(&req, deployments).await,
         "list" => handle_list(deployments).await,
         "stop" => handle_stop(&req, deployments).await,
@@ -141,18 +155,27 @@ async fn handle_request(
 async fn handle_health(
     deployments: &Deployments,
     attestation: &Arc<Box<dyn AttestationBackend>>,
+    gpu_evidence: Option<&GpuBackend>,
     start_time: std::time::Instant,
 ) -> Value {
     let count = deployments.lock().await.len();
-    json!({
+    let mut response = json!({
         "ok": true,
         "attestation_type": attestation.attestation_type(),
         "workloads": count,
         "uptime_secs": start_time.elapsed().as_secs(),
-    })
+    });
+    if let Some(g) = gpu_evidence {
+        response["gpu_evidence_type"] = json!(g.evidence_type());
+    }
+    response
 }
 
-fn handle_attest(req: &Value, attestation: &Arc<Box<dyn AttestationBackend>>) -> Value {
+fn handle_attest(
+    req: &Value,
+    attestation: &Arc<Box<dyn AttestationBackend>>,
+    gpu_evidence: Option<&GpuBackend>,
+) -> Value {
     let report_data = match attestation_report_data(req) {
         Ok(report_data) => report_data,
         Err(e) => return json!({"ok": false, "error": e}),
@@ -167,20 +190,47 @@ fn handle_attest(req: &Value, attestation: &Arc<Box<dyn AttestationBackend>>) ->
     match quote {
         Ok(q) => {
             use base64::Engine;
-            json!({
+            let mut response = json!({
                 "ok": true,
                 "attestation_type": attestation.attestation_type(),
                 "quote_format": "tdx",
                 "quote_b64": q,
                 "report_data_b64": base64::engine::general_purpose::STANDARD.encode(&report_data),
                 "report_data_len": report_data.len(),
-            })
+            });
+            // GPU evidence is best-effort: TDX-only clients see no
+            // change; failures degrade to a `nvgpu_error` field but
+            // never escalate to top-level `ok: false`.
+            if let Some(g) = gpu_evidence {
+                response["evidence"] = collect_gpu_evidence_value(&***g);
+            }
+            response
         }
         Err(e) => json!({
             "ok": false,
             "attestation_type": attestation.attestation_type(),
             "error": e,
         }),
+    }
+}
+
+fn collect_gpu_evidence_value(g: &dyn GpuEvidenceBackend) -> Value {
+    use base64::Engine;
+    match g.collect() {
+        Ok(ev) => {
+            let mut nvgpu = json!({
+                "gpu_attestation_report_b64":
+                    base64::engine::general_purpose::STANDARD.encode(&ev.gpu_report),
+                "collected_at": ev.collected_at,
+                "helper": g.evidence_type(),
+            });
+            if let Some(switch) = ev.switch_report {
+                nvgpu["switch_attestation_report_b64"] =
+                    json!(base64::engine::general_purpose::STANDARD.encode(&switch));
+            }
+            json!({ "nvgpu": nvgpu })
+        }
+        Err(e) => json!({ "nvgpu_error": e }),
     }
 }
 
@@ -605,5 +655,80 @@ mod tests {
 
         let err = attestation_report_data(&req).unwrap_err();
         assert!(err.contains("maximum is 64"));
+    }
+
+    fn mock_attestation() -> Arc<Box<dyn AttestationBackend>> {
+        use crate::attestation::testing::MockTdxBackend;
+        let backend: Box<dyn AttestationBackend> = Box::new(MockTdxBackend::new());
+        Arc::new(backend)
+    }
+
+    fn mock_gpu_ok() -> GpuBackend {
+        use crate::attestation::testing::MockGpuBackend;
+        let backend: Box<dyn GpuEvidenceBackend> = Box::new(MockGpuBackend::ok());
+        Arc::new(backend)
+    }
+
+    fn mock_gpu_err() -> GpuBackend {
+        use crate::attestation::testing::MockGpuBackend;
+        let backend: Box<dyn GpuEvidenceBackend> = Box::new(MockGpuBackend::err("collector busy"));
+        Arc::new(backend)
+    }
+
+    #[test]
+    fn attest_without_gpu_backend_omits_evidence_field() {
+        // Regression guard: TDX-only clients (e.g. private-claude) must
+        // see the exact pre-change response shape.
+        let req = json!({"method": "attest"});
+        let resp = handle_attest(&req, &mock_attestation(), None);
+        assert_eq!(resp["ok"], json!(true));
+        assert_eq!(resp["attestation_type"], json!("tdx"));
+        assert_eq!(resp["quote_format"], json!("tdx"));
+        assert!(resp["quote_b64"].is_string());
+        assert!(resp.get("evidence").is_none(), "got: {resp}");
+    }
+
+    #[test]
+    fn attest_with_gpu_backend_includes_nvgpu_block() {
+        let req = json!({"method": "attest"});
+        let gpu = mock_gpu_ok();
+        let resp = handle_attest(&req, &mock_attestation(), Some(&gpu));
+        assert_eq!(resp["ok"], json!(true));
+        let nvgpu = &resp["evidence"]["nvgpu"];
+        assert!(nvgpu["gpu_attestation_report_b64"].is_string(), "{resp}");
+        assert!(nvgpu["switch_attestation_report_b64"].is_string(), "{resp}");
+        assert_eq!(nvgpu["helper"], json!("nvidia-cc"));
+        assert!(nvgpu["collected_at"].is_number());
+    }
+
+    #[test]
+    fn attest_gpu_failure_does_not_break_tdx_path() {
+        let req = json!({"method": "attest"});
+        let gpu = mock_gpu_err();
+        let resp = handle_attest(&req, &mock_attestation(), Some(&gpu));
+        // TDX path still succeeds.
+        assert_eq!(resp["ok"], json!(true));
+        assert!(resp["quote_b64"].is_string());
+        // GPU failure surfaces as a structured error, not a top-level fail.
+        assert_eq!(resp["evidence"]["nvgpu_error"], json!("collector busy"));
+        assert!(resp["evidence"].get("nvgpu").is_none());
+    }
+
+    #[tokio::test]
+    async fn health_surfaces_gpu_evidence_type_when_present() {
+        let deployments: Deployments =
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        let attestation = mock_attestation();
+        let gpu = mock_gpu_ok();
+        let start = std::time::Instant::now();
+
+        let resp_with = handle_health(&deployments, &attestation, Some(&gpu), start).await;
+        assert_eq!(resp_with["gpu_evidence_type"], json!("nvidia-cc"));
+
+        let resp_without = handle_health(&deployments, &attestation, None, start).await;
+        assert!(
+            resp_without.get("gpu_evidence_type").is_none(),
+            "{resp_without}"
+        );
     }
 }

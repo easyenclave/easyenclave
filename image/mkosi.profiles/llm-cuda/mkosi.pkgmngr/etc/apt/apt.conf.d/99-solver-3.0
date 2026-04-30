@@ -1,0 +1,6 @@
+// apt's new resolver — much better at large dep graphs with
+// version pins than the legacy one. Required for the NVIDIA
+// driver chain to resolve (the legacy solver gives up on the
+// libnvidia-* sub-dep cascade and reports every package as "not
+// going to be installed").
+APT::Solver "3.0";
