@@ -15,6 +15,7 @@
     <a href="#whats-inside">What's Inside</a>
     <a href="#features">Features</a>
     <a href="#how">How It Works</a>
+    <a href="#blog">Blog</a>
     <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
   </div>
 </nav>
@@ -103,6 +104,36 @@
   </div>
 </section>
 
+<section id="blog" class="ct">
+  <div class="c">
+    <h2>Blog</h2>
+    <p class="sub">Notes on minimal images, measured boot, and practical confidential computing.</p>
+    <div class="blog-list">
+      <article id="blog-nvidia-confidential-gpu" class="post featured-post">
+        <div class="meta">April 30, 2026 / Confidential GPUs</div>
+        <h3>NVIDIA Confidential GPU Support Turns a 50MB Linux Image Into 7GB</h3>
+        <p class="lede">To utilize NVIDIA's confidential GPU code with CUDA and LLMs, the minimum Linux installation grows from about 50MB to roughly 7GB after compression. Uncompressed and unsquashed, it is about twice that size.</p>
+        <div class="size-callout">
+          <div><span>50MB</span><small>minimal CPU image</small></div>
+          <div><span>7GB</span><small>compressed CUDA/LLM image</small></div>
+          <div><span>~14GB</span><small>uncompressed rootfs</small></div>
+        </div>
+        <p>The increase is not mostly application code. It is the GPU compute stack: CUDA libraries, PyTorch wheels, NVIDIA driver components, vLLM dependencies, and the operating-system pieces needed to support driver loading and kernel integration.</p>
+        <div class="breakdown">
+          <div class="bd-row"><span>CUDA 12.8 libraries</span><span>~2.5GB</span></div>
+          <div class="bd-row"><span>PyTorch wheels with bundled CUDA</span><span>~2GB</span></div>
+          <div class="bd-row"><span>NVIDIA 580 driver, fabricmanager, nscq, persistenced</span><span>~700MB</span></div>
+          <div class="bd-row"><span>vLLM and Python dependencies</span><span>~500MB</span></div>
+          <div class="bd-row"><span>Kernel, headers, modules, and systemd baggage</span><span>~200MB</span></div>
+          <div class="bd-row"><span>Ubuntu base and DKMS toolchain</span><span>~500MB</span></div>
+        </div>
+        <p>That is the tradeoff EasyEnclave is trying to make visible: confidential computing can be tiny when the workload is a static native binary, but confidential GPU inference currently pulls in a full accelerator ecosystem.</p>
+        <p class="commit-note">Latest commit: <code>7e40204</code> skips GCE metadata fetches on non-GCE hosts via DMI detection, reducing noisy boot logs on local QEMU and TDX development machines.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
 <section id="api" class="ct">
   <div class="c">
     <h2>Socket API</h2>
@@ -148,6 +179,7 @@ bash test-local.sh</pre>
     <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
     <a href="https://github.com/easyenclave/easyenclave#socket-api">API</a>
     <a href="https://github.com/easyenclave/easyenclave/wiki">Docs</a>
+    <a href="#blog">Blog</a>
   </p>
   <p style="margin-top:8px">EasyEnclave &mdash; MIT License</p>
 </footer>

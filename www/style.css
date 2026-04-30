@@ -45,6 +45,23 @@ section h2 { font-size: 24px; font-weight: 700; margin-bottom: 10px; }
 .arch pre { font-family: var(--mono); font-size: 12px; line-height: 1.7; color: var(--dim); }
 .arch .g { color: var(--green); } .arch .b { color: var(--blue); }
 
+.blog-list { max-width: 680px; margin: 0 auto; text-align: left; }
+.post { background: var(--bg-alt); border: 1px solid var(--surface); border-radius: 10px; padding: 24px; }
+.post .meta { font-family: var(--mono); font-size: 11px; color: var(--green); font-weight: 600; margin-bottom: 8px; text-transform: uppercase; letter-spacing: .04em; }
+.post h3 { font-size: 22px; line-height: 1.25; margin-bottom: 12px; }
+.post p { color: var(--dim); font-size: 14px; margin-top: 14px; }
+.post .lede { color: var(--text); font-size: 16px; }
+.size-callout { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin: 22px 0; }
+.size-callout div { background: var(--surface); border-radius: 8px; padding: 14px; text-align: center; }
+.size-callout span { display: block; color: var(--green); font-family: var(--mono); font-size: 26px; font-weight: 800; line-height: 1; }
+.size-callout small { display: block; color: var(--dim); font-size: 12px; margin-top: 8px; line-height: 1.35; }
+.breakdown { border: 1px solid var(--surface); border-radius: 8px; overflow: hidden; margin-top: 18px; }
+.bd-row { display: grid; grid-template-columns: minmax(0,1fr) 96px; background: var(--bg); border-top: 1px solid var(--surface); }
+.bd-row:first-child { border-top: 0; }
+.bd-row span { padding: 10px 12px; color: var(--dim); font-size: 13px; }
+.bd-row span:last-child { color: var(--green); font-family: var(--mono); font-weight: 700; text-align: right; }
+.commit-note { border-top: 1px solid var(--surface); padding-top: 14px; }
+
 .api { display: grid; grid-template-columns: repeat(auto-fit,minmax(340px,1fr)); gap: 10px; }
 .ae { background: var(--bg-alt); border: 1px solid var(--surface); border-radius: 8px; padding: 14px; }
 .ae .l { font-family: var(--mono); font-size: 11px; color: var(--green); font-weight: 600; margin-bottom: 6px; }
@@ -75,4 +92,4 @@ section h2 { font-size: 24px; font-weight: 700; margin-bottom: 10px; }
 footer { border-top: 1px solid var(--surface); padding: 24px; text-align: center; }
 footer p { color: var(--dim); font-size: 13px; } footer a { color: var(--dim); margin: 0 10px; }
 
-@media(max-width:600px) { nav .links{display:none} .hero{padding:64px 16px 40px} .grid,.api{grid-template-columns:1fr} .stats{gap:24px} .cmp-hdr,.cmp-row{grid-template-columns:1fr 1fr 1fr; font-size:11px} .cmp-hdr span,.cmp-row span{padding:6px 8px} }
+@media(max-width:600px) { nav .links{display:none} .hero{padding:64px 16px 40px} .grid,.api,.size-callout{grid-template-columns:1fr} .stats{gap:24px} .cmp-hdr,.cmp-row{grid-template-columns:1fr 1fr 1fr; font-size:11px} .cmp-hdr span,.cmp-row span{padding:6px 8px} .post{padding:18px} .post h3{font-size:19px} .bd-row{grid-template-columns:1fr} .bd-row span:last-child{text-align:left; padding-top:0} }
