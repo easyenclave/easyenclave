@@ -50,32 +50,82 @@ for m in dm-verity nvme virtio_blk virtio_pci virtio_scsi hv_vmbus hv_storvsc td
     modprobe "$m" 2>/dev/null || echo "note: $m not loaded (may be built-in)"
 done
 
-# Resolve LABEL=/UUID= via findfs, with a retry loop to let hotplug
-# settle. Same UKI boots GCP (nvme0n1p2) and libvirt/qemu (vda2) thanks
-# to the `root` label set at mkfs time (image/mkimage.sh).
-case "$ROOT_DATA" in
-    LABEL=*|UUID=*)
-        for i in $(seq 1 30); do
-            RESOLVED=$(findfs "$ROOT_DATA" 2>/dev/null || true)
-            [ -n "$RESOLVED" ] && [ -e "$RESOLVED" ] && { ROOT_DATA="$RESOLVED"; break; }
-            sleep 1
-        done
-        ;;
-    *)
-        for i in $(seq 1 30); do
-            [ -e "$ROOT_DATA" ] && break
-            sleep 1
-        done
-        ;;
-esac
-echo "Resolved root to $ROOT_DATA"
-[ -e "$ROOT_DATA" ] || { echo "FATAL: $ROOT_DATA not found after 30s"; ls /dev/nvme* /dev/vd* /dev/sd* 2>/dev/null; exec /bin/sh; }
+# Resolve LABEL= / UUID= via findfs (supported by busybox); resolve
+# PARTLABEL= / PARTUUID= via /sys/class/block/*/uevent because
+# busybox's findfs doesn't grok GPT partition attributes — only
+# filesystem-level LABEL/UUID. The kernel exposes PARTLABEL as
+# `PARTNAME=...` and PARTUUID as `PARTUUID=...` in each block
+# device's uevent file, which gives us a busybox-only path to the
+# device node. Same UKI boots GCP (nvme0n1p2) and libvirt/qemu
+# (vda2) thanks to the partition labels set at sfdisk time
+# (image/assemble-disk.sh).
+resolve_partattr() {
+    local key="$1" value="$2" u dev
+    for u in /sys/class/block/*/uevent; do
+        [ -f "$u" ] || continue
+        if grep -q "^${key}=${value}$" "$u" 2>/dev/null; then
+            dev=$(grep "^DEVNAME=" "$u" | cut -d= -f2)
+            [ -n "$dev" ] && [ -e "/dev/$dev" ] && echo "/dev/$dev" && return 0
+        fi
+    done
+    return 1
+}
+resolve_dev() {
+    local spec="$1" name="$2" out
+    case "$spec" in
+        LABEL=*|UUID=*)
+            for _ in $(seq 1 30); do
+                out=$(findfs "$spec" 2>/dev/null || true)
+                [ -n "$out" ] && [ -e "$out" ] && { echo "$out"; return 0; }
+                sleep 1
+            done
+            ;;
+        PARTLABEL=*)
+            for _ in $(seq 1 30); do
+                out=$(resolve_partattr PARTNAME "${spec#PARTLABEL=}")
+                [ -n "$out" ] && { echo "$out"; return 0; }
+                sleep 1
+            done
+            ;;
+        PARTUUID=*)
+            for _ in $(seq 1 30); do
+                out=$(resolve_partattr PARTUUID "${spec#PARTUUID=}")
+                [ -n "$out" ] && { echo "$out"; return 0; }
+                sleep 1
+            done
+            ;;
+        ?*)
+            for _ in $(seq 1 30); do
+                [ -e "$spec" ] && { echo "$spec"; return 0; }
+                sleep 1
+            done
+            ;;
+    esac
+    echo "FATAL: $name '$spec' not found after 30s" >&2
+    return 1
+}
+
+if ! ROOT_DATA=$(resolve_dev "$ROOT_DATA" "root data"); then
+    ls /dev/nvme* /dev/vd* /dev/sd* 2>/dev/null
+    exec /bin/sh
+fi
+echo "Resolved root data to $ROOT_DATA"
+
+if [ -n "$ROOT_HASH" ]; then
+    if ! ROOT_HASH=$(resolve_dev "$ROOT_HASH" "verity hash"); then
+        exec /bin/sh
+    fi
+    echo "Resolved verity hash to $ROOT_HASH"
+fi
 
 if [ -n "$ROOTHASH" ] && [ -n "$ROOT_DATA" ] && [ -n "$ROOT_HASH" ] && command -v veritysetup >/dev/null; then
     veritysetup open "$ROOT_DATA" verity-root "$ROOT_HASH" "$ROOTHASH" || {
         echo "FATAL: dm-verity setup failed"
         exec /bin/sh
     }
+    # No -t flag: kernel auto-detects ext4 vs squashfs (vs whatever).
+    # Same template handles both confer-image-style squashfs+verity
+    # and the historical ext4+verity layout.
     mount -o ro /dev/mapper/verity-root /mnt/root
 elif [ -n "$ROOT_DATA" ]; then
     mount -o ro "$ROOT_DATA" /mnt/root

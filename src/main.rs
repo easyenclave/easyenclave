@@ -41,6 +41,24 @@ async fn main() {
         attestation.attestation_type()
     );
 
+    // 3b. Optional GPU evidence backend (NVIDIA CC). Soft detect — if the
+    // helper isn't installed (or gpu_attestation is absent/disabled) we
+    // simply stay TDX-only. Failures inside the helper at runtime never
+    // fail the TDX path; they surface as `evidence.nvgpu_error` on the
+    // `attest` response.
+    let gpu_evidence = attestation::detect_gpu_evidence(cfg.gpu_attestation.as_ref());
+    match &gpu_evidence {
+        Some(g) => eprintln!(
+            "easyenclave: gpu evidence backend: {} (helper: {})",
+            g.evidence_type(),
+            cfg.gpu_attestation
+                .as_ref()
+                .map(|c| c.helper_path.as_str())
+                .unwrap_or("(unset)")
+        ),
+        None => eprintln!("easyenclave: gpu evidence backend: none"),
+    }
+
     // 4. Pre-fetch all github_release assets before any workload starts.
     // Boot workloads spawn asynchronously, so without this phase a
     // workload could shell out to a tool (e.g. cloudflared) before its
@@ -129,6 +147,7 @@ async fn main() {
         socket_path: cfg.socket_path.clone(),
         deployments,
         attestation: Arc::new(attestation),
+        gpu_evidence: gpu_evidence.map(Arc::new),
         start_time,
         expected_token: Some(boot_token),
     };

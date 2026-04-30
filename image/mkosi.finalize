@@ -1,6 +1,31 @@
 #!/bin/bash
-# Cleanup for reproducible rootfs.
+# Cleanup for reproducible rootfs. Runs OUTSIDE the chroot, after
+# mkosi has unmounted any bind-mounts (notably /etc/resolv.conf,
+# which mkosi bind-mounts onto the chroot during WithNetwork=yes
+# builds).
 set -euo pipefail
 ROOT="${1:-${BUILDROOT:-/buildroot}}"
 rm -f "$ROOT/var/cache/ldconfig/aux-cache"
 find "$ROOT/var/log" -type f -delete 2>/dev/null || true
+
+# DKMS embeds the wall-clock build time as the first lines of every
+# make.log it produces (`Wed Apr 29 21:24:30 UTC 2026`). The log is
+# not used at runtime — it's purely a build-time diagnostic — so
+# strip it for reproducibility. Same approach confer-image takes in
+# its mkosi.postinst.
+find "$ROOT/var/lib/dkms" -type d -name log -exec rm -rf {} + 2>/dev/null || true
+
+# pip writes per-package install metadata (RECORD, INSTALLER) that's
+# content-addressed and reproducible, but it also drops apt/pip
+# cache leftovers in /root/.cache and /tmp despite --no-cache-dir.
+# Belt-and-suspenders cleanup.
+rm -rf "$ROOT/root/.cache" "$ROOT/.cache" 2>/dev/null || true
+find "$ROOT/tmp" -mindepth 1 -delete 2>/dev/null || true
+
+# Re-create the runtime resolv.conf symlink. mkosi.postinst.chroot
+# would create this normally, but skips it when /etc/resolv.conf is
+# bind-mounted by mkosi. By the time finalize runs the bind-mount
+# is gone, so we can safely overwrite whatever's there (typically
+# systemd-resolved's dangling stub-resolv.conf symlink).
+rm -f "$ROOT/etc/resolv.conf"
+ln -sf /run/resolv.conf "$ROOT/etc/resolv.conf"

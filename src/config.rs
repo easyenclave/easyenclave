@@ -16,6 +16,36 @@ pub struct Config {
     pub data_dir: String,
     #[serde(default)]
     pub boot_workloads: Vec<BootWorkload>,
+    #[serde(default)]
+    pub gpu_attestation: Option<GpuAttestationConfig>,
+}
+
+/// Optional auxiliary evidence backend for confidential GPUs (NVIDIA H100 CC).
+/// PID 1 shells out to `helper_path` on each `attest` call; the helper
+/// prints raw GPU evidence bytes on stdout in a length-prefixed wire
+/// format (see `docs/gpu-attestation.md`). Absent or `enabled: false` →
+/// the runtime keeps producing TDX-only quotes (existing behaviour).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GpuAttestationConfig {
+    #[serde(default = "default_gpu_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_gpu_helper_path")]
+    pub helper_path: String,
+    #[serde(default = "default_gpu_timeout_secs")]
+    pub timeout_secs: u64,
+    #[serde(default = "default_gpu_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+}
+
+impl Default for GpuAttestationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_gpu_enabled(),
+            helper_path: default_gpu_helper_path(),
+            timeout_secs: default_gpu_timeout_secs(),
+            cache_ttl_secs: default_gpu_cache_ttl_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +87,22 @@ fn default_app_name() -> String {
     "unnamed".to_string()
 }
 
+fn default_gpu_enabled() -> bool {
+    false
+}
+
+fn default_gpu_helper_path() -> String {
+    "/usr/local/bin/ee-gpu-evidence".to_string()
+}
+
+fn default_gpu_timeout_secs() -> u64 {
+    15
+}
+
+fn default_gpu_cache_ttl_secs() -> u64 {
+    60
+}
+
 impl Config {
     /// Load config from file, then overlay with environment variables.
     pub fn load() -> Result<Self, String> {
@@ -69,6 +115,7 @@ impl Config {
                 socket_path: default_socket_path(),
                 data_dir: default_data_dir(),
                 boot_workloads: Vec::new(),
+                gpu_attestation: None,
             }
         };
 
@@ -83,6 +130,45 @@ impl Config {
             match serde_json::from_str::<Vec<BootWorkload>>(&val) {
                 Ok(workloads) => config.boot_workloads = workloads,
                 Err(e) => eprintln!("easyenclave: warning: EE_BOOT_WORKLOADS parse error: {e}"),
+            }
+        }
+
+        // GPU attestation env overrides. Any of these creates the block
+        // if absent in the file, so a deployment can opt in purely via
+        // kernel cmdline / agent.env without baking config.json.
+        if let Ok(val) = std::env::var("EE_GPU_ATTESTATION_ENABLED") {
+            let enabled = matches!(val.as_str(), "1" | "true" | "yes");
+            config
+                .gpu_attestation
+                .get_or_insert_with(GpuAttestationConfig::default)
+                .enabled = enabled;
+        }
+        if let Ok(val) = std::env::var("EE_GPU_ATTESTATION_HELPER") {
+            config
+                .gpu_attestation
+                .get_or_insert_with(GpuAttestationConfig::default)
+                .helper_path = val;
+        }
+        if let Ok(val) = std::env::var("EE_GPU_ATTESTATION_TIMEOUT") {
+            if let Ok(secs) = val.parse() {
+                config
+                    .gpu_attestation
+                    .get_or_insert_with(GpuAttestationConfig::default)
+                    .timeout_secs = secs;
+            } else {
+                eprintln!("easyenclave: warning: EE_GPU_ATTESTATION_TIMEOUT not an integer: {val}");
+            }
+        }
+        if let Ok(val) = std::env::var("EE_GPU_ATTESTATION_CACHE_TTL") {
+            if let Ok(secs) = val.parse() {
+                config
+                    .gpu_attestation
+                    .get_or_insert_with(GpuAttestationConfig::default)
+                    .cache_ttl_secs = secs;
+            } else {
+                eprintln!(
+                    "easyenclave: warning: EE_GPU_ATTESTATION_CACHE_TTL not an integer: {val}"
+                );
             }
         }
 
