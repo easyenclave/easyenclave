@@ -16,6 +16,7 @@
     <a href="#features">Features</a>
     <a href="#no-age-gate">No Age Gate</a>
     <a href="#how">How It Works</a>
+    <a href="#blog">Blog</a>
     <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
   </div>
 </nav>
@@ -122,6 +123,36 @@
   </div>
 </section>
 
+<section id="blog" class="ct">
+  <div class="c">
+    <h2>Blog</h2>
+    <p class="sub">Notes from the edge of minimal confidential computing.</p>
+    <article class="blog-post">
+      <div class="meta">April 30, 2026 / LLM privacy</div>
+      <h3>The 50MB to 7GB question</h3>
+      <p class="lede">A minimal EasyEnclave image can be around 50MB. To run NVIDIA confidential GPU code with CUDA, vLLM, and local LLM inference, the image grows to roughly 7GB after compression. Unsquashed, it is about twice that.</p>
+      <p>That sounds like a failure of minimalism until you name the tradeoff. CPU mode keeps the enclave small and lets a private proxy track conversation history in TDX-private memory while routing model calls through provider-side ZDR. GPU mode pulls the model local, keeps prompts away from an outside LLM provider, and asks attestation to prove both the TDX VM and the NVIDIA confidential GPU state.</p>
+      <div class="size-strip">
+        <div><span>50MB</span><small>CPU enclave shape</small></div>
+        <div><span>7GB</span><small>compressed CUDA/LLM image</small></div>
+        <div><span>~14GB</span><small>unsquashed rootfs</small></div>
+      </div>
+      <div class="split">
+        <div>
+          <h4>CPU + ZDR</h4>
+          <p>The small-image path works well for a private-claude style proxy. The enclave owns session state, chat history, keys, and the attested client channel. OpenRouter ZDR routing denies provider-side collection, but the model still runs outside the enclave.</p>
+        </div>
+        <div>
+          <h4>Local GPU + attestation</h4>
+          <p>The GPU path is heavier, but it changes the privacy boundary. Prompts, history, and model execution can stay inside the measured VM, while combined TDX and NVIDIA GPU evidence lets a relying party check the CPU enclave, GPU mode bits, driver and firmware state, and fabric configuration.</p>
+        </div>
+      </div>
+      <p>The rough 7GB breakdown is mostly platform weight: CUDA 12.8 libraries at about 2.5GB, CUDA-bundled PyTorch wheels around 2GB, NVIDIA 580 driver pieces near 700MB, vLLM plus Python dependencies around 500MB, kernel/header/module and systemd support around 200MB, and the Ubuntu plus DKMS build base around 500MB.</p>
+      <p>The latest mainline work, <code>cd71a7c</code>, adds the <code>llm-cuda</code> target scaffolding so those vLLM and GPU bytes can live inside the verity-protected root. That is the right place for this experiment: make the cost visible, make the evidence explicit, and let users choose between small CPU privacy with ZDR routing or local GPU inference with hardware-backed proof.</p>
+    </article>
+  </div>
+</section>
+
 <section id="api" class="ct">
   <div class="c">
     <h2>Socket API</h2>
@@ -165,6 +196,7 @@ make build TARGET=local-tdx-qcow2    # libvirt backing-file qcow2</pre>
     <a href="https://github.com/easyenclave/easyenclave">GitHub</a>
     <a href="https://github.com/easyenclave/easyenclave#socket-api">API</a>
     <a href="https://github.com/easyenclave/easyenclave/wiki">Docs</a>
+    <a href="#blog">Blog</a>
   </p>
   <p style="margin-top:8px">EasyEnclave &mdash; MIT License</p>
 </footer>
