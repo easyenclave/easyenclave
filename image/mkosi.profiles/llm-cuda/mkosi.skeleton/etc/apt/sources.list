@@ -1,6 +1,0 @@
-# Ubuntu Noble (24.04 LTS) snapshot — pinned for reproducibility.
-# Runtime apt-get inside the booted VM (when applicable) sees the
-# same sources mkosi did at image-build time.
-deb http://snapshot.ubuntu.com/ubuntu/20260209T000000Z/ noble main restricted universe multiverse
-deb http://snapshot.ubuntu.com/ubuntu/20260209T000000Z/ noble-updates main restricted universe multiverse
-deb http://snapshot.ubuntu.com/ubuntu/20260209T000000Z/ noble-security main restricted universe multiverse

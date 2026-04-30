@@ -1,6 +1,0 @@
-// Force apt to use only the snapshot repository inside the rootfs.
-// Disables the freshness checks that would otherwise reject
-// snapshot Release files past their original validity window.
-Acquire::Check-Valid-Until "false";
-Acquire::Max-ValidTime "0";
-APT::Get::Update::SourceListWarnings::NonFreeFirmware "false";
