@@ -1,0 +1,45 @@
+# Verbatim copy of the preferences file that ships with the
+# `nvidia-driver-pinning-580.126.20` package on the NVIDIA cuda
+# repo (path `etc/apt/preferences.d/nvidia-driver-pin` inside the
+# .deb). Using their canonical pin-by-source-package syntax
+# (`src:foo`) instead of binary-name wildcards because a single
+# `src:` entry catches every binary package built from that
+# source — covers all the libnvidia-*-580 helpers (gl, gpucomp,
+# cfg1, common, decode, encode, extra, fbc1, compute) without
+# us having to enumerate them.
+#
+# Why this file is here and not just `Packages=
+# nvidia-driver-pinning-580.126.20` in mkosi.conf: that package
+# drops THIS file via its postinst, but postinst runs after the
+# package install batch finishes — too late to influence the
+# dep resolution of nvidia-driver-580-open / fabricmanager etc.
+# in the SAME mkosi run. Dropping the file directly into
+# mkosi.pkgmngr makes apt see the pin during the initial
+# resolution.
+#
+# Without this file: nvidia-dkms-580-open floats up to
+# 580.159.03 while nvidia-fabricmanager + libnvidia-nscq stay
+# pinned at 580.126.X — boot-time `nvidia-nvswitch: Version
+# mismatch` and a poisoned H100 GSP handshake.
+
+# Basic driver packages, includes foreign architectures
+# cuda-compat, built from nvidia-graphics-drivers does not have a generic common name so APT installs it
+# if requested.
+Package: src:nvidia-graphics-drivers-580:any src:nvidia-kmod-open:any
+Pin: version 580.126.20-*
+Pin-Priority: 1000
+
+# Basic driver packages, only in the native architectures
+Package: src:nvidia-modprobe src:nvidia-persistenced src:nvidia-settings src:nvidia-xconfig
+Pin: version 580.126.20-*
+Pin-Priority: 1000
+
+# Meta packages, includes foreign architectures
+Package: src:cuda-drivers:any src:nvidia-open:any
+Pin: version 580.126.20-*
+Pin-Priority: 1000
+
+# Extra driver packages, only in the native architectures
+Package: src:libnvidia-nscq src:libnvsdm src:nvidia-fabricmanager src:nvidia-imex src:nvlink5 src:fabricmanager src:imex
+Pin: version 580.126.20-*
+Pin-Priority: 1000

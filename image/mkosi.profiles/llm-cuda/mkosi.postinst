@@ -45,7 +45,8 @@ chroot /buildroot python3 -m venv /opt/venv-attestation
 chroot /buildroot /opt/venv-attestation/bin/pip install --upgrade --no-cache-dir pip
 chroot /buildroot /opt/venv-attestation/bin/pip install --no-cache-dir \
     nv-attestation-sdk==2.6.3 \
-    nv-local-gpu-verifier==2.6.3
+    nv-local-gpu-verifier==2.6.3 \
+    nv-ppcie-verifier==1.6.4
 
 # Pre-compile bytecode with hash-based invalidation. First-import on
 # the read-only verity-protected rootfs would otherwise try to write
